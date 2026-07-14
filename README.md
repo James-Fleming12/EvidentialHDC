@@ -108,17 +108,57 @@ Positioned as a compute-scaling variant: *"when additional compute is available,
 
 ---
 
-## 6. Reading List
+## 6. Extensive Reading List
 
-To execute this pivot, we must explore specific mechanisms for single-pass epistemic UQ and streaming buffer allocation.
+To execute this pivot seamlessly, the following literature provides the theoretical foundation and the exact mechanisms needed for the implementation of the three pillars.
 
-1. **Efficient TTA UQ Estimation:** 
-   We cannot afford Monte Carlo Dropout or Deep Ensembles (TTA must run strictly online). 
-   - *Read:* Literature on **Evidential Deep Learning**, **Temperature Scaling**, or **Single-Pass Feature-Level Perturbations** to find the cheapest, most effective epistemic UQ method compatible with our frozen 3D backbone.
-2. **Headroom-Based Resource Allocation:**
-   - *Read:* Literature on estimating unsupervised headroom or predictive instability in streaming data. We need to validate metrics (e.g., tracking moving averages of entropy/confidence) to automatically identify and freeze saturated classes in the subcluster ledger.
-3. **Category-Balanced Memory Banks:**
-   - *Read:* **RoTTA (Robust Test-Time Adaptation).** This is the closest prior work (category-balanced memory bank for temporally correlated streams). Understand how they bound class updates, and clearly differentiate our backprop-free, intra-class balancing approach.
+### 1. Efficient Single-Pass Epistemic Uncertainty (Contribution 1b)
+These papers explore how to extract robust uncertainty directly from the backbone's latent space without requiring deep ensembles, multiple forward passes, or distance metrics that duplicate your HDC cosine similarity.
+
+| Paper | The Concept | How to Use It |
+|---|---|---|
+| [**Evidential Deep Learning**](https://scholar.google.com/scholar?q=Evidential+Deep+Learning+Sensoy)<br>*(Sensoy et al., NeurIPS 2018)* | Formulates learning as evidence acquisition using Subjective Logic. Places a Dirichlet distribution over class probabilities, allowing explicit "I don't know" outputs independent of prototype distance. | (Used for pre-training/formulation reference) |
+| [**SNGP**](https://scholar.google.com/scholar?q=Simple+and+Principled+Uncertainty+Estimation+with+Deterministic+Deep+Learning+via+Distance+Awareness)<br>*(Liu et al., NeurIPS 2020)* | Spectral-normalized Neural Gaussian Processes force the latent space to be "distance-aware," providing high-quality epistemic uncertainty in a single pass. | (Used for pre-training/formulation reference) |
+| [**Prior Networks**](https://scholar.google.com/scholar?q=Predictive+Uncertainty+Estimation+via+Prior+Networks)<br>*(Malinin & Gales, NeurIPS 2018)* | Introduces Dirichlet Prior Networks to model distributional uncertainty directly. Targets the requirement to identify points far from the source distribution. | (Used for pre-training/formulation reference) |
+| [**DUQ**](https://scholar.google.com/scholar?q=Deterministic+Neural+Networks+with+Appropriate+Inductive+Biases+Capture+Epistemic+Uncertainty)<br>*(van Amersfoort et al., ICML 2020)* | Uses a two-sided gradient penalty to enforce "distance awareness." | Proves you can extract a mathematically rigorous epistemic uncertainty score directly from the feature vector's magnitude. |
+| [**Laplace Redux**](https://scholar.google.com/scholar?q=Laplace+Redux+Effortless+Bayesian+Deep+Learning)<br>*(Daxberger et al., NeurIPS 2021)* | Applies a post-hoc Laplace approximation to the last layer, yielding a closed-form, single-pass epistemic uncertainty without altering weights. | Fit this approximation to the source data once; evaluate target data against it at test-time for a pure epistemic signal. |
+| [**Feature Space Singularity**](https://scholar.google.com/scholar?q=Feature+Space+Singularity+for+Out-of-Distribution+Detection)<br>*(Huang et al., NeurIPS 2021)* | Demonstrates the raw L2 norm (magnitude) of the latent vector is a highly effective, zero-cost metric for OOD detection. | Since HDC requires L2-normalized vectors, the magnitude is usually thrown away. Use the pre-normalization magnitude as the epistemic veto! |
+| [**React**](https://scholar.google.com/scholar?q=React+Out-of-distribution+Detection+With+Rectified+Activations)<br>*(Sun et al., NeurIPS 2021)* | Shows OOD data causes massive activation spikes in penultimate layers. Clamping these makes uncertainty metrics vastly more reliable. | Monitor pre-projection features for activation spikes as an immediate indicator of epistemic failure (e.g., fog artifacts). |
+
+### 2. Spatial/Temporal Consistency as a Hard Veto (Contribution 1c)
+Consistency cannot just smooth scores; it must actively reject geometrically plausible but temporally/spatially isolated errors.
+
+| Paper | The Concept | How to Use It |
+|---|---|---|
+| [**Temporal Ensembling**](https://scholar.google.com/scholar?q=Temporal+Ensembling+for+Semi-Supervised+Learning)<br>*(Laine & Aila, ICLR 2017)* | The foundational text on using moving averages of network predictions over time to stabilize pseudo-labels. | Maps perfectly to consecutive LiDAR frames for defining temporal vetoes. |
+| [**ST3D**](https://scholar.google.com/scholar?q=ST3D+Self-training+for+Unsupervised+Domain+Adaptation+on+3D+Object+Detection)<br>*(Yang et al., CVPR 2021)* | State-of-the-art for 3D LiDAR UDA, heavily utilizing spatial/temporal consistency to filter pseudo-labels. | Read to see exactly what baselines your consistency veto must outperform. |
+| [**FixMatch**](https://scholar.google.com/scholar?q=FixMatch+Simplifying+Semi-Supervised+Learning+with+Consistency+and+Confidence)<br>*(Sohn et al., NeurIPS 2020)* | Enforces that weak and strong predictions must strictly agree before retaining a label. | The theoretical basis for your "hard veto" argument over "soft smoothing." |
+| [**PointTTA**](https://scholar.google.com/scholar?q=PointTTA+Test-Time+Adaptation+for+Point+Cloud+Processing)<br>*(Metzger et al., 2023)* | A direct TTA framework for 3D point clouds relying on spatial transformations and self-supervision. | Compare their soft-consistency loss to your hard-veto logic to define valid "spatial neighborhoods." |
+| [**Test-Time Training on Video**](https://scholar.google.com/scholar?q=Test-Time+Training+on+Video+Better+Point+Tracking+and+Pose+Estimation)<br>*(Sun et al., 2022)* | Adapts representations online by enforcing temporal consistency across sequential frames. | Validates the assumption that temporal physics is the ultimate arbiter of label correctness. Use tracking logic for frame-to-frame veto. |
+| [**Ada3D**](https://scholar.google.com/scholar?q=Ada3D+Adaptive+3D+Object+Detection)<br>*(Recent CVPR/ICCV)* | Focuses on aligning local spatial contexts under domain shifts, assuming adjacent points share semantic identity. | Formalize the spatial veto: if cosine similarity says Pedestrian, but k geometric neighbors are Road, the label is vetoed. |
+| [**TENT**](https://scholar.google.com/scholar?q=TENT+Fully+Test-Time+Adaptation+by+Entropy+Minimization)<br>*(Wang et al., ICLR 2021)* | The baseline for entropy minimization based TTA. | Cite as the counter-example: TENT's soft smoothing causes semantic poisoning. Contrast with your boolean temporal veto. |
+
+### 3. Subcluster Ledgers & Headroom Allocation (Contribution 2)
+These papers tackle gating updates based on representation saturation and non-i.i.d. target streams, aligning perfectly with the backprop-free subcluster ledger.
+
+| Paper | The Concept | How to Use It |
+|---|---|---|
+| [**RoTTA**](https://scholar.google.com/scholar?q=RoTTA+Robust+Test-Time+Adaptation+in+Dynamic+Scenarios)<br>*(Yuan et al., CVPR 2023)* | Maintains a category-balanced memory bank for temporally correlated streams. | Mandatory reading. Differentiate your approach: your ledger never touches inference, preventing Voronoi-shattering. |
+| [**Class-Balanced Loss**](https://scholar.google.com/scholar?q=Class-Balanced+Loss+Based+on+Effective+Number+of+Samples)<br>*(Cui et al., CVPR 2019)* | Formally defines class saturation (effective number of samples), proving exponentially diminishing returns. | Provides mathematical justification for the headroom-budgeting ledger. |
+| [**DELTA**](https://scholar.google.com/scholar?q=DELTA+Degradation-Free+Fully+Test-Time+Adaptation)<br>*(Zhao et al., ICLR 2023)* | Explores how unconstrained TTA destroys majority classes. Uses class-aware balancing. | Compare your ledger against their balancing mechanism. |
+| [**NOTE**](https://scholar.google.com/scholar?q=NOTE+Robust+Continual+Test-time+Adaptation+Against+Temporal+Correlation)<br>*(Gong et al., NeurIPS 2022)* | Tackles the "fog bank" problem where temporally correlated TTA streams cause batch-norm/memory collapse. | Direct theoretical precedent. They balance memory to prevent temporal collapse; you balance subclusters to equalize headroom. |
+| [**LAME**](https://scholar.google.com/scholar?q=LAME+Latent-Space+Marginalization+for+Blind+Action)<br>*(Boudiaf et al., CVPR 2022)* | Performs TTA without updating weights, strictly updating latent space assignments via Laplacian smoothing on affinity matrix. | Massive structural citation. Contrast their affinity-matrix approach with your O(K) budgeted subcluster approach. |
+| [**AdaContrast**](https://scholar.google.com/scholar?q=AdaContrast+Contrastive+Test-Time+Adaptation)<br>*(Chen et al., CVPR 2022)* | Utilizes a pseudo-label queue to track class frequencies and reject over-represented classes. | Validates that updating saturated classes hurts. Defends why your ledger freezes saturated subclusters. |
+| [**Practical Coresets for Online ML**](https://scholar.google.com/scholar?q=Practical+Coresets+for+Online+Machine+Learning)<br>*(Feldman 2020)* | Focuses on selecting the smallest possible subset of streaming data to represent the full distribution. | Rigorous framing: your ledger maintains an online coreset of the target domain. Tracking K subclusters equalizes learning potential. |
+
+### 4. Multi-View Test-Time Augmentation (Contribution 3)
+If including the TTA variant for compute-scaling, it must be grounded in literature treating augmentation as a reliability signal.
+
+| Paper | The Concept | How to Use It |
+|---|---|---|
+| [**Learning to Trust**](https://scholar.google.com/scholar?q=Learning+to+Trust+Test-Time+Augmentation+for+Epistemic+Uncertainty+Estimation)<br>*(Ayhan & Berens, 2018)* | Seminal paper establishing variance across TTAs as a valid proxy for epistemic uncertainty. | Foundations for TTA reliability. |
+| [**Uncertainty-guided TTA**](https://scholar.google.com/scholar?q=Uncertainty-guided+Test-Time+Augmentation)<br>*(Shanmugam et al., 2021)* | Standard TTA applies all augmentations equally. This paper learns which augmentations to trust. | Maps well to your "cross-view soft agreement" signal. |
+| [**PointContrast**](https://scholar.google.com/scholar?q=PointContrast+Unsupervised+Pre-training+for+3D+Point+Cloud+Understanding)<br>*(Xie et al., ECCV 2020)* | Focuses on cross-view consistency in 3D point clouds. | Provides the exact geometric augmentations (yaw, roll, scale) statistically valid for 3D LiDAR TTA. |
 
 ---
 
