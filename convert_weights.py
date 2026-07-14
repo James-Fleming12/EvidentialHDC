@@ -6,12 +6,13 @@ import sys
 import modules.HDC_utils
 modules.HDC_utils.Model = modules.HDC_utils.UQModel
 modules.HDC_utils.KNNModel = modules.HDC_utils.UQModel
+modules.HDC_utils.DensityModel = modules.HDC_utils.UQModel
 
 def convert_weights(input_path, output_path):
     print(f"Processing {input_path}...")
     try:
-        # Load the old data
-        data = torch.load(input_path, map_location='cpu')
+        # Load the old data (using weights_only=False because we are unpickling an object, not just a dict)
+        data = torch.load(input_path, map_location='cpu', weights_only=False)
         
         # If it was saved as a full model object (which `trainer.train` did), extract state_dict
         if isinstance(data, torch.nn.Module):
