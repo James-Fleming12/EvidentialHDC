@@ -15,7 +15,7 @@ from dataset.kitti.parser import Parser
 import unsup_main
 from unsup_main import train_extractor, train_hdc, extract_metrics_from_conf_matrix, setup_logger, save_graphic
 from modules.HDC_utils import UQModel
-from modules.HDC_utils import set_knn_model
+from modules.HDC_utils import set_uq_model
 
 NUM_CLASSES = 7
 KITTI_DATA_DIR = "/mnt/alpha/jmfleming/KITTI"
@@ -314,7 +314,7 @@ def main():
                     train_sequences=DATA["split"]["train"],
                     valid_sequences=DATA["split"]["valid"],
                     test_sequences=None,
-                    labels=DATA["labels"],
+            set_uq_models=DATA["labels"],
                     color_map=DATA.get("color_map", {}),
                     learning_map=DATA["learning_map"],
                     learning_map_inv=DATA["learning_map_inv"],

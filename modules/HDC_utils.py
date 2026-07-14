@@ -556,5 +556,5 @@ class UQModel(nn.Module):
         """
         pass
 
-def set_knn_model(ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device, subcluster_type='bipolar'):
+def set_uq_model(ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device, subcluster_type='bipolar'):
     return UQModel(ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device)

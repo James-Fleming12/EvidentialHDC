@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
-from modules.HDC_utils import set_model, set_knn_model
+from modules.HDC_utils import set_model, set_uq_model
 from modules.ioueval import *
 import torch.backends.cudnn as cudnn
 from postproc.KNN import KNN
@@ -464,7 +464,7 @@ class UQTrainer():
                 self.loss_w[x_cl] = 0
         print("Loss weights from content: ", self.loss_w.data)
 
-        self.model = set_knn_model(ARCH, modeldir, 'rp', 0, 0, self.num_classes, self.device, subcluster_type='bipolar' if bipolar_subclusters else 'continuous')
+        self.model = set_uq_model(ARCH, modeldir, 'rp', 0, 0, self.num_classes, self.device, subcluster_type='bipolar' if bipolar_subclusters else 'continuous')
         print(self.parser.get_n_classes())
         self.post = None
         if self.ARCH["post"]["KNN"]["use"]:
