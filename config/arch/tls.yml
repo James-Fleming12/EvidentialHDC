@@ -1,0 +1,87 @@
+################################################################################
+# training parameters
+################################################################################
+train:
+  pipeline: "res"       #  "res"  "fid"
+  act: "Hardswish"      #  "SiLU" "Hardswish" “LeakyReLU”
+  loss: "xentropy"      #  must be either xentropy or iou
+  aux_loss: True
+  lamda: 1.0
+  scheduler: "consine"  # "consine" or "decay"
+  max_epochs: 60
+  consine:
+    min_lr: 0.00005
+    max_lr: 0.005
+    first_cycle: 30
+    cycle: 1
+    wup_epochs: 1
+    gamma: 1.0
+  decay:
+    lr: 0.01
+    wup_epochs: 1        # warmup during first XX epochs (can be float)
+    lr_decay: 0.99       # learning rate decay per epoch after initial cycle (from min lr)
+  momentum: 0.9          # sgd momentum
+  w_decay: 0.0001        # weight decay
+  batch_size: 1         # batch size
+  report_batch: 1      # every x batches, report loss
+  report_epoch: 1        # every x epochs, report validation set
+  epsilon_w: 0.001       # class weight w = 1 / (content + epsilon_w)
+  save_summary: False    # Summary of weight histograms for tensorboard   Must false since not check the api
+  save_scans:  False     # False doesn't save anything, True saves som
+  show_scans: True       # show scans during training
+  save_batch: 1
+  #workers: 6             # number of threads to get data
+
+################################################################################
+# postproc parameters
+################################################################################
+post:
+  KNN:
+    use: True # This parameter default is false
+    params:
+      knn: 11
+      search: 11
+      sigma: 1.0
+      cutoff: 5.0
+
+################################################################################
+# classification head parameters
+################################################################################
+# dataset (to find parser)
+dataset:
+  labels: "tls"
+  scans: "tls"
+  max_points: 1700000 # max of any scan in dataset
+  sensor:
+    name: "Pandora"
+    type: "spherical" # projective
+    fov_up: 40
+    fov_down: -2
+    img_prop:
+      width: 1800
+      height: 40
+    img_means: #range,x,y,z,signal   (40, 1800)
+      - 22.26779
+      - 0.047988741803219784
+      - 0.014624937683793257 
+      - 0.31810294615712037
+      - 13.875261
+    img_stds: #range,x,y,z,signal
+      - 17.735949
+      - 4.116406713529827
+      - 4.047795017791086 
+      - 0.4673269793107607
+      - 14.0925865
+      
+#    img_means: #range,x,y,z,signal    (64, 1024)
+#      - 102.31736
+#      - 0.5701352
+#      - 1.6314405
+#      - -0.57639515
+#      - 13.933974
+#    img_stds: #range,x,y,z,signal
+#      - 64.4951
+#      - 17.42037
+#      - 22.216806
+#      - 1.6533886
+#      - 14.048399

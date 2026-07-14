@@ -1,0 +1,204 @@
+# nuScenes-lidarseg converted to SemanticKITTI format via KittiConverter.
+# Labels on disk are raw nuScenes lidarseg uint32 indices (0-31),
+# stored directly with np.uint32(lidar_panoptic_anno).tofile()
+# NO remapping happens in the converter — learning_map does it at load time.
+#
+# Confirmed nuScenes lidarseg index -> class name (from nusc.lidarseg_idx2name_mapping):
+#  0: noise                              16: vehicle.bus.rigid
+#  1: animal                             17: vehicle.car
+#  2: human.pedestrian.adult             18: vehicle.construction
+#  3: human.pedestrian.child             19: vehicle.emergency.ambulance
+#  4: human.pedestrian.construction_worker  20: vehicle.emergency.police
+#  5: human.pedestrian.personal_mobility 21: vehicle.motorcycle
+#  6: human.pedestrian.police_officer    22: vehicle.trailer
+#  7: human.pedestrian.stroller         23: vehicle.truck
+#  8: human.pedestrian.wheelchair       24: flat.driveable_surface
+#  9: movable_object.barrier            25: flat.other
+# 10: movable_object.debris             26: flat.sidewalk
+# 11: movable_object.pushable_pullable  27: flat.terrain
+# 12: movable_object.trafficcone        28: static.manmade
+# 13: static_object.bicycle_rack        29: static.other
+# 14: vehicle.bicycle                   30: static.vegetation
+# 15: vehicle.bus.bendy                 31: vehicle.ego
+
+name: "nuscenes"
+
+labels:
+  0:  "noise"
+  1:  "animal"
+  2:  "human.pedestrian.adult"
+  3:  "human.pedestrian.child"
+  4:  "human.pedestrian.construction_worker"
+  5:  "human.pedestrian.personal_mobility"
+  6:  "human.pedestrian.police_officer"
+  7:  "human.pedestrian.stroller"
+  8:  "human.pedestrian.wheelchair"
+  9:  "movable_object.barrier"
+  10: "movable_object.debris"
+  11: "movable_object.pushable_pullable"
+  12: "movable_object.trafficcone"
+  13: "static_object.bicycle_rack"
+  14: "vehicle.bicycle"
+  15: "vehicle.bus.bendy"
+  16: "vehicle.bus.rigid"
+  17: "vehicle.car"
+  18: "vehicle.construction"
+  19: "vehicle.emergency.ambulance"
+  20: "vehicle.emergency.police"
+  21: "vehicle.motorcycle"
+  22: "vehicle.trailer"
+  23: "vehicle.truck"
+  24: "flat.driveable_surface"
+  25: "flat.other"
+  26: "flat.sidewalk"
+  27: "flat.terrain"
+  28: "static.manmade"
+  29: "static.other"
+  30: "static.vegetation"
+  31: "vehicle.ego"
+
+color_map: # bgr
+  0:  [0,   0,   0  ]   # noise              black
+  1:  [255, 0,   0  ]   # animal             red
+  2:  [245, 150, 100]   # pedestrian.adult   salmon
+  3:  [245, 230, 100]   # pedestrian.child   yellow
+  4:  [250, 80,  100]   # construction_worker pink
+  5:  [150, 60,  30 ]   # personal_mobility  brown
+  6:  [255, 0,   0  ]   # police_officer     red
+  7:  [180, 30,  80 ]   # stroller           dark pink
+  8:  [255, 0,   0  ]   # wheelchair         red
+  9:  [30,  30,  255]   # barrier            blue
+  10: [200, 40,  255]   # debris             purple
+  11: [90,  30,  150]   # pushable_pullable  dark purple
+  12: [255, 0,   255]   # trafficcone        magenta
+  13: [255, 150, 255]   # bicycle_rack       light magenta
+  14: [75,  0,   75 ]   # bicycle            dark purple
+  15: [75,  0,   175]   # bus.bendy          purple-blue
+  16: [0,   200, 255]   # bus.rigid          cyan
+  17: [50,  120, 255]   # car                blue
+  18: [0,   150, 255]   # construction       light blue
+  19: [170, 255, 150]   # ambulance          light green
+  20: [0,   175, 0  ]   # police car         green
+  21: [0,   60,  135]   # motorcycle         dark blue
+  22: [80,  240, 150]   # trailer            mint
+  23: [150, 240, 255]   # truck              light cyan
+  24: [0,   0,   255]   # driveable_surface  blue
+  25: [255, 255, 50 ]   # flat.other         yellow
+  26: [245, 150, 100]   # sidewalk           salmon
+  27: [255, 0,   0  ]   # terrain            red
+  28: [200, 40,  255]   # manmade            purple
+  29: [30,  30,  255]   # static.other       blue
+  30: [90,  30,  150]   # vegetation         dark purple
+  31: [250, 80,  100]   # ego vehicle        pink
+
+content: # point frequency ratios from nuScenes-lidarseg stats
+  0:  0.0009
+  1:  0.0000
+  2:  0.0031
+  3:  0.0000
+  4:  0.0001
+  5:  0.0003
+  6:  0.0000
+  7:  0.0000
+  8:  0.0000
+  9:  0.0039
+  10: 0.0000
+  11: 0.0002
+  12: 0.0004
+  13: 0.0003
+  14: 0.0001
+  15: 0.0029
+  16: 0.0021
+  17: 0.0372
+  18: 0.0028
+  19: 0.0000
+  20: 0.0000
+  21: 0.0005
+  22: 0.0009
+  23: 0.0217
+  24: 0.2902
+  25: 0.0107
+  26: 0.0533
+  27: 0.0497
+  28: 0.1474
+  29: 0.0012
+  30: 0.1116
+  31: 0.2586
+
+# Maps raw nuScenes lidarseg IDs (0-31) -> 17 learned xentropy classes
+learning_map:
+  0:  0   # noise                        -> ignore
+  1:  0   # animal                       -> ignore
+  2:  7   # pedestrian.adult             -> pedestrian
+  3:  7   # pedestrian.child             -> pedestrian
+  4:  7   # construction_worker          -> pedestrian
+  5:  7   # personal_mobility            -> pedestrian
+  6:  7   # police_officer               -> pedestrian
+  7:  7   # stroller                     -> pedestrian
+  8:  7   # wheelchair                   -> pedestrian
+  9:  1   # barrier                      -> barrier
+  10: 0   # debris                       -> ignore
+  11: 0   # pushable_pullable            -> ignore
+  12: 8   # trafficcone                  -> traffic_cone
+  13: 1   # bicycle_rack                 -> barrier
+  14: 2   # bicycle                      -> bicycle
+  15: 3   # bus.bendy                    -> bus
+  16: 3   # bus.rigid                    -> bus
+  17: 4   # car                          -> car
+  18: 5   # construction vehicle         -> construction_vehicle
+  19: 5   # emergency.ambulance          -> construction_vehicle
+  20: 4   # emergency.police             -> car
+  21: 6   # motorcycle                   -> motorcycle
+  22: 9   # trailer                      -> trailer
+  23: 10  # truck                        -> truck
+  24: 11  # flat.driveable_surface       -> driveable_surface
+  25: 12  # flat.other                   -> other_flat
+  26: 13  # flat.sidewalk                -> sidewalk
+  27: 14  # flat.terrain                 -> terrain
+  28: 15  # static.manmade               -> manmade
+  29: 0   # static.other                 -> ignore
+  30: 16  # static.vegetation            -> vegetation
+  31: 15  # vehicle.ego                  -> manmade
+
+learning_map_inv:
+  0:  0   # ignore               -> noise
+  1:  9   # barrier              -> movable_object.barrier
+  2:  14  # bicycle              -> vehicle.bicycle
+  3:  15  # bus                  -> vehicle.bus.bendy
+  4:  17  # car                  -> vehicle.car
+  5:  18  # construction_vehicle -> vehicle.construction
+  6:  21  # motorcycle           -> vehicle.motorcycle
+  7:  2   # pedestrian           -> human.pedestrian.adult
+  8:  12  # traffic_cone         -> movable_object.trafficcone
+  9:  22  # trailer              -> vehicle.trailer
+  10: 23  # truck                -> vehicle.truck
+  11: 24  # driveable_surface    -> flat.driveable_surface
+  12: 25  # other_flat           -> flat.other
+  13: 26  # sidewalk             -> flat.sidewalk
+  14: 27  # terrain              -> flat.terrain
+  15: 28  # manmade              -> static.manmade
+  16: 30  # vegetation           -> static.vegetation
+
+learning_ignore:
+  0:  True   # ignore
+  1:  False  # barrier
+  2:  False  # bicycle
+  3:  False  # bus
+  4:  False  # car
+  5:  False  # construction_vehicle
+  6:  False  # motorcycle
+  7:  False  # pedestrian
+  8:  False  # traffic_cone
+  9:  False  # trailer
+  10: False  # truck
+  11: False  # driveable_surface
+  12: False  # other_flat
+  13: False  # sidewalk
+  14: False  # terrain
+  15: False  # manmade
+  16: False  # vegetation
+
+split:
+  train: [2, 3, 5, 6, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 24, 25, 27, 29, 30, 32, 34, 35, 36, 38, 39, 41, 42, 43, 44, 45, 46, 48, 50, 52, 53, 54, 55, 56, 57, 58, 59, 61, 63, 64, 65, 66, 67, 69, 71, 72, 75, 92, 93, 94, 95, 96, 97, 100, 101, 102, 103, 104, 106, 108, 109, 110, 123, 124, 125, 127, 128, 129, 132, 133, 134, 138, 139, 149, 151, 154, 155, 158, 159, 160, 161, 162, 163, 164, 165, 166, 170, 171, 173, 174, 175, 176, 177, 178, 179, 180, 181, 184, 185, 187, 190, 191, 192, 193, 194, 195, 196, 199, 200, 203, 204, 207, 209, 211, 218, 220, 221, 222, 224, 225, 227, 228, 229, 230, 231, 232, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 248, 249, 250, 251, 252, 253, 255, 256, 257, 258, 259, 260, 261, 262, 263, 264, 269, 272, 273, 275, 276, 284, 285, 287, 288, 289, 290, 293, 294, 295, 297, 298, 299, 300, 301, 302, 305, 306, 315, 317, 321, 323, 324, 328, 330, 331, 332, 344, 345, 346, 347, 348, 349, 350, 351, 355, 358, 360, 361, 362, 363, 365, 366, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 380, 381, 382, 384, 385, 386, 388, 390, 391, 392, 393, 394, 395, 396, 397, 399, 400, 401, 402, 403, 405, 406, 410, 411, 412, 413, 414, 415, 416, 419, 420, 421, 422, 423, 424, 425, 426, 427, 428, 429, 431, 432, 433, 435, 436, 437, 439, 440, 441, 442, 443, 444, 445, 446, 447, 448, 450, 451, 452, 454, 455, 458, 461, 462, 463, 464, 465, 468, 469, 472, 474, 475, 476, 499, 500, 501, 504, 505, 506, 507, 508, 509, 510, 511, 512, 513, 515, 517, 519, 521, 522, 523, 524, 525, 526, 527, 528, 529, 530, 531, 532, 533, 534, 535, 536, 537, 538, 541, 542, 545, 546, 552, 553, 555, 556, 557, 558, 559, 560, 562, 563, 564, 565, 566, 568, 570, 571, 572, 573, 574, 575, 576, 578, 580, 582, 583, 585, 586, 587, 588, 591, 592, 594, 595, 596, 597, 598, 600, 625, 626, 627, 629, 630, 633, 634, 635, 636, 637, 638, 639, 640, 641, 642, 644, 645, 647, 648, 649, 650, 652, 653, 654, 655, 656, 659, 660, 661, 662, 664, 666, 668, 669, 670, 671, 672, 673, 674, 675, 676, 677, 678, 679, 681, 683, 684, 685, 686, 687, 695, 697, 701, 703, 705, 708, 709, 710, 711, 712, 714, 715, 716, 718, 719, 728, 730, 731, 734, 735, 736, 738, 739, 740, 741, 744, 747, 749, 750, 751, 752, 757, 758, 759, 760, 761, 763, 764, 765, 767, 768, 771, 775, 777, 778, 782, 783, 784, 786, 787, 790, 791, 794, 795, 797, 799, 800, 803, 805, 806, 808, 809, 810, 811, 812, 813, 815, 817, 819, 820, 821, 822, 847, 849, 852, 853, 854, 855, 856, 858, 861, 862, 863, 868, 870, 871, 872, 873, 876, 880, 882, 883, 884, 886, 887, 888, 889, 890, 892, 893, 894, 895, 896, 897, 898, 899, 901, 902, 903, 904, 905, 907, 908, 909, 911, 912, 914, 916, 917, 920, 922, 923, 924, 925, 926, 927, 928, 930, 931, 945, 952, 955, 956, 958, 959, 960, 961, 962, 963, 966, 967, 971, 972, 975, 976, 977, 978, 979, 980, 983, 989, 990, 991, 992, 994, 995, 997, 998, 1002, 1003, 1006, 1007, 1008, 1009, 1010, 1013, 1014, 1015, 1016, 1017, 1018, 1021, 1022, 1024, 1025, 1045, 1046, 1048, 1050, 1051, 1053, 1054, 1055, 1056, 1057, 1058, 1059, 1060, 1062, 1063, 1064, 1065, 1066, 1067, 1071, 1073, 1074, 1076, 1077, 1078, 1079, 1080, 1082, 1086, 1087, 1088, 1090, 1091, 1092, 1095, 1096, 1098, 1099, 1101, 1104, 1106, 1107, 1108]
+  valid: [1, 4, 12, 20, 51, 60, 62, 68, 70, 73, 76, 105, 120, 135, 150, 157, 168, 172, 182, 188, 202, 208, 212, 214, 219, 226, 233, 270, 271, 278, 292, 303, 304, 318, 329, 352, 354, 356, 357, 359, 389, 398, 407, 408, 417, 418, 457, 471, 478, 480, 502, 514, 518, 520, 544, 554, 561, 589, 593, 599, 632, 643, 646, 651, 657, 658, 665, 667, 688, 689, 696, 698, 700, 706, 707, 717, 727, 733, 746, 769, 770, 789, 792, 802, 804, 848, 850, 865, 866, 869, 875, 878, 885, 900, 910, 913, 915, 919, 921, 949, 957, 969, 981, 982, 984, 999, 1004, 1005, 1011, 1012, 1020, 1044, 1047, 1049, 1052, 1069, 1070, 1072, 1081, 1083, 1084, 1085, 1093, 1102, 1105, 1109, 1110]
+  test:  [7, 26, 28, 31, 33, 47, 49, 74, 98, 99, 107, 121, 122, 126, 130, 131, 152, 167, 183, 206, 210, 213, 247, 254, 268, 274, 277, 283, 286, 291, 296, 316, 353, 364, 367, 379, 383, 430, 434, 438, 449, 453, 456, 459, 467, 477, 479, 539, 543, 577, 584, 590, 663, 704, 713, 726, 737, 762, 780, 781, 796, 798, 816, 851, 860, 864, 877, 891, 906, 929, 947, 953, 968, 988, 996, 1000, 1001, 1019, 1023, 1061, 1068, 1075, 1089, 1094, 1097, 1100]

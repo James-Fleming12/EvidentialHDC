@@ -1,0 +1,6 @@
+numpy==1.23
+tensorflow==2.12.0
+waymo-open-dataset-tf-2-12-0==1.6.4
+dask[dataframe]>=2023.1.0
+pyarrow>=10.0.0
+tqdm>=4.66.0

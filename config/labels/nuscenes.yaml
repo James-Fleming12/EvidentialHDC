@@ -1,0 +1,191 @@
+# This file is covered by the LICENSE file in the root of this project.
+name: "nuscenes"
+labels:
+    0: "noise"
+    1: "animal"
+    2: "human.pedestrian.adult"
+    3: "human.pedestrian.child"
+    4: "human.pedestrian.construction_worker"
+    5: "human.pedestrian.personal_mobility"
+    6: "human.pedestrian.police_officer"
+    7: "human.pedestrian.stroller"
+    8: "human.pedestrian.wheelchair"
+    9: "movable_object.barrier"
+    10: "movable_object.debris"
+    11: "movable_object.pushable_pullable"
+    12: "movable_object.trafficcone"
+    13: "static_object.bicycle_rack"
+    14: "vehicle.bicycle"
+    15: "vehicle.bus.bendy"
+    16: "vehicle.bus.rigid"
+    17: "vehicle.car"
+    18: "vehicle.construction"
+    19: "vehicle.emergency.ambulance"
+    20: "vehicle.emergency.police"
+    21: "vehicle.motorcycle"
+    22: "vehicle.trailer"
+    23: "vehicle.truck"
+    24: "flat.driveable_surface"
+    25: "flat.other"
+    26: "flat.sidewalk"
+    27: "flat.terrain"
+    28: "static.manmade"
+    29: "static.other"
+    30: "static.vegetation"
+    31: "vehicle.ego"
+
+color_map: # bgr
+  0: [0, 0, 0]
+  1: [0, 0, 255]
+  2: [245, 150, 100]
+  3: [245, 230, 100]
+  4: [250, 80, 100]
+  5: [150, 60, 30]
+  6: [255, 0, 0]
+  7: [180, 30, 80]
+  8: [255, 0, 0]
+  9: [30, 30, 255]
+  10: [200, 40, 255]
+  11: [90, 30, 150]
+  12: [255, 0, 255]
+  13: [255, 150, 255]
+  14: [75, 0, 75]
+  15: [75, 0, 175]
+  16: [0, 200, 255]
+  17: [50, 120, 255]
+  18: [0, 150, 255]
+  19: [170, 255, 150]
+  20: [0, 175, 0]
+  21: [0, 60, 135]
+  22: [80, 240, 150]
+  23: [150, 240, 255]
+  24: [0, 0, 255]
+  25: [255, 255, 50]
+  26: [245, 150, 100]
+  27: [255, 0, 0]
+  28: [200, 40, 255]
+  29: [30, 30, 255]
+  30: [90, 30, 150]
+  31: [250, 80, 100]
+
+content: # as a ratio with the total number of points
+  1: 0.0
+  7: 0.0
+  8: 0.0
+  19: 0.0
+  20: 0.0
+  10: 0.00000342
+  6: 0.00000456
+  3: 0.00000164
+  4: 0.0001007
+  14: 0.0001043
+  11: 0.0001635
+  5: 0.0002920
+  13: 0.0003191
+  12: 0.0004425
+  21: 0.0004786
+  0: 0.0008955
+  22: 0.0009117
+  29: 0.0011913
+  16: 0.0021170
+  18: 0.0028019
+  15: 0.0028900
+  2: 0.0031236
+  9: 0.0039425
+  25: 0.0107052
+  23: 0.0216904
+  17: 0.0371616
+  27: 0.0496589
+  26: 0.0532507
+  30: 0.1115962
+  28: 0.1474087
+  31: 0.2585672
+  24: 0.2901625
+# classes that are indistinguishable from single scan or inconsistent in
+# ground truth are mapped to their closest equivalent
+learning_map:
+  0: 0  # "noise" -> "barrier"
+  1: 0  # "animal" -> "barrier"
+  2: 7  # "human.pedestrian.adult" -> "pedestrian"
+  3: 7  # "human.pedestrian.child" -> "pedestrian"
+  4: 7  # "human.pedestrian.construction_worker" -> "pedestrian"
+  5: 0  # "human.pedestrian.personal_mobility" -> "pedestrian"
+  6: 7  # "human.pedestrian.police_officer" -> "pedestrian"
+  7: 0  # "human.pedestrian.stroller" -> "pedestrian"
+  8: 0  # "human.pedestrian.wheelchair" -> "pedestrian"
+  9: 1  # "movable_object.barrier" -> "barrier"
+  10: 0  # "movable_object.debris" -> "traffic_cone"
+  11: 0  # "movable_object.pushable_pullable" -> "traffic_cone"
+  12: 8  # "movable_object.trafficcone" -> "traffic_cone"
+  13: 0  # "static_object.bicycle_rack" -> "barrier"
+  14: 2  # "vehicle.bicycle" -> "bicycle"
+  15: 3  # "vehicle.bus.bendy" -> "bus"
+  16: 3  # "vehicle.bus.rigid" -> "bus"
+  17: 4  # "vehicle.car" -> "car"
+  18: 5  # "vehicle.construction" -> "construction_vehicle"
+  19: 0  # "vehicle.emergency.ambulance" -> "motorcycle"
+  20: 0  # "vehicle.emergency.police" -> "motorcycle"
+  21: 6  # "vehicle.motorcycle" -> "motorcycle"
+  22: 9  # "vehicle.trailer" -> "trailer"
+  23: 10  # "vehicle.truck" -> "truck"
+  24: 11  # "flat.driveable_surface" -> "driveable_surface"
+  25: 12 # "flat.other" -> "barrier"
+  26: 13  # "flat.sidewalk" -> "sidewalk"
+  27: 14  # "flat.terrain" -> "terrain"
+  28: 15  # "static.manmade" -> "manmade"
+  29: 0  # "static.other" -> "barrier"
+  30: 16  # "static.vegetation" -> "vegetation"
+  31: 0  # "vehicle.ego" -> "manmade"
+learning_map_inv: # inverse of previous map
+  0: 0  # "noise" -> "barrier"
+  1: 9  # "animal" -> "barrier"
+  2: 14  # "human.pedestrian.adult" -> "pedestrian"
+  3: 15  # "human.pedestrian.child" -> "pedestrian"
+  4: 17  # "human.pedestrian.construction_worker" -> "pedestrian"
+  5: 18  # "human.pedestrian.personal_mobility" -> "pedestrian"
+  6: 21  # "human.pedestrian.police_officer" -> "pedestrian"
+  7: 2  # "human.pedestrian.stroller" -> "pedestrian"
+  8: 12  # "human.pedestrian.wheelchair" -> "pedestrian"
+  9: 22  # "movable_object.barrier" -> "barrier"
+  10: 23  # "movable_object.debris" -> "traffic_cone"
+  11: 24  # "movable_object.pushable_pullable" -> "traffic_cone"
+  12: 25  # "movable_object.trafficcone" -> "traffic_cone"
+  13: 26  # "static_object.bicycle_rack" -> "barrier"
+  14: 27  # "vehicle.bicycle" -> "bicycle"
+  15: 28  # "vehicle.bus.bendy" -> "bus"
+  16: 30  # "vehicle.bus.rigid" -> "bus"
+  
+learning_ignore: # Ignore classes
+  0: True      # "unlabeled", and others ignored
+  1: False     # "car"
+  2: False     # "bicycle"
+  3: False     # "motorcycle"
+  4: False     # "truck"
+  5: False     # "other-vehicle"
+  6: False     # "person"
+  7: False     # "bicyclist"
+  8: False     # "motorcyclist"
+  9: False     # "road"
+  10: False    # "parking"
+  11: False    # "sidewalk"
+  12: False    # "other-ground"
+  13: False    # "building"
+  14: False    # "fence"
+  15: False    # "vegetation"
+  16: False    # "trunk"
+
+split: # sequence numbers
+  train:
+    - 61
+    - 553
+    - 655
+    - 757
+    - 796
+    - 1077
+    - 1094
+    - 1100
+  valid:
+    - 103
+    - 916
+  test:
+    - 0001

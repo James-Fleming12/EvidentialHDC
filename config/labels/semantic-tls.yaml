@@ -1,0 +1,57 @@
+# This file is covered by the LICENSE file in the root of this project.
+name: "tls"
+labels:
+    0: "unlabeled"
+    1: "alive"
+    2: "1h"
+    3: "10h"
+    4: "100h"
+    5: "1000h"
+color_map: # bgr
+    0: [0, 0, 0]
+    1: [30, 30, 255]
+    2: [200, 40, 255]
+    3: [245, 150, 100]
+    4: [0, 60, 135]
+    5: [0, 175, 0]
+
+content: # as a ratio with the total number of points
+    0: 0.36103684006556025
+    1: 0.23637032763536936
+    2: 0.3007084139902245
+    3: 0.055451429664750425
+    4: 0.01948699776747582
+    5: 0.026945990876619606
+
+## classes that are indistinguishable from single scan or inconsistent in
+
+# ground truth are mapped to their closest equivalent
+learning_map:
+    0: 0
+    1: 1
+    2: 2
+    3: 3
+    4: 4
+    5: 5
+learning_map_inv: # inverse of previous map
+    0: 0      # "unlabeled", and others ignored
+    1: 1     # "car"
+    2: 2     # "bicycle"
+    3: 3     # "motorcycle"
+    4: 4     # "truck"
+    5: 5     # "other-vehicle"
+learning_ignore: # Ignore classes
+  0: True      # "unlabeled", and others ignored
+  1: False     # "car"
+  2: False     # "bicycle"
+  3: False     # "motorcycle"
+  4: False     # "truck"
+  5: False     # "other-vehicle"
+
+split: # sequence numbers
+  train:
+    - 0
+  valid:
+    - 2
+  test:
+    - 3
