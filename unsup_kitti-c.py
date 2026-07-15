@@ -118,7 +118,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         for i in range(num_rp):
                             temp_proj = model.multi_rp_projs[i]
                             temp_proto = model.multi_rp_prototypes[i]
-                            temp_hv = functional.hard_quantize(F.linear(latent_x_valid.float(), temp_proj))
+                            temp_hv = functional.normalize(F.linear(latent_x_valid.float(), temp_proj))
                             temp_logits = F.linear(F.normalize(temp_hv.to(temp_proto.dtype), dim=1), temp_proto)
                             rp_preds.append(torch.argmax(temp_logits, dim=1))
                         rp_preds = torch.stack(rp_preds, dim=0)
