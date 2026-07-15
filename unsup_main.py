@@ -28,7 +28,7 @@ def setup_logger(log_file):
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
     logger = logging.getLogger(log_file)
     logger.setLevel(logging.INFO)
-    fh = logging.FileHandler(log_file)
+    fh = logging.FileHandler(log_file, mode='w')
     fh.setLevel(logging.INFO)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     fh.setFormatter(formatter)
