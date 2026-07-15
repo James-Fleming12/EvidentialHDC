@@ -371,7 +371,7 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device):
                         class_latent_counts[c] += c_mask.sum()
                         
                 for i in range(num_rp):
-                    temp_hv = functional.hard_quantize(F.linear(latent_valid, model.multi_rp_projs[i]))
+                    temp_hv = functional.normalize(F.linear(latent_valid, model.multi_rp_projs[i]))
                     for c in range(num_classes):
                         c_mask = labels_valid == c
                         if c_mask.any():
