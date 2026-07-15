@@ -16,8 +16,9 @@ import unsup_main
 from unsup_main import train_extractor, train_hdc, extract_metrics_from_conf_matrix, setup_logger, save_graphic
 from modules.HDC_utils import UQModel
 from modules.HDC_utils import set_uq_model
+from torchhd import functional
 
-NUM_CLASSES = 7
+NUM_CLASSES = 17
 KITTI_DATA_DIR = "/mnt/alpha/jmfleming/KITTI"
 CORRUPTIONS = [
     'fog', 
@@ -35,35 +36,51 @@ CORRUPTIONS = [
 SEVERITY_MAP = {1: 'light', 2: 'moderate', 3: 'heavy', 4: 'extreme'}
 
 CONFIG_ARCH = "config/arch/senet-2048p.yml"
-CONFIG_LABELS_KITTI = "config/labels/semantic-kitti.yaml"  # The 7-class mapped version from D3CTTA
 CONFIG_LABELS_KITTI_ALL = "config/labels/semantic-kitti-all.yaml"  # Standard 17 classes
 
-def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='density', dry_run=False, custom_update_fn=None):
+def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None):
     miou_history = []
     acc_history = []
     iou_per_class_history = []
     num_classes = model.num_classes
     cumulative_confusion_matrix = torch.zeros((num_classes, num_classes), dtype=torch.int64, device=device)
+    
+    prev_preds_2d = None
 
     for batch_idx, batch_data in enumerate(tqdm(target_dataloader, desc="Adapting", leave=False)):
         if dry_run and batch_idx >= 2:
             break
+            
+        if dry_run and batch_idx == 0:
+            print(f"\n[DEBUG] len(batch_data): {len(batch_data)}")
+            if len(batch_data) > 10:
+                print(f"[DEBUG] batch_data[10] shape: {batch_data[10].shape}")
         
         proj_in = batch_data[0].to(device)
         proj_labels = batch_data[2].to(device).view(-1)
         if batch_idx == 0:
-            print(f"DEBUG: len(batch_data) = {len(batch_data)}")
-            if len(batch_data) > 10:
-                print(f"DEBUG: batch_data[10].shape = {batch_data[10].shape}")
+            pass # debug printing removed for cleanliness
+            
         proj_xyz = batch_data[10].to(device) if len(batch_data) > 10 else None
         
         if proj_in.shape[1] > 0:
             model.eval()
             with torch.no_grad():
-                logits, sims, indices, h = model(proj_in)
-                predictions = torch.argmax(logits, dim=1)
-                selected_labels = proj_labels[indices]
+                # Get raw latent and encodings for updates
+                with torch.amp.autocast('cuda', enabled=True):
+                    latent_x = model.net(proj_in, only_feat=True)
+                latent_x = latent_x.permute(0, 2, 3, 1).reshape(-1, 128)
                 
+                raw_enc, indices, _ = model.encode(proj_in)
+                norm_enc = F.normalize(raw_enc, dim=1)
+                
+                if norm_enc.dtype != model.classify.weight.dtype:
+                    model.classify = model.classify.to(norm_enc.dtype)
+                
+                logits = model.classify(norm_enc)
+                predictions = torch.argmax(logits, dim=1)
+                
+                selected_labels = proj_labels[indices]
                 mask = (selected_labels >= 0) & (selected_labels < num_classes)
                 if mask.any():
                     hist = torch.bincount(
@@ -78,27 +95,134 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
             iou_per_class_history.append(cumulative_iou_per_class)
             
             # Adapt: Inference Update
-            if not eval_only:
+            if not eval_only and update_method != 'frozen':
                 model.eval()
-                if update_method == 'epistemic':
-                    # TODO: Implement Pillar 1 (Epistemic UQ)
-                    pass
-                elif update_method == 'consistency':
-                    # TODO: Implement Pillar 1 (Spatial/Temporal Consistency)
-                    pass
-                elif update_method == 'hybrid':
-                    # TODO: Implement Pillar 1 (Fusion)
-                    pass
-                elif update_method == 'hybrid_balanced':
-                    # TODO: Implement Pillar 3 (Subcluster Ledger)
-                    pass
-                elif update_method == 'multi_view':
-                    # TODO: Implement Pillar 2 (Multi-view TTA)
-                    pass
-                elif update_method == 'oracle':
-                    # TODO: Implement Oracle gating
-                    pass
+                with torch.no_grad():
+                    update_lr = 0.01
+                    proto_norm = F.normalize(model.classify.weight, dim=1)
+                    cos_sims = F.linear(norm_enc, proto_norm)
+                    max_cos_sim, pseudo_labels = torch.max(cos_sims, dim=1)
+                    
+                    geometric_mask = max_cos_sim > 0.8
+                    update_mask = geometric_mask.clone()
+                    veto_mask = torch.zeros_like(geometric_mask)
+                    
+                    latent_x_valid = latent_x[indices]
+
+                    if update_method == 'prototype_cosine':
+                        pass
+                        
+                    elif update_method == 'epistemic_multi_rp':
+                        num_rp = 5
+                        rp_preds = []
+                        for i in range(num_rp):
+                            temp_proj = model.multi_rp_projs[i]
+                            temp_proto = model.multi_rp_prototypes[i]
+                            temp_hv = functional.hard_quantize(F.linear(latent_x_valid.float(), temp_proj))
+                            temp_logits = F.linear(F.normalize(temp_hv.to(temp_proto.dtype), dim=1), temp_proto)
+                            rp_preds.append(torch.argmax(temp_logits, dim=1))
+                        rp_preds = torch.stack(rp_preds, dim=0)
+                        rp_agreement = (rp_preds == pseudo_labels.unsqueeze(0)).float().mean(dim=0)
+                        veto_mask = rp_agreement < 0.8
+                        update_mask = geometric_mask & (~veto_mask)
+                        
+                    elif update_method == 'epistemic_density':
+                        pred_means = model.class_latent_means[pseudo_labels]
+                        dist_to_mean = torch.norm(latent_x_valid.float() - pred_means, p=2, dim=1)
+                        veto_mask = dist_to_mean > (3 * model.source_density_std)
+                        update_mask = geometric_mask & (~veto_mask)
+                        
+                    elif update_method == 'epistemic_magnitude':
+                        raw_magnitude = torch.norm(latent_x_valid.float(), p=2, dim=1)
+                        mag_diff = torch.abs(raw_magnitude - model.source_mean_magnitude)
+                        veto_mask = mag_diff > (3 * model.source_std_magnitude)
+                        update_mask = geometric_mask & (~veto_mask)
+                        
+                    elif update_method == 'spatial_veto':
+                        H, W = proj_in.shape[2], proj_in.shape[3]
+                        if H < 3 or W < 3:
+                            veto_mask = torch.zeros_like(geometric_mask)
+                        else:
+                            preds_full = torch.full((H * W,), -1, dtype=torch.long, device=device)
+                            preds_full[indices] = pseudo_labels
+                            preds_2d = preds_full.reshape(1, 1, H, W).float()
+                            
+                            unfolded = F.unfold(preds_2d, kernel_size=3, padding=1).squeeze(0).long()
+                            unfolded_valid = unfolded[:, indices]
+                            
+                            one_hot = torch.zeros(num_classes, unfolded_valid.shape[1], device=device)
+                            for c in range(num_classes):
+                                one_hot[c] = (unfolded_valid == c).sum(dim=0)
+                            
+                            mode_labels_valid = torch.argmax(one_hot, dim=0)
+                            max_counts = torch.max(one_hot, dim=0)[0]
+                            
+                            consensus_agrees = (mode_labels_valid == pseudo_labels) & (max_counts > 0)
+                            veto_mask = ~consensus_agrees
+                        update_mask = geometric_mask & (~veto_mask)
+                        
+                    elif update_method == 'temporal_veto':
+                        H, W = proj_in.shape[2], proj_in.shape[3]
+                        
+                        # 1. Reconstruct the CURRENT frame's 2D prediction map (needed for the next frame)
+                        curr_preds_full = torch.full((H * W,), -1, dtype=torch.long, device=device)
+                        curr_preds_full[indices] = pseudo_labels
+                        curr_preds_2d = curr_preds_full.reshape(1, 1, H, W).float()
+                        
+                        if prev_preds_2d is not None:
+                            # 2. Unfold the PREVIOUS frame's 2D map with a 5x5 kernel
+                            # This acts as an instant O(N) search radius for ego-motion tolerance
+                            unfolded_prev = F.unfold(prev_preds_2d, kernel_size=5, padding=2).squeeze(0).long()
+                            
+                            # 3. Extract the previous 5x5 neighborhoods only for the points valid in the CURRENT frame
+                            prev_neighborhoods = unfolded_prev[:, indices]  # Shape: (25, N)
+                            
+                            # 4. Logic: Did we see anything here before? 
+                            valid_past = (prev_neighborhoods != -1).any(dim=0)
+                            
+                            # 5. Logic: Does the current prediction match ANYTHING in that past 5x5 window?
+                            label_matched = (prev_neighborhoods == pseudo_labels.unsqueeze(0)).any(dim=0)
+                            
+                            # 6. Veto if we saw points there before, but NONE of them match the current label
+                            veto_mask = valid_past & (~label_matched)
+                        else:
+                            veto_mask = torch.zeros_like(geometric_mask)
+                            
+                        # Save the current 2D map for the next frame
+                        prev_preds_2d = curr_preds_2d.clone()
+                        update_mask = geometric_mask & (~veto_mask)
+                        
+                    if not hasattr(model, '_firing_log'):
+                        model._firing_log = []
+                    model._firing_log.append(update_mask.float().mean().item())
+                    
+                    if update_method != 'prototype_cosine':
+                        valid_gt_mask = (proj_labels >= 0) & (proj_labels < num_classes)
+                        true_errors_rejected = (geometric_mask & veto_mask & valid_gt_mask & (pseudo_labels != proj_labels)).sum().item()
+                        correct_labels_rejected = (geometric_mask & veto_mask & valid_gt_mask & (pseudo_labels == proj_labels)).sum().item()
+                        if not hasattr(model, '_veto_stats'):
+                            model._veto_stats = {'true_errors_rejected': 0, 'correct_labels_rejected': 0}
+                        model._veto_stats['true_errors_rejected'] += true_errors_rejected
+                        model._veto_stats['correct_labels_rejected'] += correct_labels_rejected
+                    
+                    if update_mask.any():
+                        valid_enc = norm_enc[update_mask]
+                        valid_labels = pseudo_labels[update_mask]
+                        for c in range(num_classes):
+                            c_mask = valid_labels == c
+                            if c_mask.any():
+                                c_update = valid_enc[c_mask].mean(dim=0)
+                                model.classify.weight[c].data += update_lr * c_update.to(model.classify.weight.dtype)
+                                model.classify.weight[c].data = F.normalize(model.classify.weight[c].data, p=2, dim=0)
+                                if not hasattr(model, '_update_magnitude_log'):
+                                    model._update_magnitude_log = []
+                                model._update_magnitude_log.append((update_lr * c_update.norm(p=2)).item())
     
+    if hasattr(model, '_veto_stats') and model._veto_stats['correct_labels_rejected'] > 0:
+        purity_ratio = model._veto_stats['true_errors_rejected'] / model._veto_stats['correct_labels_rejected']
+        print(f"\n[Stats] Veto Purity Ratio: {purity_ratio:.2f} ({model._veto_stats['true_errors_rejected']} true errors rejected / {model._veto_stats['correct_labels_rejected']} correct labels rejected)")
+        model._veto_stats = {'true_errors_rejected': 0, 'correct_labels_rejected': 0}
+        
     avg_firing_rate = 0.0
     if hasattr(model, '_firing_log') and len(model._firing_log) > 0:
         avg_firing_rate = sum(model._firing_log) / len(model._firing_log)
@@ -175,23 +299,14 @@ def load_hdc_model(path, num_classes=NUM_CLASSES):
     ARCH = yaml.safe_load(open(CONFIG_ARCH, 'r'))
     modeldir = os.path.dirname(path)
 
-    model = set_knn_model(ARCH, modeldir, 'rp', 0, 0, num_classes, device)
+    model = set_uq_model(ARCH, modeldir, 'rp', 0, 0, num_classes, device)
     
     model.load_state_dict(torch.load(path, map_location=device), strict=False)
     model.to(device)
     return model
 
-def populate_knn_bank(model, data_dir, arch_cfg, data_cfg, device):
-    bank_path = os.path.join(os.path.dirname(data_dir), "knn_bank.pt")
-    if os.path.exists(bank_path):
-        print(f"Loading pre-populated k-NN bank from {bank_path}...")
-        bank_data = torch.load(bank_path, map_location=device)
-        model.bank = bank_data
-        print("Calibrating robust thresholds from source data...")
-        model.calibrate_thresholds(coverage=0.50)
-        return
-
-    print(f"Populating k-NN bank from {data_dir}...")
+def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device):
+    print(f"Populating source statistics from {data_dir}...")
     parser = Parser(root=data_dir,
                     train_sequences=data_cfg["split"]["train"],
                     valid_sequences=data_cfg["split"]["valid"],
@@ -210,32 +325,99 @@ def populate_knn_bank(model, data_dir, arch_cfg, data_cfg, device):
     dataloader = DataLoader(parser.trainloader.dataset, batch_size=1, shuffle=True, num_workers=4)
     model.eval()
     
+    all_magnitudes = []
+    num_classes = model.num_classes
+    class_latent_sums = torch.zeros(num_classes, 128, device=device)
+    class_latent_counts = torch.zeros(num_classes, device=device)
+    
+    num_rp = 5
+    model.multi_rp_projs = []
+    model.multi_rp_prototypes = torch.zeros(num_rp, num_classes, model.hd_dim, device=device)
+    for _ in range(num_rp):
+        temp_proj = torch.randn(model.hd_dim, 128, device=device)
+        q, _ = torch.linalg.qr(temp_proj)
+        temp_proj = q * torch.sqrt(torch.tensor(model.hd_dim, dtype=torch.float32, device=device))
+        model.multi_rp_projs.append(temp_proj)
+    
     with torch.no_grad():
-        for batch_data in tqdm(dataloader, desc="Populating Bank"):
+        for batch_idx, batch_data in enumerate(tqdm(dataloader, desc="Populating Source Stats")):
+            if batch_idx > 500: # Limit to a subset to save time
+                break
             proj_in = batch_data[0].to(device)
             proj_labels = batch_data[2].to(device).view(-1)
             
             if proj_in.shape[1] > 0:
-                enc, _, _ = model.encode(proj_in)
-                original_x = proj_in.permute(0, 2, 3, 1).contiguous().reshape(-1, proj_in.shape[1])
-                valid_mask = torch.any(original_x != 0, dim=1)
+                with torch.amp.autocast('cuda', enabled=True):
+                    latent_x = model.net(proj_in, only_feat=True)
+                latent_x = latent_x.permute(0, 2, 3, 1).reshape(-1, 128)
                 
-                if not torch.any(valid_mask):
+                _, indices, _ = model.encode(proj_in)
+                selected_labels = proj_labels[indices]
+                valid_mask = (selected_labels >= 0) & (selected_labels < num_classes)
+                
+                if not valid_mask.any():
                     continue
                     
-                enc = enc[valid_mask]
-                labels = proj_labels[valid_mask]
+                latent_valid = latent_x[valid_mask].float()
+                labels_valid = selected_labels[valid_mask]
                 
-                model.update_bank(enc, labels)
+                raw_magnitude = torch.norm(latent_valid, p=2, dim=1)
+                all_magnitudes.append(raw_magnitude.cpu())
                 
-                if all(model.bank[c].shape[0] >= model.bank_size for c in range(model.num_classes)):
-                    break
-                    
-        print("Calibrating robust thresholds from source data...")
-        model.calibrate_thresholds(coverage=0.50)
-        
-    print(f"Saving populated bank to {bank_path}...")
-    torch.save(model.bank, bank_path)
+                for c in range(num_classes):
+                    c_mask = labels_valid == c
+                    if c_mask.any():
+                        class_latent_sums[c] += latent_valid[c_mask].sum(dim=0)
+                        class_latent_counts[c] += c_mask.sum()
+                        
+                for i in range(num_rp):
+                    temp_hv = functional.hard_quantize(F.linear(latent_valid, model.multi_rp_projs[i]))
+                    for c in range(num_classes):
+                        c_mask = labels_valid == c
+                        if c_mask.any():
+                            model.multi_rp_prototypes[i, c] += temp_hv[c_mask].sum(dim=0)
+                            
+    if len(all_magnitudes) > 0:
+        all_magnitudes = torch.cat(all_magnitudes, dim=0)
+        model.source_mean_magnitude = all_magnitudes.mean().item()
+        model.source_std_magnitude = all_magnitudes.std().item()
+    else:
+        raise ValueError("Source statistics population failed: No valid latent features found in the first 500 frames.")
+    
+    counts_safe = torch.clamp(class_latent_counts, min=1).unsqueeze(1)
+    model.class_latent_means = class_latent_sums / counts_safe
+    model.multi_rp_prototypes = F.normalize(model.multi_rp_prototypes, p=2, dim=2)
+    
+    # Pass 2: Calculate density standard deviation
+    all_dists = []
+    with torch.no_grad():
+        for batch_idx, batch_data in enumerate(tqdm(dataloader, desc="Populating Density Std")):
+            if batch_idx > 50:
+                break
+            proj_in = batch_data[0].to(device)
+            proj_labels = batch_data[2].to(device).view(-1)
+            
+            if proj_in.shape[1] > 0:
+                with torch.amp.autocast('cuda', enabled=True):
+                    latent_x = model.net(proj_in, only_feat=True)
+                latent_x = latent_x.permute(0, 2, 3, 1).reshape(-1, 128)
+                _, indices, _ = model.encode(proj_in)
+                selected_labels = proj_labels[indices]
+                valid_mask = (selected_labels >= 0) & (selected_labels < num_classes)
+                
+                if not valid_mask.any():
+                    continue
+                latent_valid = latent_x[valid_mask].float()
+                labels_valid = selected_labels[valid_mask]
+                
+                pred_means = model.class_latent_means[labels_valid]
+                dists = torch.norm(latent_valid - pred_means, p=2, dim=1)
+                all_dists.append(dists.cpu())
+                
+    if len(all_dists) > 0:
+        model.source_density_std = torch.cat(all_dists, dim=0).std().item()
+    else:
+        model.source_density_std = 1.0
 
 def main():
     parser = argparse.ArgumentParser(description="Test Unsupervised Updates on KITTI-C")
@@ -245,7 +427,7 @@ def main():
     parser.add_argument('--skip_extractor', action='store_true', help='Skip feature extractor pretraining and only retrain the HDC model')
     parser.add_argument('--pretrained_path', type=str, default='logs/kitti_pretrain/hdc_sub.pth', help='Path to load pretrained model')
     parser.add_argument('--log_dir', type=str, default='logs/kitti_c_test', help='Directory to save logs and graphics')
-    parser.add_argument('--method', type=str, choices=['frozen', 'epistemic', 'consistency', 'hybrid', 'hybrid_balanced', 'multi_view', 'oracle', 'all'], default='frozen', help='Method to test.')
+    parser.add_argument('--method', type=str, choices=['frozen', 'prototype_cosine', 'epistemic_multi_rp', 'epistemic_density', 'epistemic_magnitude', 'spatial_veto', 'temporal_veto', 'all'], default='frozen', help='Method to test.')
     parser.add_argument('--dry_run', action='store_true', help='Run only 2 batches per condition to quickly verify no crashes will occur.')
     parser.add_argument('--continue_pretrain', action='store_true', help='Resume pretraining from the existing pretrained_path')
     parser.add_argument('--continue', dest='continue_epochs', type=int, default=0, help='Continue feature extractor training for this many epochs, reinitialize HDC, and perform adaptation')
@@ -265,9 +447,6 @@ def main():
     os.makedirs(args.log_dir, exist_ok=True)
     logger = setup_logger(os.path.join(args.log_dir, 'kitti_c.log'))
 
-    global NUM_CLASSES
-    NUM_CLASSES = 17
-        
     try:
         ARCH = yaml.safe_load(open(CONFIG_ARCH, 'r'))
         DATA = yaml.safe_load(open(CONFIG_LABELS_KITTI_ALL, 'r'))
@@ -294,7 +473,7 @@ def main():
             logger.info(f"Successfully pretrained model on SemanticKITTI. Optimizer state saved to {opt_path}")
             
     sev = args.severity
-    methods_to_run = ['prototype', 'knn'] if args.method == 'all' else [args.method]
+    methods_to_run = ['prototype_cosine', 'epistemic_multi_rp', 'epistemic_density', 'epistemic_magnitude', 'spatial_veto', 'temporal_veto'] if args.method == 'all' else [args.method]
     
     global_results = {
         'mIoU': {m: {c: {} for c in CORRUPTIONS} for m in methods_to_run},
@@ -314,7 +493,7 @@ def main():
                     train_sequences=DATA["split"]["train"],
                     valid_sequences=DATA["split"]["valid"],
                     test_sequences=None,
-            set_uq_models=DATA["labels"],
+                    labels=DATA["labels"],
                     color_map=DATA.get("color_map", {}),
                     learning_map=DATA["learning_map"],
                     learning_map_inv=DATA["learning_map_inv"],
@@ -336,6 +515,62 @@ def main():
         end_idx = (i + 1) * chunk_size if i < len(CORRUPTIONS) - 1 else total_len
         chunks.append(indices[start_idx:end_idx])
 
+    if any(m in ['epistemic_multi_rp', 'epistemic_density', 'epistemic_magnitude'] for m in methods_to_run) or args.method == 'all':
+        base_model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES)
+        populate_source_statistics(base_model, args.kitti_dir, ARCH, DATA, device)
+        
+        source_stats_cache = {
+            'multi_rp_projs': base_model.multi_rp_projs,
+            'multi_rp_prototypes': base_model.multi_rp_prototypes,
+            'class_latent_means': base_model.class_latent_means,
+            'source_mean_magnitude': base_model.source_mean_magnitude,
+            'source_std_magnitude': base_model.source_std_magnitude,
+            'source_density_std': base_model.source_density_std
+        }
+    else:
+        source_stats_cache = None
+
+    clean_state_dict = torch.load(args.pretrained_path, map_location=device)
+    
+    logger.info("Pre-loading corruption datasets...")
+    corruption_datasets = {}
+    for ctype in CORRUPTIONS:
+        sev_str = SEVERITY_MAP.get(sev, 'moderate')
+        corruption_root = os.path.join(args.kittic_dir, ctype, sev_str)
+        seq_dir = os.path.join(corruption_root, "sequences")
+        if not os.path.exists(seq_dir):
+            logger.info(f"Directory structure doesn't match standard KITTI. Creating 'sequences/08' symlink in {corruption_root}...")
+            os.makedirs(seq_dir, exist_ok=True)
+            os.symlink("..", os.path.join(seq_dir, "08"))
+        try:
+            parser_obj = Parser(root=corruption_root,
+                                train_sequences=DATA["split"]["valid"],
+                                valid_sequences=DATA["split"]["valid"],
+                                test_sequences=None,
+                                labels=DATA["labels"],
+                                color_map=DATA.get("color_map", {}),
+                                learning_map=DATA["learning_map"],
+                                learning_map_inv=DATA["learning_map_inv"],
+                                sensor=ARCH["dataset"]["sensor"],
+                                max_points=ARCH["dataset"]["max_points"],
+                                batch_size=1,
+                                workers=ARCH["train"]["workers"],
+                                gt=True,
+                                shuffle_train=False)
+            corruption_datasets[ctype] = parser_obj.validloader.dataset
+        except Exception as e:
+            logger.error(f"Failed to load KITTI-C corruption dataset at {corruption_root}: {e}")
+
+    # Initialize the model exactly ONCE to be shared
+    model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES)
+    if source_stats_cache is not None:
+        model.multi_rp_projs = source_stats_cache['multi_rp_projs']
+        model.multi_rp_prototypes = source_stats_cache['multi_rp_prototypes']
+        model.class_latent_means = source_stats_cache['class_latent_means']
+        model.source_mean_magnitude = source_stats_cache['source_mean_magnitude']
+        model.source_std_magnitude = source_stats_cache['source_std_magnitude']
+        model.source_density_std = source_stats_cache['source_density_std']
+
     for current_method in methods_to_run:
         logger.info(f"=========================================")
         logger.info(f"Starting Evaluation for Method: {current_method}")
@@ -348,56 +583,20 @@ def main():
         results_miou = {c: {} for c in active_corruptions}
         results_acc = {c: {} for c in active_corruptions}
 
-        model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES)
-        if current_method == 'knn':
-            populate_knn_bank(model, args.kitti_dir, ARCH, DATA, device)
-            # Make a clean backup of the bank to restore on reset
-            clean_bank = {k: v.clone() for k, v in model.bank.items()}
+        # Reset model at the start of each new method loop
+        model.load_state_dict(clean_state_dict, strict=False)
 
         for i, ctype in enumerate(active_corruptions):
             if args.reset_per_corruption and args.chunked:
                 logger.info("Resetting model to clean pretrained weights for this corruption.")
-                model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES)
-                if current_method == 'knn':
-                    model.bank = {k: v.clone() for k, v in clean_bank.items()}
+                model.load_state_dict(clean_state_dict, strict=False)
                 
             logger.info(f"Testing {ctype} severity {sev} (Chunk {i+1}/{len(active_corruptions)})")
             
-            # Map severity integer to Robo3D folder name
-            sev_str = SEVERITY_MAP.get(sev, 'moderate')
-            
-            # NOTE (PLAN): The Parser natively expects a "sequences" folder inside root. 
-            # (e.g., SemanticKITTI-C/fog/moderate/sequences/08/velodyne)
-            # If the download layout is just SemanticKITTI-C/fog/moderate/velodyne, this will fail.
-            # Plan: We will either symlink the paths or create a custom KITTI-C Parser subclass
-            # that alters the root string logic once the exact directory layout is confirmed.
-            corruption_root = os.path.join(args.kittic_dir, ctype, sev_str)
-            seq_dir = os.path.join(corruption_root, "sequences")
-            if not os.path.exists(seq_dir):
-                logger.info(f"Directory structure doesn't match standard KITTI. Creating 'sequences/08' symlink in {corruption_root}...")
-                os.makedirs(seq_dir, exist_ok=True)
-                # Create sequences/08 that points to the parent directory (corruption_root)
-                os.symlink("..", os.path.join(seq_dir, "08"))
-            
-            try:
-                parser_obj = Parser(root=corruption_root,
-                                    train_sequences=DATA["split"]["valid"],
-                                    valid_sequences=DATA["split"]["valid"],
-                                    test_sequences=None,
-                                    labels=DATA["labels"],
-                                    color_map=DATA.get("color_map", {}),
-                                    learning_map=DATA["learning_map"],
-                                    learning_map_inv=DATA["learning_map_inv"],
-                                    sensor=ARCH["dataset"]["sensor"],
-                                    max_points=ARCH["dataset"]["max_points"],
-                                    batch_size=1,
-                                    workers=ARCH["train"]["workers"],
-                                    gt=True,
-                                    shuffle_train=False)
-                full_corruption_dataset = parser_obj.validloader.dataset
-            except Exception as e:
-                logger.error(f"Failed to load KITTI-C corruption dataset at {corruption_root}: {e}")
+            if ctype not in corruption_datasets:
                 continue
+                
+            full_corruption_dataset = corruption_datasets[ctype]
             
             # Prevent silent misalignment bugs by ensuring corrupted frame count matches baseline clean chunk length
             assert len(full_corruption_dataset) == total_len, (
@@ -410,9 +609,7 @@ def main():
                 # Standard protocol: full sequence, independent adaptation
                 chunk_dataset = full_corruption_dataset
                 # Reset model before each corruption
-                model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES)
-                if current_method == 'knn':
-                    model.bank = {k: v.clone() for k, v in clean_bank.items()}
+                model.load_state_dict(clean_state_dict, strict=False)
             else:
                 # D3CTTA protocol: chunks, continuous adaptation
                 chunk_dataset = torch.utils.data.Subset(full_corruption_dataset, chunks[i])
