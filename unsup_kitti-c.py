@@ -103,9 +103,12 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     cos_sims = F.linear(norm_enc, proto_norm)
                     max_cos_sim, pseudo_labels = torch.max(cos_sims, dim=1)
                     
-                    geometric_mask = max_cos_sim > 0.8
-                    update_mask = geometric_mask.clone()
-                    veto_mask = torch.zeros_like(geometric_mask)
+                    # Soft Gating Initialization
+                    # HDC cosine similarities are extremely small (e.g. ~0.1). We use a scaled softmax 
+                    # to generate a well-distributed [0, 1] weight representing prediction confidence.
+                    cos_sim_probs = F.softmax(cos_sims * 10.0, dim=1)
+                    base_weights = cos_sim_probs.max(dim=1)[0]
+                    update_weights = base_weights.clone()
                     
                     latent_x_valid = latent_x[indices]
 
@@ -123,25 +126,27 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             rp_preds.append(torch.argmax(temp_logits, dim=1))
                         rp_preds = torch.stack(rp_preds, dim=0)
                         rp_agreement = (rp_preds == pseudo_labels.unsqueeze(0)).float().mean(dim=0)
-                        veto_mask = rp_agreement < 0.8
-                        update_mask = geometric_mask & (~veto_mask)
+                        
+                        update_weights = update_weights * rp_agreement
                         
                     elif update_method == 'epistemic_density':
                         pred_means = model.class_latent_means[pseudo_labels]
                         dist_to_mean = torch.norm(latent_x_valid.float() - pred_means, p=2, dim=1)
-                        veto_mask = dist_to_mean > (3 * model.source_density_std)
-                        update_mask = geometric_mask & (~veto_mask)
+                        # Soft Veto: Exponential decay based on distance. 
+                        decay = torch.exp(-0.693 * (dist_to_mean / (model.source_density_std + 1e-8)))
+                        update_weights = update_weights * decay
                         
                     elif update_method == 'epistemic_magnitude':
                         raw_magnitude = torch.norm(latent_x_valid.float(), p=2, dim=1)
                         mag_diff = torch.abs(raw_magnitude - model.source_mean_magnitude)
-                        veto_mask = mag_diff > (3 * model.source_std_magnitude)
-                        update_mask = geometric_mask & (~veto_mask)
+                        # Soft Veto: Exponential decay based on difference from clean mean.
+                        decay = torch.exp(-0.693 * (mag_diff / (model.source_std_magnitude + 1e-8)))
+                        update_weights = update_weights * decay
                         
                     elif update_method == 'spatial_veto':
                         H, W = proj_in.shape[2], proj_in.shape[3]
                         if H < 3 or W < 3:
-                            veto_mask = torch.zeros_like(geometric_mask)
+                            pass
                         else:
                             preds_full = torch.full((H * W,), -1, dtype=torch.long, device=device)
                             preds_full[indices] = pseudo_labels
@@ -157,66 +162,62 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             mode_labels_valid = torch.argmax(one_hot, dim=0)
                             max_counts = torch.max(one_hot, dim=0)[0]
                             
-                            consensus_agrees = (mode_labels_valid == pseudo_labels) & (max_counts > 0)
-                            veto_mask = ~consensus_agrees
-                        update_mask = geometric_mask & (~veto_mask)
+                            agrees = (mode_labels_valid == pseudo_labels)
+                            spatial_weight = torch.where(agrees, max_counts.float() / 9.0, torch.zeros_like(max_counts.float()))
+                            update_weights = update_weights * spatial_weight
                         
                     elif update_method == 'temporal_veto':
                         H, W = proj_in.shape[2], proj_in.shape[3]
                         
-                        # 1. Reconstruct the CURRENT frame's 2D prediction map (needed for the next frame)
                         curr_preds_full = torch.full((H * W,), -1, dtype=torch.long, device=device)
                         curr_preds_full[indices] = pseudo_labels
                         curr_preds_2d = curr_preds_full.reshape(1, 1, H, W).float()
                         
                         if prev_preds_2d is not None:
-                            # 2. Unfold the PREVIOUS frame's 2D map with a 5x5 kernel
-                            # This acts as an instant O(N) search radius for ego-motion tolerance
                             unfolded_prev = F.unfold(prev_preds_2d, kernel_size=5, padding=2).squeeze(0).long()
-                            
-                            # 3. Extract the previous 5x5 neighborhoods only for the points valid in the CURRENT frame
-                            prev_neighborhoods = unfolded_prev[:, indices]  # Shape: (25, N)
-                            
-                            # 4. Logic: Did we see anything here before? 
+                            prev_neighborhoods = unfolded_prev[:, indices] 
                             valid_past = (prev_neighborhoods != -1).any(dim=0)
-                            
-                            # 5. Logic: Does the current prediction match ANYTHING in that past 5x5 window?
                             label_matched = (prev_neighborhoods == pseudo_labels.unsqueeze(0)).any(dim=0)
+                            conflict = valid_past & (~label_matched)
+                            # Hard filter for temporal conflict: drops weight to 0.0
+                            update_weights = update_weights * (~conflict).float()
                             
-                            # 6. Veto if we saw points there before, but NONE of them match the current label
-                            veto_mask = valid_past & (~label_matched)
-                        else:
-                            veto_mask = torch.zeros_like(geometric_mask)
-                            
-                        # Save the current 2D map for the next frame
                         prev_preds_2d = curr_preds_2d.clone()
-                        update_mask = geometric_mask & (~veto_mask)
                         
+                    # Calculate tracking metrics
+                    # We define a "veto" as any point where the uncertainty method cut the base confidence by >50%
+                    veto_mask = update_weights < (0.5 * base_weights)
+                    # We define a point as "fired" if it contributes more than 10% weight
+                    fired_mask = update_weights > 0.1
+                    
                     if not hasattr(model, '_firing_log'):
                         model._firing_log = []
-                    model._firing_log.append(update_mask.float().mean().item())
+                    model._firing_log.append(update_weights.mean().item())
                     
                     if update_method != 'prototype_cosine':
                         valid_gt_mask = (proj_labels >= 0) & (proj_labels < num_classes)
-                        true_errors_rejected = (geometric_mask & veto_mask & valid_gt_mask & (pseudo_labels != proj_labels)).sum().item()
-                        correct_labels_rejected = (geometric_mask & veto_mask & valid_gt_mask & (pseudo_labels == proj_labels)).sum().item()
+                        true_errors_rejected = (veto_mask & valid_gt_mask & (pseudo_labels != proj_labels)).sum().item()
+                        correct_labels_rejected = (veto_mask & valid_gt_mask & (pseudo_labels == proj_labels)).sum().item()
                         if not hasattr(model, '_veto_stats'):
                             model._veto_stats = {'true_errors_rejected': 0, 'correct_labels_rejected': 0}
                         model._veto_stats['true_errors_rejected'] += true_errors_rejected
                         model._veto_stats['correct_labels_rejected'] += correct_labels_rejected
                     
-                    if update_mask.any():
-                        valid_enc = norm_enc[update_mask]
-                        valid_labels = pseudo_labels[update_mask]
+                    if fired_mask.any():
+                        valid_enc = norm_enc[indices]
                         for c in range(num_classes):
-                            c_mask = valid_labels == c
+                            c_mask = (pseudo_labels == c)
                             if c_mask.any():
-                                c_update = valid_enc[c_mask].mean(dim=0)
-                                model.classify.weight[c].data += update_lr * c_update.to(model.classify.weight.dtype)
-                                model.classify.weight[c].data = F.normalize(model.classify.weight[c].data, p=2, dim=0)
-                                if not hasattr(model, '_update_magnitude_log'):
-                                    model._update_magnitude_log = []
-                                model._update_magnitude_log.append((update_lr * c_update.norm(p=2)).item())
+                                c_weights = update_weights[c_mask].unsqueeze(1)
+                                c_update = (valid_enc[c_mask] * c_weights).mean(dim=0)
+                                
+                                if c_update.norm(p=2) > 1e-6:
+                                    model.classify.weight[c].data += update_lr * c_update.to(model.classify.weight.dtype)
+                                    model.classify.weight[c].data = F.normalize(model.classify.weight[c].data, p=2, dim=0)
+                                    
+                                    if not hasattr(model, '_update_magnitude_log'):
+                                        model._update_magnitude_log = []
+                                    model._update_magnitude_log.append((update_lr * c_update.norm(p=2)).item())
     
     if hasattr(model, '_veto_stats') and model._veto_stats['correct_labels_rejected'] > 0:
         purity_ratio = model._veto_stats['true_errors_rejected'] / model._veto_stats['correct_labels_rejected']
