@@ -104,9 +104,9 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     max_cos_sim, pseudo_labels = torch.max(cos_sims, dim=1)
                     
                     # Soft Gating Initialization
-                    # HDC cosine similarities are extremely small (e.g. ~0.1). We use a scaled softmax 
-                    # to generate a well-distributed [0, 1] weight representing prediction confidence.
-                    cos_sim_probs = F.softmax(cos_sims * 10.0, dim=1)
+                    # HDC cosine similarities are extremely small (e.g. ~0.05 to ~0.15). 
+                    # We use a sharp temperature scaling (x 100.0) to properly stretch these into [0, 1] probability weights.
+                    cos_sim_probs = F.softmax(cos_sims * 100.0, dim=1)
                     base_weights = cos_sim_probs.max(dim=1)[0]
                     update_weights = base_weights.clone()
                     
@@ -187,12 +187,17 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     # Calculate tracking metrics
                     # We define a "veto" as any point where the uncertainty method cut the base confidence by >50%
                     veto_mask = update_weights < (0.5 * base_weights)
-                    # We define a point as "fired" if it contributes more than 10% weight
-                    fired_mask = update_weights > 0.1
+                    # We define a point as "fired" if it contributes more than 1% weight
+                    fired_mask = update_weights > 0.01
                     
                     if not hasattr(model, '_firing_log'):
                         model._firing_log = []
-                    model._firing_log.append(update_weights.mean().item())
+                    
+                    # Guard against empty tensors causing NaN
+                    if len(update_weights) > 0:
+                        model._firing_log.append(update_weights.mean().item())
+                    else:
+                        model._firing_log.append(0.0)
                     
                     if update_method != 'prototype_cosine':
                         valid_gt_mask = (proj_labels >= 0) & (proj_labels < num_classes)
