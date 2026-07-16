@@ -115,6 +115,21 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     if update_method == 'prototype_cosine':
                         pass
                         
+                    elif update_method == 'balanced_margin':
+                        # Simple margin-based probabilistic drop to prevent over-updating on easy samples
+                        sorted_cos_sims, _ = torch.sort(cos_sims, dim=1, descending=True)
+                        margins = sorted_cos_sims[:, 0] - sorted_cos_sims[:, 1]
+                        
+                        # High confidence threshold (0.05 is significant in HDC cosine space)
+                        margin_threshold = 0.05
+                        drop_prob = 0.5
+                        
+                        # Detect high confidence samples and probabilistically drop them
+                        random_drops = torch.rand_like(margins) < drop_prob
+                        drop_mask = (margins > margin_threshold) & random_drops
+                        
+                        update_weights = update_weights * (~drop_mask).float()
+                        
                     elif update_method == 'epistemic_multi_rp':
                         num_rp = 5
                         rp_preds = []
@@ -433,7 +448,7 @@ def main():
     parser.add_argument('--skip_extractor', action='store_true', help='Skip feature extractor pretraining and only retrain the HDC model')
     parser.add_argument('--pretrained_path', type=str, default='logs/kitti_pretrain/hdc_sub.pth', help='Path to load pretrained model')
     parser.add_argument('--log_dir', type=str, default='logs/kitti_c_test', help='Directory to save logs and graphics')
-    parser.add_argument('--method', type=str, choices=['frozen', 'prototype_cosine', 'epistemic_multi_rp', 'epistemic_density', 'epistemic_magnitude', 'spatial_veto', 'temporal_veto', 'all'], default='frozen', help='Method to test.')
+    parser.add_argument('--method', type=str, choices=['frozen', 'prototype_cosine', 'balanced_margin', 'epistemic_multi_rp', 'epistemic_density', 'epistemic_magnitude', 'spatial_veto', 'temporal_veto', 'all'], default='frozen', help='Method to test.')
     parser.add_argument('--dry_run', action='store_true', help='Run only 2 batches per condition to quickly verify no crashes will occur.')
     parser.add_argument('--continue_pretrain', action='store_true', help='Resume pretraining from the existing pretrained_path')
     parser.add_argument('--continue', dest='continue_epochs', type=int, default=0, help='Continue feature extractor training for this many epochs, reinitialize HDC, and perform adaptation')
@@ -479,7 +494,7 @@ def main():
             logger.info(f"Successfully pretrained model on SemanticKITTI. Optimizer state saved to {opt_path}")
             
     sev = args.severity
-    methods_to_run = ['prototype_cosine', 'epistemic_multi_rp', 'epistemic_density', 'epistemic_magnitude', 'spatial_veto', 'temporal_veto'] if args.method == 'all' else [args.method]
+    methods_to_run = ['prototype_cosine', 'balanced_margin', 'epistemic_multi_rp', 'epistemic_density', 'epistemic_magnitude', 'spatial_veto', 'temporal_veto'] if args.method == 'all' else [args.method]
     
     global_results = {
         'mIoU': {m: {c: {} for c in CORRUPTIONS} for m in methods_to_run},
