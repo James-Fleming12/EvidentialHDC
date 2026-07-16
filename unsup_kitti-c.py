@@ -75,7 +75,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                 norm_enc = F.normalize(raw_enc, dim=1)
                 
                 if norm_enc.dtype != model.classify.weight.dtype:
-                    model.classify = model.classify.to(norm_enc.dtype)
+                    norm_enc = norm_enc.to(model.classify.weight.dtype)
                 
                 logits = model.classify(norm_enc)
                 predictions = torch.argmax(logits, dim=1)
