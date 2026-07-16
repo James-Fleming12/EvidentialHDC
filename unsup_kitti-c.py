@@ -112,10 +112,9 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     
                     latent_x_valid = latent_x[indices]
 
-                    if update_method == 'prototype_cosine':
-                        pass
-                        
-                    elif update_method == 'balanced_margin':
+                    core_method = update_method.replace('balanced_', '')
+                    
+                    if 'balanced' in update_method:
                         # Simple margin-based probabilistic drop to prevent over-updating on easy samples
                         sorted_cos_sims, _ = torch.sort(cos_sims, dim=1, descending=True)
                         margins = sorted_cos_sims[:, 0] - sorted_cos_sims[:, 1]
@@ -130,7 +129,10 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         
                         update_weights = update_weights * (~drop_mask).float()
                         
-                    elif update_method == 'epistemic_multi_rp':
+                    if core_method == 'prototype_cosine' or core_method == 'margin':
+                        pass
+                        
+                    elif core_method == 'epistemic_multi_rp':
                         num_rp = 5
                         rp_preds = []
                         for i in range(num_rp):
@@ -144,21 +146,21 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         
                         update_weights = update_weights * rp_agreement
                         
-                    elif update_method == 'epistemic_density':
+                    elif core_method == 'epistemic_density':
                         pred_means = model.class_latent_means[pseudo_labels]
                         dist_to_mean = torch.norm(latent_x_valid.float() - pred_means, p=2, dim=1)
                         # Soft Veto: Exponential decay based on distance. 
                         decay = torch.exp(-0.693 * (dist_to_mean / (model.source_density_std + 1e-8)))
                         update_weights = update_weights * decay
                         
-                    elif update_method == 'epistemic_magnitude':
+                    elif core_method == 'epistemic_magnitude':
                         raw_magnitude = torch.norm(latent_x_valid.float(), p=2, dim=1)
                         mag_diff = torch.abs(raw_magnitude - model.source_mean_magnitude)
                         # Soft Veto: Exponential decay based on difference from clean mean.
                         decay = torch.exp(-0.693 * (mag_diff / (model.source_std_magnitude + 1e-8)))
                         update_weights = update_weights * decay
                         
-                    elif update_method == 'spatial_veto':
+                    elif core_method == 'spatial_veto':
                         H, W = proj_in.shape[2], proj_in.shape[3]
                         if H < 3 or W < 3:
                             pass
@@ -181,7 +183,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             spatial_weight = torch.where(agrees, max_counts.float() / 9.0, torch.zeros_like(max_counts.float()))
                             update_weights = update_weights * spatial_weight
                         
-                    elif update_method == 'temporal_veto':
+                    elif core_method == 'temporal_veto':
                         H, W = proj_in.shape[2], proj_in.shape[3]
                         
                         curr_preds_full = torch.full((H * W,), -1, dtype=torch.long, device=device)
@@ -494,7 +496,7 @@ def main():
             logger.info(f"Successfully pretrained model on SemanticKITTI. Optimizer state saved to {opt_path}")
             
     sev = args.severity
-    methods_to_run = ['prototype_cosine', 'balanced_margin', 'epistemic_multi_rp', 'epistemic_density', 'epistemic_magnitude', 'spatial_veto', 'temporal_veto'] if args.method == 'all' else [args.method]
+    methods_to_run = ['prototype_cosine', 'balanced_margin', 'epistemic_multi_rp', 'balanced_epistemic_multi_rp', 'epistemic_density', 'balanced_epistemic_density', 'epistemic_magnitude', 'balanced_epistemic_magnitude', 'spatial_veto', 'balanced_spatial_veto', 'temporal_veto', 'balanced_temporal_veto'] if args.method == 'all' else [args.method]
     
     global_results = {
         'mIoU': {m: {c: {} for c in CORRUPTIONS} for m in methods_to_run},
@@ -536,7 +538,7 @@ def main():
         end_idx = (i + 1) * chunk_size if i < len(CORRUPTIONS) - 1 else total_len
         chunks.append(indices[start_idx:end_idx])
 
-    if any(m in ['epistemic_multi_rp', 'epistemic_density', 'epistemic_magnitude'] for m in methods_to_run) or args.method == 'all':
+    if any('epistemic' in m for m in methods_to_run) or args.method == 'all':
         base_model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES)
         populate_source_statistics(base_model, args.kitti_dir, ARCH, DATA, device)
         
