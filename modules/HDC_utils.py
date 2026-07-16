@@ -372,11 +372,6 @@ class UQModel(nn.Module):
 
         self.register_buffer('proto_momentum', torch.zeros_like(self.classify.weight.data)) # EMA momentum
 
-        # KNN Confidence Bank
-        self.k = 100
-        self.bank_size = 3000
-        self.bank = {c: torch.empty((0, self.hd_dim), device=self.device) for c in range(self.num_classes)}
-
     def encode(self, x, mask=None, PERCENTAGE=None, is_wrong=None, chunk_idx=None):
         if mask is None:
             mask = torch.ones(self.hd_dim, device=self.device).type(torch.bool)
