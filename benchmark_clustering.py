@@ -8,7 +8,7 @@ from sklearn.mixture import GaussianMixture
 from sklearn.metrics import silhouette_score
 import yaml
 
-from modules.parser import Parser
+from dataset.kitti.parser import Parser
 from modules.HDC_utils import set_uq_model
 
 def load_config(path):
