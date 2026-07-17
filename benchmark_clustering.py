@@ -71,7 +71,7 @@ def run_benchmarks():
             if not valid_mask.any():
                 continue
                 
-            latent_x = model.net(proj_in)
+            latent_x = model.net(proj_in, only_feat=True)
             latent_x = latent_x.permute(0, 2, 3, 1).reshape(-1, 128)
             import torch.nn.functional as F
             latent_x = F.normalize(latent_x, dim=1)
