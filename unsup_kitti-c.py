@@ -496,7 +496,7 @@ def main():
             logger.info(f"Successfully pretrained model on SemanticKITTI. Optimizer state saved to {opt_path}")
             
     sev = args.severity
-    methods_to_run = ['prototype_cosine', 'balanced_margin', 'epistemic_multi_rp', 'balanced_epistemic_multi_rp', 'epistemic_density', 'balanced_epistemic_density', 'epistemic_magnitude', 'balanced_epistemic_magnitude', 'spatial_veto', 'balanced_spatial_veto', 'temporal_veto', 'balanced_temporal_veto'] if args.method == 'all' else [args.method]
+    methods_to_run = ['prototype_cosine', 'balanced_margin', 'epistemic_density', 'balanced_epistemic_density', 'temporal_veto', 'balanced_temporal_veto'] if args.method == 'all' else [args.method]
     
     global_results = {
         'mIoU': {m: {c: {} for c in CORRUPTIONS} for m in methods_to_run},
