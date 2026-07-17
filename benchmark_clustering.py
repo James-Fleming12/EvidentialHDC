@@ -45,10 +45,10 @@ def run_benchmarks():
     
     print("Loading Pretrained Model...")
     model_dir = 'logs/kitti_pretrain'
-    hd_encoder = 'HDnn'
-    num_levels = 100
-    randomness = 'gaussian'
-    num_classes = 20
+    hd_encoder = 'rp'
+    num_levels = 0
+    randomness = 0
+    num_classes = 17
     
     model = set_uq_model(arch_cfg, model_dir, hd_encoder, num_levels, randomness, num_classes, device)
     model.load_state_dict(torch.load(os.path.join(model_dir, 'hdc_sub.pth'), map_location=device), strict=False)
