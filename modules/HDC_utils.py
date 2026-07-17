@@ -531,25 +531,128 @@ class UQModel(nn.Module):
         pass
 
     @torch.no_grad()
-    def _initialize_subcluster_ledger(self):
+    def _initialize_subcluster_ledger(self, num_clusters=10):
         """
-        Initializes K subclusters per class using K-Means or source-domain density.
+        Initializes K subclusters per class using KMeans on source-domain density.
         Initializes a counter array `self.subcluster_update_counts = zeros(NUM_CLASSES, K)`.
         """
-        pass
-
+        from sklearn.cluster import KMeans
+        import numpy as np
+        
+        self.num_clusters = num_clusters
+        self.subcluster_centroids = torch.zeros(self.num_classes, num_clusters, 128, device=self.device)
+        self.subcluster_update_counts = torch.zeros(self.num_classes, num_clusters, device=self.device)
+        self.actual_k_per_class = torch.zeros(self.num_classes, dtype=torch.long, device=self.device)
+        
+        # Check if latents were collected
+        if not hasattr(self, 'class_latents_for_clustering'):
+            raise RuntimeError("_initialize_subcluster_ledger requires self.class_latents_for_clustering to be populated")
+            
+        # Find the minimum number of samples across all valid classes
+        class_sizes = []
+        for c in range(self.num_classes):
+            if len(self.class_latents_for_clustering[c]) > 0:
+                size = sum(x.shape[0] for x in self.class_latents_for_clustering[c])
+                class_sizes.append(size)
+                
+        if len(class_sizes) == 0:
+            return
+            
+        # Target samples per class is the minimum size across all classes
+        target_samples = min(class_sizes)
+        print(f"Downsampling all classes to exactly {target_samples} samples for KMeans...")
+            
+        for c in range(self.num_classes):
+            if len(self.class_latents_for_clustering[c]) == 0:
+                continue
+                
+            data = torch.cat(self.class_latents_for_clustering[c], dim=0).numpy()
+            
+            # Uniformly downsample to target_samples
+            if data.shape[0] > target_samples:
+                indices = np.random.choice(data.shape[0], target_samples, replace=False)
+                data = data[indices]
+            
+            # If a class has fewer points than K, reduce K for that class
+            K = min(num_clusters, data.shape[0])
+            if K == 0: continue
+            self.actual_k_per_class[c] = K
+            
+            kmeans = KMeans(n_clusters=K, n_init='auto', random_state=42)
+            kmeans.fit(data)
+            
+            centroids = torch.tensor(kmeans.cluster_centers_, dtype=torch.float32, device=self.device)
+            # Normalize centroids back to hypersphere
+            centroids = torch.nn.functional.normalize(centroids, dim=1)
+            
+            self.subcluster_centroids[c, :K] = centroids
     @torch.no_grad()
-    def _consult_budget_ledger(self, enc, preds, candidate_mask):
+    def _consult_budget_ledger(self, latent_x_valid, preds, update_weights, budget_margin=50):
         """
-        Takes the mask of points that passed the UQ gate (`candidate_mask`).
-        1. Maps each candidate point to its nearest subcluster.
+        Takes the continuous soft weights (`update_weights`) of candidate points.
+        1. Maps each candidate point (latent_x_valid) to its nearest subcluster centroid for its predicted class.
         2. Checks `self.subcluster_update_counts`. If a subcluster has exceeded its 
-           relative budget (e.g., it has N more updates than its siblings), 
-           it is temporarily frozen.
-        3. Returns a refined mask where saturated points are dropped.
+           relative budget (e.g., it has N more updates than the minimum sibling), 
+           its update weight is zeroed out.
+        3. Returns refined weights where saturated points are dropped.
         4. Increments the ledger counts for the points that are ultimately admitted.
         """
-        pass
+        if latent_x_valid.shape[0] == 0:
+            return update_weights
+            
+        latent_x_norm = torch.nn.functional.normalize(latent_x_valid, dim=1)
+        
+        # We need to find the closest subcluster centroid for each point based on its predicted class
+        # preds is shape (N,)
+        refined_weights = update_weights.clone()
+        
+        # We process class by class to avoid massive broadcasting
+        unique_classes = torch.unique(preds)
+        for c in unique_classes:
+            c_mask = (preds == c)
+            if not c_mask.any(): continue
+            
+            K = self.actual_k_per_class[c].item()
+            if K == 0:
+                # No subclusters were initialized for this class (very rare), just allow all updates
+                continue
+                
+            # shape: (N_c, 128)
+            pts = latent_x_norm[c_mask]
+            
+            # shape: (K, 128)
+            centroids = self.subcluster_centroids[c, :K]
+            
+            # cosine similarity: (N_c, K)
+            sims = torch.matmul(pts, centroids.T)
+            
+            # nearest subcluster indices: (N_c,)
+            nearest_subclusters = torch.argmax(sims, dim=1)
+            
+            # Check budgets
+            # We want to freeze subclusters that have significantly more updates than the least-updated subcluster
+            current_counts = self.subcluster_update_counts[c, :K]
+            min_count = current_counts.min()
+            
+            # For each point, check if its subcluster is saturated
+            subcluster_counts_for_pts = current_counts[nearest_subclusters]
+            
+            # Saturated if it exceeds the minimum count by more than the budget_margin
+            saturated_mask = (subcluster_counts_for_pts - min_count) > budget_margin
+            
+            # Zero out the weights for saturated points
+            refined_weights[c_mask] = refined_weights[c_mask] * (~saturated_mask).float()
+            
+            # Update the ledger for points that were NOT dropped (i.e., non-zero weights)
+            # We count an update if the refined weight > 0
+            admitted_pts_mask = (refined_weights[c_mask] > 0)
+            if admitted_pts_mask.any():
+                admitted_subclusters = nearest_subclusters[admitted_pts_mask]
+                # Increment counts using bincount
+                updates = torch.bincount(admitted_subclusters, minlength=K)
+                self.subcluster_update_counts[c, :K] += updates
+
+        return refined_weights
 
 def set_uq_model(ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device, subcluster_type='bipolar'):
     return UQModel(ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device)

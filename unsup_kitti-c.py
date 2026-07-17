@@ -112,7 +112,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     
                     latent_x_valid = latent_x[indices]
 
-                    core_method = update_method.replace('balanced_', '')
+                    core_method = update_method.replace('balanced_', '').replace('ledger_', '')
                     
                     if 'balanced' in update_method:
                         # Simple margin-based probabilistic drop to prevent over-updating on easy samples
@@ -128,6 +128,16 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         drop_mask = (margins > margin_threshold) & random_drops
                         
                         update_weights = update_weights * (~drop_mask).float()
+                        
+                    elif 'ledger' in update_method:
+                        # Full class-budgeting ledger
+                        # budget_margin controls how many MORE updates a saturated subcluster can have before freezing
+                        update_weights = model._consult_budget_ledger(
+                            latent_x_valid, 
+                            pseudo_labels, 
+                            update_weights, 
+                            budget_margin=50
+                        )
                         
                     if core_method == 'prototype_cosine' or core_method == 'margin':
                         pass
@@ -353,6 +363,10 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device):
     class_latent_sums = torch.zeros(num_classes, 128, device=device)
     class_latent_counts = torch.zeros(num_classes, device=device)
     
+    # Collect latents for KMeans subcluster initialization
+    model.class_latents_for_clustering = {c: [] for c in range(num_classes)}
+    max_cluster_samples_per_class = 10000
+    
     num_rp = 5
     model.multi_rp_projs = []
     model.multi_rp_prototypes = torch.zeros(num_rp, num_classes, model.hd_dim, device=device)
@@ -393,6 +407,12 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device):
                         class_latent_sums[c] += latent_valid[c_mask].sum(dim=0)
                         class_latent_counts[c] += c_mask.sum()
                         
+                        # Accumulate up to max_cluster_samples_per_class for clustering
+                        current_len = sum(len(x) for x in model.class_latents_for_clustering[c])
+                        if current_len < max_cluster_samples_per_class:
+                            c_latents = latent_valid[c_mask].cpu()
+                            model.class_latents_for_clustering[c].append(c_latents)
+                        
                 for i in range(num_rp):
                     temp_hv = functional.normalize(F.linear(latent_valid, model.multi_rp_projs[i]))
                     for c in range(num_classes):
@@ -409,6 +429,10 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device):
     
     counts_safe = torch.clamp(class_latent_counts, min=1).unsqueeze(1)
     model.class_latent_means = class_latent_sums / counts_safe
+    
+    # Initialize the subcluster budget ledger here!
+    print("Initializing Subcluster Budget Ledger using KMeans...")
+    model._initialize_subcluster_ledger(num_clusters=10)
     model.multi_rp_prototypes = F.normalize(model.multi_rp_prototypes, p=2, dim=2)
     
     # Pass 2: Calculate density standard deviation
@@ -450,7 +474,7 @@ def main():
     parser.add_argument('--skip_extractor', action='store_true', help='Skip feature extractor pretraining and only retrain the HDC model')
     parser.add_argument('--pretrained_path', type=str, default='logs/kitti_pretrain/hdc_sub.pth', help='Path to load pretrained model')
     parser.add_argument('--log_dir', type=str, default='logs/kitti_c_test', help='Directory to save logs and graphics')
-    parser.add_argument('--method', type=str, choices=['frozen', 'prototype_cosine', 'balanced_margin', 'epistemic_multi_rp', 'epistemic_density', 'epistemic_magnitude', 'spatial_veto', 'temporal_veto', 'all'], default='frozen', help='Method to test.')
+    parser.add_argument('--method', type=str, choices=['frozen', 'prototype_cosine', 'balanced_margin', 'ledger_epistemic_density', 'epistemic_multi_rp', 'epistemic_density', 'epistemic_magnitude', 'spatial_veto', 'temporal_veto', 'all'], default='frozen', help='Method to test.')
     parser.add_argument('--dry_run', action='store_true', help='Run only 2 batches per condition to quickly verify no crashes will occur.')
     parser.add_argument('--continue_pretrain', action='store_true', help='Resume pretraining from the existing pretrained_path')
     parser.add_argument('--continue', dest='continue_epochs', type=int, default=0, help='Continue feature extractor training for this many epochs, reinitialize HDC, and perform adaptation')
@@ -496,7 +520,7 @@ def main():
             logger.info(f"Successfully pretrained model on SemanticKITTI. Optimizer state saved to {opt_path}")
             
     sev = args.severity
-    methods_to_run = ['prototype_cosine', 'balanced_margin', 'epistemic_density', 'balanced_epistemic_density', 'temporal_veto', 'balanced_temporal_veto'] if args.method == 'all' else [args.method]
+    methods_to_run = ['prototype_cosine', 'balanced_margin', 'epistemic_density', 'balanced_epistemic_density', 'ledger_epistemic_density', 'temporal_veto'] if args.method == 'all' else [args.method]
     
     global_results = {
         'mIoU': {m: {c: {} for c in CORRUPTIONS} for m in methods_to_run},
