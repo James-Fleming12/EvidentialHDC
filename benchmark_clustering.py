@@ -20,8 +20,8 @@ def run_benchmarks():
     print(f"Using device: {device}")
     
     # Load configs
-    arch_cfg = load_config('config/arch/CENet_SemanticKITTI.yaml')
-    data_cfg = load_config('config/labels/semantic-kitti.yaml')
+    arch_cfg = load_config('config/arch/senet-2048p.yml')
+    data_cfg = load_config('config/labels/semantic-kitti-all.yaml')
     
     data_dir = '/mnt/alpha/jmfleming/KITTI'
     
