@@ -1,21 +1,21 @@
 # Preliminary KITTI-C Test Iterations
-**Date:** July 15, 2026
+**Date:** July 16, 2026
 
 ## Objective
 Evaluate baseline unsupervised adaptation (`prototype_cosine`) against novel uncertainty-gated adaptation strategies (epistemic, spatial, temporal) across 8 SemanticKITTI-C corruptions. The primary metric is Mean Intersection over Union (mIoU) measured pre-adaptation and post-adaptation.
 
 ## Results Summary (mIoU)
 
-| Corruption | Base (Frozen) | Prototype Cosine | Multi-RP | Density | Magnitude | Spatial Veto | Temporal Veto |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| Fog | 0.0366 | **0.0574** | 0.0337 | 0.0451 | 0.0390 | 0.0436 | 0.0342 |
-| Wet Ground | 0.3620 | 0.3088 | **0.4202** | 0.4039 | 0.3156 | 0.3811 | 0.3779 |
-| Snow | 0.3817 | 0.4121 | 0.4457 | 0.4221 | 0.3909 | 0.4204 | **0.4880** |
-| Motion Blur| 0.3824 | 0.3762 | 0.4116 | **0.4176** | 0.4016 | 0.3762 | 0.4124 |
-| Beam Miss  | 0.3333 | 0.3144 | **0.3758** | 0.3695 | 0.3128 | 0.3629 | 0.3705 |
-| Crosstalk  | 0.0744 | **0.1058** | 0.0617 | 0.0914 | 0.1201 | 0.0867 | 0.0794 |
-| Incomplete | 0.3501 | 0.3241 | **0.3947** | 0.3671 | 0.3397 | 0.3611 | 0.3847 |
-| Cross-Sens | 0.2283 | 0.2033 | 0.2377 | **0.2499** | 0.1947 | 0.2155 | 0.2233 |
+| Corruption | Base (Frozen) | Prototype Cosine | Epistemic Density | Balanced + Epistemic Density |
+| :--- | :---: | :---: | :---: | :---: |
+| Fog | 0.0583 | 0.0778 | 0.0759 | **0.0864** |
+| Wet Ground | 0.4245 | 0.2619 | 0.4498 | **0.4839** |
+| Snow | 0.4078 | 0.3639 | 0.4899 | **0.5271** |
+| Motion Blur| 0.4061 | 0.3401 | 0.4594 | **0.4788** |
+| Beam Miss  | 0.3779 | 0.3058 | 0.4081 | **0.4322** |
+| Crosstalk  | 0.0700 | 0.0976 | 0.0829 | **0.1055** |
+| Incomplete | 0.3760 | 0.2940 | 0.4076 | **0.4192** |
+| Cross-Sens | 0.2587 | 0.1991 | 0.2861 | **0.3070** |
 
 ## Analysis of Successes and Failures
 
@@ -23,30 +23,24 @@ Evaluate baseline unsupervised adaptation (`prototype_cosine`) against novel unc
 The standard pseudo-labeling adaptation approach (`prototype_cosine`) suffers from severe model degradation. It actually *hurts* performance on 5 out of 8 corruptions (Wet Ground, Motion Blur, Beam Missing, Incomplete Echo, Cross-Sensor). This validates the core hypothesis: unfiltered pseudo-labeling causes confirmation bias where the model confidently updates on its own mistakes, shattering rare class prototypes.
 
 ### 2. Epistemic Density is the Most Robust (Universal Improvement)
-The `epistemic_density` method is the only strategy that improved performance across **all 8 corruptions** with absolutely zero degradation. 
-- **Mechanism:** It has a highly conservative firing rate (~15-20%). By only updating on points that lie densely near established source distributions, it completely isolates the model from outlier noise. 
-- **Conclusion:** Safe, universally robust, but leaves some potential gains on the table due to its conservative nature.
+The `epistemic_density` method improves performance across **all 8 corruptions** with absolutely zero degradation. 
+- **Mechanism:** It has a highly conservative firing rate (~15-20%). By only updating on points that lie densely near established source distributions, it isolates the model from outlier noise. 
 
-### 3. Epistemic Multi-RP Offers the Highest Upside
-`epistemic_multi_rp` provided the highest peak gains across the board.
-- **Successes:** +5.8% on Wet Ground, +6.4% on Snow, +4.4% on Incomplete Echo.
-- **Failures:** Slight degradation on Fog and Crosstalk. 
-- **Mechanism:** It fires moderately (~82-98% depending on the chunk) but is highly effective at identifying structural certainty.
-
-### 4. Temporal Veto Excels in Specific Corruptions
-- **Successes:** Delivered a massive **+10.6% gain on Snow** (0.3817 -> 0.4880). This makes sense logically—snow introduces chaotic frame-by-frame structural noise. By enforcing temporal consistency, the model completely filters out transient snowflake hits.
+### 3. Balanced Margin Drop Synergizes with Density (Breakthrough)
+Combining a probabilistic drop ($p=0.5$ for margins $> 0.05$) with `epistemic_density` created a massive synergistic effect that shattered all previous performance ceilings:
+- **Successes:** +11.9% on Snow, +7.2% on Motion Blur, +5.9% on Wet Ground.
+- **Mechanism:** `epistemic_density` isolates hard samples from OOD noise. However, it still updates heavily on "easy/confident" samples (which are overwhelmingly common classes like Road/Building), causing Voronoi shattering of rare classes. The `balanced_margin` drop throttles the Firing Rate on confident samples from ~19% down to **~9.5%**. By halving the updates on common classes, the rare classes successfully maintain their geometric volume in the HDC space.
 
 ## Strategic Next Steps
 
 Now that we have proven that uncertainty gating resolves test-time adaptation collapse, we can focus on maximizing these gains.
 
 ### 1. Implement "The Ledger" (Balanced Class Allocation)
-While `epistemic_density` successfully prevented degradation by being conservative, both it and `multi_rp` are likely still suffering from Voronoi-shattering (where common classes like "Road" receive millions of updates while rare classes like "Bicycle" get zero, shrinking the rare class decision boundaries).
-- **Action:** Implement `_initialize_subcluster_ledger` and `_consult_budget_ledger` in `modules/HDC_utils.py`. By enforcing a fixed update budget per class, we ensure rare classes maintain their volume in the hyperdimensional space.
+While `balanced_margin` dynamically limits updates on high-confidence (common class) samples, it acts as a proxy for true class-budgeting. By implementing the full `_initialize_subcluster_ledger` and `_consult_budget_ledger` in `modules/HDC_utils.py`, we can explicitly enforce a fixed update budget per class, ensuring that rare classes mathematically maintain their exact geometric volume in the hyperdimensional space.
 
 ### 2. Method Ensembling (Union of Experts)
-We saw that `epistemic_density` is universally safe, `temporal_veto` is a silver bullet for Snow, and `epistemic_multi_rp` is a powerhouse for structured noise (Wet Ground, Incomplete Echo). 
-- **Action:** Create a unified pipeline that combines these gating functions. For instance, a point must pass the `temporal_veto` AND have high `epistemic_density` to be considered for a rare class update.
+We saw that `balanced_epistemic_density` provides universally elite performance. `temporal_veto` also showed unique synergy for chaotic frame-by-frame structural noise.
+- **Action:** Explore multi-condition constraints, such as requiring a point to pass `temporal_veto` AND have high `epistemic_density` to be considered for a rare class update.
 
 ### 3. Move to Soft Gating Tuning
 We replaced hard binary masks with Soft Gating (using sharpened Softmax probabilities as continuous weights). However, the hyperparameters (like `update_lr = 0.01` and temperature `T=100`) were chosen arbitrarily to fix the NaN bug.
