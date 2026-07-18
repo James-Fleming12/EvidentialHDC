@@ -570,9 +570,13 @@ def main():
             'multi_rp_projs': base_model.multi_rp_projs,
             'multi_rp_prototypes': base_model.multi_rp_prototypes,
             'class_latent_means': base_model.class_latent_means,
-            'source_mean_magnitude': base_model.source_mean_magnitude,
-            'source_std_magnitude': base_model.source_std_magnitude,
-            'source_density_std': base_model.source_density_std
+            'source_mean_magnitude': getattr(base_model, 'source_mean_magnitude', None),
+            'source_std_magnitude': getattr(base_model, 'source_std_magnitude', None),
+            'source_density_std': getattr(base_model, 'source_density_std', None),
+            'num_clusters': getattr(base_model, 'num_clusters', None),
+            'subcluster_centroids': getattr(base_model, 'subcluster_centroids', None),
+            'subcluster_update_counts': getattr(base_model, 'subcluster_update_counts', None),
+            'actual_k_per_class': getattr(base_model, 'actual_k_per_class', None)
         }
     else:
         source_stats_cache = None
@@ -617,6 +621,11 @@ def main():
         model.source_mean_magnitude = source_stats_cache['source_mean_magnitude']
         model.source_std_magnitude = source_stats_cache['source_std_magnitude']
         model.source_density_std = source_stats_cache['source_density_std']
+        if source_stats_cache['num_clusters'] is not None:
+            model.num_clusters = source_stats_cache['num_clusters']
+            model.subcluster_centroids = source_stats_cache['subcluster_centroids']
+            model.subcluster_update_counts = source_stats_cache['subcluster_update_counts']
+            model.actual_k_per_class = source_stats_cache['actual_k_per_class']
 
     for current_method in methods_to_run:
         logger.info(f"=========================================")
