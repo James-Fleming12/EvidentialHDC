@@ -130,13 +130,23 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         update_weights = update_weights * (~drop_mask).float()
                         
                     elif 'ledger' in update_method:
+                        # Parse the margin type from the method string
+                        margin_type = 'absolute'
+                        budget_margin = 50
+                        
+                        if 'relaxed' in update_method:
+                            margin_type = 'absolute'
+                            budget_margin = 5000
+                        elif 'dynamic' in update_method:
+                            margin_type = 'proportional'
+                            
                         # Full class-budgeting ledger
-                        # budget_margin controls how many MORE updates a saturated subcluster can have before freezing
                         update_weights = model._consult_budget_ledger(
                             latent_x_valid, 
                             pseudo_labels, 
                             update_weights, 
-                            budget_margin=50
+                            budget_margin=budget_margin,
+                            margin_type=margin_type
                         )
                         
                     if core_method == 'prototype_cosine' or core_method == 'margin':
@@ -520,7 +530,7 @@ def main():
             logger.info(f"Successfully pretrained model on SemanticKITTI. Optimizer state saved to {opt_path}")
             
     sev = args.severity
-    methods_to_run = ['prototype_cosine', 'balanced_margin', 'epistemic_density', 'balanced_epistemic_density', 'ledger_epistemic_density', 'temporal_veto'] if args.method == 'all' else [args.method]
+    methods_to_run = ['ledger_epistemic_density_relaxed', 'ledger_epistemic_density_dynamic'] if args.method == 'all' else [args.method]
     
     global_results_path = os.path.join(args.log_dir, 'global_results.json')
     if os.path.exists(global_results_path):

@@ -587,7 +587,7 @@ class UQModel(nn.Module):
             
             self.subcluster_centroids[c, :K] = centroids
     @torch.no_grad()
-    def _consult_budget_ledger(self, latent_x_valid, preds, update_weights, budget_margin=50):
+    def _consult_budget_ledger(self, latent_x_valid, preds, update_weights, budget_margin=50, margin_type='absolute'):
         """
         Takes the continuous soft weights (`update_weights`) of candidate points.
         1. Maps each candidate point (latent_x_valid) to its nearest subcluster centroid for its predicted class.
@@ -638,7 +638,10 @@ class UQModel(nn.Module):
             subcluster_counts_for_pts = current_counts[nearest_subclusters]
             
             # Saturated if it exceeds the minimum count by more than the budget_margin
-            saturated_mask = (subcluster_counts_for_pts - min_count) > budget_margin
+            if margin_type == 'proportional':
+                saturated_mask = subcluster_counts_for_pts > (min_count * 2.0 + 500)
+            else:
+                saturated_mask = (subcluster_counts_for_pts - min_count) > budget_margin
             
             # Zero out the weights for saturated points
             refined_weights[c_mask] = refined_weights[c_mask] * (~saturated_mask).float()
