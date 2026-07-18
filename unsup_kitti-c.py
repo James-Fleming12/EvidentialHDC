@@ -522,10 +522,21 @@ def main():
     sev = args.severity
     methods_to_run = ['prototype_cosine', 'balanced_margin', 'epistemic_density', 'balanced_epistemic_density', 'ledger_epistemic_density', 'temporal_veto'] if args.method == 'all' else [args.method]
     
-    global_results = {
-        'mIoU': {m: {c: {} for c in CORRUPTIONS} for m in methods_to_run},
-        'Accuracy': {m: {c: {} for c in CORRUPTIONS} for m in methods_to_run},
-    }
+    global_results_path = os.path.join(args.log_dir, 'global_results.json')
+    if os.path.exists(global_results_path):
+        with open(global_results_path, 'r') as f:
+            global_results = json.load(f)
+        # Ensure the dicts for the current methods exist in case they were never run
+        for m in methods_to_run:
+            if m not in global_results['mIoU']:
+                global_results['mIoU'][m] = {c: {} for c in CORRUPTIONS}
+            if m not in global_results['Accuracy']:
+                global_results['Accuracy'][m] = {c: {} for c in CORRUPTIONS}
+    else:
+        global_results = {
+            'mIoU': {m: {c: {} for c in CORRUPTIONS} for m in methods_to_run},
+            'Accuracy': {m: {c: {} for c in CORRUPTIONS} for m in methods_to_run},
+        }
     
     shared_init_metrics = {}
     

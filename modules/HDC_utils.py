@@ -600,7 +600,7 @@ class UQModel(nn.Module):
         if latent_x_valid.shape[0] == 0:
             return update_weights
             
-        latent_x_norm = torch.nn.functional.normalize(latent_x_valid, dim=1)
+        latent_x_norm = torch.nn.functional.normalize(latent_x_valid.float(), dim=1)
         
         # We need to find the closest subcluster centroid for each point based on its predicted class
         # preds is shape (N,)
