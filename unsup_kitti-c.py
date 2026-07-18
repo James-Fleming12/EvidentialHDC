@@ -641,11 +641,15 @@ def main():
 
         # Reset model at the start of each new method loop
         model.load_state_dict(clean_state_dict, strict=False)
+        if hasattr(model, 'subcluster_update_counts') and model.subcluster_update_counts is not None:
+            model.subcluster_update_counts.zero_()
 
         for i, ctype in enumerate(active_corruptions):
             if args.reset_per_corruption and args.chunked:
                 logger.info("Resetting model to clean pretrained weights for this corruption.")
                 model.load_state_dict(clean_state_dict, strict=False)
+                if hasattr(model, 'subcluster_update_counts') and model.subcluster_update_counts is not None:
+                    model.subcluster_update_counts.zero_()
                 
             logger.info(f"Testing {ctype} severity {sev} (Chunk {i+1}/{len(active_corruptions)})")
             
