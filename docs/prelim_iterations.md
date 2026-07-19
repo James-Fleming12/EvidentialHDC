@@ -31,17 +31,21 @@ Combining a probabilistic drop ($p=0.5$ for margins $> 0.05$) with `epistemic_de
 - **Successes:** +11.9% on Snow, +7.2% on Motion Blur, +5.9% on Wet Ground.
 - **Mechanism:** `epistemic_density` isolates hard samples from OOD noise. However, it still updates heavily on "easy/confident" samples (which are overwhelmingly common classes like Road/Building), causing Voronoi shattering of rare classes. The `balanced_margin` drop throttles the Firing Rate on confident samples from ~19% down to **~9.5%**. By halving the updates on common classes, the rare classes successfully maintain their geometric volume in the HDC space.
 
+### 4. The Subcluster Ledger (Geometric Rebalancing) - FAILED
+While `balanced_margin` dynamically limits updates on high-confidence (common class) samples, it acts as a proxy for true class-budgeting. We implemented a strict budget across $K$ intra-class subclusters (`ledger_epistemic_density`) to enforce this mathematically.
+- **Result:** Severe performance degradation (e.g., `snow-3` mIoU plummeted from `0.4078` to `0.2290`). Firing rates dropped to <1% in strict mode.
+- **Mechanism (Outlier Amplifier):** In latent space, "common geometries" form the dense, confident core. "Rare geometries" form the low-density fringe (often outliers/noise). By freezing the core updates and waiting for the rare geometries to catch up, the ledger prevented the network from updating on safe representations, dragging prototypes toward heavily penalized noise.
+- **Future Pivot (Novel HDC Gating):** Intra-class spatial balancing flattens the natural confidence gradients. If we return to novel gating later, we should directly exploit the topological properties of the 10,000D hypervectors rather than the 128D bottleneck. For example:
+  - **Dirichlet Evidential Gating:** Treat HDC cosine similarities as raw evidence to generate Dirichlet parameters, natively quantifying epistemic uncertainty (True Evidential Deep Learning).
+  - **HDC-Energy:** Calculate the LogSumExp of cosine similarities in the HDC space to detect OOD samples.
+
 ## Strategic Next Steps
 
 Now that we have proven that uncertainty gating resolves test-time adaptation collapse, we can focus on maximizing these gains.
 
-### 1. Implement "The Ledger" (Balanced Class Allocation)
-While `balanced_margin` dynamically limits updates on high-confidence (common class) samples, it acts as a proxy for true class-budgeting. By implementing the full `_initialize_subcluster_ledger` and `_consult_budget_ledger` in `modules/HDC_utils.py`, we can explicitly enforce a fixed update budget per class, ensuring that rare classes mathematically maintain their exact geometric volume in the hyperdimensional space.
-
-### 2. Method Ensembling (Union of Experts)
-We saw that `balanced_epistemic_density` provides universally elite performance. `temporal_veto` also showed unique synergy for chaotic frame-by-frame structural noise.
-- **Action:** Explore multi-condition constraints, such as requiring a point to pass `temporal_veto` AND have high `epistemic_density` to be considered for a rare class update.
-
-### 3. Move to Soft Gating Tuning
+### 1. Method Ensembling (Union of Experts)
+Since intra-class geometric balancing (the ledger) proved detrimental, we will shift focus immediately towards **Method Ensembling**. We saw that `balanced_epistemic_density` provides universally elite performance. `temporal_veto` also showed unique synergy for chaotic frame-by-frame structural noise.
+- **Action:** Explore multi-condition constraints, combining the strengths of our robust gating functions. For instance, requiring a point to pass `temporal_veto` AND have high `epistemic_density` to safely survive adaptation without amplifying outliers.
+### 2. Move to Soft Gating Tuning
 We replaced hard binary masks with Soft Gating (using sharpened Softmax probabilities as continuous weights). However, the hyperparameters (like `update_lr = 0.01` and temperature `T=100`) were chosen arbitrarily to fix the NaN bug.
 - **Action:** Now that the pipeline runs, we can tune the soft-gating temperature to scale updates proportionally to confidence, rather than letting everything update at full stride.
