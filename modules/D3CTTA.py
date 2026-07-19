@@ -9,7 +9,7 @@ def softmax_entropy(x):
     return -(x.softmax(1) * x.log_softmax(1)).sum(1)
 
 class D3CTTA(nn.Module):
-    def __init__(self, feature_extractor, num_classes=13, feature_dim=128, proj_dim=1024, lambda_ridge=0.1, source_prototypes=None):
+    def __init__(self, feature_extractor, num_classes=13, feature_dim=128, proj_dim=145, lambda_ridge=0.1, source_prototypes=None):
         super().__init__()
         self.feature_extractor = feature_extractor
         self.num_classes = num_classes
@@ -118,13 +118,13 @@ class D3CTTA(nn.Module):
             if self.domain_id not in self.domains_bn_stats and mu is not None:
                 self.domains_bn_stats[self.domain_id] = {'mu': mu, 'sigma': sigma}
 
-            G = self.G_d[self.domain_id]
-            C = self.C_d[self.domain_id]
+            device = h.device
+            G = self.G_d[self.domain_id].to(device)
+            C = self.C_d[self.domain_id].to(device)
             
             if C.sum() == 0 and self.pred_source is not None:
                 logits = self.pred_source
             else:
-                device = h.device
                 I = torch.eye(self.proj_dim, device=device)
                 G_inv = torch.linalg.inv(G + self.lambda_ridge * I)
                 logits = h @ G_inv @ C
