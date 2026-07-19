@@ -164,6 +164,7 @@ class D3CTTA(nn.Module):
         if points is None:
             return torch.ones(len(pred), dtype=torch.bool, device=pred.device)
             
+        orig_device = pred.device
         pred = pred.argmax(1).detach().cpu().numpy()
         points_np = points.detach().cpu().numpy()
         
@@ -194,7 +195,7 @@ class D3CTTA(nn.Module):
 
         valid_filter = ground_index | other_index | manmade_pred_index | manmade_index | plane_pred_index
         # Return a single boolean mask of geometrically valid points
-        return torch.tensor(valid_filter, device=pred.device) if isinstance(valid_filter, np.ndarray) else torch.ones(len(pred), dtype=torch.bool, device=pred.device)
+        return torch.tensor(valid_filter, device=orig_device) if isinstance(valid_filter, np.ndarray) else torch.ones(len(pred), dtype=torch.bool, device=orig_device)
 
     def inference_update(self, h, predictions, xyz):
         device = h.device
