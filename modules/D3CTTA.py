@@ -273,6 +273,8 @@ class D3CTTA(nn.Module):
         pred_filtered = pred_proto_argmax[final_indices]
         
         if h_filtered.shape[0] > 0:
+            self.G_d[self.domain_id] = self.G_d[self.domain_id].to(h_filtered.device)
+            self.C_d[self.domain_id] = self.C_d[self.domain_id].to(h_filtered.device)
             self.G_d[self.domain_id] += h_filtered.T @ h_filtered
-            y_one_hot = F.one_hot(pred_filtered, num_classes=self.num_classes).float()
+            y_one_hot = F.one_hot(pred_filtered, num_classes=self.num_classes).float().to(h_filtered.device)
             self.C_d[self.domain_id] += h_filtered.T @ y_one_hot
