@@ -179,7 +179,7 @@ class D3CTTA(nn.Module):
                 from scipy.spatial import cKDTree
                 # print("Open3D not installed. Using SciPy fallback for geometric prior filter...")
                 tree = cKDTree(points_np)
-                dists, idxs = tree.query(points_np, k=30, distance_upper_bound=2.0)
+                dists, idxs = tree.query(points_np, k=30, distance_upper_bound=2.0, workers=-1)
                 
                 invalid_mask = np.isinf(dists)
                 idxs[invalid_mask] = 0
