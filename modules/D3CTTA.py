@@ -214,7 +214,7 @@ class D3CTTA(nn.Module):
         feat_valid = self.feat_source[valid_idx]
         h_valid = h[valid_idx]
         pred_source_valid = self.pred_source[valid_idx]
-        xyz_valid = xyz[valid_idx] if xyz else None
+        xyz_valid = xyz[valid_idx] if xyz is not None else None
         
         # 1. Entropy Filtering (Top Ratio)
         ent = softmax_entropy(pred_source_valid)
