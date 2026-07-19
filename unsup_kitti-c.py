@@ -768,7 +768,9 @@ def main():
                         if "UpdateMagnitude" in metrics:
                             firing_rate_str += f", UpdateMag={metrics['UpdateMagnitude']:.4f}"
             except Exception as e:
+                import traceback
                 logger.error(f"FATAL ERROR during {ctype} sev {sev} ({current_method}): {e}")
+                logger.error(traceback.format_exc())
                 logger.info("Skipping to next cell to protect the overnight run...")
                 continue
             
