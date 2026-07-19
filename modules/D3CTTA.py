@@ -153,7 +153,7 @@ class D3CTTA(nn.Module):
         pred_label = pred_proto
         for i in range(self.num_classes):
             index_class = (pred_label == i)
-            feat_i = feat[index_class].detach().cpu()
+            feat_i = feat[index_class].detach()
             if feat_i.shape[0] < self.min_feat:
                 continue
             mean = torch.mean(feat_i, dim=0)
