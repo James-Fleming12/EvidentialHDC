@@ -68,21 +68,21 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
             model.eval()
             with torch.no_grad():
                 if update_method == 'd3ctta':
-                    logits, _, indices, h = eval_model(proj_in, xyz=proj_xyz)
+                    logits, _, indices, h = model(proj_in, xyz=proj_xyz)
                     predictions = torch.argmax(logits, dim=1)
                 else:
                     # Get raw latent and encodings for updates
                     with torch.amp.autocast('cuda', enabled=True):
-                        latent_x = eval_model.net(proj_in, only_feat=True)
+                        latent_x = model.net(proj_in, only_feat=True)
                     latent_x = latent_x.permute(0, 2, 3, 1).reshape(-1, 128)
                     
-                    raw_enc, indices, _ = eval_model.encode(proj_in)
+                    raw_enc, indices, _ = model.encode(proj_in)
                     norm_enc = F.normalize(raw_enc, dim=1)
                     
-                    if norm_enc.dtype != eval_model.classify.weight.dtype:
-                        norm_enc = norm_enc.to(eval_model.classify.weight.dtype)
+                    if norm_enc.dtype != model.classify.weight.dtype:
+                        norm_enc = norm_enc.to(model.classify.weight.dtype)
                     
-                    logits = eval_model.classify(norm_enc)
+                    logits = model.classify(norm_enc)
                     predictions = torch.argmax(logits, dim=1)
                 
                 selected_labels = proj_labels[indices]
@@ -104,11 +104,11 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                 model.eval()
                 with torch.no_grad():
                     if update_method == 'd3ctta':
-                        eval_model.inference_update(h, predictions, proj_xyz)
+                        model.inference_update(h, predictions, proj_xyz)
                         continue
                         
                     update_lr = 0.01
-                    proto_norm = F.normalize(eval_model.classify.weight, dim=1)
+                    proto_norm = F.normalize(model.classify.weight, dim=1)
                     cos_sims = F.linear(norm_enc, proto_norm)
                     max_cos_sim, pseudo_labels = torch.max(cos_sims, dim=1)
                     
