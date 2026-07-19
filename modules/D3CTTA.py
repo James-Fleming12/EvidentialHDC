@@ -9,7 +9,7 @@ def softmax_entropy(x):
     return -(x.softmax(1) * x.log_softmax(1)).sum(1)
 
 class D3CTTA(nn.Module):
-    def __init__(self, feature_extractor, num_classes=13, feature_dim=128, proj_dim=145, lambda_ridge=0.1, source_prototypes=None):
+    def __init__(self, feature_extractor, num_classes=13, feature_dim=128, proj_dim=1024, lambda_ridge=0.1, source_prototypes=None):
         super().__init__()
         self.feature_extractor = feature_extractor
         self.num_classes = num_classes
@@ -175,9 +175,28 @@ class D3CTTA(nn.Module):
             pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=2.0, max_nn=30))
             normals = np.fabs(np.asarray(pcd.normals)[:, 2])
         except ImportError:
-            # Fallback if open3d is missing (assume everything passes the geometric filter)
-            print("Open3D not installed. Skipping geometric prior filter.")
-            normals = np.ones(len(points_np)) * 0.5
+            try:
+                from scipy.spatial import cKDTree
+                # print("Open3D not installed. Using SciPy fallback for geometric prior filter...")
+                tree = cKDTree(points_np)
+                dists, idxs = tree.query(points_np, k=30, distance_upper_bound=2.0)
+                
+                invalid_mask = np.isinf(dists)
+                idxs[invalid_mask] = 0
+                neighbors = points_np[idxs]
+                
+                query_points = points_np[:, np.newaxis, :]
+                neighbors = np.where(invalid_mask[:, :, np.newaxis], query_points, neighbors)
+                
+                centroids = np.mean(neighbors, axis=1, keepdims=True)
+                centered = neighbors - centroids
+                covs = np.einsum('nij,nik->njk', centered, centered)
+                
+                w, v = np.linalg.eigh(covs)
+                normals = np.abs(v[:, 2, 0])
+            except ImportError:
+                print("Open3D and SciPy not installed. Skipping geometric prior filter.")
+                normals = np.ones(len(points_np)) * 0.5
 
         plane_norm_index = normals > 0.9
         manmade_norm_index = normals < 0.1
