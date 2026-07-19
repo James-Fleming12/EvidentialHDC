@@ -47,6 +47,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
     
     prev_preds_2d = None
 
+
     for batch_idx, batch_data in enumerate(tqdm(target_dataloader, desc="Adapting", leave=False)):
         if dry_run and batch_idx >= 2:
             break
@@ -66,19 +67,23 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         if proj_in.shape[1] > 0:
             model.eval()
             with torch.no_grad():
-                # Get raw latent and encodings for updates
-                with torch.amp.autocast('cuda', enabled=True):
-                    latent_x = model.net(proj_in, only_feat=True)
-                latent_x = latent_x.permute(0, 2, 3, 1).reshape(-1, 128)
-                
-                raw_enc, indices, _ = model.encode(proj_in)
-                norm_enc = F.normalize(raw_enc, dim=1)
-                
-                if norm_enc.dtype != model.classify.weight.dtype:
-                    norm_enc = norm_enc.to(model.classify.weight.dtype)
-                
-                logits = model.classify(norm_enc)
-                predictions = torch.argmax(logits, dim=1)
+                if update_method == 'd3ctta':
+                    logits, _, indices, h = eval_model(proj_in, xyz=proj_xyz)
+                    predictions = torch.argmax(logits, dim=1)
+                else:
+                    # Get raw latent and encodings for updates
+                    with torch.amp.autocast('cuda', enabled=True):
+                        latent_x = eval_model.net(proj_in, only_feat=True)
+                    latent_x = latent_x.permute(0, 2, 3, 1).reshape(-1, 128)
+                    
+                    raw_enc, indices, _ = eval_model.encode(proj_in)
+                    norm_enc = F.normalize(raw_enc, dim=1)
+                    
+                    if norm_enc.dtype != eval_model.classify.weight.dtype:
+                        norm_enc = norm_enc.to(eval_model.classify.weight.dtype)
+                    
+                    logits = eval_model.classify(norm_enc)
+                    predictions = torch.argmax(logits, dim=1)
                 
                 selected_labels = proj_labels[indices]
                 mask = (selected_labels >= 0) & (selected_labels < num_classes)
@@ -98,8 +103,12 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
             if not eval_only and update_method != 'frozen':
                 model.eval()
                 with torch.no_grad():
+                    if update_method == 'd3ctta':
+                        eval_model.inference_update(h, predictions, proj_xyz)
+                        continue
+                        
                     update_lr = 0.01
-                    proto_norm = F.normalize(model.classify.weight, dim=1)
+                    proto_norm = F.normalize(eval_model.classify.weight, dim=1)
                     cos_sims = F.linear(norm_enc, proto_norm)
                     max_cos_sim, pseudo_labels = torch.max(cos_sims, dim=1)
                     
@@ -149,10 +158,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             margin_type=margin_type
                         )
                         
-                    if core_method == 'prototype_cosine' or core_method == 'margin':
-                        pass
-                        
-                    elif core_method == 'epistemic_multi_rp':
+                    if 'multi_rp' in update_method:
                         num_rp = 5
                         rp_preds = []
                         for i in range(num_rp):
@@ -166,21 +172,21 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         
                         update_weights = update_weights * rp_agreement
                         
-                    elif core_method == 'epistemic_density':
+                    if 'density' in update_method:
                         pred_means = model.class_latent_means[pseudo_labels]
                         dist_to_mean = torch.norm(latent_x_valid.float() - pred_means, p=2, dim=1)
                         # Soft Veto: Exponential decay based on distance. 
                         decay = torch.exp(-0.693 * (dist_to_mean / (model.source_density_std + 1e-8)))
                         update_weights = update_weights * decay
                         
-                    elif core_method == 'epistemic_magnitude':
+                    if 'magnitude' in update_method:
                         raw_magnitude = torch.norm(latent_x_valid.float(), p=2, dim=1)
                         mag_diff = torch.abs(raw_magnitude - model.source_mean_magnitude)
                         # Soft Veto: Exponential decay based on difference from clean mean.
                         decay = torch.exp(-0.693 * (mag_diff / (model.source_std_magnitude + 1e-8)))
                         update_weights = update_weights * decay
                         
-                    elif core_method == 'spatial_veto':
+                    if 'spatial' in update_method:
                         H, W = proj_in.shape[2], proj_in.shape[3]
                         if H < 3 or W < 3:
                             pass
@@ -203,7 +209,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             spatial_weight = torch.where(agrees, max_counts.float() / 9.0, torch.zeros_like(max_counts.float()))
                             update_weights = update_weights * spatial_weight
                         
-                    elif core_method == 'temporal_veto':
+                    if 'temporal' in update_method:
                         H, W = proj_in.shape[2], proj_in.shape[3]
                         
                         curr_preds_full = torch.full((H * W,), -1, dtype=torch.long, device=device)
@@ -530,7 +536,12 @@ def main():
             logger.info(f"Successfully pretrained model on SemanticKITTI. Optimizer state saved to {opt_path}")
             
     sev = args.severity
-    methods_to_run = ['ledger_epistemic_density_relaxed', 'ledger_epistemic_density_dynamic'] if args.method == 'all' else [args.method]
+    methods_to_run = [
+        'd3ctta',
+        'balanced_multi_rp_density',
+        'balanced_temporal_density',
+        'balanced_temporal_multi_rp_density'
+    ] if args.method == 'all' else [args.method]
     
     global_results_path = os.path.join(args.log_dir, 'global_results.json')
     if os.path.exists(global_results_path):
@@ -664,6 +675,12 @@ def main():
         model.load_state_dict(clean_state_dict, strict=False)
         if hasattr(model, 'subcluster_update_counts') and model.subcluster_update_counts is not None:
             model.subcluster_update_counts.zero_()
+            
+        if current_method == 'd3ctta':
+            from modules.D3CTTA import D3CTTA
+            eval_model = D3CTTA(model.net, num_classes=NUM_CLASSES, feature_dim=128).to(device)
+        else:
+            eval_model = model
 
         for i, ctype in enumerate(active_corruptions):
             if args.reset_per_corruption and args.chunked:
@@ -702,7 +719,7 @@ def main():
                     # Pass 1: True Initial (Frozen on chunk)
                     if (ctype, sev) not in shared_init_metrics:
                         logger.info("  -> Pass 1: Computing True Initial metrics (Frozen)")
-                        init_metrics = evaluate_and_adapt(model, target_dataloader, device, eval_only=True, dry_run=args.dry_run)
+                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run)
                         shared_init_metrics[(ctype, sev)] = init_metrics
                     else:
                         logger.info("  -> Pass 1: Reusing cached True Initial metrics (Frozen)")
@@ -711,13 +728,13 @@ def main():
                     # Pass 2: Adapt (only if method is not frozen)
                     if current_method != 'frozen':
                         logger.info("  -> Pass 2: Adapting model weights")
-                        adapt_metrics = evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run)
+                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run)
                     else:
                         adapt_metrics = init_metrics
                         
                     # Pass 3: True Final (Frozen on chunk using adapted weights)
                     logger.info("  -> Pass 3: Computing True Final metrics (Frozen)")
-                    final_metrics = evaluate_and_adapt(model, target_dataloader, device, eval_only=True, dry_run=args.dry_run)
+                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run)
                     
                     # We only care about the absolute end of the frozen evaluations for the sequence
                     metrics = adapt_metrics  # Just for the trajectory json
@@ -736,7 +753,7 @@ def main():
                             firing_rate_str += f", UpdateMag={adapt_metrics['UpdateMagnitude']:.4f}"
                 else:
                     # Original single-pass continuous evaluation
-                    metrics = evaluate_and_adapt(model, target_dataloader, device, eval_only=(current_method == 'frozen'), update_method=current_method, dry_run=args.dry_run)
+                    metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=(current_method == 'frozen'), update_method=current_method, dry_run=args.dry_run)
                     if len(metrics["mIoU"]) > 0:
                         initial_miou = metrics["mIoU"][0]
                         final_miou = metrics["mIoU"][-1]

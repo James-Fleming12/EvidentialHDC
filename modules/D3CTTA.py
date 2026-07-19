@@ -9,7 +9,7 @@ def softmax_entropy(x):
     return -(x.softmax(1) * x.log_softmax(1)).sum(1)
 
 class D3CTTA(nn.Module):
-    def __init__(self, feature_extractor, num_classes=13, feature_dim=128, proj_dim=1024, lambda_ridge=0.1):
+    def __init__(self, feature_extractor, num_classes=13, feature_dim=128, proj_dim=1024, lambda_ridge=0.1, source_prototypes=None):
         super().__init__()
         self.feature_extractor = feature_extractor
         self.num_classes = num_classes
@@ -28,7 +28,9 @@ class D3CTTA(nn.Module):
         self.W.weight.requires_grad = False
         
         # 2. Extract original prototypes (warmup supports)
-        if hasattr(self.feature_extractor, 'semantic_output'):
+        if source_prototypes is not None:
+            self.source_prototypes = source_prototypes.clone()
+        elif hasattr(self.feature_extractor, 'semantic_output'):
             source_weight = self.feature_extractor.semantic_output.weight.data.clone()
             # source_weight is [num_classes, feature_dim, 1, 1]
             self.source_prototypes = source_weight.view(num_classes, feature_dim)
@@ -135,8 +137,8 @@ class D3CTTA(nn.Module):
             return [list(range(self.feat_source.shape[0]))] * self.num_areas_d
             
         distance = torch.sqrt(points[:, 0]**2 + points[:, 1]**2)
-        distance = torch.clamp(distance, 0+1e-3, 100-1e-3) # Range up to 100m
-        distance_list = np.linspace(0, 100, self.num_areas_d + 1)
+        distance = torch.clamp(distance, 0+1e-3, 50-1e-3) # Range up to 50m as per paper
+        distance_list = np.linspace(0, 50, self.num_areas_d + 1)
         
         distance_labels = np.digitize(distance.detach().cpu().numpy(), bins=distance_list) - 1
         distance_labels = np.clip(distance_labels, 0, self.num_areas_d - 1)
