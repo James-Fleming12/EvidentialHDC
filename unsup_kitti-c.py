@@ -67,7 +67,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         if proj_in.shape[1] > 0:
             model.eval()
             with torch.no_grad():
-                if update_method == 'd3ctta':
+                if type(model).__name__ == 'D3CTTA':
                     logits, _, indices, h = model(proj_in, xyz=proj_xyz)
                     predictions = torch.argmax(logits, dim=1)
                 else:
@@ -103,7 +103,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
             if not eval_only and update_method != 'frozen':
                 model.eval()
                 with torch.no_grad():
-                    if update_method == 'd3ctta':
+                    if type(model).__name__ == 'D3CTTA':
                         model.inference_update(h, predictions, proj_xyz)
                         continue
                         
