@@ -138,6 +138,33 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         
                         update_weights = update_weights * (~drop_mask).float()
                         
+                    if 'dirichlet_density' in update_method:
+                        # Softplus to map cosine sims to positive evidence
+                        evidence = F.softplus(cos_sims * 100.0)
+                        alpha = evidence + 1.0
+                        S = torch.sum(alpha, dim=1, keepdim=True)
+                        uncertainty = num_classes / S.squeeze(1) # Epistemic uncertainty
+                        
+                        # Soft Veto: High uncertainty scales down update weight
+                        u_threshold = 0.5 
+                        decay = torch.exp(-2.0 * torch.relu(uncertainty - u_threshold))
+                        update_weights = update_weights * decay
+                        
+                    if 'energy_density' in update_method:
+                        # Free Energy = -T * logsumexp(logits / T)
+                        energy = -torch.logsumexp(cos_sims * 100.0, dim=1)
+                        
+                        if not hasattr(model, 'ema_energy'):
+                            model.ema_energy = energy.mean().item()
+                            
+                        if batch_idx > 0:
+                            model.ema_energy = 0.9 * model.ema_energy + 0.1 * energy.mean().item()
+                            
+                        # Soft Veto: if energy is significantly higher than EMA (less negative)
+                        energy_diff = torch.relu(energy - model.ema_energy)
+                        decay = torch.exp(-0.693 * (energy_diff / (abs(model.ema_energy) * 0.1 + 1e-5)))
+                        update_weights = update_weights * decay
+                        
                     elif 'ledger' in update_method:
                         # Parse the margin type from the method string
                         margin_type = 'absolute'
@@ -208,6 +235,28 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             agrees = (mode_labels_valid == pseudo_labels)
                             spatial_weight = torch.where(agrees, max_counts.float() / 9.0, torch.zeros_like(max_counts.float()))
                             update_weights = update_weights * spatial_weight
+                        
+                    if 'momentum_veto' in update_method:
+                        H, W = proj_in.shape[2], proj_in.shape[3]
+                        if not hasattr(model, 'ema_logits'):
+                            model.ema_logits = torch.zeros((1, num_classes, H, W), device=device)
+                            
+                        curr_logits_full = torch.zeros((H * W, num_classes), device=device)
+                        curr_logits_full[indices] = cos_sims
+                        curr_logits_2d = curr_logits_full.T.reshape(1, num_classes, H, W)
+                        
+                        if batch_idx == 0:
+                            model.ema_logits = curr_logits_2d
+                        else:
+                            model.ema_logits = 0.9 * model.ema_logits + 0.1 * curr_logits_2d
+                            
+                        ema_logits_valid = model.ema_logits.squeeze(0).reshape(num_classes, -1).T[indices]
+                        
+                        # Cosine distance to measure curvature/divergence from central flow
+                        cos_dist = 1.0 - F.cosine_similarity(cos_sims, ema_logits_valid + 1e-8, dim=1)
+                        
+                        decay = torch.exp(-5.0 * cos_dist)
+                        update_weights = update_weights * decay
                         
                     if 'temporal' in update_method:
                         H, W = proj_in.shape[2], proj_in.shape[3]
@@ -537,10 +586,9 @@ def main():
             
     sev = args.severity
     methods_to_run = [
-        'd3ctta',
-        'balanced_multi_rp_density',
-        'balanced_temporal_density',
-        'balanced_temporal_multi_rp_density'
+        'dirichlet_density',
+        'energy_density',
+        'momentum_veto'
     ] if args.method == 'all' else [args.method]
     
     global_results_path = os.path.join(args.log_dir, 'global_results.json')
