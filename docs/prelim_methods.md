@@ -81,3 +81,25 @@ $$ W(x) = W_{base}(x) \cdot \exp\left( -\lambda \cdot \text{Div}(x) \right) $$
 These methods evaluate the physical geometry and structural neighborhood of the point cloud.
 
 *Note: Due to the high computational expense of operations like native surface normal estimation (e.g., PCA on local neighborhoods) and 3D KD-Tree searches, these mechanisms are detailed in a separate section of the study as a heavy fallback alternative.*
+
+---
+
+## 5. Paper Organization & Ensembling Strategy
+
+The structure of the study systematically builds upon the failure of purely spatial gating mechanisms. Our framework is organized into a primary lightweight method and two targeted augmentations.
+
+### The Basic Core Method
+* **Composition:** Network Uncertainty (`dirichlet_density`) + HDC Uncertainty (`energy_density`)
+* **Rationale:** Purely Spatial/Geometric gating (as seen in baseline models like D3CTTA) catastrophically fails by itself under structurally destructive corruptions like fog and motion blur. By replacing physical space with the latent hyperdimensional space, we construct a "Very Basic Method" that massively improves performance over the baseline. Because Network and HDC uncertainty are computed instantly from the initial forward pass, this core method incurs **zero additional storage and zero additional computational overhead**.
+
+### Variant 1: Temporal Augmentation (+ Storage)
+* **Composition:** Core Method + Temporal Uncertainty (`momentum_veto`)
+* **Rationale:** Adds the continuous optimization trajectory (EMA). This variant provides critical resistance to chaotic, frame-by-frame volatility (e.g., snow reflections) but requires additional GPU memory/storage to maintain the central flow tensor across time.
+
+### Variant 2: Spatial Augmentation (+ Compute)
+* **Composition:** Core Method + Spatial Uncertainty (Geometric Integrity)
+* **Rationale:** Reintroduces physical geometry checks (like surface normal consistency or KD-Tree neighborhood tracking). This variant is presented as a heavy fallback alternative because calculating strict physical constraints on massive LiDAR point clouds incurs a highly prohibitive computational cost.
+
+### Variant 3: The Full Ensemble
+* **Composition:** Network + HDC + Temporal + Spatial
+* **Rationale:** The complete unified pipeline, fusing all four gates for maximum robustness across every corruption modality.
