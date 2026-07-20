@@ -78,9 +78,15 @@ $$ W(x) = W_{base}(x) \cdot \exp\left( -\lambda \cdot \text{Div}(x) \right) $$
 ---
 
 ## 4. Spatial Uncertainty (Geometric Integrity)
-These methods evaluate the physical geometry and structural neighborhood of the point cloud.
+These methods evaluate the structural integrity of the point cloud. Traditionally, this requires computationally prohibitive physical geometry checks (like 3D KD-Tree searches for surface normal estimation). Our method completely replaces this overhead by performing spatial integrity checks natively within the latent HDC space.
 
-*Note: Due to the high computational expense of operations like native surface normal estimation (e.g., PCA on local neighborhoods) and 3D KD-Tree searches, these mechanisms are detailed in a separate section of the study as a heavy fallback alternative.*
+### Orthogonal Noise Detection / ViM (`orthogonal_spatial_veto`) - *Current*
+Measures spatial and structural noise by computing the orthogonal residual norm of a point relative to the principal semantic subspace (Virtual-logit Matching).
+$$ \mathbf{Q}, R = \text{qr}(\mathcal{P}^T) $$
+$$ x_{\parallel} = x \mathbf{Q} \mathbf{Q}^T $$
+$$ \text{Residual}(x) = \|x - x_{\parallel}\|_2 $$
+$$ W(x) = W_{base}(x) \cdot \exp\left( -\lambda \cdot \text{Residual}(x) \right) $$
+*Mechanism: In a 10,000D space, the 17 prototypes span a tiny semantic subspace. Structurally corrupted points (like LiDAR crosstalk) project massively into the orthogonal null space. This replaces a multi-million-node KD-Tree search with a single matrix multiplication, instantly vetoing physical artifacts even if their Softmax confidence is high.*
 
 ---
 
@@ -96,9 +102,9 @@ The structure of the study systematically builds upon the failure of purely spat
 * **Composition:** Core Method + Temporal Uncertainty (`momentum_veto`)
 * **Rationale:** Adds the continuous optimization trajectory (EMA). This variant provides critical resistance to chaotic, frame-by-frame volatility (e.g., snow reflections) but requires additional GPU memory/storage to maintain the central flow tensor across time.
 
-### Variant 2: Spatial Augmentation (+ Compute)
-* **Composition:** Core Method + Spatial Uncertainty (Geometric Integrity)
-* **Rationale:** Reintroduces physical geometry checks (like surface normal consistency or KD-Tree neighborhood tracking). This variant is presented as a heavy fallback alternative because calculating strict physical constraints on massive LiDAR point clouds incurs a highly prohibitive computational cost.
+### Variant 2: Spatial Augmentation (Latent Geometry)
+* **Composition:** Core Method + Spatial Uncertainty (`orthogonal_spatial_veto`)
+* **Rationale:** Traditionally, geometric integrity requires expensive physical KD-Trees. This variant introduces Orthogonal Noise Detection (ViM), completely replacing physical operations with a single highly-parallelized linear projection. It detects structural artifacts that fall into the 10,000D null space, adding robust geometric filtering with practically zero computational overhead.
 
 ### Variant 3: The Full Ensemble
 * **Composition:** Network + HDC + Temporal + Spatial
