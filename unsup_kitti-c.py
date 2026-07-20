@@ -225,13 +225,18 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         
                         # Project incoming points into the subspace
                         subspace_projection = norm_enc[indices] @ Q @ Q.T
+                        proj_norm = torch.norm(subspace_projection, dim=1)
                         
-                        # Calculate residual norm (orthogonal noise)
-                        residual = norm_enc[indices] - subspace_projection
-                        residual_norm = torch.norm(residual, dim=1)
-                        
-                        # Exponential decay based on orthogonal noise
-                        decay = torch.exp(-5.0 * residual_norm)
+                        # Track the expected magnitude of the semantic projection
+                        if not hasattr(model, 'ema_proj_norm'):
+                            model.ema_proj_norm = proj_norm.mean().item()
+                        if batch_idx > 0:
+                            model.ema_proj_norm = 0.9 * model.ema_proj_norm + 0.1 * proj_norm.mean().item()
+                            
+                        # Veto if the projection norm drops significantly below the moving average
+                        # (Meaning the point's geometry has shifted heavily into the orthogonal null space)
+                        proj_drop = torch.relu(model.ema_proj_norm - proj_norm)
+                        decay = torch.exp(-10.0 * (proj_drop / (model.ema_proj_norm + 1e-5)))
                         update_weights = update_weights * decay
                         
                     if use_momentum:
