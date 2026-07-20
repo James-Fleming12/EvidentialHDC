@@ -123,7 +123,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
 
                     core_method = update_method.replace('balanced_', '').replace('ledger_', '')
                     
-                    if 'balanced' in update_method:
+                    if 'balanced' in update_method or update_method in ['core_method', 'variant_1', 'variant_2', 'variant_3']:
                         # Simple margin-based probabilistic drop to prevent over-updating on easy samples
                         sorted_cos_sims, _ = torch.sort(cos_sims, dim=1, descending=True)
                         margins = sorted_cos_sims[:, 0] - sorted_cos_sims[:, 1]
