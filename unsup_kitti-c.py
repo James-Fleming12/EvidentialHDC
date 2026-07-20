@@ -138,7 +138,12 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         
                         update_weights = update_weights * (~drop_mask).float()
                         
-                    if 'dirichlet_density' in update_method:
+                    use_dirichlet = 'dirichlet_density' in update_method or update_method in ['core_method', 'variant_1', 'variant_2', 'variant_3']
+                    use_energy = 'energy_density' in update_method or update_method in ['core_method', 'variant_1', 'variant_2', 'variant_3']
+                    use_momentum = 'momentum_veto' in update_method or update_method in ['variant_1', 'variant_3']
+                    use_spatial = 'orthogonal_spatial_veto' in update_method or update_method in ['variant_2', 'variant_3']
+                    
+                    if use_dirichlet:
                         # Softplus to map cosine sims to positive evidence
                         evidence = F.softplus(cos_sims * 100.0)
                         alpha = evidence + 1.0
@@ -150,7 +155,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         decay = torch.exp(-2.0 * torch.relu(uncertainty - u_threshold))
                         update_weights = update_weights * decay
                         
-                    if 'energy_density' in update_method:
+                    if use_energy:
                         # Free Energy = -T * logsumexp(logits / T)
                         energy = -torch.logsumexp(cos_sims * 100.0, dim=1)
                         
@@ -213,30 +218,23 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         decay = torch.exp(-0.693 * (mag_diff / (model.source_std_magnitude + 1e-8)))
                         update_weights = update_weights * decay
                         
-                    if 'spatial' in update_method:
-                        H, W = proj_in.shape[2], proj_in.shape[3]
-                        if H < 3 or W < 3:
-                            pass
-                        else:
-                            preds_full = torch.full((H * W,), -1, dtype=torch.long, device=device)
-                            preds_full[indices] = pseudo_labels
-                            preds_2d = preds_full.reshape(1, 1, H, W).float()
-                            
-                            unfolded = F.unfold(preds_2d, kernel_size=3, padding=1).squeeze(0).long()
-                            unfolded_valid = unfolded[:, indices]
-                            
-                            one_hot = torch.zeros(num_classes, unfolded_valid.shape[1], device=device)
-                            for c in range(num_classes):
-                                one_hot[c] = (unfolded_valid == c).sum(dim=0)
-                            
-                            mode_labels_valid = torch.argmax(one_hot, dim=0)
-                            max_counts = torch.max(one_hot, dim=0)[0]
-                            
-                            agrees = (mode_labels_valid == pseudo_labels)
-                            spatial_weight = torch.where(agrees, max_counts.float() / 9.0, torch.zeros_like(max_counts.float()))
-                            update_weights = update_weights * spatial_weight
+                    if use_spatial:
+                        # ViM: Orthogonal Noise Detection (Residual Subspace)
+                        # Q is an orthonormal basis for the principal semantic subspace spanned by prototypes
+                        Q, _ = torch.linalg.qr(model.classify.weight.T)
                         
-                    if 'momentum_veto' in update_method:
+                        # Project incoming points into the subspace
+                        subspace_projection = norm_enc[indices] @ Q @ Q.T
+                        
+                        # Calculate residual norm (orthogonal noise)
+                        residual = norm_enc[indices] - subspace_projection
+                        residual_norm = torch.norm(residual, dim=1)
+                        
+                        # Exponential decay based on orthogonal noise
+                        decay = torch.exp(-5.0 * residual_norm)
+                        update_weights = update_weights * decay
+                        
+                    if use_momentum:
                         H, W = proj_in.shape[2], proj_in.shape[3]
                         if not hasattr(model, 'ema_logits'):
                             model.ema_logits = torch.zeros((1, num_classes, H, W), device=device)
@@ -539,7 +537,7 @@ def main():
     parser.add_argument('--skip_extractor', action='store_true', help='Skip feature extractor pretraining and only retrain the HDC model')
     parser.add_argument('--pretrained_path', type=str, default='logs/kitti_pretrain/hdc_sub.pth', help='Path to load pretrained model')
     parser.add_argument('--log_dir', type=str, default='logs/kitti_c_test', help='Directory to save logs and graphics')
-    parser.add_argument('--method', type=str, choices=['frozen', 'prototype_cosine', 'balanced_margin', 'ledger_epistemic_density', 'epistemic_multi_rp', 'epistemic_density', 'epistemic_magnitude', 'spatial_veto', 'temporal_veto', 'all'], default='frozen', help='Method to test.')
+    parser.add_argument('--method', type=str, default='frozen', help='Method to test.')
     parser.add_argument('--dry_run', action='store_true', help='Run only 2 batches per condition to quickly verify no crashes will occur.')
     parser.add_argument('--continue_pretrain', action='store_true', help='Resume pretraining from the existing pretrained_path')
     parser.add_argument('--continue', dest='continue_epochs', type=int, default=0, help='Continue feature extractor training for this many epochs, reinitialize HDC, and perform adaptation')
@@ -586,9 +584,10 @@ def main():
             
     sev = args.severity
     methods_to_run = [
-        'dirichlet_density',
-        'energy_density',
-        'momentum_veto'
+        'core_method',
+        'variant_1',
+        'variant_2',
+        'variant_3'
     ] if args.method == 'all' else [args.method]
     
     global_results_path = os.path.join(args.log_dir, 'global_results.json')
