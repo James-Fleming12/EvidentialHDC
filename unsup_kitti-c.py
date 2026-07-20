@@ -204,7 +204,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         
                         update_weights = update_weights * rp_agreement
                         
-                    if 'density' in update_method:
+                    if 'euclidean_density' in update_method or 'epistemic_density' in update_method or 'multi_rp_density' in update_method or 'temporal_density' in update_method:
                         pred_means = model.class_latent_means[pseudo_labels]
                         dist_to_mean = torch.norm(latent_x_valid.float() - pred_means, p=2, dim=1)
                         # Soft Veto: Exponential decay based on distance. 
@@ -589,10 +589,9 @@ def main():
             
     sev = args.severity
     methods_to_run = [
-        'core_method',
-        'variant_1',
-        'variant_2',
-        'variant_3'
+        'balanced_dirichlet_density',
+        'balanced_energy_density',
+        'balanced_orthogonal_spatial_veto'
     ] if args.method == 'all' else [args.method]
     
     global_results_path = os.path.join(args.log_dir, 'global_results.json')
