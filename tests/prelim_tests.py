@@ -94,7 +94,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     ).reshape(num_classes, num_classes)
                     cumulative_confusion_matrix += hist
                 
-            cumulative_miou, head_miou, mid_miou, tail_miou, cumulative_acc, cumulative_iou_per_class = extract_metrics_from_conf_matrix(cumulative_confusion_matrix)
+            cumulative_miou, cumulative_acc, cumulative_iou_per_class = extract_metrics_from_conf_matrix(cumulative_confusion_matrix)
             miou_history.append(cumulative_miou)
             acc_history.append(cumulative_acc)
             iou_per_class_history.append(cumulative_iou_per_class)
@@ -121,67 +121,151 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     
                     latent_x_valid = latent_x[indices]
 
-                    if not hasattr(model, 'class_freq_ema'):
-                        model.class_freq_ema = torch.ones(num_classes, device=device) / num_classes
+                    core_method = update_method.replace('balanced_', '').replace('ledger_', '')
                     
-                    beta = 0.99
-                    batch_freq = torch.bincount(pseudo_labels, minlength=num_classes).float() / max(1, pseudo_labels.size(0))
-                    model.class_freq_ema = beta * model.class_freq_ema + (1 - beta) * batch_freq
+                    if 'balanced' in update_method or update_method in ['core_method', 'variant_1', 'variant_2', 'variant_3']:
+                        if not hasattr(model, 'class_freq_ema'):
+                            model.class_freq_ema = torch.ones(num_classes, device=device) / num_classes
+                        
+                        beta = 0.99
+                        batch_freq = torch.bincount(pseudo_labels, minlength=num_classes).float() / max(1, pseudo_labels.size(0))
+                        model.class_freq_ema = beta * model.class_freq_ema + (1 - beta) * batch_freq
+                        
+                        # Hard lower bound to prevent network freeze when rare classes drop to 0 in a batch size of 1
+                        min_freq = torch.clamp(model.class_freq_ema.min(), min=0.01)
+                        f_y = torch.clamp(model.class_freq_ema[pseudo_labels], min=0.01)
+                        
+                        # Inverse Frequency Soft Weighting (gamma = 0.1 softened to prevent majority class paralysis)
+                        balance_weights = (min_freq / f_y) ** 0.1
+                        update_weights = update_weights * balance_weights
+                        
+                    use_dirichlet = 'dirichlet_density' in update_method or update_method in ['core_method', 'variant_1', 'variant_2', 'variant_3']
+                    use_energy = 'energy_density' in update_method or update_method in ['core_method', 'variant_1', 'variant_2', 'variant_3']
+                    use_momentum = 'momentum_veto' in update_method or update_method in ['variant_1', 'variant_3']
+                    use_spatial = 'orthogonal_spatial_veto' in update_method or update_method in ['variant_2', 'variant_3']
                     
-                    # Hard lower bound to prevent network freeze when rare classes drop to 0 in a batch size of 1
-                    min_freq = torch.clamp(model.class_freq_ema.min(), min=0.01)
-                    f_y = torch.clamp(model.class_freq_ema[pseudo_labels], min=0.01)
-                    
-                    # 1. Balanced Updates: Inverse Frequency Soft Weighting (gamma = 0.1)
-                    balance_weights = (min_freq / f_y) ** 0.1
-                    update_weights = update_weights * balance_weights
-                    
+                    # Gather all exponential decay factors to apply Fuzzy Min-Gate
+                    # Default is 1.0 (no decay)
                     N_samples = latent_x_valid.size(0)
                     dirichlet_decay = torch.ones(N_samples, device=device)
+                    energy_decay = torch.ones(N_samples, device=device)
+                    spatial_decay = torch.ones(N_samples, device=device)
                     temporal_decay = torch.ones(N_samples, device=device)
                     
-                    # 2. Hypervector Uncertainty: Z-Score Calibrated Dirichlet Evidence
-                    z_c = (cos_sims - model.source_mu_cos) / (model.source_sigma_cos + 1e-8)
-                    gamma_sharpness = 5.0
-                    evidence = F.softplus(gamma_sharpness * z_c)
-                    alpha = evidence + 1.0
-                    S = torch.sum(alpha, dim=1, keepdim=True)
-                    uncertainty = num_classes / S.squeeze(1) # Epistemic uncertainty
-                    
-                    # Soft Veto: High uncertainty scales down update weight
-                    u_threshold = 0.5 
-                    dirichlet_decay = torch.exp(-2.0 * torch.relu(uncertainty - u_threshold))
-                    
-                    # 3. Temporal Uncertainty: Latent Prototype Drift Tracking
-                    if not hasattr(model, 'drift_mu_c'):
-                        model.drift_mu_c = model.class_latent_means.clone().to(device)
+                    if use_dirichlet:
+                        # Z-Score Calibrated Dirichlet Evidence
+                        # Standardize inputs using baseline in-distribution statistics to prevent evidence squash in 10,000D
+                        z_c = (cos_sims - model.source_mu_cos) / (model.source_sigma_cos + 1e-8)
                         
-                    # Drift Divergence Gate (Measure global drift of the centroid from its anchor)
-                    centroid_drift = torch.norm(model.drift_mu_c[pseudo_labels] - model.drift_mu_0[pseudo_labels], p=2, dim=1)
-                    temporal_decay = torch.exp(-2.0 * centroid_drift)
+                        gamma = 5.0 # Sharpness param
+                        evidence = F.softplus(gamma * z_c)
+                        alpha = evidence + 1.0
+                        S = torch.sum(alpha, dim=1, keepdim=True)
+                        uncertainty = num_classes / S.squeeze(1) # Epistemic uncertainty
+                        
+                        # Soft Veto: High uncertainty scales down update weight
+                        u_threshold = 0.5 # Restored empirical threshold to allow proper veto scaling
+                        dirichlet_decay = torch.exp(-2.0 * torch.relu(uncertainty - u_threshold))
+                        
+                    if use_energy:
+                        # Free Energy = -T * logsumexp(logits / T)
+                        energy = -torch.logsumexp(cos_sims * 100.0, dim=1)
+                        
+                        # Soft Veto: if energy is significantly higher than clean anchor (less negative)
+                        energy_diff = torch.relu(energy - model.source_energy_mean)
+                        energy_decay = torch.exp(-0.693 * (energy_diff / (abs(model.source_energy_mean) * 0.1 + 1e-5)))
+                        
+                    elif 'ledger' in update_method:
+                        # Parse the margin type from the method string
+                        margin_type = 'absolute'
+                        budget_margin = 50
+                        
+                        if 'relaxed' in update_method:
+                            margin_type = 'absolute'
+                            budget_margin = 5000
+                        elif 'dynamic' in update_method:
+                            margin_type = 'proportional'
+                            
+                        # Full class-budgeting ledger
+                        update_weights = model._consult_budget_ledger(
+                            latent_x_valid, 
+                            pseudo_labels, 
+                            update_weights, 
+                            budget_margin=budget_margin,
+                            margin_type=margin_type
+                        )
+                        
+                    if 'multi_rp' in update_method:
+                        num_rp = 5
+                        rp_preds = []
+                        for i in range(num_rp):
+                            temp_proj = model.multi_rp_projs[i]
+                            temp_proto = model.multi_rp_prototypes[i]
+                            temp_hv = functional.normalize(F.linear(latent_x_valid.float(), temp_proj))
+                            temp_logits = F.linear(F.normalize(temp_hv.to(temp_proto.dtype), dim=1), temp_proto)
+                            rp_preds.append(torch.argmax(temp_logits, dim=1))
+                        rp_preds = torch.stack(rp_preds, dim=0)
+                        rp_agreement = (rp_preds == pseudo_labels.unsqueeze(0)).float().mean(dim=0)
+                        
+                        update_weights = update_weights * rp_agreement
+                        
+                    if 'euclidean_density' in update_method or 'epistemic_density' in update_method or 'multi_rp_density' in update_method or 'temporal_density' in update_method or use_dirichlet or use_energy:
+                        # Tier 1 (128D Manifold Anchor): Guarantees the sample lies on the continuous semantic manifold
+                        pred_means = model.class_latent_means[pseudo_labels]
+                        dist_sq = torch.norm(latent_x_valid.float() - pred_means, p=2, dim=1) ** 2
+                        variance = 2.0 * (model.source_density_std ** 2) + 1e-8
+                        tier1_decay = torch.exp(-dist_sq / variance)
+                        update_weights = update_weights * tier1_decay
+                        
+                    if 'magnitude' in update_method:
+                        raw_magnitude = torch.norm(latent_x_valid.float(), p=2, dim=1)
+                        mag_diff = torch.abs(raw_magnitude - model.source_mean_magnitude)
+                        # Soft Veto: Exponential decay based on difference from clean mean.
+                        decay = torch.exp(-0.693 * (mag_diff / (model.source_std_magnitude + 1e-8)))
+                        update_weights = update_weights * decay
+                        
+                    if use_spatial:
+                        # ViM: Orthogonal Noise Detection (Residual Subspace)
+                        # Q is an orthonormal basis for the principal semantic subspace spanned by prototypes
+                        Q, _ = torch.linalg.qr(model.classify.weight.T)
+                        
+                        # Project incoming points into the subspace
+                        subspace_projection = norm_enc[indices] @ Q @ Q.T
+                        proj_norm = torch.norm(subspace_projection, dim=1)
+                        
+                        # Veto if the projection norm drops significantly below the clean source anchor
+                        # (Meaning the point's geometry has shifted heavily into the orthogonal null space)
+                        proj_drop = torch.relu(model.source_proj_norm_mean - proj_norm)
+                        spatial_decay = torch.exp(-10.0 * (proj_drop / (model.source_proj_norm_mean + 1e-5)))
+                        
+                    if use_momentum:
+                        # Replaced Gradient momentum_veto with Latent Prototype Drift Tracking
+                        if not hasattr(model, 'drift_mu_c'):
+                            model.drift_mu_c = model.class_latent_means.clone().to(device)
+                            
+                        # 1. Drift Divergence Gate (Measure global drift of the centroid from its anchor)
+                        centroid_drift = torch.norm(model.drift_mu_c[pseudo_labels] - model.drift_mu_0[pseudo_labels], p=2, dim=1)
+                        
+                        # W_temporal = exp(-lambda * ReLU(centroid_drift))
+                        temporal_decay = torch.exp(-2.0 * centroid_drift)
 
-                    # Apply Fuzzy Min-Gate: take the strictest single penalty across Dirichlet and Temporal tracking
-                    stacked_decays = torch.stack([dirichlet_decay, temporal_decay], dim=0)
+                    # Apply Fuzzy Min-Gate: take the strictest single penalty across all uncertainty metrics
+                    # This prevents multiplicative double-veto shrinkage while keeping all gates active
+                    stacked_decays = torch.stack([dirichlet_decay, energy_decay, spatial_decay, temporal_decay], dim=0)
                     fuzzy_min_decay = torch.min(stacked_decays, dim=0).values
                     
                     update_weights = update_weights * fuzzy_min_decay
-                    
-                    # 4. Network Uncertainty (128D Manifold Anchor): Guarantees the sample lies on the continuous semantic manifold
-                    pred_means = model.class_latent_means[pseudo_labels]
-                    dist_sq = torch.norm(latent_x_valid.float() - pred_means, p=2, dim=1) ** 2
-                    variance = 2.0 * (model.source_density_std[pseudo_labels] ** 2) + 1e-8
-                    tier1_decay = torch.exp(-dist_sq / variance)
-                    update_weights = update_weights * tier1_decay
 
-                    # Update Latent Prototype Tracking (Only using points that survived the final veto filtering)
-                    eta = 0.05
-                    unique_classes = pseudo_labels.unique()
-                    for c in unique_classes:
-                        # Only accept points for tracking if their final weight is high enough to be considered a confident update
-                        mask = (pseudo_labels == c) & (update_weights > 0.5 * base_weights)
-                        if mask.any():
-                            c_mean = latent_x_valid[mask].float().mean(dim=0)
-                            model.drift_mu_c[c] = (1 - eta) * model.drift_mu_c[c] + eta * c_mean
+                    if use_momentum:
+                        # 2. Update Latent Prototype Tracking (Only using points that survived the veto filtering)
+                        eta = 0.05
+                        unique_classes = pseudo_labels.unique()
+                        for c in unique_classes:
+                            # Only accept points for tracking if their final weight is high enough to be considered a confident update
+                            mask = (pseudo_labels == c) & (update_weights > 0.5 * base_weights)
+                            if mask.any():
+                                c_mean = latent_x_valid[mask].float().mean(dim=0)
+                                model.drift_mu_c[c] = (1 - eta) * model.drift_mu_c[c] + eta * c_mean
                         
                     if 'temporal' in update_method:
                         H, W = proj_in.shape[2], proj_in.shape[3]
@@ -217,9 +301,9 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         model._firing_log.append(0.0)
                     
                     if update_method != 'prototype_cosine':
-                        valid_gt_mask = (selected_labels >= 0) & (selected_labels < num_classes)
-                        true_errors_rejected = (veto_mask & valid_gt_mask & (pseudo_labels != selected_labels)).sum().item()
-                        correct_labels_rejected = (veto_mask & valid_gt_mask & (pseudo_labels == selected_labels)).sum().item()
+                        valid_gt_mask = (proj_labels >= 0) & (proj_labels < num_classes)
+                        true_errors_rejected = (veto_mask & valid_gt_mask & (pseudo_labels != proj_labels)).sum().item()
+                        correct_labels_rejected = (veto_mask & valid_gt_mask & (pseudo_labels == proj_labels)).sum().item()
                         if not hasattr(model, '_veto_stats'):
                             model._veto_stats = {'true_errors_rejected': 0, 'correct_labels_rejected': 0}
                         model._veto_stats['true_errors_rejected'] += true_errors_rejected
@@ -234,7 +318,6 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                 c_update = (valid_enc[c_mask] * c_weights).mean(dim=0)
                                 
                                 if c_update.norm(p=2) > 1e-6:
-                                    c_update = F.normalize(c_update, p=2, dim=0)
                                     model.classify.weight[c].data += update_lr * c_update.to(model.classify.weight.dtype)
                                     model.classify.weight[c].data = F.normalize(model.classify.weight[c].data, p=2, dim=0)
                                     
@@ -257,16 +340,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         avg_update_magnitude = sum(model._update_magnitude_log) / len(model._update_magnitude_log)
         model._update_magnitude_log = []
         
-    return {
-        "mIoU": miou_history, 
-        "Head_mIoU": head_miou,
-        "Mid_mIoU": mid_miou,
-        "Tail_mIoU": tail_miou,
-        "Accuracy": acc_history, 
-        "IoU_per_class": iou_per_class_history, 
-        "FiringRate": avg_firing_rate, 
-        "UpdateMagnitude": avg_update_magnitude
-    }
+    return {"mIoU": miou_history, "Accuracy": acc_history, "IoU_per_class": iou_per_class_history, "FiringRate": avg_firing_rate, "UpdateMagnitude": avg_update_magnitude}
 
 
 def pretrain_pipeline(ARCH, DATA, data_dir, pretrained_path, return_trainer=False, skip_extractor=False, resume_path=None, hdc_epochs=15, extractor_epochs=60):
@@ -407,16 +481,42 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device):
                         class_latent_sums[c] += latent_valid[c_mask].sum(dim=0)
                         class_latent_counts[c] += c_mask.sum()
                         
+                        # Accumulate up to max_cluster_samples_per_class for clustering
+                        current_len = sum(len(x) for x in model.class_latents_for_clustering[c])
+                        if current_len < max_cluster_samples_per_class:
+                            c_latents = latent_valid[c_mask].cpu()
+                            model.class_latents_for_clustering[c].append(c_latents)
+                        
+                for i in range(num_rp):
+                    temp_hv = functional.normalize(F.linear(latent_valid, model.multi_rp_projs[i]))
+                    for c in range(num_classes):
+                        c_mask = labels_valid == c
+                        if c_mask.any():
+                            model.multi_rp_prototypes[i, c] += temp_hv[c_mask].sum(dim=0)
+                            
+    if len(all_magnitudes) > 0:
+        all_magnitudes = torch.cat(all_magnitudes, dim=0)
+        model.source_mean_magnitude = all_magnitudes.mean().item()
+        model.source_std_magnitude = all_magnitudes.std().item()
+    else:
+        raise ValueError("Source statistics population failed: No valid latent features found in the first 500 frames.")
+    
     counts_safe = torch.clamp(class_latent_counts, min=1).unsqueeze(1)
     model.class_latent_means = class_latent_sums / counts_safe
+    
+    # Initialize the subcluster budget ledger here!
+    print("Initializing Subcluster Budget Ledger using KMeans...")
+    model._initialize_subcluster_ledger(num_clusters=10)
+    model.multi_rp_prototypes = F.normalize(model.multi_rp_prototypes, p=2, dim=2)
     
     # Initialize Latent Anchors for Temporal Drift tracking
     model.drift_mu_0 = model.class_latent_means.clone()
     
-    # Pass 2: Calculate per-class density standard deviation and cos similarity statistics
-    all_dists_per_class = {c: [] for c in range(num_classes)}
-    all_cos_per_class = {c: [] for c in range(num_classes)}
-    
+    # Pass 2: Calculate density standard deviation and cos similarity statistics
+    all_dists = []
+    all_cos = []
+    all_energy = []
+    all_proj_norm = []
     with torch.no_grad():
         for batch_idx, batch_data in enumerate(tqdm(dataloader, desc="Populating Source Stats")):
             if batch_idx > 50:
@@ -439,6 +539,7 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device):
                 
                 pred_means = model.class_latent_means[labels_valid]
                 dists = torch.norm(latent_valid - pred_means, p=2, dim=1)
+                all_dists.append(dists.cpu())
                 
                 # Compute cos sims for Z-score calibration
                 norm_enc = F.normalize(raw_enc[valid_mask], dim=1)
@@ -446,65 +547,29 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device):
                     norm_enc = norm_enc.to(model.classify.weight.dtype)
                 logits = model.classify(norm_enc)
                 true_cos = logits[torch.arange(logits.size(0)), labels_valid]
+                all_cos.append(true_cos.cpu())
                 
-                for c in range(num_classes):
-                    c_mask = labels_valid == c
-                    if c_mask.any():
-                        all_dists_per_class[c].append(dists[c_mask].cpu())
-                        all_cos_per_class[c].append(true_cos[c_mask].cpu())
+                # Compute Free Energy anchor
+                energy = -torch.logsumexp(logits * 100.0, dim=1)
+                all_energy.append(energy.cpu())
                 
-    
-    model.source_density_std = torch.zeros(num_classes, device=device)
-    model.source_mu_cos = torch.zeros(num_classes, device=device)
-    model.source_sigma_cos = torch.zeros(num_classes, device=device)
-    
-    # We need a global fallback for classes that might not have appeared
-    global_dists = []
-    global_cos = []
-    for c in range(num_classes):
-        if len(all_dists_per_class[c]) > 0:
-            c_dists = torch.cat(all_dists_per_class[c], dim=0)
-            global_dists.append(c_dists)
-        if len(all_cos_per_class[c]) > 0:
-            c_cos = torch.cat(all_cos_per_class[c], dim=0)
-            global_cos.append(c_cos)
-            
-    if len(global_dists) == 0:
-        raise ValueError("Source statistics population failed: No valid latent features found in the first 50 frames.")
-        
-    global_dist_std = torch.cat(global_dists, dim=0).std().item()
-    global_cos_tensor = torch.cat(global_cos, dim=0)
-    global_cos_mean = global_cos_tensor.mean().item()
-    global_cos_std = global_cos_tensor.std().item()
-    
-    for c in range(num_classes):
-        if len(all_dists_per_class[c]) > 0:
-            model.source_density_std[c] = torch.cat(all_dists_per_class[c], dim=0).std().item()
-            c_cos = torch.cat(all_cos_per_class[c], dim=0)
-            model.source_mu_cos[c] = c_cos.mean().item()
-            model.source_sigma_cos[c] = c_cos.std().item()
-        else:
-            # Fallback to global statistics if class is completely missing from the first 50 frames
-            model.source_density_std[c] = global_dist_std
-            model.source_mu_cos[c] = global_cos_mean
-            model.source_sigma_cos[c] = global_cos_std
-    
-    return {
-        'source_density_std': model.source_density_std,
-        'source_mu_cos': model.source_mu_cos,
-        'source_sigma_cos': model.source_sigma_cos,
-        'drift_mu_0': model.drift_mu_0.clone().cpu()
-    }
+                # Compute ViM Orthogonal Spatial projection norm anchor
+                Q, _ = torch.linalg.qr(model.classify.weight.T)
+                proj = norm_enc @ Q @ Q.T
+                proj_norm = torch.norm(proj, p=2, dim=1)
+                all_proj_norm.append(proj_norm.cpu())
+                
+    if len(all_dists) > 0:
+        model.source_density_std = torch.cat(all_dists, dim=0).std().item()
+        cat_cos = torch.cat(all_cos, dim=0)
+        model.source_mu_cos = cat_cos.mean().item()
+        model.source_sigma_cos = cat_cos.std().item()
+        model.source_energy_mean = torch.cat(all_energy).mean().item()
+        model.source_proj_norm_mean = torch.cat(all_proj_norm).mean().item()
+    else:
+        raise ValueError("Source statistics population failed: No valid latent features found to compute density and Z-Score statistics.")
 
 def main():
-    import random
-    torch.manual_seed(42)
-    torch.cuda.manual_seed(42)
-    np.random.seed(42)
-    random.seed(42)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    
     parser = argparse.ArgumentParser(description="Test Unsupervised Updates on KITTI-C")
     parser.add_argument('--pretrain', action='store_true', help='Run pretraining on SemanticKITTI before evaluating')
     parser.add_argument('--chunked', action='store_true', help='Use D3CTTA chunked protocol: continuous adaptation across disjoint 1/7th splits instead of full independent sequences.')
@@ -558,7 +623,10 @@ def main():
             logger.info(f"Successfully pretrained model on SemanticKITTI. Optimizer state saved to {opt_path}")
             
     sev = args.severity
-    methods_to_run = ['evidential_hdc_tta']
+    methods_to_run = [
+        'core_method',
+        'variant_3'
+    ] if args.method == 'all' else [args.method]
     
     global_results_path = os.path.join(args.log_dir, 'global_results.json')
     if os.path.exists(global_results_path):
@@ -611,16 +679,29 @@ def main():
         end_idx = (i + 1) * chunk_size if i < len(CORRUPTIONS) - 1 else total_len
         chunks.append(indices[start_idx:end_idx])
 
-    base_model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES)
-    populate_source_statistics(base_model, args.kitti_dir, ARCH, DATA, device)
-    
-    source_stats_cache = {
-        'class_latent_means': base_model.class_latent_means,
-        'source_density_std': getattr(base_model, 'source_density_std', None),
-        'source_mu_cos': getattr(base_model, 'source_mu_cos', None),
-        'source_sigma_cos': getattr(base_model, 'source_sigma_cos', None),
-        'drift_mu_0': getattr(base_model, 'drift_mu_0', None)
-    }
+    if any('epistemic' in m for m in methods_to_run) or args.method == 'all':
+        base_model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES)
+        populate_source_statistics(base_model, args.kitti_dir, ARCH, DATA, device)
+        
+        source_stats_cache = {
+            'multi_rp_projs': base_model.multi_rp_projs,
+            'multi_rp_prototypes': base_model.multi_rp_prototypes,
+            'class_latent_means': base_model.class_latent_means,
+            'source_mean_magnitude': getattr(base_model, 'source_mean_magnitude', None),
+            'source_std_magnitude': getattr(base_model, 'source_std_magnitude', None),
+            'source_density_std': getattr(base_model, 'source_density_std', None),
+            'source_mu_cos': getattr(base_model, 'source_mu_cos', None),
+            'source_sigma_cos': getattr(base_model, 'source_sigma_cos', None),
+            'source_energy_mean': getattr(base_model, 'source_energy_mean', None),
+            'source_proj_norm_mean': getattr(base_model, 'source_proj_norm_mean', None),
+            'drift_mu_0': getattr(base_model, 'drift_mu_0', None),
+            'num_clusters': getattr(base_model, 'num_clusters', None),
+            'subcluster_centroids': getattr(base_model, 'subcluster_centroids', None),
+            'subcluster_update_counts': getattr(base_model, 'subcluster_update_counts', None),
+            'actual_k_per_class': getattr(base_model, 'actual_k_per_class', None)
+        }
+    else:
+        source_stats_cache = None
 
     clean_state_dict = torch.load(args.pretrained_path, map_location=device)
     

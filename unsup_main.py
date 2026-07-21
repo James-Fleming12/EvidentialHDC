@@ -62,12 +62,29 @@ def extract_metrics_from_conf_matrix(conf_matrix):
     
     miou = iou_per_class[valid_classes].mean().item()
     
+    # SemanticKITTI groupings (mapping: 2:bike, 3:bus, 4:car, 6:moto, 7:person, 10:truck, 11:driveable, 12:other_flat, 13:sidewalk, 14:terrain, 15:manmade, 16:vegetation)
+    head_mask = torch.zeros_like(valid_classes)
+    head_mask[[11, 13, 14, 15, 16]] = True
+    head_mask = head_mask & valid_classes
+    
+    mid_mask = torch.zeros_like(valid_classes)
+    mid_mask[[4, 12]] = True
+    mid_mask = mid_mask & valid_classes
+    
+    tail_mask = torch.zeros_like(valid_classes)
+    tail_mask[[2, 3, 6, 7, 10]] = True
+    tail_mask = tail_mask & valid_classes
+    
+    head_miou = iou_per_class[head_mask].mean().item() if head_mask.any() else 0.0
+    mid_miou = iou_per_class[mid_mask].mean().item() if mid_mask.any() else 0.0
+    tail_miou = iou_per_class[tail_mask].mean().item() if tail_mask.any() else 0.0
+    
     # Calculate overall accuracy excluding class 0
     total_correct_valid = tp[1:].sum().item()
     total_samples_valid = conf_matrix[1:, :].sum().item()
     overall_acc = total_correct_valid / (total_samples_valid + 1e-6)
     
-    return miou, overall_acc, iou_per_class.cpu().tolist()
+    return miou, head_miou, mid_miou, tail_miou, overall_acc, iou_per_class.cpu().tolist()
 
 def load_hdc_model(path):
     print(f"Loading pretrained HDC model from {path}...")

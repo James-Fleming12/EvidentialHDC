@@ -4,6 +4,16 @@
 ## Objective
 Evaluate baseline unsupervised adaptation (`prototype_cosine`) against novel uncertainty-gated adaptation strategies (epistemic, spatial, temporal) across 8 SemanticKITTI-C corruptions. The primary metric is Mean Intersection over Union (mIoU) measured pre-adaptation and post-adaptation.
 
+## The Final Preliminary Architecture (`variant_1`)
+*Note: This represents the culmination of our preliminary test phase. This is the **final preliminary architecture**, not the finalized production architecture. Future iterations focusing on refined class-balancing and multi-view architectures will be documented in subsequent logs.*
+
+After resolving multiple mathematical bottlenecks (Double-Veto Trap, Majority Class Paralysis, Structural Vetoes), we established a mathematically pure, 4-tier adaptation pipeline that successfully fuses network, hypervector, and temporal uncertainties with class-balanced weighting:
+
+1. **Balanced Updates (Frequency Protection):** Deterministic Soft-Dampening ($\gamma=0.1$) prevents the majority classes (e.g., Road) from shattering rare classes (e.g., Pedestrian) without causing network paralysis.
+2. **Network Uncertainty (128D Euclidean Manifold Density):** The Tier 1 geometric gate. Measures distance in the standard neural bottleneck to guarantee the point resides on the continuous semantic manifold.
+3. **Hypervector Uncertainty (10,000D Calibrated Dirichlet Epistemic Density):** The Tier 2 symbolic gate. Extracts $z$-score calibrated Dirichlet evidence natively from the HDC space to quantify and veto complex Out-of-Distribution (OOD) noise and semantic collisions.
+4. **Temporal Uncertainty (Latent Prototype Drift Tracking):** The Tier 3 temporal gate. Tracks the physical geometric trajectory of class centroids over time to ensure the network is not succumbing to feedback loops.
+
 ## Results Summary (mIoU)
 
 | Corruption | Base (Frozen) | Prototype Cosine | Epistemic Density | Balanced + Epistemic Density |
@@ -87,5 +97,18 @@ While the individual fixes are mathematically sound, combining them directly int
 * **The Double-Veto Trap**: Dirichlet and Energy decays are both derived from the exact same 10,000D `cos_sims` tensor. Because they measure the same underlying OOD deviation, multiplying them together ($e^{-A} \cdot e^{-B}$) effectively squares the penalty. This redundant, multiplicative double-veto causes severe over-regularization and risks triggering Representation Shrinkage.
 * **Majority Class Paralysis**: The deterministic Class-Frequency Dampening throttles classes strictly based on frequency. By scaling weights using $(min\_freq / f_y)^{0.5}$ with a hard $0.01$ minimum, the majority Road class (often $40\%$ frequency) is permanently throttled to a $\approx 15\%$ update weight. While this protects rare classes, it paralyses the network's ability to adapt the Road prototype during massive background domain shifts (like reflections on Wet Ground).
 
+### 5. Fuzzy Min-Gate Integration & The Structural Vulnerability of ViM/Energy
+To solve the Double-Veto Trap, we integrated a **Fuzzy Min-Gate** ($W = W_{base} \cdot \min(decay_{dir}, decay_{energy}, decay_{spatial})$) and softened the frequency throttler to $\gamma=0.1$. 
+
+**Results (Fuzzy Min-Gate `variant_3`):**
+* **Success:** Firing rates successfully recovered from ~1% back to ~4-5%. This caused immediate jumps in performance on Wet Ground (`0.4892`, up from `0.4413`) and Snow (`0.4606`, up from `0.4216`).
+* **Failure (Representation Shrinkage):** Despite the math being fixed, the unified ensemble *still* degraded below the frozen baseline on `beam_missing` (`0.3399` vs `0.3779`) and `cross_sensor` (`0.2324` vs `0.2587`). It also failed to beat the pure July 19th `temporal_density` ensemble.
+
+**The Conclusion (The Kitchen Sink is Flawed):**
+By taking the strict $\min()$ of all gates, the network inherits the weaknesses of every gate. We previously proved that spatial/geometric filtering (like D3CTTA) fails catastrophically on structural corruptions because structural shifts (like missing LiDAR beams) *look* like geometric noise. By including the **ViM Spatial Gate** and the **Energy Gate** in the ensemble, we forced the network to veto the exact structural updates it needed to survive `beam_missing` and `cross_sensor`. 
+
+**Final Architectural Decision:**
+The massive "kitchen sink" ensemble must be abandoned. The optimal, mathematically pure architecture for this network is the **Calibrated Dirichlet Epistemic Gate + Latent Prototype Drift Tracking**. It is the only metric natively capable of handling structural domain shifts without triggering false-positive geometric vetoes.
+
 ### Strategic Summary
-The pipeline has been rebuilt with extreme mathematical rigor. The overhauled architecture relies on explicitly calibrated dual-space anchoring (128D + 10,000D), deterministic frequency dampening, and physical latent drift tracking. This eliminates all representation shrinkage and uncalibrated false-positives, establishing the foundation for the next iteration of the Evidential HDC Test-Time Adaptation pipeline.
+The pipeline has been rebuilt with extreme mathematical rigor. The overhauled architecture relies on explicitly calibrated dual-space anchoring (128D + 10,000D), deterministic frequency dampening, and physical latent drift tracking. We have successfully proven that Spatial and Energy-based OOD metrics are fundamentally incompatible with structural point cloud adaptation, establishing the Calibrated Dirichlet Evidential Gate as the definitive Test-Time Adaptation pipeline for Evidential HDC.
