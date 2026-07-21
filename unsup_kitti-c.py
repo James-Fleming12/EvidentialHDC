@@ -40,6 +40,9 @@ CONFIG_LABELS_KITTI_ALL = "config/labels/semantic-kitti-all.yaml"  # Standard 17
 
 def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None):
     miou_history = []
+    head_miou_history = []
+    mid_miou_history = []
+    tail_miou_history = []
     acc_history = []
     iou_per_class_history = []
     num_classes = model.num_classes
@@ -96,6 +99,9 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                 
             cumulative_miou, head_miou, mid_miou, tail_miou, cumulative_acc, cumulative_iou_per_class = extract_metrics_from_conf_matrix(cumulative_confusion_matrix)
             miou_history.append(cumulative_miou)
+            head_miou_history.append(head_miou)
+            mid_miou_history.append(mid_miou)
+            tail_miou_history.append(tail_miou)
             acc_history.append(cumulative_acc)
             iou_per_class_history.append(cumulative_iou_per_class)
             
@@ -259,9 +265,9 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         
     return {
         "mIoU": miou_history, 
-        "Head_mIoU": head_miou,
-        "Mid_mIoU": mid_miou,
-        "Tail_mIoU": tail_miou,
+        "Head_mIoU": head_miou_history,
+        "Mid_mIoU": mid_miou_history,
+        "Tail_mIoU": tail_miou_history,
         "Accuracy": acc_history, 
         "IoU_per_class": iou_per_class_history, 
         "FiringRate": avg_firing_rate, 
