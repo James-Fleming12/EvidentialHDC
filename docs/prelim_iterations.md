@@ -64,7 +64,7 @@ While `balanced_margin` dynamically limits updates on high-confidence (common cl
    - **`balanced_temporal_density`** is the absolute best performer across the board, establishing the new robust state-of-the-art for our architecture.
    - Adding Multiple Random Projections (`multi_rp`) to the temporal method actually caused a very slight drop in accuracy, indicating that the multi-RP projection over-regularized the robust Temporal + Epistemic Density signal.
 
-## Final Gate Architecture & Critical Flaw Resolution (July 20, 2026)
+## Overhauled Gate Architecture & Critical Flaw Resolution (July 20, 2026)
 
 **Objective**: Following initial ablation failures, we ran isolated tests on the HDC metrics (Dirichlet, Energy) and discovered a catastrophic drop in performance. We initially attributed this to a "Dimensionality Gap", but further review identified the true root causes and led to a complete, rigorous pipeline overhaul.
 
@@ -82,5 +82,10 @@ While `balanced_margin` dynamically limits updates on high-confidence (common cl
 * **Stochastic Margins**: Probabilistic Bernoulli dropping ($p=0.5$) introduced high batch variance. We replaced this with **Deterministic Class-Frequency Soft-Dampening**, updating weights using an inverse-frequency EMA $(\min f_k / f_{\hat{y}})^\gamma$.
 * **Temporal Momentum Flaw**: Tracking gradient loss EMA for temporal consistency falsely vetoed updates during valid physical maneuvers (e.g. sharp turns). We replaced this with **Latent Prototype Drift Tracking**, directly measuring if target adaptation is dragging the 128D class centroid away from its clean source anchor.
 
+### 4. Identified Architectural Bottlenecks in the Ensembled "Core Method"
+While the individual fixes are mathematically sound, combining them directly into a unified `core_method` introduces two restrictive bottlenecks:
+* **The Double-Veto Trap**: Dirichlet and Energy decays are both derived from the exact same 10,000D `cos_sims` tensor. Because they measure the same underlying OOD deviation, multiplying them together ($e^{-A} \cdot e^{-B}$) effectively squares the penalty. This redundant, multiplicative double-veto causes severe over-regularization and risks triggering Representation Shrinkage.
+* **Majority Class Paralysis**: The deterministic Class-Frequency Dampening throttles classes strictly based on frequency. By scaling weights using $(min\_freq / f_y)^{0.5}$ with a hard $0.01$ minimum, the majority Road class (often $40\%$ frequency) is permanently throttled to a $\approx 15\%$ update weight. While this protects rare classes, it paralyses the network's ability to adapt the Road prototype during massive background domain shifts (like reflections on Wet Ground).
+
 ### Strategic Summary
-The pipeline has been rebuilt with extreme mathematical rigor. The final architecture relies on explicitly calibrated dual-space anchoring (128D + 10,000D), deterministic frequency dampening, and physical latent drift tracking. This eliminates all representation shrinkage and uncalibrated false-positives, establishing the definitive Test-Time Adaptation pipeline for Evidential HDC.
+The pipeline has been rebuilt with extreme mathematical rigor. The overhauled architecture relies on explicitly calibrated dual-space anchoring (128D + 10,000D), deterministic frequency dampening, and physical latent drift tracking. This eliminates all representation shrinkage and uncalibrated false-positives, establishing the foundation for the next iteration of the Evidential HDC Test-Time Adaptation pipeline.
