@@ -135,14 +135,22 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         min_freq = torch.clamp(model.class_freq_ema.min(), min=0.01)
                         f_y = torch.clamp(model.class_freq_ema[pseudo_labels], min=0.01)
                         
-                        # Inverse Frequency Soft Weighting (gamma = 0.5)
-                        balance_weights = (min_freq / f_y) ** 0.5
+                        # Inverse Frequency Soft Weighting (gamma = 0.1 softened to prevent majority class paralysis)
+                        balance_weights = (min_freq / f_y) ** 0.1
                         update_weights = update_weights * balance_weights
                         
                     use_dirichlet = 'dirichlet_density' in update_method or update_method in ['core_method', 'variant_1', 'variant_2', 'variant_3']
                     use_energy = 'energy_density' in update_method or update_method in ['core_method', 'variant_1', 'variant_2', 'variant_3']
                     use_momentum = 'momentum_veto' in update_method or update_method in ['variant_1', 'variant_3']
                     use_spatial = 'orthogonal_spatial_veto' in update_method or update_method in ['variant_2', 'variant_3']
+                    
+                    # Gather all exponential decay factors to apply Fuzzy Min-Gate
+                    # Default is 1.0 (no decay)
+                    N_samples = latent_x_valid.size(0)
+                    dirichlet_decay = torch.ones(N_samples, device=device)
+                    energy_decay = torch.ones(N_samples, device=device)
+                    spatial_decay = torch.ones(N_samples, device=device)
+                    temporal_decay = torch.ones(N_samples, device=device)
                     
                     if use_dirichlet:
                         # Z-Score Calibrated Dirichlet Evidence
@@ -157,8 +165,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         
                         # Soft Veto: High uncertainty scales down update weight
                         u_threshold = 0.5 # Restored empirical threshold to allow proper veto scaling
-                        decay = torch.exp(-2.0 * torch.relu(uncertainty - u_threshold))
-                        update_weights = update_weights * decay
+                        dirichlet_decay = torch.exp(-2.0 * torch.relu(uncertainty - u_threshold))
                         
                     if use_energy:
                         # Free Energy = -T * logsumexp(logits / T)
@@ -166,8 +173,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         
                         # Soft Veto: if energy is significantly higher than clean anchor (less negative)
                         energy_diff = torch.relu(energy - model.source_energy_mean)
-                        decay = torch.exp(-0.693 * (energy_diff / (abs(model.source_energy_mean) * 0.1 + 1e-5)))
-                        update_weights = update_weights * decay
+                        energy_decay = torch.exp(-0.693 * (energy_diff / (abs(model.source_energy_mean) * 0.1 + 1e-5)))
                         
                     elif 'ledger' in update_method:
                         # Parse the margin type from the method string
@@ -230,8 +236,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         # Veto if the projection norm drops significantly below the clean source anchor
                         # (Meaning the point's geometry has shifted heavily into the orthogonal null space)
                         proj_drop = torch.relu(model.source_proj_norm_mean - proj_norm)
-                        decay = torch.exp(-10.0 * (proj_drop / (model.source_proj_norm_mean + 1e-5)))
-                        update_weights = update_weights * decay
+                        spatial_decay = torch.exp(-10.0 * (proj_drop / (model.source_proj_norm_mean + 1e-5)))
                         
                     if use_momentum:
                         # Replaced Gradient momentum_veto with Latent Prototype Drift Tracking
@@ -243,8 +248,15 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         
                         # W_temporal = exp(-lambda * ReLU(centroid_drift))
                         temporal_decay = torch.exp(-2.0 * centroid_drift)
-                        update_weights = update_weights * temporal_decay
 
+                    # Apply Fuzzy Min-Gate: take the strictest single penalty across all uncertainty metrics
+                    # This prevents multiplicative double-veto shrinkage while keeping all gates active
+                    stacked_decays = torch.stack([dirichlet_decay, energy_decay, spatial_decay, temporal_decay], dim=0)
+                    fuzzy_min_decay = torch.min(stacked_decays, dim=0).values
+                    
+                    update_weights = update_weights * fuzzy_min_decay
+
+                    if use_momentum:
                         # 2. Update Latent Prototype Tracking (Only using points that survived the veto filtering)
                         eta = 0.05
                         unique_classes = pseudo_labels.unique()
