@@ -561,15 +561,21 @@ def main():
     methods_to_run = ['evidential_hdc_tta']
     
     global_results_path = os.path.join(args.log_dir, 'global_results.json')
+    global_results = None
     if os.path.exists(global_results_path):
-        with open(global_results_path, 'r') as f:
-            global_results = json.load(f)
+        try:
+            with open(global_results_path, 'r') as f:
+                global_results = json.load(f)
+        except json.JSONDecodeError:
+            global_results = None
+            
+    if global_results is not None:
         # Ensure the dicts for the current methods exist in case they were never run
         for m in methods_to_run:
-            if m not in global_results['mIoU']:
-                global_results['mIoU'][m] = {c: {} for c in CORRUPTIONS}
-            if m not in global_results['Accuracy']:
-                global_results['Accuracy'][m] = {c: {} for c in CORRUPTIONS}
+            if m not in global_results.get('mIoU', {}):
+                global_results.setdefault('mIoU', {})[m] = {c: {} for c in CORRUPTIONS}
+            if m not in global_results.get('Accuracy', {}):
+                global_results.setdefault('Accuracy', {})[m] = {c: {} for c in CORRUPTIONS}
     else:
         global_results = {
             'mIoU': {m: {c: {} for c in CORRUPTIONS} for m in methods_to_run},
