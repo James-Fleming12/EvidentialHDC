@@ -790,7 +790,10 @@ def main():
                 global_results['mIoU'][current_method][ctype][sev] = (initial_miou, final_miou)
                 global_results['Accuracy'][current_method][ctype][sev] = (initial_acc, final_acc)
                 
-                logger.info(f"Result for {ctype}-{sev}: Initial mIoU={initial_miou:.4f} -> Final={final_miou:.4f}, Initial Acc={initial_acc:.4f} -> Final={final_acc:.4f}{firing_rate_str}")
+                initial_tail = init_metrics["Tail_mIoU"][-1] if current_method != 'frozen' else metrics["Tail_mIoU"][0]
+                final_tail = final_metrics["Tail_mIoU"][-1] if current_method != 'frozen' else metrics["Tail_mIoU"][-1]
+                
+                logger.info(f"Result for {ctype}-{sev}: Initial mIoU={initial_miou:.4f} -> Final={final_miou:.4f} (Tail: {initial_tail:.4f} -> {final_tail:.4f}), Acc={initial_acc:.4f} -> {final_acc:.4f}{firing_rate_str}")
                 suffix = f"_{current_method}"
                 
                 traj_json_path = os.path.join(args.log_dir, f'traj_{ctype}_{sev}{suffix}.json')
