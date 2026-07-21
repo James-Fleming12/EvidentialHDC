@@ -662,22 +662,11 @@ def main():
     # Initialize the model exactly ONCE to be shared
     model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES)
     if source_stats_cache is not None:
-        model.multi_rp_projs = source_stats_cache['multi_rp_projs']
-        model.multi_rp_prototypes = source_stats_cache['multi_rp_prototypes']
         model.class_latent_means = source_stats_cache['class_latent_means']
-        model.source_mean_magnitude = source_stats_cache['source_mean_magnitude']
-        model.source_std_magnitude = source_stats_cache['source_std_magnitude']
         model.source_density_std = source_stats_cache['source_density_std']
         model.source_mu_cos = source_stats_cache['source_mu_cos']
         model.source_sigma_cos = source_stats_cache['source_sigma_cos']
-        model.source_energy_mean = source_stats_cache['source_energy_mean']
-        model.source_proj_norm_mean = source_stats_cache['source_proj_norm_mean']
         model.drift_mu_0 = source_stats_cache['drift_mu_0']
-        if source_stats_cache['num_clusters'] is not None:
-            model.num_clusters = source_stats_cache['num_clusters']
-            model.subcluster_centroids = source_stats_cache['subcluster_centroids']
-            model.subcluster_update_counts = source_stats_cache['subcluster_update_counts']
-            model.actual_k_per_class = source_stats_cache['actual_k_per_class']
 
     for current_method in methods_to_run:
         logger.info(f"=========================================")
