@@ -74,10 +74,16 @@ We ran a grid sweep over `test_1b` (Step Magnitude Throttles) and `test_1c` (Par
    - `coherence` (L2 norm of the batch) successfully constrained the gradients but did so uniformly (scaling all steps by ~0.65). This slowed the `wet_ground` destruction slightly but failed to selectively punish noisy single-point updates.
 3. **The Failure of Statistical Shrinkage (Test 1c):** Shrinking the calibration bounds (`0.75` and `0.5`) had almost zero effect on `wet_ground` performance. The reflections geometrically lie inside the core road manifold; statistical gating cannot distinguish them.
 
-**The New Hypothesis & Solution:**
-We must throttle the step magnitude by **mass**, not by raw evidence or uniform coherence. If a class only fires on 1 point (mass $\approx 1.0$), it should receive a tiny fraction of the learning rate. If it fires on 10+ points, it should receive the full unit step. We propose a **`weight_sum` throttle**:
-`g = min(1.0, update_weights[c_mask].sum().item() / 10.0)`
-This preserves the C2 directional normalization while ensuring that phantom single-point reflections cannot drag the prototype.
+**The New Hypothesis & Solution (Morning Update: July 22):**
+The initial assumption that the -3.28% `wet_ground` regression was entirely due to tail-class shattering (bicyclist rotating 60 degrees on isolated noise) was incomplete. While the tail *did* shatter due to the C2 fix granting unit steps to 0.12%-confidence noise, the bulk of the mIoU drop must have stemmed from high-mass head classes like Road drifting on large specular puddles. 
+We tested three new mechanisms to address the accumulation of this drift:
+1. **`count_throttle` (The NO-OP):** Throttling by mass (`min(1.0, count / 10.0)`) failed to stop `wet_ground` degradation (mIoU 0.3916). Puddle reflections on `wet_ground` generate hundreds of points per frame, easily clearing the throttle threshold. Mass throttling is blind to dense, coherent false-positives.
+2. **`rotation_cap` (The Over-Correction):** A hard 10-degree rotation cap perfectly halted the 60-degree runaways on `wet_ground`, but actively destroyed our previous `snow` tail rescue (mIoU dropped from 0.4840 $\rightarrow$ 0.3862). To successfully adapt to severe `snow`, tail prototypes organically need to rotate up to 40 degrees. 
+3. **`anchor_spring` (The Silent PyTorch Bug):** A mechanism to gently pull drifting prototypes back to their initialization (`w_t = (1-k)*w_t + k*w_0`) yielded results mathematically identical to the baseline. This exposed a critical PyTorch assignment bug: `model.classify.weight[c].data = ...` silently replaces a temporary view's pointer rather than modifying the tensor in-place. 
+   - **Crucially, this meant our post-step `F.normalize()` had also been silently failing for the entire project.** Prototypes were never re-normalized, causing their magnitudes to grow unbounded over thousands of frames and systematically shrinking the effective angular step size of the $0.01$ learning rate.
+
+**Immediate Action:** 
+We have patched the script to use explicit in-place memory copies (`.data.copy_()`) for all tensor updates. We have widened the `rotation_cap` to 40 degrees and tuned `anchor_spring` to `k=0.01` (1%). We are re-running the sweep to observe the true impact of the spring mechanism.
 
 ### Part 2: Structural Tail Rescue
 Why did `beam_missing` head classes adapt while the tail didn't? Single-frame adaptation cannot recover geometry that is completely missing (e.g. absent scan lines). 
