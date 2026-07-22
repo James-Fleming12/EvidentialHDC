@@ -148,14 +148,18 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     f_y = torch.clamp(model.class_freq_ema[pseudo_labels], min=0.01)
                     
                     # 1. Balanced Updates: Inverse Frequency Soft Weighting (gamma = 0.1)
-                    balance_weights = (min_freq / f_y) ** 0.1
+                    gamma = float(test_1b) if test_1b.replace('.','',1).isdigit() else 0.1
+                    balance_weights = (min_freq / f_y) ** gamma
                     update_weights = update_weights * balance_weights
                     
-                    N_samples = latent_x_valid.size(0)
-                    dirichlet_decay = torch.ones(N_samples, device=device)
-                    temporal_decay = torch.ones(N_samples, device=device)
+                    # 2. Network Uncertainty (128D Manifold Anchor)
+                    pred_means = model.class_latent_means[pseudo_labels]
+                    dist_sq = torch.norm(latent_x_valid.float() - pred_means, p=2, dim=1) ** 2
+                    variance = 2.0 * (model.source_density_std[pseudo_labels] ** 2) + 1e-8
+                    tier1_decay = torch.exp(-dist_sq / variance)
+                    update_weights = update_weights * tier1_decay
                     
-                    # 2. Hypervector Uncertainty: Z-Score Calibrated Dirichlet Evidence
+                    # 3. Hypervector Uncertainty: Z-Score Calibrated Dirichlet Evidence
                     z_c = (cos_sims - active_mu_cos) / (active_sigma_cos + 1e-8)
                     gamma_sharpness = 5.0
                     evidence = F.softplus(gamma_sharpness * z_c)
@@ -166,55 +170,10 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     # Soft Veto: High uncertainty scales down update weight
                     u_threshold = 0.5 
                     dirichlet_decay = torch.exp(-2.0 * torch.relu(uncertainty - u_threshold))
+                    update_weights = update_weights * dirichlet_decay
                     
-                    # 3. Temporal Uncertainty: Latent Prototype Drift Tracking
-                    if not hasattr(model, 'drift_mu_c'):
-                        model.drift_mu_c = model.class_latent_means.clone().to(device)
-                        
-                    # Drift Divergence Gate (Measure global drift of the centroid from its anchor)
-                    centroid_drift = torch.norm(model.drift_mu_c[pseudo_labels] - model.drift_mu_0[pseudo_labels], p=2, dim=1)
-                    temporal_decay = torch.exp(-2.0 * centroid_drift)
-
-                    # Apply Fuzzy Min-Gate: take the strictest single penalty across Dirichlet and Temporal tracking
-                    stacked_decays = torch.stack([dirichlet_decay, temporal_decay], dim=0)
-                    fuzzy_min_decay = torch.min(stacked_decays, dim=0).values
-                    
-                    update_weights = update_weights * fuzzy_min_decay
-                    
-                    # 4. Network Uncertainty (128D Manifold Anchor): Guarantees the sample lies on the continuous semantic manifold
-                    pred_means = model.class_latent_means[pseudo_labels]
-                    dist_sq = torch.norm(latent_x_valid.float() - pred_means, p=2, dim=1) ** 2
-                    variance = 2.0 * (model.source_density_std[pseudo_labels] ** 2) + 1e-8
-                    tier1_decay = torch.exp(-dist_sq / variance)
-                    update_weights = update_weights * tier1_decay
-
-                    # Update Latent Prototype Tracking (Only using points that survived the final veto filtering)
-                    eta = 0.05
-                    unique_classes = pseudo_labels.unique()
-                    for c in unique_classes:
-                        # Only accept points for tracking if their final weight is high enough to be considered a confident update
-                        mask = (pseudo_labels == c) & (update_weights > 0.5 * base_weights)
-                        if mask.any():
-                            c_mean = latent_x_valid[mask].float().mean(dim=0)
-                            model.drift_mu_c[c] = (1 - eta) * model.drift_mu_c[c] + eta * c_mean
-                        
-                    if 'temporal' in update_method:
-                        H, W = proj_in.shape[2], proj_in.shape[3]
-                        
-                        curr_preds_full = torch.full((H * W,), -1, dtype=torch.long, device=device)
-                        curr_preds_full[indices] = pseudo_labels
-                        curr_preds_2d = curr_preds_full.reshape(1, 1, H, W).float()
-                        
-                        if prev_preds_2d is not None:
-                            unfolded_prev = F.unfold(prev_preds_2d, kernel_size=5, padding=2).squeeze(0).long()
-                            prev_neighborhoods = unfolded_prev[:, indices] 
-                            valid_past = (prev_neighborhoods != -1).any(dim=0)
-                            label_matched = (prev_neighborhoods == pseudo_labels.unsqueeze(0)).any(dim=0)
-                            conflict = valid_past & (~label_matched)
-                            # Hard filter for temporal conflict: drops weight to 0.0
-                            update_weights = update_weights * (~conflict).float()
-                            
-                        prev_preds_2d = curr_preds_2d.clone()
+                    # 4. Temporal Uncertainty (Latent Prototype Drift Tracking)
+                    # Handled by anchor_spring inside the prototype update block!
                         
                     # Calculate tracking metrics
                     # We define a "veto" as any point where the uncertainty method cut the base confidence by >50%
@@ -278,10 +237,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                     elif test_1b == 'coherence':
                                         g = (valid_enc[c_mask].mean(dim=0).norm(p=2).item())
                                         step_mag = step_mag * g
-                                    elif test_1b == 'count_throttle':
-                                        g = min(1.0, c_mask.sum().item() / 10.0)
-                                        step_mag = step_mag * g
-                                    elif test_1b == 'rotation_cap':
+                                    if update_method == 'evidential_hdc_tta':
                                         if hasattr(model, 'initial_classify_weights'):
                                             w_0 = F.normalize(model.initial_classify_weights[c], dim=0)
                                             w_t = F.normalize(model.classify.weight[c], dim=0)
@@ -293,7 +249,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                                 
                                     model.classify.weight[c].data += step_mag * c_update.to(model.classify.weight.dtype)
                                     
-                                    if test_1b == 'anchor_spring' and hasattr(model, 'initial_classify_weights'):
+                                    if update_method == 'evidential_hdc_tta' and hasattr(model, 'initial_classify_weights'):
                                         spring_k = 0.01
                                         w_0 = F.normalize(model.initial_classify_weights[c], dim=0).to(model.classify.weight.device)
                                         model.classify.weight[c].data.copy_((1 - spring_k) * model.classify.weight[c].data + spring_k * w_0)
