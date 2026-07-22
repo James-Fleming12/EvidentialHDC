@@ -230,7 +230,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                 if c_update.norm(p=2) > 1e-6:
                                     c_update = F.normalize(c_update, p=2, dim=0)
                                     
-                                    step_mag = update_lr
+                                    step_mag = update_lr * update_weights[c_mask].mean().item()
+                                    
                                     if test_1b == 'mean_evidence':
                                         g = evidence[c_mask, c].mean().item()
                                         step_mag = step_mag * g
