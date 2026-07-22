@@ -619,8 +619,8 @@ def main():
     parser.add_argument('--kitti_dir', type=str, default='/mnt/alpha/jmfleming/KITTI', help='Path to SemanticKITTI dataset for pretraining')
     parser.add_argument('--kittic_dir', type=str, default='/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C', help='Path to real SemanticKITTI-C dataset')
     parser.add_argument('--corruptions', type=str, default='snow,beam_missing,wet_ground', help='Comma separated list of corruptions to test. Defaults to diagnostic panel.')
-    parser.add_argument('--test_1b', type=str, default='none', choices=['none', 'mean_evidence', 'coherence'], help='Test 1b: Evidence-conditioned step magnitude')
-    parser.add_argument('--test_1c', type=float, default=1.0, help='Test 1c: Partial calibration shrinkage lambda [0.0 to 1.0]')
+    parser.add_argument('--test_1b', type=str, default='none', help='Test 1b: Comma-separated list of step magnitudes (e.g., none,mean_evidence,coherence)')
+    parser.add_argument('--test_1c', type=str, default='1.0', help='Test 1c: Comma-separated list of shrinkage lambdas (e.g., 1.0,0.75,0.50)')
     args = parser.parse_args()
 
     if args.continue_epochs > 0:
@@ -668,17 +668,31 @@ def main():
         except json.JSONDecodeError:
             global_results = None
             
+    test_1b_list = args.test_1b.split(',')
+    test_1c_list = [float(x) for x in args.test_1c.split(',')]
+    
+    configs_to_run = []
+    for m in methods_to_run:
+        if m == 'frozen':
+            configs_to_run.append((m, 'none', 1.0))
+        else:
+            for tb in test_1b_list:
+                for tc in test_1c_list:
+                    configs_to_run.append((m, tb, tc))
+    
+    full_method_names = [f"{m}_1b_{tb}_1c_{tc}" if m != 'frozen' else 'frozen' for (m, tb, tc) in configs_to_run]
+                    
     if global_results is not None:
         # Ensure the dicts for the current methods exist in case they were never run
-        for m in methods_to_run:
+        for m in full_method_names:
             if m not in global_results.get('mIoU', {}):
                 global_results.setdefault('mIoU', {})[m] = {c: {} for c in CORRUPTIONS}
             if m not in global_results.get('Accuracy', {}):
                 global_results.setdefault('Accuracy', {})[m] = {c: {} for c in CORRUPTIONS}
     else:
         global_results = {
-            'mIoU': {m: {c: {} for c in CORRUPTIONS} for m in methods_to_run},
-            'Accuracy': {m: {c: {} for c in CORRUPTIONS} for m in methods_to_run},
+            'mIoU': {m: {c: {} for c in CORRUPTIONS} for m in full_method_names},
+            'Accuracy': {m: {c: {} for c in CORRUPTIONS} for m in full_method_names},
         }
     
     shared_init_metrics = {}
@@ -767,9 +781,9 @@ def main():
         model.source_sigma_cos = source_stats_cache['source_sigma_cos']
         model.drift_mu_0 = source_stats_cache['drift_mu_0']
 
-    for current_method in methods_to_run:
+    for (current_method, t1b, t1c), full_method_name in zip(configs_to_run, full_method_names):
         logger.info(f"=========================================")
-        logger.info(f"Starting Evaluation for Method: {current_method}")
+        logger.info(f"Starting Evaluation for Method: {full_method_name}")
         logger.info(f"=========================================")
         
         active_corruptions = CORRUPTIONS
@@ -827,7 +841,7 @@ def main():
                     # Pass 1: True Initial (Frozen on chunk)
                     if (ctype, sev) not in shared_init_metrics:
                         logger.info("  -> Pass 1: Computing True Initial metrics (Frozen)")
-                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b=args.test_1b, test_1c=args.test_1c)
+                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b='none', test_1c=1.0)
                         shared_init_metrics[(ctype, sev)] = init_metrics
                     else:
                         logger.info("  -> Pass 1: Reusing cached True Initial metrics (Frozen)")
@@ -837,14 +851,14 @@ def main():
                     if current_method != 'frozen':
                         logger.info("  -> Pass 2: Adapting model weights")
                         eval_model.train()
-                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, test_1b=args.test_1b, test_1c=args.test_1c)
+                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c)
                     else:
                         adapt_metrics = init_metrics
                         
                     # Pass 3: True Final (Frozen on chunk using adapted weights)
                     logger.info("  -> Pass 3: Computing True Final metrics (Frozen)")
                     eval_model.eval()
-                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b=args.test_1b, test_1c=args.test_1c)
+                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c)
                     
                     # We only care about the absolute end of the frozen evaluations for the sequence
                     metrics = adapt_metrics  # Just for the trajectory json
@@ -888,14 +902,14 @@ def main():
                 results_miou[ctype][sev] = (initial_miou, final_miou)
                 results_acc[ctype][sev] = (initial_acc, final_acc)
                 
-                global_results['mIoU'][current_method][ctype][sev] = (initial_miou, final_miou)
-                global_results['Accuracy'][current_method][ctype][sev] = (initial_acc, final_acc)
+                global_results['mIoU'][full_method_name][ctype][sev] = (initial_miou, final_miou)
+                global_results['Accuracy'][full_method_name][ctype][sev] = (initial_acc, final_acc)
                 
                 initial_tail = init_metrics["Tail_mIoU"][-1] if current_method != 'frozen' else metrics["Tail_mIoU"][0]
                 final_tail = final_metrics["Tail_mIoU"][-1] if current_method != 'frozen' else metrics["Tail_mIoU"][-1]
                 
                 logger.info(f"Result for {ctype}-{sev}: Initial mIoU={initial_miou:.4f} -> Final={final_miou:.4f} (Tail: {initial_tail:.4f} -> {final_tail:.4f}), Acc={initial_acc:.4f} -> {final_acc:.4f}{firing_rate_str}")
-                suffix = f"_{current_method}"
+                suffix = f"_{full_method_name}"
                 
                 traj_json_path = os.path.join(args.log_dir, f'traj_{ctype}_{sev}{suffix}.json')
                 with open(traj_json_path, 'w') as f:
