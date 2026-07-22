@@ -38,7 +38,7 @@ SEVERITY_MAP = {1: 'light', 2: 'moderate', 3: 'heavy', 4: 'extreme'}
 CONFIG_ARCH = "config/arch/senet-2048p.yml"
 CONFIG_LABELS_KITTI_ALL = "config/labels/semantic-kitti-all.yaml"  # Standard 17 classes
 
-def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None):
+def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, test_1b='none', test_1c=1.0):
     miou_history = []
     head_miou_history = []
     mid_miou_history = []
@@ -50,6 +50,12 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
     
     prev_preds_2d = None
 
+    # Test 1c: Partial Calibration (Shrinkage)
+    if not eval_only and test_1c < 1.0:
+        global_mu = model.source_mu_cos.mean()
+        global_sigma = model.source_sigma_cos.mean()
+        model.source_mu_cos = test_1c * model.source_mu_cos + (1 - test_1c) * global_mu
+        model.source_sigma_cos = test_1c * model.source_sigma_cos + (1 - test_1c) * global_sigma
 
     for batch_idx, batch_data in enumerate(tqdm(target_dataloader, desc="Adapting", leave=False)):
         if dry_run and batch_idx >= 2:
@@ -261,6 +267,14 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                 
                                 if c_update.norm(p=2) > 1e-6:
                                     c_update = F.normalize(c_update, p=2, dim=0)
+                                    
+                                    if test_1b == 'mean_evidence':
+                                        g = evidence[c_mask, c].mean().item()
+                                        c_update = c_update * g
+                                    elif test_1b == 'coherence':
+                                        g = (valid_enc[c_mask].mean(dim=0).norm(p=2).item())
+                                        c_update = c_update * g
+                                        
                                     model.classify.weight[c].data += update_lr * c_update.to(model.classify.weight.dtype)
                                     model.classify.weight[c].data = F.normalize(model.classify.weight[c].data, p=2, dim=0)
                                     
@@ -604,7 +618,9 @@ def main():
     parser.add_argument('--severity', type=int, default=3, help='Severity level for corruptions')
     parser.add_argument('--kitti_dir', type=str, default='/mnt/alpha/jmfleming/KITTI', help='Path to SemanticKITTI dataset for pretraining')
     parser.add_argument('--kittic_dir', type=str, default='/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C', help='Path to real SemanticKITTI-C dataset')
-    parser.add_argument('--corruptions', type=str, default=None, help='Comma separated list of corruptions to test. Defaults to all 8.')
+    parser.add_argument('--corruptions', type=str, default='snow,beam_missing,wet_ground', help='Comma separated list of corruptions to test. Defaults to diagnostic panel.')
+    parser.add_argument('--test_1b', type=str, default='none', choices=['none', 'mean_evidence', 'coherence'], help='Test 1b: Evidence-conditioned step magnitude')
+    parser.add_argument('--test_1c', type=float, default=1.0, help='Test 1c: Partial calibration shrinkage lambda [0.0 to 1.0]')
     args = parser.parse_args()
 
     if args.continue_epochs > 0:
@@ -811,7 +827,7 @@ def main():
                     # Pass 1: True Initial (Frozen on chunk)
                     if (ctype, sev) not in shared_init_metrics:
                         logger.info("  -> Pass 1: Computing True Initial metrics (Frozen)")
-                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run)
+                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b=args.test_1b, test_1c=args.test_1c)
                         shared_init_metrics[(ctype, sev)] = init_metrics
                     else:
                         logger.info("  -> Pass 1: Reusing cached True Initial metrics (Frozen)")
@@ -820,13 +836,15 @@ def main():
                     # Pass 2: Adapt (only if method is not frozen)
                     if current_method != 'frozen':
                         logger.info("  -> Pass 2: Adapting model weights")
-                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run)
+                        eval_model.train()
+                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, test_1b=args.test_1b, test_1c=args.test_1c)
                     else:
                         adapt_metrics = init_metrics
                         
                     # Pass 3: True Final (Frozen on chunk using adapted weights)
                     logger.info("  -> Pass 3: Computing True Final metrics (Frozen)")
-                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run)
+                    eval_model.eval()
+                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b=args.test_1b, test_1c=args.test_1c)
                     
                     # We only care about the absolute end of the frozen evaluations for the sequence
                     metrics = adapt_metrics  # Just for the trajectory json

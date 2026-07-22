@@ -26,14 +26,22 @@ HDC_SUB_PATH = "logs/hdc_sub.pth"
 
 def setup_logger(log_file):
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
-    logger = logging.getLogger(log_file)
+    logger = logging.getLogger() # Get root logger
     logger.setLevel(logging.INFO)
+    
+    # Remove all existing handlers
+    if logger.hasHandlers():
+        logger.handlers.clear()
+        
     fh = logging.FileHandler(log_file, mode='w')
     fh.setLevel(logging.INFO)
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     fh.setFormatter(formatter)
-    if not logger.handlers:
-        logger.addHandler(fh)
+    ch.setFormatter(formatter)
+    logger.addHandler(fh)
+    logger.addHandler(ch)
     return logger
 
 def save_graphic(save_path, title, data):
