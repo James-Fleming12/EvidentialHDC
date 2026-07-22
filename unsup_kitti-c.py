@@ -845,6 +845,14 @@ def main():
                 chunk_dataset = full_corruption_dataset
                 # Reset model before each corruption
                 model.load_state_dict(clean_state_dict, strict=False)
+                if hasattr(model, 'initial_classify_weights'):
+                    del model.initial_classify_weights
+                if hasattr(model, 'drift_mu_c'):
+                    del model.drift_mu_c
+                if hasattr(model, 'class_freq_ema'):
+                    del model.class_freq_ema
+                if hasattr(model, 'subcluster_update_counts') and model.subcluster_update_counts is not None:
+                    model.subcluster_update_counts.zero_()
             else:
                 # D3CTTA protocol: chunks, continuous adaptation
                 chunk_dataset = torch.utils.data.Subset(full_corruption_dataset, chunks[i])
