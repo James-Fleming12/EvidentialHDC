@@ -271,19 +271,38 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                 if c_update.norm(p=2) > 1e-6:
                                     c_update = F.normalize(c_update, p=2, dim=0)
                                     
+                                    step_mag = update_lr
                                     if test_1b == 'mean_evidence':
                                         g = evidence[c_mask, c].mean().item()
-                                        c_update = c_update * g
+                                        step_mag = step_mag * g
                                     elif test_1b == 'coherence':
                                         g = (valid_enc[c_mask].mean(dim=0).norm(p=2).item())
-                                        c_update = c_update * g
+                                        step_mag = step_mag * g
+                                    elif test_1b == 'count_throttle':
+                                        g = min(1.0, c_mask.sum().item() / 10.0)
+                                        step_mag = step_mag * g
+                                    elif test_1b == 'rotation_cap':
+                                        if hasattr(model, 'initial_classify_weights'):
+                                            w_0 = F.normalize(model.initial_classify_weights[c], dim=0)
+                                            w_t = F.normalize(model.classify.weight[c], dim=0)
+                                            cos_sim = F.linear(w_t.unsqueeze(0), w_0.unsqueeze(0)).item()
+                                            cos_sim = max(-1.0, min(1.0, cos_sim))
+                                            angle = torch.acos(torch.tensor(cos_sim)).item() * (180.0 / torch.pi)
+                                            if angle > 10.0:  # Hard cap at 10 degrees
+                                                step_mag = 0.0
+                                                
+                                    model.classify.weight[c].data += step_mag * c_update.to(model.classify.weight.dtype)
+                                    
+                                    if test_1b == 'anchor_spring' and hasattr(model, 'initial_classify_weights'):
+                                        spring_k = 0.05
+                                        w_0 = F.normalize(model.initial_classify_weights[c], dim=0).to(model.classify.weight.device)
+                                        model.classify.weight[c].data = (1 - spring_k) * model.classify.weight[c].data + spring_k * w_0
                                         
-                                    model.classify.weight[c].data += update_lr * c_update.to(model.classify.weight.dtype)
                                     model.classify.weight[c].data = F.normalize(model.classify.weight[c].data, p=2, dim=0)
                                     
                                     if not hasattr(model, '_update_magnitude_log'):
                                         model._update_magnitude_log = []
-                                    model._update_magnitude_log.append((update_lr * c_update.norm(p=2)).item())
+                                    model._update_magnitude_log.append(step_mag)
     
     if hasattr(model, '_veto_stats') and model._veto_stats['correct_labels_rejected'] > 0:
         purity_ratio = model._veto_stats['true_errors_rejected'] / model._veto_stats['correct_labels_rejected']
@@ -622,7 +641,7 @@ def main():
     parser.add_argument('--kitti_dir', type=str, default='/mnt/alpha/jmfleming/KITTI', help='Path to SemanticKITTI dataset for pretraining')
     parser.add_argument('--kittic_dir', type=str, default='/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C', help='Path to real SemanticKITTI-C dataset')
     parser.add_argument('--corruptions', type=str, default='snow,beam_missing,wet_ground', help='Comma separated list of corruptions to test. Defaults to diagnostic panel.')
-    parser.add_argument('--test_1b', type=str, default='none', help='Test 1b: Comma-separated list of step magnitudes (e.g., none,mean_evidence,coherence)')
+    parser.add_argument('--test_1b', type=str, default='none', help='Test 1b: Comma-separated list of step magnitudes (e.g., none,count_throttle,rotation_cap,anchor_spring)')
     parser.add_argument('--test_1c', type=str, default='1.0', help='Test 1c: Comma-separated list of shrinkage lambdas (e.g., 1.0,0.75,0.50)')
     args = parser.parse_args()
 

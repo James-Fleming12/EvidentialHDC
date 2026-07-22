@@ -64,12 +64,20 @@ Before testing new methods, we must unblock interpretation by tracking mechanism
 * **Per-class firing rate** to see what classes are triggering updates.
 * **Per-class veto purity** to verify if the road gate is now leaking reflections on `wet_ground`.
 
-### Part 1: Fix the Wet Ground Regression
-We must decouple the C2 *direction* from the C2 *magnitude*. 
-* **Test 1a (Diagnostic):** Verify poor road veto purity and high road rotation on `wet_ground`.
-* **Test 1b (Evidence-Conditioned Step):** Keep normalized direction, but scale the step magnitude by evidence quality `g(evidence_c)`.
-* **Test 1c (Partial Calibration):** Shrink per-class statistics towards the global mean to tighten the road band.
-* **Test 1d (Trimmed Mean):** Use a median/medoid aggregation to naturally drop phantom road reflection points.
+### Part 1: Fix the Wet Ground Regression (Update: July 22)
+
+**Overnight Sweep Results (Test 1b and 1c)**
+We ran a grid sweep over `test_1b` (Step Magnitude Throttles) and `test_1c` (Partial Calibration Shrinkage) to attempt to decouple the C2 *direction* from the C2 *magnitude*. The results definitively isolated the bug, though the proposed mitigations failed:
+1. **The Diagnostic Truth (Test 1a):** The per-class diagnostics revealed that on `wet_ground`, classes 11 (bicyclist) and 13 (motorcyclist) were rotating a staggering **50 to 60 degrees**, despite only firing on **0.1%** of frames. The C2 normalization fix (`F.normalize(c_update)`) gave tail classes the budget to adapt to noise, but it unintentionally granted a single noisy phantom reflection point a full `update_lr=0.01` unit step. Over 4000 frames, these isolated false-positives completely shattered the prototypes.
+2. **The Failure of Evidence Throttling (Test 1b):** 
+   - `mean_evidence` caused complete model collapse (mIoU dropped to ~0.27). Because Dirichlet evidence (`softplus(5*Z)`) is unbounded, highly coherent clusters generated scalars of 5.0+, massively amplifying the learning rate and exploding the gradients.
+   - `coherence` (L2 norm of the batch) successfully constrained the gradients but did so uniformly (scaling all steps by ~0.65). This slowed the `wet_ground` destruction slightly but failed to selectively punish noisy single-point updates.
+3. **The Failure of Statistical Shrinkage (Test 1c):** Shrinking the calibration bounds (`0.75` and `0.5`) had almost zero effect on `wet_ground` performance. The reflections geometrically lie inside the core road manifold; statistical gating cannot distinguish them.
+
+**The New Hypothesis & Solution:**
+We must throttle the step magnitude by **mass**, not by raw evidence or uniform coherence. If a class only fires on 1 point (mass $\approx 1.0$), it should receive a tiny fraction of the learning rate. If it fires on 10+ points, it should receive the full unit step. We propose a **`weight_sum` throttle**:
+`g = min(1.0, update_weights[c_mask].sum().item() / 10.0)`
+This preserves the C2 directional normalization while ensuring that phantom single-point reflections cannot drag the prototype.
 
 ### Part 2: Structural Tail Rescue
 Why did `beam_missing` head classes adapt while the tail didn't? Single-frame adaptation cannot recover geometry that is completely missing (e.g. absent scan lines). 
