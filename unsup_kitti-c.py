@@ -215,10 +215,19 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     
                     if not hasattr(model, '_firing_log'):
                         model._firing_log = []
+                    if not hasattr(model, '_class_firing_log'):
+                        model._class_firing_log = {c: [] for c in range(num_classes)}
+                        
+                    if not eval_only and not hasattr(model, 'initial_classify_weights'):
+                        model.initial_classify_weights = model.classify.weight.clone().detach()
                     
                     # Guard against empty tensors causing NaN
                     if len(update_weights) > 0:
                         model._firing_log.append(update_weights.mean().item())
+                        for c in range(num_classes):
+                            c_mask = (pseudo_labels == c)
+                            if c_mask.any():
+                                model._class_firing_log[c].append(update_weights[c_mask].mean().item())
                     else:
                         model._firing_log.append(0.0)
                     
@@ -228,8 +237,19 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         correct_labels_rejected = (veto_mask & valid_gt_mask & (pseudo_labels == selected_labels)).sum().item()
                         if not hasattr(model, '_veto_stats'):
                             model._veto_stats = {'true_errors_rejected': 0, 'correct_labels_rejected': 0}
+                        if not hasattr(model, '_class_veto_stats'):
+                            model._class_veto_stats = {c: {'true_errors_rejected': 0, 'correct_labels_rejected': 0} for c in range(num_classes)}
+                            
                         model._veto_stats['true_errors_rejected'] += true_errors_rejected
                         model._veto_stats['correct_labels_rejected'] += correct_labels_rejected
+                        
+                        for c in range(num_classes):
+                            c_mask = (pseudo_labels == c)
+                            if c_mask.any():
+                                true_errs = (veto_mask & valid_gt_mask & c_mask & (pseudo_labels != selected_labels)).sum().item()
+                                corr_labels = (veto_mask & valid_gt_mask & c_mask & (pseudo_labels == selected_labels)).sum().item()
+                                model._class_veto_stats[c]['true_errors_rejected'] += true_errs
+                                model._class_veto_stats[c]['correct_labels_rejected'] += corr_labels
                     
                     if fired_mask.any():
                         valid_enc = norm_enc[indices]
@@ -250,8 +270,65 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
     
     if hasattr(model, '_veto_stats') and model._veto_stats['correct_labels_rejected'] > 0:
         purity_ratio = model._veto_stats['true_errors_rejected'] / model._veto_stats['correct_labels_rejected']
-        print(f"\n[Stats] Veto Purity Ratio: {purity_ratio:.2f} ({model._veto_stats['true_errors_rejected']} true errors rejected / {model._veto_stats['correct_labels_rejected']} correct labels rejected)")
+        # print(f"\n[Stats] Veto Purity Ratio: {purity_ratio:.2f} ({model._veto_stats['true_errors_rejected']} true errors rejected / {model._veto_stats['correct_labels_rejected']} correct labels rejected)")
         model._veto_stats = {'true_errors_rejected': 0, 'correct_labels_rejected': 0}
+        
+    if not eval_only and hasattr(model, 'initial_classify_weights'):
+        import logging
+        logger = logging.getLogger("EvalAdapt")
+        class_rotations = {}
+        for c in range(num_classes):
+            w_0 = F.normalize(model.initial_classify_weights[c], dim=0)
+            w_t = F.normalize(model.classify.weight[c], dim=0)
+            cos_sim = F.linear(w_t.unsqueeze(0), w_0.unsqueeze(0)).item()
+            cos_sim = max(-1.0, min(1.0, cos_sim))
+            angle = torch.acos(torch.tensor(cos_sim)).item() * (180.0 / torch.pi)
+            class_rotations[c] = angle
+            
+        logger.info(f"\n[Stats] Prototype Rotation (Degrees):")
+        head_rot = {c: round(class_rotations[c], 2) for c in [11, 13, 14, 15, 16]}
+        tail_rot = {c: round(class_rotations[c], 2) for c in [2, 3, 6, 7, 10]}
+        logger.info(f"  Head Rotation: {head_rot}")
+        logger.info(f"  Tail Rotation: {tail_rot}")
+        
+    if hasattr(model, '_class_veto_stats') and not eval_only:
+        import logging
+        logger = logging.getLogger("EvalAdapt")
+        logger.info(f"\n[Stats] Per-Class Veto Purity (True Errors / Correct Labels Rejected):")
+        head_purity = {}
+        tail_purity = {}
+        for c in range(num_classes):
+            stats = model._class_veto_stats[c]
+            if stats['correct_labels_rejected'] > 0:
+                purity = stats['true_errors_rejected'] / stats['correct_labels_rejected']
+            else:
+                purity = -1.0
+            if c in [11, 13, 14, 15, 16]:
+                head_purity[c] = round(purity, 2)
+            elif c in [2, 3, 6, 7, 10]:
+                tail_purity[c] = round(purity, 2)
+        logger.info(f"  Head Purity: {head_purity}")
+        logger.info(f"  Tail Purity: {tail_purity}")
+        model._class_veto_stats = {c: {'true_errors_rejected': 0, 'correct_labels_rejected': 0} for c in range(num_classes)}
+        
+    if hasattr(model, '_class_firing_log') and not eval_only:
+        import logging
+        logger = logging.getLogger("EvalAdapt")
+        head_firing = {}
+        tail_firing = {}
+        for c in range(num_classes):
+            if len(model._class_firing_log[c]) > 0:
+                rate = sum(model._class_firing_log[c]) / len(model._class_firing_log[c])
+            else:
+                rate = 0.0
+            if c in [11, 13, 14, 15, 16]:
+                head_firing[c] = round(rate, 4)
+            elif c in [2, 3, 6, 7, 10]:
+                tail_firing[c] = round(rate, 4)
+        logger.info(f"\n[Stats] Per-Class Firing Rates:")
+        logger.info(f"  Head Firing: {head_firing}")
+        logger.info(f"  Tail Firing: {tail_firing}")
+        model._class_firing_log = {c: [] for c in range(num_classes)}
         
     avg_firing_rate = 0.0
     if hasattr(model, '_firing_log') and len(model._firing_log) > 0:

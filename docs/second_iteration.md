@@ -21,5 +21,67 @@ In this phase, we will investigate:
 * **Multi-View Consistency Gating:** Requiring consensus across multiple spatial projections (or consecutive LiDAR sweeps) before allowing high-magnitude updates.
 * **Feature Fusion:** Aggregating features from multiple views into the 10,000D hyperdimensional space to generate a more robust, physically grounded Dirichlet uncertainty prior.
 
-## Preliminary Tests & Baselines
-*(Test logs, ablations, and empirical results for multi-view and advanced balancing runs will be recorded here as the iteration progresses.)*
+## Part 1: Architecture Calibration & Normalization (Test A1 & C2)
+
+Before implementing complex Multi-View or Intra-Class mechanisms, we conducted a structural audit to ensure the foundational pipeline was sound. We discovered three critical mathematical flaws in the adaptation update rules that were severely penalizing rare classes:
+
+1. **Global Calibration (Test A1):** The Dirichlet gating (Hypervector Uncertainty) was calibrated globally. Rare classes naturally have lower geometric coherence (higher standard deviation) than dense classes like Road. By applying a global Z-score, the gate was inherently filtering out rare classes as "uncertain." We shifted to **per-class Z-score calibration** (`source_mu_cos[c]`, `source_density_std[c]`), allowing each class to be gated on its own respective sub-manifold scale.
+2. **Update Normalization (Test C2):** The TTA update formula `c_update = (valid_enc * weights).mean(dim=0)` inherently coupled the magnitude of the rotation step to both the class point count and intra-class coherence. Diffuse tail classes yielded small-norm means, rotating slower than tight head classes. We applied `F.normalize(c_update, p=2, dim=0)` *before* multiplying by the learning rate, turning the learning rate into a pure angular rotation budget.
+3. **Veto-Purity Bug:** Corrected a shape misalignment in the metric tracking where the model was falsely reporting how accurately it was vetoing errors.
+
+### Results (Post-Calibration)
+
+The impact of normalizing the adaptation steps and dynamically scaling the uncertainty gates per-class was staggering:
+
+| Corruption | Base (Frozen) | Adapted (New) | $\Delta$ mIoU | Tail (Base) | Tail (New) | $\Delta$ Tail |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| Snow | 0.4078 | **0.4840** | +7.62% | 0.1223 | **0.2846** | +16.23% |
+| Incomplete Echo | 0.3760 | **0.4263** | +5.03% | 0.0504 | **0.1276** | +7.72% |
+| Cross Sensor | 0.2587 | **0.3132** | +5.45% | 0.0564 | 0.0496 | -0.68% |
+| Beam Missing | 0.3779 | **0.4253** | +4.74% | 0.1155 | 0.1211 | +0.56% |
+| Motion Blur | 0.4061 | **0.4489** | +4.28% | 0.1354 | **0.1710** | +3.56% |
+| Fog | 0.0583 | **0.0986** | +4.03% | 0.0006 | 0.0000 | -0.06% |
+| Crosstalk | 0.0700 | **0.1139** | +4.39% | 0.0033 | 0.0000 | -0.33% |
+| Wet Ground | **0.4245** | 0.3917 | -3.28% | 0.1805 | 0.1619 | -1.86% |
+
+### Key Takeaways
+* **Structural Recovery:** Under the previous legacy pipeline, `beam_missing` was being actively degraded by the network (dropping to 0.1936). With the fixed normalized tracking and independent gates, `beam_missing` leaps by +4.74% mIoU.
+* **Massive Rare-Class Rescue:** By normalizing the `c_update` step, tail classes finally had enough rotation budget to adapt to environmental snow noise. The Tail mIoU for `snow` skyrocketed by **+16.23%**. `incomplete_echo` saw similar tail recoveries (+7.72%). 
+* **Wet Ground Degradation:** `wet_ground` remains uniquely adversarial. Despite structural improvements elsewhere, adaptation actively harmed it by -3.28%. This points towards a fundamental domain shift where the reflection geometry entirely shatters the semantic manifold in a way that continuous tracking cannot heal.
+
+## Phase 2 Test Plan (v2): Post-Calibration Next Steps
+**Updated July 21 (Post A1+C2)**
+
+The empirical results above fundamentally re-sequence the Phase 2 agenda. The A1+C2 fixes successfully rescued the tail on noise corruptions (Snow, Incomplete Echo, Motion Blur), but failed on structural corruptions (Beam Missing) and actively regressed reflection corruptions (Wet Ground). 
+
+The likely mechanism behind the Wet Ground regression: reflections produce confident-but-wrong road labels. Road has a high intrinsic $\sigma$, so per-class calibration (A1) widened the road acceptance band, admitting reflections. C2 then gave those noisy updates full rotation magnitude instead of shrinking them, causing the head prototypes to drift on phantom geometry. 
+
+Phase 2 will now proceed as follows:
+
+### Part 0: Instrumentation Debt (Immediate)
+Before testing new methods, we must unblock interpretation by tracking mechanism diagnostics per-class:
+* **Per-class prototype rotation** ($\angle(w_c^t, w_c^0)$) to see if tail classes are even moving on structural corruptions.
+* **Per-class firing rate** to see what classes are triggering updates.
+* **Per-class veto purity** to verify if the road gate is now leaking reflections on `wet_ground`.
+
+### Part 1: Fix the Wet Ground Regression
+We must decouple the C2 *direction* from the C2 *magnitude*. 
+* **Test 1a (Diagnostic):** Verify poor road veto purity and high road rotation on `wet_ground`.
+* **Test 1b (Evidence-Conditioned Step):** Keep normalized direction, but scale the step magnitude by evidence quality `g(evidence_c)`.
+* **Test 1c (Partial Calibration):** Shrink per-class statistics towards the global mean to tighten the road band.
+* **Test 1d (Trimmed Mean):** Use a median/medoid aggregation to naturally drop phantom road reflection points.
+
+### Part 2: Structural Tail Rescue
+Why did `beam_missing` head classes adapt while the tail didn't? Single-frame adaptation cannot recover geometry that is completely missing (e.g. absent scan lines). 
+* **Test 2a:** Check tail rotation on `beam_missing`. If zero, the tail is starved of points.
+* **Test 2b:** Compare surviving point counts between `incomplete_echo` (dropout) and `beam_missing` (absent lines). 
+
+### Part 3 & 4: Inter/Intra-Class Refinement
+* **Test 3a:** Re-sweep the inverse-frequency dampener ($\gamma$) now that C2 has decoupled magnitude.
+* **Test 4a (Per-Subcluster Calibration):** Push the A1 Dirichlet calibration one level down to the $K$-means subclusters so rare poses don't look OOD against their own core class manifold.
+
+### Part 5: Multi-View Architectures
+Multi-view now has two concrete, evidence-grounded jobs:
+1. Supply missing geometry for structural corruptions (pose-warped temporal sweeps).
+2. Provide a noise-vs-few discriminator (view disagreement) for the Test 1b step-magnitude throttle.
+* We will fix the naive 5x5 temporal gate, build an AUROC screening harness to rank view augmentations, and fuse the top signals into the Dirichlet evidence term.
