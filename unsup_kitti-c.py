@@ -288,17 +288,17 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                             cos_sim = F.linear(w_t.unsqueeze(0), w_0.unsqueeze(0)).item()
                                             cos_sim = max(-1.0, min(1.0, cos_sim))
                                             angle = torch.acos(torch.tensor(cos_sim)).item() * (180.0 / torch.pi)
-                                            if angle > 10.0:  # Hard cap at 10 degrees
+                                            if angle > 40.0:  # Hard cap at 40 degrees
                                                 step_mag = 0.0
                                                 
                                     model.classify.weight[c].data += step_mag * c_update.to(model.classify.weight.dtype)
                                     
                                     if test_1b == 'anchor_spring' and hasattr(model, 'initial_classify_weights'):
-                                        spring_k = 0.05
+                                        spring_k = 0.01
                                         w_0 = F.normalize(model.initial_classify_weights[c], dim=0).to(model.classify.weight.device)
-                                        model.classify.weight[c].data = (1 - spring_k) * model.classify.weight[c].data + spring_k * w_0
+                                        model.classify.weight[c].data.copy_((1 - spring_k) * model.classify.weight[c].data + spring_k * w_0)
                                         
-                                    model.classify.weight[c].data = F.normalize(model.classify.weight[c].data, p=2, dim=0)
+                                    model.classify.weight[c].data.copy_(F.normalize(model.classify.weight[c].data, p=2, dim=0))
                                     
                                     if not hasattr(model, '_update_magnitude_log'):
                                         model._update_magnitude_log = []
