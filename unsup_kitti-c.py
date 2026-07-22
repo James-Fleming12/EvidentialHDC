@@ -51,11 +51,14 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
     prev_preds_2d = None
 
     # Test 1c: Partial Calibration (Shrinkage)
-    if not eval_only and test_1c < 1.0:
+    if test_1c < 1.0:
         global_mu = model.source_mu_cos.mean()
         global_sigma = model.source_sigma_cos.mean()
-        model.source_mu_cos = test_1c * model.source_mu_cos + (1 - test_1c) * global_mu
-        model.source_sigma_cos = test_1c * model.source_sigma_cos + (1 - test_1c) * global_sigma
+        active_mu_cos = test_1c * model.source_mu_cos + (1 - test_1c) * global_mu
+        active_sigma_cos = test_1c * model.source_sigma_cos + (1 - test_1c) * global_sigma
+    else:
+        active_mu_cos = model.source_mu_cos
+        active_sigma_cos = model.source_sigma_cos
 
     for batch_idx, batch_data in enumerate(tqdm(target_dataloader, desc="Adapting", leave=False)):
         if dry_run and batch_idx >= 2:
@@ -153,7 +156,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     temporal_decay = torch.ones(N_samples, device=device)
                     
                     # 2. Hypervector Uncertainty: Z-Score Calibrated Dirichlet Evidence
-                    z_c = (cos_sims - model.source_mu_cos) / (model.source_sigma_cos + 1e-8)
+                    z_c = (cos_sims - active_mu_cos) / (active_sigma_cos + 1e-8)
                     gamma_sharpness = 5.0
                     evidence = F.softplus(gamma_sharpness * z_c)
                     alpha = evidence + 1.0
@@ -795,6 +798,8 @@ def main():
 
         # Reset model at the start of each new method loop
         model.load_state_dict(clean_state_dict, strict=False)
+        if hasattr(model, 'initial_classify_weights'):
+            del model.initial_classify_weights
         if hasattr(model, 'subcluster_update_counts') and model.subcluster_update_counts is not None:
             model.subcluster_update_counts.zero_()
             
@@ -808,6 +813,8 @@ def main():
             if args.reset_per_corruption and args.chunked:
                 logger.info("Resetting model to clean pretrained weights for this corruption.")
                 model.load_state_dict(clean_state_dict, strict=False)
+                if hasattr(model, 'initial_classify_weights'):
+                    del model.initial_classify_weights
                 if hasattr(model, 'subcluster_update_counts') and model.subcluster_update_counts is not None:
                     model.subcluster_update_counts.zero_()
                 
