@@ -816,6 +816,8 @@ def main():
             del model.drift_mu_c
         if hasattr(model, 'class_freq_ema'):
             del model.class_freq_ema
+        if hasattr(model, 'class_update_counts'):
+            del model.class_update_counts
         if hasattr(model, 'subcluster_update_counts') and model.subcluster_update_counts is not None:
             model.subcluster_update_counts.zero_()
             
@@ -835,6 +837,8 @@ def main():
                     del model.drift_mu_c
                 if hasattr(model, 'class_freq_ema'):
                     del model.class_freq_ema
+                if hasattr(model, 'class_update_counts'):
+                    del model.class_update_counts
                 if hasattr(model, 'subcluster_update_counts') and model.subcluster_update_counts is not None:
                     model.subcluster_update_counts.zero_()
                 
@@ -863,6 +867,8 @@ def main():
                     del model.drift_mu_c
                 if hasattr(model, 'class_freq_ema'):
                     del model.class_freq_ema
+                if hasattr(model, 'class_update_counts'):
+                    del model.class_update_counts
                 if hasattr(model, 'subcluster_update_counts') and model.subcluster_update_counts is not None:
                     model.subcluster_update_counts.zero_()
             else:
