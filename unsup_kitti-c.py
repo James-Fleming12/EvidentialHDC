@@ -38,7 +38,7 @@ SEVERITY_MAP = {1: 'light', 2: 'moderate', 3: 'heavy', 4: 'extreme'}
 CONFIG_ARCH = "config/arch/senet-2048p.yml"
 CONFIG_LABELS_KITTI_ALL = "config/labels/semantic-kitti-all.yaml"  # Standard 17 classes
 
-def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, test_1b='none', test_1c=1.0, reproduce_bug=False, schedule='none'):
+def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, test_1b='none', test_1c=1.0, ic_method='none'):
     miou_history = []
     head_miou_history = []
     mid_miou_history = []
@@ -146,8 +146,6 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         model.class_freq_ema = torch.ones(num_classes, device=device) / num_classes
                     if not hasattr(model, 'class_update_counts'):
                         model.class_update_counts = torch.zeros(num_classes, device=device)
-                    if not hasattr(model, 'momentum_prototypes'):
-                        model.momentum_prototypes = model.classify.weight.data.clone()
                     
                     beta = 0.99
                     batch_freq = torch.bincount(pseudo_labels, minlength=num_classes).float() / max(1, pseudo_labels.size(0))
@@ -239,27 +237,32 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             c_mask = (pseudo_labels == c)
                             if c_mask.any():
                                 c_weights = update_weights[c_mask].unsqueeze(1)
-                                c_update = (valid_enc[c_mask] * c_weights).mean(dim=0)
+                                if ic_method == 'xc2' and c_mask.sum().item() >= 5:
+                                    from sklearn.cluster import MiniBatchKMeans
+                                    pts = valid_enc[c_mask].detach().cpu().numpy()
+                                    kmeans = MiniBatchKMeans(n_clusters=min(5, len(pts)), n_init=1, max_iter=10).fit(pts)
+                                    cluster_centers = torch.tensor(kmeans.cluster_centers_, device=device, dtype=valid_enc.dtype)
+                                    c_update = cluster_centers.mean(dim=0)
+                                else:
+                                    c_update = (valid_enc[c_mask] * c_weights).mean(dim=0)
                                 
                                 if c_update.norm(p=2) > 1e-6:
                                     c_update = F.normalize(c_update, p=2, dim=0)
                                     
                                     step_mag = update_lr * update_weights[c_mask].mean().item()
                                     
-                                    model.class_update_counts[c] += 1
-                                    if schedule == '1/t':
-                                        beta = 0.05
-                                        t = model.class_update_counts[c].item()
-                                        step_mag = step_mag / (1.0 + beta * t)
-                                    elif schedule == 'cosine':
+                                    if ic_method == 'ic1':
+                                        # Strict 5 degree per chunk budget limit
                                         import math
-                                        t = model.class_update_counts[c].item()
-                                        max_t = 4000  # Approx sequence length
-                                        progress = min(1.0, t / max_t)
-                                        step_mag = step_mag * 0.5 * (1.0 + math.cos(math.pi * progress))
-                                    elif schedule == 's2_equilibrium':
-                                        pass
-                                        
+                                        max_step = (5.0 * math.pi / 180.0) * model.classify.weight[c].norm(p=2).item()
+                                        step_mag = min(step_mag, max_step)
+                                    elif ic_method == 'ic4':
+                                        # Epistemic weighting: faster updates for high uncertainty
+                                        if 'uncertainty' in locals():
+                                            step_mag *= uncertainty[c_mask].mean().item()
+                                            
+                                    model.class_update_counts[c] += 1
+                                    
                                     if test_1b == 'mean_evidence':
                                         g = evidence[c_mask, c].mean().item()
                                         step_mag = step_mag * g
@@ -277,25 +280,15 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                             if angle > 40.0:  # Hard cap at 40 degrees
                                                 step_mag = 0.0
                                                 
-                                    if schedule == 's2_equilibrium':
-                                        if update_method == 'evidential_hdc_tta' and hasattr(model, 'initial_classify_weights'):
-                                            spring_k = 0.0005
-                                            w_0 = F.normalize(model.initial_classify_weights[c], dim=0).to(model.momentum_prototypes.device)
-                                            model.momentum_prototypes[c].data.copy_((1 - spring_k) * model.momentum_prototypes[c].data + spring_k * w_0)
-                                        
-                                        model.momentum_prototypes[c].data += step_mag * c_update.to(model.momentum_prototypes.dtype)
-                                        step_mag = step_mag / model.momentum_prototypes[c].norm(p=2).item()
-                                        model.classify.weight[c].data.copy_(F.normalize(model.momentum_prototypes[c].data, p=2, dim=0))
-                                    else:
-                                        model.classify.weight[c].data += step_mag * c_update.to(model.classify.weight.dtype)
-                                        
-                                        if update_method == 'evidential_hdc_tta' and hasattr(model, 'initial_classify_weights'):
-                                            spring_k = 0.0005
-                                            w_0 = F.normalize(model.initial_classify_weights[c], dim=0).to(model.classify.weight.device)
-                                            model.classify.weight[c].data.copy_((1 - spring_k) * model.classify.weight[c].data + spring_k * w_0)
-                                            
-                                        if not reproduce_bug:
-                                            model.classify.weight[c].data.copy_(F.normalize(model.classify.weight[c].data, p=2, dim=0))
+                                    # Bayesian Momentum Prototypes
+                                    # The unnormalized weight vector accumulates norms proportional to frequency.
+                                    # This creates both an emergent 1/t LR schedule AND a Bayesian Prior for the final logits.
+                                    model.classify.weight[c].data += step_mag * c_update.to(model.classify.weight.dtype)
+                                    
+                                    if update_method == 'evidential_hdc_tta' and hasattr(model, 'initial_classify_weights'):
+                                        spring_k = 0.0005
+                                        w_0 = F.normalize(model.initial_classify_weights[c], dim=0).to(model.classify.weight.device)
+                                        model.classify.weight[c].data.copy_((1 - spring_k) * model.classify.weight[c].data + spring_k * w_0)
                                     
                                     if not hasattr(model, '_update_magnitude_log'):
                                         model._update_magnitude_log = []
@@ -628,7 +621,6 @@ def main():
     parser.add_argument('--pretrained_path', type=str, default='logs/kitti_pretrain/hdc_sub.pth', help='Path to load pretrained model')
     parser.add_argument('--log_dir', type=str, default='logs/kitti_c_test', help='Directory to save logs and graphics')
     parser.add_argument('--method', type=str, default='frozen', help='Method to test.')
-    parser.add_argument('--reproduce_bug', action='store_true', help='Skip post-step normalization to reproduce the phase 1 magnitude explosion bug.')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for noise floor tests')
     parser.add_argument('--dry_run', action='store_true', help='Run only 2 batches per condition to quickly verify no crashes will occur.')
     parser.add_argument('--continue_pretrain', action='store_true', help='Resume pretraining from the existing pretrained_path')
@@ -642,7 +634,7 @@ def main():
     parser.add_argument('--corruptions', type=str, default='snow,beam_missing,wet_ground', help='Comma separated list of corruptions to test. Defaults to diagnostic panel.')
     parser.add_argument('--test_1b', type=str, default='none', help='Test 1b: Comma-separated list of step magnitudes (e.g., none,count_throttle,rotation_cap,anchor_spring)')
     parser.add_argument('--test_1c', type=str, default='1.0', help='Test 1c: Comma-separated list of shrinkage lambdas (e.g., 1.0,0.75,0.50)')
-    parser.add_argument('--schedule', type=str, default='none', help='Learning rate schedule: none, 1/t, cosine, or s2_equilibrium')
+    parser.add_argument('--ic_method', type=str, default='none', help='Inter/Intra-Class balancing method: none, ic1, ic4, xc1, xc2')
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -900,7 +892,7 @@ def main():
                     # Pass 1: True Initial (Frozen on chunk)
                     if (ctype, sev) not in shared_init_metrics:
                         logger.info("  -> Pass 1: Computing True Initial metrics (Frozen)")
-                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b='none', test_1c=1.0, reproduce_bug=getattr(args, 'reproduce_bug', False), schedule=getattr(args, 'schedule', 'none'))
+                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b='none', test_1c=1.0, ic_method=args.ic_method)
                         shared_init_metrics[(ctype, sev)] = init_metrics
                     else:
                         logger.info("  -> Pass 1: Reusing cached True Initial metrics (Frozen)")
@@ -910,14 +902,14 @@ def main():
                     if current_method != 'frozen':
                         logger.info("  -> Pass 2: Adapting model weights")
                         eval_model.train()
-                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, reproduce_bug=getattr(args, 'reproduce_bug', False), schedule=getattr(args, 'schedule', 'none'))
+                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method)
                     else:
                         adapt_metrics = init_metrics
                         
                     # Pass 3: True Final (Frozen on chunk using adapted weights)
                     logger.info("  -> Pass 3: Computing True Final metrics (Frozen)")
                     eval_model.eval()
-                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, reproduce_bug=getattr(args, 'reproduce_bug', False), schedule=getattr(args, 'schedule', 'none'))
+                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method)
                     
                     # We only care about the absolute end of the frozen evaluations for the sequence
                     metrics = adapt_metrics  # Just for the trajectory json
@@ -937,7 +929,7 @@ def main():
                             firing_rate_str += f", UpdateMag={adapt_metrics['UpdateMagnitude']:.4f}"
                 else:
                     # Original single-pass continuous evaluation
-                    metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=(current_method == 'frozen'), update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, reproduce_bug=getattr(args, 'reproduce_bug', False), schedule=getattr(args, 'schedule', 'none'))
+                    metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=(current_method == 'frozen'), update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method)
                     if len(metrics["mIoU"]) > 0:
                         initial_miou = metrics["mIoU"][0]
                         final_miou = metrics["mIoU"][-1]
