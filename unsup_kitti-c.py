@@ -146,6 +146,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         model.class_freq_ema = torch.ones(num_classes, device=device) / num_classes
                     if not hasattr(model, 'class_update_counts'):
                         model.class_update_counts = torch.zeros(num_classes, device=device)
+                    if not hasattr(model, 'class_M'):
+                        model.class_M = torch.ones(num_classes, device=device)
                     
                     beta = 0.99
                     batch_freq = torch.bincount(pseudo_labels, minlength=num_classes).float() / max(1, pseudo_labels.size(0))
@@ -255,6 +257,11 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                         max_t = 4000  # Approx sequence length
                                         progress = min(1.0, t / max_t)
                                         step_mag = step_mag * 0.5 * (1.0 + math.cos(math.pi * progress))
+                                    elif schedule == 's2_equilibrium':
+                                        model.class_M[c] += step_mag
+                                        spring_k = 0.0005
+                                        model.class_M[c] = (1 - spring_k) * model.class_M[c] + spring_k * 1.0
+                                        step_mag = step_mag / model.class_M[c].item()
                                         
                                     if test_1b == 'mean_evidence':
                                         g = evidence[c_mask, c].mean().item()
@@ -628,7 +635,7 @@ def main():
     parser.add_argument('--corruptions', type=str, default='snow,beam_missing,wet_ground', help='Comma separated list of corruptions to test. Defaults to diagnostic panel.')
     parser.add_argument('--test_1b', type=str, default='none', help='Test 1b: Comma-separated list of step magnitudes (e.g., none,count_throttle,rotation_cap,anchor_spring)')
     parser.add_argument('--test_1c', type=str, default='1.0', help='Test 1c: Comma-separated list of shrinkage lambdas (e.g., 1.0,0.75,0.50)')
-    parser.add_argument('--schedule', type=str, default='none', help='Learning rate schedule: none, 1/t, or cosine')
+    parser.add_argument('--schedule', type=str, default='none', help='Learning rate schedule: none, 1/t, cosine, or s2_equilibrium')
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -818,6 +825,8 @@ def main():
             del model.class_freq_ema
         if hasattr(model, 'class_update_counts'):
             del model.class_update_counts
+        if hasattr(model, 'class_M'):
+            del model.class_M
         if hasattr(model, 'subcluster_update_counts') and model.subcluster_update_counts is not None:
             model.subcluster_update_counts.zero_()
             
@@ -839,6 +848,8 @@ def main():
                     del model.class_freq_ema
                 if hasattr(model, 'class_update_counts'):
                     del model.class_update_counts
+                if hasattr(model, 'class_M'):
+                    del model.class_M
                 if hasattr(model, 'subcluster_update_counts') and model.subcluster_update_counts is not None:
                     model.subcluster_update_counts.zero_()
                 

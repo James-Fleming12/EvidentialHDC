@@ -2,21 +2,15 @@
 set -e
 
 echo "========================================="
-echo "Starting S1: Explicit Learning Rate Schedules"
+echo "Starting S2: Explicit Learning Rate Schedule"
 echo "========================================="
 
-echo "\n[1/2] RUN 1: Schedule = 1/t (Decaying Learning Rate)"
+echo -e "\n[1/1] RUN 1: Schedule = s2_equilibrium (Formalized Bug Reproduction)"
 PYTORCH_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=3 uv run unsup_kitti-c.py \
   --method evidential_hdc_tta \
   --corruptions snow,wet_ground \
-  --schedule 1/t
+  --schedule s2_equilibrium
 
-echo "\n[2/2] RUN 2: Schedule = cosine (Cosine Annealing)"
-PYTORCH_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=3 uv run unsup_kitti-c.py \
-  --method evidential_hdc_tta \
-  --corruptions snow,wet_ground \
-  --schedule cosine
-
-echo "\n========================================="
-echo "S1 Diagnostics Complete!"
+echo -e "\n========================================="
+echo "Diagnostics Complete!"
 echo "========================================="
