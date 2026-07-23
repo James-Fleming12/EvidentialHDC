@@ -39,6 +39,10 @@ CONFIG_ARCH = "config/arch/senet-2048p.yml"
 CONFIG_LABELS_KITTI_ALL = "config/labels/semantic-kitti-all.yaml"  # Standard 17 classes
 
 def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, test_1b='none', test_1c=1.0, ic_method='none'):
+    if ic_method not in ['none', 'ic1', 'ic4', 'xc2']:
+        raise ValueError(f"Unknown ic_method: {ic_method}")
+
+    model_was_training = model.training
     miou_history = []
     head_miou_history = []
     mid_miou_history = []
@@ -241,8 +245,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                     pts = valid_enc[c_mask]
                                     k = min(5, len(pts))
                                     # Fast PyTorch Native K-Means on GPU
-                                    indices = torch.randperm(len(pts), device=device)[:k]
-                                    centroids = pts[indices]
+                                    km_indices = torch.randperm(len(pts), device=device)[:k]
+                                    centroids = pts[km_indices]
                                     for _ in range(5): # 5 iters is plenty for small clusters
                                         dists = torch.cdist(pts, centroids)
                                         labels = dists.argmin(dim=1)
@@ -280,25 +284,10 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                         g = (valid_enc[c_mask].mean(dim=0).norm(p=2).item())
                                         step_mag = step_mag * g
                                         
-                                    if update_method == 'evidential_hdc_tta':
-                                        if hasattr(model, 'initial_classify_weights'):
-                                            w_0 = F.normalize(model.initial_classify_weights[c], dim=0)
-                                            w_t = F.normalize(model.classify.weight[c], dim=0)
-                                            cos_sim = F.linear(w_t.unsqueeze(0), w_0.unsqueeze(0)).item()
-                                            cos_sim = max(-1.0, min(1.0, cos_sim))
-                                            angle = torch.acos(torch.tensor(cos_sim)).item() * (180.0 / torch.pi)
-                                            if angle > 40.0:  # Hard cap at 40 degrees
-                                                step_mag = 0.0
-                                                
                                     # Bayesian Momentum Prototypes
                                     # The unnormalized weight vector accumulates norms proportional to frequency.
                                     # This creates both an emergent 1/t LR schedule AND a Bayesian Prior for the final logits.
                                     model.classify.weight[c].data += step_mag * c_update.to(model.classify.weight.dtype)
-                                    
-                                    if update_method == 'evidential_hdc_tta' and hasattr(model, 'initial_classify_weights'):
-                                        spring_k = 0.0005
-                                        w_0 = F.normalize(model.initial_classify_weights[c], dim=0).to(model.classify.weight.device)
-                                        model.classify.weight[c].data.copy_((1 - spring_k) * model.classify.weight[c].data + spring_k * w_0)
                                     
                                     if not hasattr(model, '_update_magnitude_log'):
                                         model._update_magnitude_log = []
@@ -464,7 +453,7 @@ def load_hdc_model(path, num_classes=NUM_CLASSES):
     model.to(device)
     return model
 
-def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device):
+def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device, dry_run=False):
     print(f"Populating source statistics from {data_dir}...")
     parser = Parser(root=data_dir,
                     train_sequences=data_cfg["split"]["train"],
@@ -504,6 +493,8 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device):
     
     with torch.no_grad():
         for batch_idx, batch_data in enumerate(tqdm(dataloader, desc="Populating Source Stats")):
+            if dry_run and batch_idx > 2:
+                break
             if batch_idx > 500: # Limit to a subset to save time
                 break
             proj_in = batch_data[0].to(device)
@@ -545,6 +536,8 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device):
     
     with torch.no_grad():
         for batch_idx, batch_data in enumerate(tqdm(dataloader, desc="Populating Source Stats")):
+            if dry_run and batch_idx > 2:
+                break
             if batch_idx > 50:
                 break
             proj_in = batch_data[0].to(device)
@@ -578,6 +571,8 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device):
                     if c_mask.any():
                         all_dists_per_class[c].append(dists[c_mask].cpu())
                         all_cos_per_class[c].append(true_cos[c_mask].cpu())
+                        if len(model.class_latents_for_clustering[c]) < max_cluster_samples_per_class:
+                            model.class_latents_for_clustering[c].append(norm_enc[c_mask].detach().cpu())
                 
     
     model.source_density_std = torch.zeros(num_classes, device=device)
@@ -615,11 +610,39 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device):
             model.source_mu_cos[c] = global_cos_mean
             model.source_sigma_cos[c] = global_cos_std
     
+    
+    # B4: Persistent Source Subclusters
+    model.source_subclusters = {}
+    print("Computing persistent source subclusters for XC tests...")
+    for c in range(num_classes):
+        if len(model.class_latents_for_clustering[c]) > 0:
+            c_latents = torch.cat(model.class_latents_for_clustering[c], dim=0)
+            if len(c_latents) > max_cluster_samples_per_class:
+                c_latents = c_latents[torch.randperm(len(c_latents))[:max_cluster_samples_per_class]]
+            c_latents = c_latents.to(device)
+            k = min(5, len(c_latents))
+            # PyTorch Native K-Means
+            km_indices = torch.randperm(len(c_latents), device=device)[:k]
+            centroids = c_latents[km_indices]
+            for _ in range(10): # Offline so we can afford 10 iters
+                dists = torch.cdist(c_latents, centroids)
+                labels = dists.argmin(dim=1)
+                new_c = []
+                for i in range(k):
+                    m = (labels == i)
+                    if m.any(): new_c.append(c_latents[m].mean(dim=0))
+                    else: new_c.append(centroids[i])
+                centroids = torch.stack(new_c)
+            model.source_subclusters[c] = centroids
+        else:
+            model.source_subclusters[c] = F.normalize(model.classify.weight[c].unsqueeze(0), dim=1)
+
     return {
         'source_density_std': model.source_density_std,
         'source_mu_cos': model.source_mu_cos,
         'source_sigma_cos': model.source_sigma_cos,
-        'drift_mu_0': model.drift_mu_0.clone().cpu()
+        'drift_mu_0': model.drift_mu_0.clone().cpu(),
+        'source_subclusters': {c: v.clone().cpu() for c, v in model.source_subclusters.items()}
     }
 
 def main():
@@ -762,14 +785,15 @@ def main():
         chunks.append(indices[start_idx:end_idx])
 
     base_model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES)
-    populate_source_statistics(base_model, args.kitti_dir, ARCH, DATA, device)
+    populate_source_statistics(base_model, args.kitti_dir, ARCH, DATA, device, dry_run=args.dry_run)
     
     source_stats_cache = {
         'class_latent_means': base_model.class_latent_means,
         'source_density_std': getattr(base_model, 'source_density_std', None),
         'source_mu_cos': getattr(base_model, 'source_mu_cos', None),
         'source_sigma_cos': getattr(base_model, 'source_sigma_cos', None),
-        'drift_mu_0': getattr(base_model, 'drift_mu_0', None)
+        'drift_mu_0': getattr(base_model, 'drift_mu_0', None),
+        'source_subclusters': getattr(base_model, 'source_subclusters', None)
     }
 
     clean_state_dict = torch.load(args.pretrained_path, map_location=device)
@@ -811,6 +835,7 @@ def main():
         model.source_mu_cos = source_stats_cache['source_mu_cos']
         model.source_sigma_cos = source_stats_cache['source_sigma_cos']
         model.drift_mu_0 = source_stats_cache['drift_mu_0']
+        model.source_subclusters = source_stats_cache['source_subclusters']
 
     for (current_method, t1b, t1c), full_method_name in zip(configs_to_run, full_method_names):
         logger.info(f"=========================================")
@@ -969,13 +994,21 @@ def main():
                 global_results['Accuracy'][full_method_name][ctype][sev] = (initial_acc, final_acc)
                 
                 if not args.chunked or args.reset_per_corruption:
+                    initial_head = init_metrics["Head_mIoU"][-1] if current_method != 'frozen' else metrics["Head_mIoU"][0]
+                    final_head = final_metrics["Head_mIoU"][-1] if current_method != 'frozen' else metrics["Head_mIoU"][-1]
+                    initial_mid = init_metrics["Mid_mIoU"][-1] if current_method != 'frozen' else metrics["Mid_mIoU"][0]
+                    final_mid = final_metrics["Mid_mIoU"][-1] if current_method != 'frozen' else metrics["Mid_mIoU"][-1]
                     initial_tail = init_metrics["Tail_mIoU"][-1] if current_method != 'frozen' else metrics["Tail_mIoU"][0]
                     final_tail = final_metrics["Tail_mIoU"][-1] if current_method != 'frozen' else metrics["Tail_mIoU"][-1]
                 else:
+                    initial_head = metrics["Head_mIoU"][0]
+                    final_head = metrics["Head_mIoU"][-1]
+                    initial_mid = metrics["Mid_mIoU"][0]
+                    final_mid = metrics["Mid_mIoU"][-1]
                     initial_tail = metrics["Tail_mIoU"][0]
                     final_tail = metrics["Tail_mIoU"][-1]
                 
-                logger.info(f"Result for {ctype}-{sev}: Initial mIoU={initial_miou:.4f} -> Final (Online)={online_miou:.4f} -> Final (Frozen)={final_miou:.4f} (Tail: {initial_tail:.4f} -> {final_tail:.4f}), Acc={initial_acc:.4f} -> {final_acc:.4f}{firing_rate_str}")
+                logger.info(f"Result for {ctype}-{sev}: Initial mIoU={initial_miou:.4f} -> Final (Online)={online_miou:.4f} -> Final (Frozen)={final_miou:.4f} (Head: {initial_head:.4f} -> {final_head:.4f}, Mid: {initial_mid:.4f} -> {final_mid:.4f}, Tail: {initial_tail:.4f} -> {final_tail:.4f}), Acc={initial_acc:.4f} -> {final_acc:.4f}{firing_rate_str}")
                 suffix = f"_{full_method_name}"
                 
                 traj_json_path = os.path.join(args.log_dir, f'traj_{ctype}_{sev}{suffix}.json')

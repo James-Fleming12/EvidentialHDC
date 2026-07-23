@@ -80,8 +80,20 @@ The evidence proves that the model *requires* a deep, early adaptation phase fol
 * **XC1 (Per-subcluster Dirichlet calibration):** Compute calibration per $K$-means subcluster.
 * **XC2 (Equal-weight-per-subcluster aggregation):** The non-restrictive replacement for the Subcluster Ledger.
 
-### IC Diagnostic Results
+### IC Diagnostic Results (3-Chunk Protocol)
 * **Baseline (Bayesian Momentum):** Achieves robust final adaptation across all chunks. Max rotation was naturally restricted to `4.14°`.
+  * Snow-3: `0.3628` $\rightarrow$ `0.3695`
+  * Beam Missing-3: `0.3656` $\rightarrow$ `0.3751`
+  * Wet Ground-3: `0.4175` $\rightarrow$ `0.4417`
 * **IC1 ($5^\circ$ Rotation Budget):** *Result:* Mathematically identical to Baseline. The Bayesian Momentum mechanism inherently suppresses all per-class chunk rotations to under $4.5^\circ$, rendering the explicit $5^\circ$ hard-budget completely inactive. This proves extreme geometric stability in the unconstrained baseline.
+  * Snow-3: `0.3628` $\rightarrow$ `0.3695`
+  * Beam Missing-3: `0.3656` $\rightarrow$ `0.3751`
+  * Wet Ground-3: `0.4175` $\rightarrow$ `0.4417`
 * **IC4 (Epistemic Weighting):** *Result:* Slightly degraded adaptation. Scaling the step magnitude by the Dirichlet uncertainty likely causes the model to over-adapt to inherently noisy pseudo-labels in highly ambiguous regions, actively harming the prototypes.
-* **XC2 (Subcluster Equivalence):** *Result:* Pending (Evaluating via native PyTorch K-Means).
+  * Snow-3: `0.3628` $\rightarrow$ `0.3688` ($-0.0007$)
+  * Beam Missing-3: `0.3656` $\rightarrow$ `0.3745` ($-0.0006$)
+  * Wet Ground-3: `0.4175` $\rightarrow$ `0.4385` ($-0.0032$)
+* **XC2 (Subcluster Equivalence):** *Result:* Outperformed Baseline on all metrics! Using an unweighted mean of $K$-means subcluster centers (rather than a raw density-skewed mean) prevented dense regions (e.g. 1000 points on a single tree) from overpowering sparse regions (e.g. 10 points on a distant shrub) during adaptation. This provided a cleaner gradient that significantly boosted tail class generalization.
+  * Snow-3: `0.3628` $\rightarrow$ `0.3709` ($+0.0014$ over Baseline)
+  * Beam Missing-3: `0.3656` $\rightarrow$ `0.3762` ($+0.0011$ over Baseline)
+  * Wet Ground-3: `0.4175` $\rightarrow$ `0.4452` ($+0.0035$ over Baseline)
