@@ -60,10 +60,10 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         active_mu_cos = model.source_mu_cos
         active_sigma_cos = model.source_sigma_cos
 
-    if not eval_only and hasattr(model, 'initial_classify_weights'):
+    if not eval_only and hasattr(model, 'classify'):
         import logging
         logger = logging.getLogger("EvalAdapt")
-        norms = {c: round(model.initial_classify_weights[c].norm().item(), 4) for c in range(17)}
+        norms = {c: round(model.classify.weight[c].norm().item(), 4) for c in range(17)}
         logger.info(f"\n[Stats] Initial Prototype Norms: {norms}")
 
     for batch_idx, batch_data in enumerate(tqdm(target_dataloader, desc="Adapting", leave=False)):
@@ -912,8 +912,6 @@ def main():
                         firing_rate_str = f", FiringRate={metrics['FiringRate']*100:.2f}%"
                         if "UpdateMagnitude" in metrics:
                             firing_rate_str += f", UpdateMag={metrics['UpdateMagnitude']:.4f}"
-                            
-                logger.info(f"Result for {ctype}-{sev}: Initial mIoU={initial_miou:.4f} -> Final (Online)={online_miou:.4f} -> Final (Frozen)={final_miou:.4f}, Acc={initial_acc:.4f} -> {final_acc:.4f}{firing_rate_str}")
             except Exception as e:
                 import traceback
                 logger.error(f"FATAL ERROR during {ctype} sev {sev} ({current_method}): {e}")
@@ -935,7 +933,7 @@ def main():
                     initial_tail = metrics["Tail_mIoU"][0]
                     final_tail = metrics["Tail_mIoU"][-1]
                 
-                logger.info(f"Result for {ctype}-{sev}: Initial mIoU={initial_miou:.4f} -> Final={final_miou:.4f} (Tail: {initial_tail:.4f} -> {final_tail:.4f}), Acc={initial_acc:.4f} -> {final_acc:.4f}{firing_rate_str}")
+                logger.info(f"Result for {ctype}-{sev}: Initial mIoU={initial_miou:.4f} -> Final (Online)={online_miou:.4f} -> Final (Frozen)={final_miou:.4f} (Tail: {initial_tail:.4f} -> {final_tail:.4f}), Acc={initial_acc:.4f} -> {final_acc:.4f}{firing_rate_str}")
                 suffix = f"_{full_method_name}"
                 
                 traj_json_path = os.path.join(args.log_dir, f'traj_{ctype}_{sev}{suffix}.json')
