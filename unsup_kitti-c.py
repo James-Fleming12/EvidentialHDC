@@ -238,11 +238,21 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             if c_mask.any():
                                 c_weights = update_weights[c_mask].unsqueeze(1)
                                 if ic_method == 'xc2' and c_mask.sum().item() >= 5:
-                                    from sklearn.cluster import MiniBatchKMeans
-                                    pts = valid_enc[c_mask].detach().cpu().numpy()
-                                    kmeans = MiniBatchKMeans(n_clusters=min(5, len(pts)), n_init=1, max_iter=10).fit(pts)
-                                    cluster_centers = torch.tensor(kmeans.cluster_centers_, device=device, dtype=valid_enc.dtype)
-                                    c_update = cluster_centers.mean(dim=0)
+                                    pts = valid_enc[c_mask]
+                                    k = min(5, len(pts))
+                                    # Fast PyTorch Native K-Means on GPU
+                                    indices = torch.randperm(len(pts), device=device)[:k]
+                                    centroids = pts[indices]
+                                    for _ in range(5): # 5 iters is plenty for small clusters
+                                        dists = torch.cdist(pts, centroids)
+                                        labels = dists.argmin(dim=1)
+                                        new_c = []
+                                        for i in range(k):
+                                            m = (labels == i)
+                                            if m.any(): new_c.append(pts[m].mean(dim=0))
+                                            else: new_c.append(centroids[i])
+                                        centroids = torch.stack(new_c)
+                                    c_update = centroids.mean(dim=0)
                                 else:
                                     c_update = (valid_enc[c_mask] * c_weights).mean(dim=0)
                                 

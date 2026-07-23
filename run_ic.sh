@@ -22,7 +22,7 @@
 # ----
 
 # Resuming Diagnostic Panel for Inter/Intra-Class Balancing
-METHODS=("ic4" "xc2")
+METHODS=("xc2")
 
 for method in "${METHODS[@]}"; do
     echo "=========================================="
