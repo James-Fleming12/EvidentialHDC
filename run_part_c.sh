@@ -4,7 +4,7 @@ export PYTORCH_ALLOC_CONF=expandable_segments:True
 export CUDA_VISIBLE_DEVICES=3
 
 # Set this to "" to run the full sweeps, or "--dry_run" to verify nothing crashes first.
-DRY_RUN_FLAG="--dry_run"
+DRY_RUN_FLAG=""
 
 # We wrap everything in a block and pipe it to tee so you have a single log file
 {

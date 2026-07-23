@@ -1,3 +1,4 @@
+import math
 import argparse
 import logging
 import os
@@ -65,7 +66,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         active_sigma_cos = model.source_sigma_cos
 
     if not eval_only and hasattr(model, 'classify'):
-        import logging
+
         logger = logging.getLogger("EvalAdapt")
         norms = {c: round(model.classify.weight[c].norm().item(), 4) for c in range(17)}
         logger.info(f"\n[Stats] Initial Prototype Norms: {norms}")
@@ -286,7 +287,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                     
                                     if ic_method == 'ic1':
                                         # Strict 5 degree per chunk budget limit
-                                        import math
+
                                         max_step = (5.0 * math.pi / 180.0) * model.classify.weight[c].norm(p=2).item()
                                         step_mag = min(step_mag, max_step)
                                     elif ic_method == 'ic4':
@@ -318,7 +319,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         model._veto_stats = {'true_errors_rejected': 0, 'correct_labels_rejected': 0}
         
     if not eval_only and hasattr(model, 'initial_classify_weights'):
-        import logging
+
         logger = logging.getLogger("EvalAdapt")
         class_rotations = {}
         for c in range(num_classes):
@@ -336,7 +337,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         logger.info(f"  Tail Rotation: {tail_rot}")
         
     if hasattr(model, '_class_veto_stats') and not eval_only:
-        import logging
+
         logger = logging.getLogger("EvalAdapt")
         logger.info(f"\n[Stats] Per-Class Veto Purity (True Errors / Correct Labels Rejected):")
         head_purity = {}
@@ -356,7 +357,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         model._class_veto_stats = {c: {'true_errors_rejected': 0, 'correct_labels_rejected': 0} for c in range(num_classes)}
         
     if hasattr(model, '_class_firing_log') and not eval_only:
-        import logging
+
         logger = logging.getLogger("EvalAdapt")
         head_firing = {}
         tail_firing = {}
