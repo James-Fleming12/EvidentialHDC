@@ -60,6 +60,12 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         active_mu_cos = model.source_mu_cos
         active_sigma_cos = model.source_sigma_cos
 
+    if not eval_only and hasattr(model, 'initial_classify_weights'):
+        import logging
+        logger = logging.getLogger("EvalAdapt")
+        norms = {c: round(model.initial_classify_weights[c].norm().item(), 4) for c in range(17)}
+        logger.info(f"\n[Stats] Initial Prototype Norms: {norms}")
+
     for batch_idx, batch_data in enumerate(tqdm(target_dataloader, desc="Adapting", leave=False)):
         if dry_run and batch_idx >= 2:
             break
