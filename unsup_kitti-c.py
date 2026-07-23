@@ -146,8 +146,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         model.class_freq_ema = torch.ones(num_classes, device=device) / num_classes
                     if not hasattr(model, 'class_update_counts'):
                         model.class_update_counts = torch.zeros(num_classes, device=device)
-                    if not hasattr(model, 'class_M'):
-                        model.class_M = torch.ones(num_classes, device=device)
+                    if not hasattr(model, 'momentum_prototypes'):
+                        model.momentum_prototypes = model.classify.weight.data.clone()
                     
                     beta = 0.99
                     batch_freq = torch.bincount(pseudo_labels, minlength=num_classes).float() / max(1, pseudo_labels.size(0))
@@ -258,10 +258,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                         progress = min(1.0, t / max_t)
                                         step_mag = step_mag * 0.5 * (1.0 + math.cos(math.pi * progress))
                                     elif schedule == 's2_equilibrium':
-                                        model.class_M[c] += step_mag
-                                        spring_k = 0.0005
-                                        model.class_M[c] = (1 - spring_k) * model.class_M[c] + spring_k * 1.0
-                                        step_mag = step_mag / model.class_M[c].item()
+                                        pass
                                         
                                     if test_1b == 'mean_evidence':
                                         g = evidence[c_mask, c].mean().item()
@@ -280,15 +277,25 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                             if angle > 40.0:  # Hard cap at 40 degrees
                                                 step_mag = 0.0
                                                 
-                                    model.classify.weight[c].data += step_mag * c_update.to(model.classify.weight.dtype)
-                                    
-                                    if update_method == 'evidential_hdc_tta' and hasattr(model, 'initial_classify_weights'):
-                                        spring_k = 0.0005
-                                        w_0 = F.normalize(model.initial_classify_weights[c], dim=0).to(model.classify.weight.device)
-                                        model.classify.weight[c].data.copy_((1 - spring_k) * model.classify.weight[c].data + spring_k * w_0)
+                                    if schedule == 's2_equilibrium':
+                                        if update_method == 'evidential_hdc_tta' and hasattr(model, 'initial_classify_weights'):
+                                            spring_k = 0.0005
+                                            w_0 = F.normalize(model.initial_classify_weights[c], dim=0).to(model.momentum_prototypes.device)
+                                            model.momentum_prototypes[c].data.copy_((1 - spring_k) * model.momentum_prototypes[c].data + spring_k * w_0)
                                         
-                                    if not reproduce_bug:
-                                        model.classify.weight[c].data.copy_(F.normalize(model.classify.weight[c].data, p=2, dim=0))
+                                        model.momentum_prototypes[c].data += step_mag * c_update.to(model.momentum_prototypes.dtype)
+                                        step_mag = step_mag / model.momentum_prototypes[c].norm(p=2).item()
+                                        model.classify.weight[c].data.copy_(F.normalize(model.momentum_prototypes[c].data, p=2, dim=0))
+                                    else:
+                                        model.classify.weight[c].data += step_mag * c_update.to(model.classify.weight.dtype)
+                                        
+                                        if update_method == 'evidential_hdc_tta' and hasattr(model, 'initial_classify_weights'):
+                                            spring_k = 0.0005
+                                            w_0 = F.normalize(model.initial_classify_weights[c], dim=0).to(model.classify.weight.device)
+                                            model.classify.weight[c].data.copy_((1 - spring_k) * model.classify.weight[c].data + spring_k * w_0)
+                                            
+                                        if not reproduce_bug:
+                                            model.classify.weight[c].data.copy_(F.normalize(model.classify.weight[c].data, p=2, dim=0))
                                     
                                     if not hasattr(model, '_update_magnitude_log'):
                                         model._update_magnitude_log = []
