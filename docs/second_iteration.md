@@ -82,8 +82,22 @@ We tested three new mechanisms to address the accumulation of this drift:
 3. **`anchor_spring` (The Silent PyTorch Bug):** A mechanism to gently pull drifting prototypes back to their initialization (`w_t = (1-k)*w_t + k*w_0`) yielded results mathematically identical to the baseline. This exposed a critical PyTorch assignment bug: `model.classify.weight[c].data = ...` silently replaces a temporary view's pointer rather than modifying the tensor in-place. 
    - **Crucially, this meant our post-step `F.normalize()` had also been silently failing for the entire project.** Prototypes were never re-normalized, causing their magnitudes to grow unbounded over thousands of frames and systematically shrinking the effective angular step size of the $0.01$ learning rate.
 
-**Immediate Action:** 
-We have patched the script to use explicit in-place memory copies (`.data.copy_()`) for all tensor updates. We have widened the `rotation_cap` to 40 degrees and tuned `anchor_spring` to `k=0.01` (1%). We are re-running the sweep to observe the true impact of the spring mechanism.
+**Immediate Action (Completed):** 
+We patched the script to use explicit in-place memory copies (`.data.copy_()`) for all tensor updates, widened the `rotation_cap` to 40 degrees, and ran a sweep to observe the true impact of the spring mechanism.
+
+### Part 1.5: The Epistemic Anchor Hypothesis (Update: Late July 22)
+
+**The `anchor_spring` Sweep Results:**
+With the magnitude scaling correctly fixed, we ran a sweep over the spring constant $k$ ($0.001, 0.0005, 0.0001$). We observed that the mathematically perfect pipeline peaked at **0.4129** on Snow ($k=0.0001$, allowing $\sim 18^\circ$ of rotation), which surprisingly underperformed the bugged Phase 1 code (which reached **0.4840**).
+
+**The Hypothesis:**
+In Phase 1, the PyTorch magnitude bug caused the effective learning rate to decay to zero after taking massive, fast steps (rotating up to 40-50 degrees) in the first evaluation chunk. The model adapted deeply, and then permanently froze.
+
+In the current fixed pipeline, the `anchor_spring` (even at a tiny $k=0.0001$) creates a continuous physical equilibrium that arrests rotation prematurely. For severe structural shifts like Snow, the prototypes organically *need* to rotate 40+ degrees to envelop the sparsified geometry. The physical spring is preventing them from reaching the true adapted state.
+
+Because our continuous magnitude gates (Tier 1 Euclidean Density and Tier 2 Dirichlet Evidence) are now fully functional, they naturally act as an **Epistemic Anchor**. If a 10,000D prototype drifts too far into OOD noise, the 128D Euclidean gate (`tier1_decay`) will exponentially crush the step magnitude to zero because the points no longer match the frozen 128D clean manifold.
+
+**Action:** We will run a final test with $k=0.0$ (disabling the macroscopic drift spring entirely) to see if the epistemic gates alone (backed by a hard 40-degree ceiling) can achieve the 0.4840+ Snow performance without shattering on Wet Ground.
 
 ### Part 2: Structural Tail Rescue
 Why did `beam_missing` head classes adapt while the tail didn't? Single-frame adaptation cannot recover geometry that is completely missing (e.g. absent scan lines). 
@@ -91,11 +105,12 @@ Why did `beam_missing` head classes adapt while the tail didn't? Single-frame ad
 * **Test 2b:** Compare surviving point counts between `incomplete_echo` (dropout) and `beam_missing` (absent lines). 
 
 ### Part 3 & 4: Inter/Intra-Class Refinement
-* **Test 3a:** Re-sweep the inverse-frequency dampener ($\gamma$) now that C2 has decoupled magnitude.
+* **Test 3a:** The inverse-frequency dampener ($\gamma$) was permanently fixed to $0.1$ as it successfully suppressed majority class confirmation bias without causing paralysis.
 * **Test 4a (Per-Subcluster Calibration):** Push the A1 Dirichlet calibration one level down to the $K$-means subclusters so rare poses don't look OOD against their own core class manifold.
 
-### Part 5: Multi-View Architectures
+### Part 5: Multi-View Architectures (Microscopic Temporal Consistency)
+With the Macroscopic Temporal Drift (`anchor_spring`) potentially being disabled, **Microscopic Temporal Consistency** becomes critical. Without a physical spring pulling the network back, we need absolute certainty in our gradient steps to defend against transient noise (like snow flakes or puddle reflections).
 Multi-view now has two concrete, evidence-grounded jobs:
-1. Supply missing geometry for structural corruptions (pose-warped temporal sweeps).
-2. Provide a noise-vs-few discriminator (view disagreement) for the Test 1b step-magnitude throttle.
+1. Enforce frame-to-frame geometric agreement before allowing high-magnitude updates (acting as a dynamic replacement for the static anchor spring).
+2. Supply missing geometry for structural corruptions (pose-warped temporal sweeps).
 * We will fix the naive 5x5 temporal gate, build an AUROC screening harness to rank view augmentations, and fuse the top signals into the Dirichlet evidence term.
