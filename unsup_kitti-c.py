@@ -38,7 +38,7 @@ SEVERITY_MAP = {1: 'light', 2: 'moderate', 3: 'heavy', 4: 'extreme'}
 CONFIG_ARCH = "config/arch/senet-2048p.yml"
 CONFIG_LABELS_KITTI_ALL = "config/labels/semantic-kitti-all.yaml"  # Standard 17 classes
 
-def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, test_1b='none', test_1c=1.0, ic_method='none'):
+def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, test_1b='none', test_1c=1.0, ic_method='none', tau=0.0):
     if ic_method not in ['none', 'ic1', 'ic4', 'xc2']:
         raise ValueError(f"Unknown ic_method: {ic_method}")
 
@@ -104,7 +104,15 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     if norm_enc.dtype != model.classify.weight.dtype:
                         norm_enc = norm_enc.to(model.classify.weight.dtype)
                     
-                    logits = model.classify(norm_enc)
+                    w_norm = F.normalize(model.classify.weight, p=2, dim=1)
+                    kappa = 15.0 # Scale to match Bayesian Momentum magnitude
+                    logits = F.linear(norm_enc, w_norm) * kappa
+                    
+                    if tau != 0.0 and hasattr(model, 'source_class_freq'):
+                        # C1: Explicit Prior Logit Adjustment
+                        pi = torch.clamp(model.source_class_freq, min=1e-5).to(device)
+                        logits = logits - tau * torch.log(pi).unsqueeze(0)
+
                     predictions = torch.argmax(logits, dim=1)
                 
                 selected_labels = proj_labels[indices]
@@ -637,12 +645,14 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device, dry_
         else:
             model.source_subclusters[c] = F.normalize(model.classify.weight[c].unsqueeze(0), dim=1)
 
+    model.source_class_freq = (class_latent_counts / class_latent_counts.sum()).cpu()
     return {
         'source_density_std': model.source_density_std,
         'source_mu_cos': model.source_mu_cos,
         'source_sigma_cos': model.source_sigma_cos,
         'drift_mu_0': model.drift_mu_0.clone().cpu(),
-        'source_subclusters': {c: v.clone().cpu() for c, v in model.source_subclusters.items()}
+        'source_subclusters': {c: v.clone().cpu() for c, v in model.source_subclusters.items()},
+        'source_class_freq': model.source_class_freq
     }
 
 def main():
@@ -668,6 +678,7 @@ def main():
     parser.add_argument('--test_1b', type=str, default='none', help='Test 1b: Comma-separated list of step magnitudes (e.g., none,count_throttle,rotation_cap,anchor_spring)')
     parser.add_argument('--test_1c', type=str, default='1.0', help='Test 1c: Comma-separated list of shrinkage lambdas (e.g., 1.0,0.75,0.50)')
     parser.add_argument('--ic_method', type=str, default='none', help='Inter/Intra-Class balancing method: none, ic1, ic4, xc1, xc2')
+    parser.add_argument('--tau', type=float, default=0.0, help='Logit adjustment tau for inference prior. τ=0 is normalized baseline. τ<0 is majority amplifier. τ>0 is balanced softmax.')
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -793,7 +804,8 @@ def main():
         'source_mu_cos': getattr(base_model, 'source_mu_cos', None),
         'source_sigma_cos': getattr(base_model, 'source_sigma_cos', None),
         'drift_mu_0': getattr(base_model, 'drift_mu_0', None),
-        'source_subclusters': getattr(base_model, 'source_subclusters', None)
+        'source_subclusters': getattr(base_model, 'source_subclusters', None),
+        'source_class_freq': getattr(base_model, 'source_class_freq', None)
     }
 
     clean_state_dict = torch.load(args.pretrained_path, map_location=device)
@@ -836,6 +848,7 @@ def main():
         model.source_sigma_cos = source_stats_cache['source_sigma_cos']
         model.drift_mu_0 = source_stats_cache['drift_mu_0']
         model.source_subclusters = source_stats_cache['source_subclusters']
+        model.source_class_freq = source_stats_cache['source_class_freq'].to(device)
 
     for (current_method, t1b, t1c), full_method_name in zip(configs_to_run, full_method_names):
         logger.info(f"=========================================")
@@ -927,7 +940,7 @@ def main():
                     # Pass 1: True Initial (Frozen on chunk)
                     if (ctype, sev) not in shared_init_metrics:
                         logger.info("  -> Pass 1: Computing True Initial metrics (Frozen)")
-                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b='none', test_1c=1.0, ic_method=args.ic_method)
+                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b='none', test_1c=1.0, ic_method=args.ic_method, tau=args.tau)
                         shared_init_metrics[(ctype, sev)] = init_metrics
                     else:
                         logger.info("  -> Pass 1: Reusing cached True Initial metrics (Frozen)")
@@ -937,14 +950,14 @@ def main():
                     if current_method != 'frozen':
                         logger.info("  -> Pass 2: Adapting model weights")
                         eval_model.train()
-                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method)
+                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method, tau=args.tau)
                     else:
                         adapt_metrics = init_metrics
                         
                     # Pass 3: True Final (Frozen on chunk using adapted weights)
                     logger.info("  -> Pass 3: Computing True Final metrics (Frozen)")
                     eval_model.eval()
-                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method)
+                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method, tau=args.tau)
                     
                     # We only care about the absolute end of the frozen evaluations for the sequence
                     metrics = adapt_metrics  # Just for the trajectory json
@@ -964,7 +977,7 @@ def main():
                             firing_rate_str += f", UpdateMag={adapt_metrics['UpdateMagnitude']:.4f}"
                 else:
                     # Original single-pass continuous evaluation
-                    metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=(current_method == 'frozen'), update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method)
+                    metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=(current_method == 'frozen'), update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method, tau=args.tau)
                     if len(metrics["mIoU"]) > 0:
                         initial_miou = metrics["mIoU"][0]
                         final_miou = metrics["mIoU"][-1]
