@@ -149,7 +149,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     
                     if update_method == 'evidential_hdc_tta':
                         # 1. Balanced Updates: Inverse Frequency Soft Weighting (gamma = 0.1)
-                        gamma = float(test_1b) if test_1b.replace('.','',1).isdigit() else 0.1
+                        gamma = 0.1
                         balance_weights = (min_freq / f_y) ** gamma
                         update_weights = update_weights * balance_weights
                         
@@ -252,7 +252,10 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                     model.classify.weight[c].data += step_mag * c_update.to(model.classify.weight.dtype)
                                     
                                     if update_method == 'evidential_hdc_tta' and hasattr(model, 'initial_classify_weights'):
-                                        spring_k = 0.01
+                                        try:
+                                            spring_k = float(test_1b)
+                                        except ValueError:
+                                            spring_k = 0.01
                                         w_0 = F.normalize(model.initial_classify_weights[c], dim=0).to(model.classify.weight.device)
                                         model.classify.weight[c].data.copy_((1 - spring_k) * model.classify.weight[c].data + spring_k * w_0)
                                         
