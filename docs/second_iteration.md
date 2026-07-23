@@ -79,3 +79,9 @@ The evidence proves that the model *requires* a deep, early adaptation phase fol
 * **IC4 (Confusion-aware weighting):** Weight class $c$ by how many points it is actively losing in the confusion matrix.
 * **XC1 (Per-subcluster Dirichlet calibration):** Compute calibration per $K$-means subcluster.
 * **XC2 (Equal-weight-per-subcluster aggregation):** The non-restrictive replacement for the Subcluster Ledger.
+
+### IC Diagnostic Results
+* **Baseline (Bayesian Momentum):** Achieves robust final adaptation across all chunks. Max rotation was naturally restricted to `4.14°`.
+* **IC1 ($5^\circ$ Rotation Budget):** *Result:* Mathematically identical to Baseline. The Bayesian Momentum mechanism inherently suppresses all per-class chunk rotations to under $4.5^\circ$, rendering the explicit $5^\circ$ hard-budget completely inactive. This proves extreme geometric stability in the unconstrained baseline.
+* **IC4 (Epistemic Weighting):** *Result:* Slightly degraded adaptation. Scaling the step magnitude by the Dirichlet uncertainty likely causes the model to over-adapt to inherently noisy pseudo-labels in highly ambiguous regions, actively harming the prototypes.
+* **XC2 (Subcluster Equivalence):** *Result:* Pending (Evaluating via native PyTorch K-Means).

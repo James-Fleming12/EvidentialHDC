@@ -9,7 +9,7 @@
 #     echo "=========================================="
 #     echo "Running IC Diagnostic: ${method}"
 #     echo "=========================================="
-#     python unsup_kitti-c.py \
+#     PYTORCH_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=3 python unsup_kitti-c.py \
 #         --method evidential_hdc_tta \
 #         --ic_method ${method} \
 #         --chunked \
@@ -28,8 +28,8 @@ for method in "${METHODS[@]}"; do
     echo "=========================================="
     echo "Running IC Diagnostic: ${method}"
     echo "=========================================="
-python unsup_kitti-c.py \
-    --method evidential_hdc_tta \
+    PYTORCH_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=3 python unsup_kitti-c.py \
+        --method evidential_hdc_tta \
         --ic_method ${method} \
         --chunked \
         --reset_per_corruption \
