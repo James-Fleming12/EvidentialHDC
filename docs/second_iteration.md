@@ -61,8 +61,11 @@ Run 3 established that the variance of the baseline is extremely tight ($\pm 0.0
 
 The evidence proves that the model *requires* a deep, early adaptation phase followed by a decay, rather than a continuous constant equilibrium. We must implement this mathematically rather than relying on a tensor accumulation bug.
 
-1. **S1 (LR Schedule Sweep):** Explicitly test constant vs $1/t$ vs cosine decay. (Currently testing via `--schedule` flag)
-2. **S2 (Per-Class Norm Equalization):** `step = lr * direction / max(||w_c||, epsilon)`.
+1. **S1 (Global LR Schedules):** We explicitly tested constant, $1/t$, and cosine decay globally. They **failed** entirely (freezing the network). Why? Because a global schedule decays learning rates equally across all classes, meaning rare classes are frozen before they ever see enough points to adapt.
+2. **S2 (Formalized Bug Reproduction / Norm-Driven Dynamic LR):** The PyTorch `.data` bug was actually an emergent, mathematically perfect **Per-Class Inverse-Frequency Schedule**. 
+   * When a majority class fires constantly, its un-normalized norm $M_c = \|w_c\|$ inflates rapidly via accumulation (e.g., $1.0 \rightarrow 30.0$). Its effective learning rate ($\alpha = \text{step} / M_c$) plummets to $1/30$, freezing and protecting it.
+   * When a rare class rarely fires, its norm stays close to $1.0$. When it finally does fire, its learning rate is un-attenuated ($1/1.0 = 1.0\times$), allowing it to adapt rapidly.
+   * **Implementation:** We now explicitly track $M_c$ as a scalar for each class, update it via $M_c \leftarrow M_c + \text{step}$, apply the spring if applicable, and formally divide $\text{step} / M_c$ before applying it to the true, normalized prototypes.
 3. **S3 (Explicit Early Stopping):** Adapt for first N frames, then freeze. 
 4. **S4 (Soft Rotation Barrier):** Replace the 40° hard cap with a soft exponential barrier.
 5. **S5 (Spring, Properly Evaluated):** Apply $k$ to all classes every frame, evaluated against the V7 noise floor.
