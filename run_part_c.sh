@@ -38,6 +38,7 @@ DRY_RUN_FLAG=""
             --method frozen \
             --ic_method none \
             --chunked \
+            --reset_per_corruption \
             --tau ${tau} \
             ${DRY_RUN_FLAG} \
             --log_dir logs/tau_sweep_tau_${tau}
