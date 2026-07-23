@@ -79,40 +79,65 @@ We ran a grid sweep over `test_1b` (Step Magnitude Throttles) and `test_1c` (Par
 **The New Hypothesis & Solution (Morning Update: July 22):**
 The initial assumption that the -3.28% `wet_ground` regression was entirely due to tail-class shattering (bicyclist rotating 60 degrees on isolated noise) was incomplete. While the tail *did* shatter due to the C2 fix granting unit steps to 0.12%-confidence noise, the bulk of the mIoU drop must have stemmed from high-mass head classes like Road drifting on large specular puddles. 
 We tested three new mechanisms to address the accumulation of this drift:
-1. **`count_throttle` (The NO-OP):** Throttling by mass (`min(1.0, count / 10.0)`) failed to stop `wet_ground` degradation (mIoU 0.3916). Puddle reflections on `wet_ground` generate hundreds of points per frame, easily clearing the throttle threshold. Mass throttling is blind to dense, coherent false-positives.
-2. **`rotation_cap` (The Over-Correction):** A hard 10-degree rotation cap perfectly halted the 60-degree runaways on `wet_ground`, but actively destroyed our previous `snow` tail rescue (mIoU dropped from 0.4840 $\rightarrow$ 0.3862). To successfully adapt to severe `snow`, tail prototypes organically need to rotate up to 40 degrees. 
-3. **`anchor_spring` (The Silent PyTorch Bug):** A mechanism to gently pull drifting prototypes back to their initialization (`w_t = (1-k)*w_t + k*w_0`) yielded results mathematically identical to the baseline. This exposed a critical PyTorch assignment bug: `model.classify.weight[c].data = ...` silently replaces a temporary view's pointer rather than modifying the tensor in-place. 
-   - **Crucially, this meant our post-step `F.normalize()` had also been silently failing for the entire project.** Prototypes were never re-normalized, causing their magnitudes to grow unbounded over thousands of frames and systematically shrinking the effective angular step size of the $0.01$ learning rate.
+## Phase 2: Audit of Phase 1 Takeaways and Balancing Test Suite
+**Date:** July 22, 2026 (v3)
 
-**Immediate Action (Completed):** 
-We patched the script to use explicit in-place memory copies (`.data.copy_()`) for all tensor updates, widened the `rotation_cap` to 40 degrees, and ran a sweep to observe the true impact of the spring mechanism.
+## Objective
+Establish mathematically rigorous diagnostics to audit the early Phase 1 hypotheses, and explicitly shift from heuristic fixes to explicit magnitude/rotation schedules and inter/intra-class balancing. 
 
-### Part 1.5: The Epistemic Anchor Hypothesis (Update: Late July 22)
+---
 
-**The `anchor_spring` Sweep Results:**
-With the magnitude scaling correctly fixed, we ran a sweep over the spring constant $k$ ($0.001, 0.0005, 0.0001$). We observed that the mathematically perfect pipeline peaked at **0.4129** on Snow ($k=0.0001$, allowing $\sim 18^\circ$ of rotation), which surprisingly underperformed the bugged Phase 1 code (which reached **0.4840**).
+## Part A: The True Phase 1 Takeaways
 
-**The Hypothesis:**
-In Phase 1, the PyTorch magnitude bug caused the effective learning rate to decay to zero after taking massive, fast steps (rotating up to 40-50 degrees) in the first evaluation chunk. The model adapted deeply, and then permanently froze.
+### A0. The PyTorch `.data` bug was a Per-Class, Time-Decaying Learning Rate
+`model.classify.weight[c].data = F.normalize(...)` failed to overwrite the tensor in-place, meaning the un-normalized weight accumulated steps infinitely: `w_c += step`.
+Because the classification layer always normalized on the forward pass (`proto_norm = F.normalize(model.classify.weight, dim=1)`), the unconstrained magnitude *only* affected the angular step size:
+`rotation per step ≈ step_mag / ||w_c||`
+As `||w_c||` grew linearly via accumulation, the effective angular learning rate decayed like **$1/t$**. This produced a textbook Robbins–Monro annealing schedule, not "early stopping". 
 
-In the current fixed pipeline, the `anchor_spring` (even at a tiny $k=0.0001$) creates a continuous physical equilibrium that arrests rotation prematurely. For severe structural shifts like Snow, the prototypes organically *need* to rotate 40+ degrees to envelop the sparsified geometry. The physical spring is preventing them from reaching the true adapted state.
+### A1. The 50–60° Rotation was a Prototype-Norm Artifact
+The claim that a single phantom point dragged prototypes 60° was false. Step magnitudes were gated by `step_mag = update_lr * update_weights`. The massive rotations occurred because rare classes happened to have small initial prototype norms, making their `1/||w_c||` multiplier massive. 
 
-Because our continuous magnitude gates (Tier 1 Euclidean Density and Tier 2 Dirichlet Evidence) are now fully functional, they naturally act as an **Epistemic Anchor**. If a 10,000D prototype drifts too far into OOD noise, the 128D Euclidean gate (`tier1_decay`) will exponentially crush the step magnitude to zero because the points no longer match the frozen 128D clean manifold.
+### A2. The Epistemic Anchor ($k=0$) does nothing
+The regression from $k=0.0001$ to $k=0.0$ was only 0.0004 mIoU—well below the noise floor. The spring is neither the cause of the `0.4840` shortfall nor a necessary anchor. 
 
-**Action:** We will run a final test with $k=0.0$ (disabling the macroscopic drift spring entirely) to see if the epistemic gates alone (backed by a hard 40-degree ceiling) can achieve the 0.4840+ Snow performance without shattering on Wet Ground.
+### A3. The `0.4840` vs `0.4129` Comparison is Confounded
+The `0.4840` metric was reported as a *cumulative online* mIoU during the adaptation pass. The `0.4129` metric was reported as a *final frozen* mIoU post-adaptation. This, alongside the addition of the hard 40° cap, the anchor spring, and the normalization fix, means the two metrics are fundamentally uncomparable.
 
-### Part 2: Structural Tail Rescue
-Why did `beam_missing` head classes adapt while the tail didn't? Single-frame adaptation cannot recover geometry that is completely missing (e.g. absent scan lines). 
-* **Test 2a:** Check tail rotation on `beam_missing`. If zero, the tail is starved of points.
-* **Test 2b:** Compare surviving point counts between `incomplete_echo` (dropout) and `beam_missing` (absent lines). 
+### A4. The `count_throttle` and Inverse-Frequency Dampeners
+`count_throttle` was aimed at a mechanism (dense false positives causing runaway rotation) that was never operating. The true mechanism was the norm artifact. Inverse-Frequency dampening ($\gamma$) was also operating on the magnitude, suppressing both direction and step-size simultaneously.
 
-### Part 3 & 4: Inter/Intra-Class Refinement
-* **Test 3a:** The inverse-frequency dampener ($\gamma$) was permanently fixed to $0.1$ as it successfully suppressed majority class confirmation bias without causing paralysis.
-* **Test 4a (Per-Subcluster Calibration):** Push the A1 Dirichlet calibration one level down to the $K$-means subclusters so rare poses don't look OOD against their own core class manifold.
+---
 
-### Part 5: Multi-View Architectures (Microscopic Temporal Consistency)
-With the Macroscopic Temporal Drift (`anchor_spring`) potentially being disabled, **Microscopic Temporal Consistency** becomes critical. Without a physical spring pulling the network back, we need absolute certainty in our gradient steps to defend against transient noise (like snow flakes or puddle reflections).
-Multi-view now has two concrete, evidence-grounded jobs:
-1. Enforce frame-to-frame geometric agreement before allowing high-magnitude updates (acting as a dynamic replacement for the static anchor spring).
-2. Supply missing geometry for structural corruptions (pose-warped temporal sweeps).
-* We will fix the naive 5x5 temporal gate, build an AUROC screening harness to rank view augmentations, and fuse the top signals into the Dirichlet evidence term.
+## Part B: Verification Tests (Diagnostics)
+
+| ID | Test | Goal |
+| :--- | :--- | :--- |
+| **V1** | **Protocol equivalence** | Report both cumulative-online mIoU and final-frozen mIoU for every run to bridge the 0.4840 metric gap. |
+| **V2** | **Log `\|\|w_c\|\|` per class** | Confirms the norm-artifact explanation. Reveals whether per-class effective LR varied by orders of magnitude. |
+| **V3** | **Class Index Fix** | Fix the Head/Tail indices. Classes 11, 13, 14, 15, 16 are head/background classes (Sidewalk, Building, Fence, Vegetation, Trunk). 2, 3, 6, 7, 10 are tail classes (Bicycle, Motorcycle, Person, Bicyclist, Parking). |
+| **V4** | **Firing Rate Logging** | Log `n_points, n_fired, mean_w, sum_w` to separate true firing frequency from mean weight. |
+| **V5** | **Argparse Plumbing** | Plumb `--test_1b` and `--reproduce_bug` to cleanly run ablations. |
+| **V6** | **Bug-reproduction** | Disable only the post-step normalization (`--reproduce_bug`). Does snow return to ~0.4840 online? This is the decisive test for the $1/t$ annealing hypothesis. |
+| **V7** | **Noise Floor** | Establish a noise floor using semantically-neutral perturbations. |
+
+---
+
+## Part C: The Step-Size Schedule
+
+The evidence says the mechanism producing the best-ever number was a decaying effective LR ($1/t$), and that everything since has been a global shrink rather than a schedule.
+
+1. **S1 (LR Schedule Sweep):** Explicitly test constant vs $1/t$ vs cosine decay.
+2. **S2 (Per-Class Norm Equalization):** `step = lr * direction / max(||w_c||, epsilon)`.
+3. **S3 (Explicit Early Stopping):** Adapt for first N frames, then freeze. 
+4. **S4 (Soft Rotation Barrier):** Replace the 40° hard cap with a soft exponential barrier.
+5. **S5 (Spring, Properly Evaluated):** Apply $k$ to all classes every frame, evaluated against the V7 noise floor.
+
+---
+
+## Part D & E: Inter/Intra-Class Balancing
+* **IC1 (Per-class rotation budget):** Equalize angular displacement, not weights.
+* **IC2 (Split $\gamma$):** Apply inverse-frequency to direction weighting only, vs magnitude only.
+* **IC4 (Confusion-aware weighting):** Weight class $c$ by how many points it is actively losing in the confusion matrix.
+* **XC1 (Per-subcluster Dirichlet calibration):** Compute calibration per $K$-means subcluster.
+* **XC2 (Equal-weight-per-subcluster aggregation):** The non-restrictive replacement for the Subcluster Ledger.

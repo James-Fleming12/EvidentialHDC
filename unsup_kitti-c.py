@@ -38,7 +38,7 @@ SEVERITY_MAP = {1: 'light', 2: 'moderate', 3: 'heavy', 4: 'extreme'}
 CONFIG_ARCH = "config/arch/senet-2048p.yml"
 CONFIG_LABELS_KITTI_ALL = "config/labels/semantic-kitti-all.yaml"  # Standard 17 classes
 
-def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, test_1b='none', test_1c=1.0):
+def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, test_1b='none', test_1c=1.0, reproduce_bug=False):
     miou_history = []
     head_miou_history = []
     mid_miou_history = []
@@ -196,7 +196,10 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         for c in range(num_classes):
                             c_mask = (pseudo_labels == c)
                             if c_mask.any():
-                                model._class_firing_log[c].append(update_weights[c_mask].mean().item())
+                                n_pts = c_mask.sum().item()
+                                n_fired = (c_mask & fired_mask).sum().item()
+                                sum_w = update_weights[c_mask].sum().item()
+                                model._class_firing_log[c].append({'n_points': n_pts, 'n_fired': n_fired, 'sum_w': sum_w})
                     else:
                         model._firing_log.append(0.0)
                     
@@ -252,14 +255,12 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                     model.classify.weight[c].data += step_mag * c_update.to(model.classify.weight.dtype)
                                     
                                     if update_method == 'evidential_hdc_tta' and hasattr(model, 'initial_classify_weights'):
-                                        try:
-                                            spring_k = float(test_1b)
-                                        except ValueError:
-                                            spring_k = 0.01
+                                        spring_k = 0.0005
                                         w_0 = F.normalize(model.initial_classify_weights[c], dim=0).to(model.classify.weight.device)
                                         model.classify.weight[c].data.copy_((1 - spring_k) * model.classify.weight[c].data + spring_k * w_0)
                                         
-                                    model.classify.weight[c].data.copy_(F.normalize(model.classify.weight[c].data, p=2, dim=0))
+                                    if not reproduce_bug:
+                                        model.classify.weight[c].data.copy_(F.normalize(model.classify.weight[c].data, p=2, dim=0))
                                     
                                     if not hasattr(model, '_update_magnitude_log'):
                                         model._update_magnitude_log = []
@@ -314,15 +315,22 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         head_firing = {}
         tail_firing = {}
         for c in range(num_classes):
-            if len(model._class_firing_log[c]) > 0:
-                rate = sum(model._class_firing_log[c]) / len(model._class_firing_log[c])
+            logs = model._class_firing_log[c]
+            if len(logs) > 0:
+                n_frames = len(logs)
+                n_points = sum(l['n_points'] for l in logs)
+                n_fired = sum(l['n_fired'] for l in logs)
+                mean_w = sum(l['sum_w'] for l in logs) / n_points if n_points > 0 else 0
+                
+                # Firing rate is now true fired points / total points
+                rate = n_fired / n_points if n_points > 0 else 0.0
             else:
                 rate = 0.0
             if c in [11, 13, 14, 15, 16]:
                 head_firing[c] = round(rate, 4)
             elif c in [2, 3, 6, 7, 10]:
                 tail_firing[c] = round(rate, 4)
-        logger.info(f"\n[Stats] Per-Class Firing Rates:")
+        logger.info(f"\n[Stats] Per-Class Firing Rates (True Fired/Total):")
         logger.info(f"  Head Firing: {head_firing}")
         logger.info(f"  Tail Firing: {tail_firing}")
         model._class_firing_log = {c: [] for c in range(num_classes)}
@@ -578,24 +586,19 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device):
 
 def main():
     import random
-    torch.manual_seed(42)
-    torch.cuda.manual_seed(42)
-    np.random.seed(42)
-    random.seed(42)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    
     parser = argparse.ArgumentParser(description="Test Unsupervised Updates on KITTI-C")
     parser.add_argument('--pretrain', action='store_true', help='Run pretraining on SemanticKITTI before evaluating')
     parser.add_argument('--chunked', action='store_true', help='Use D3CTTA chunked protocol: continuous adaptation across disjoint 1/7th splits instead of full independent sequences.')
-    parser.add_argument('--reset_per_corruption', action='store_true', help='Reset the model to the clean pretrained weights before adapting on each corruption (even when using chunks).')
-    parser.add_argument('--skip_extractor', action='store_true', help='Skip feature extractor pretraining and only retrain the HDC model')
+    parser.add_argument('--reset_per_corruption', action='store_true', help='Reset the model to the clean pretrained weights before adapting on each corruption (requires --chunked).')
     parser.add_argument('--pretrained_path', type=str, default='logs/kitti_pretrain/hdc_sub.pth', help='Path to load pretrained model')
     parser.add_argument('--log_dir', type=str, default='logs/kitti_c_test', help='Directory to save logs and graphics')
     parser.add_argument('--method', type=str, default='frozen', help='Method to test.')
+    parser.add_argument('--reproduce_bug', action='store_true', help='Skip post-step normalization to reproduce the phase 1 magnitude explosion bug.')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for noise floor tests')
     parser.add_argument('--dry_run', action='store_true', help='Run only 2 batches per condition to quickly verify no crashes will occur.')
     parser.add_argument('--continue_pretrain', action='store_true', help='Resume pretraining from the existing pretrained_path')
     parser.add_argument('--continue', dest='continue_epochs', type=int, default=0, help='Continue feature extractor training for this many epochs, reinitialize HDC, and perform adaptation')
+    parser.add_argument('--skip_extractor', action='store_true', help='Skip feature extractor pretraining and only retrain the HDC model')
     parser.add_argument('--extractor_epochs', type=int, default=60, help='Number of epochs to train the feature extractor')
     parser.add_argument('--hdc_epochs', type=int, default=15, help='Number of epochs to train the HDC density model')
     parser.add_argument('--severity', type=int, default=3, help='Severity level for corruptions')
@@ -605,6 +608,13 @@ def main():
     parser.add_argument('--test_1b', type=str, default='none', help='Test 1b: Comma-separated list of step magnitudes (e.g., none,count_throttle,rotation_cap,anchor_spring)')
     parser.add_argument('--test_1c', type=str, default='1.0', help='Test 1c: Comma-separated list of shrinkage lambdas (e.g., 1.0,0.75,0.50)')
     args = parser.parse_args()
+
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
+    random.seed(args.seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
 
     if args.continue_epochs > 0:
         args.pretrain = True
@@ -844,7 +854,7 @@ def main():
                     # Pass 1: True Initial (Frozen on chunk)
                     if (ctype, sev) not in shared_init_metrics:
                         logger.info("  -> Pass 1: Computing True Initial metrics (Frozen)")
-                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b='none', test_1c=1.0)
+                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b='none', test_1c=1.0, reproduce_bug=getattr(args, 'reproduce_bug', False))
                         shared_init_metrics[(ctype, sev)] = init_metrics
                     else:
                         logger.info("  -> Pass 1: Reusing cached True Initial metrics (Frozen)")
@@ -854,24 +864,25 @@ def main():
                     if current_method != 'frozen':
                         logger.info("  -> Pass 2: Adapting model weights")
                         eval_model.train()
-                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c)
+                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, reproduce_bug=getattr(args, 'reproduce_bug', False))
                     else:
                         adapt_metrics = init_metrics
                         
                     # Pass 3: True Final (Frozen on chunk using adapted weights)
                     logger.info("  -> Pass 3: Computing True Final metrics (Frozen)")
                     eval_model.eval()
-                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c)
+                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, reproduce_bug=getattr(args, 'reproduce_bug', False))
                     
                     # We only care about the absolute end of the frozen evaluations for the sequence
                     metrics = adapt_metrics  # Just for the trajectory json
                     if len(init_metrics["mIoU"]) > 0:
                         initial_miou = init_metrics["mIoU"][-1]
                         final_miou = final_metrics["mIoU"][-1]
+                        online_miou = adapt_metrics["mIoU"][-1]
                         initial_acc = init_metrics["Accuracy"][-1]
                         final_acc = final_metrics["Accuracy"][-1]
                     else:
-                        initial_miou = final_miou = initial_acc = final_acc = 0.0
+                        initial_miou = final_miou = online_miou = initial_acc = final_acc = 0.0
                         
                     firing_rate_str = ""
                     if "FiringRate" in adapt_metrics:
@@ -880,20 +891,23 @@ def main():
                             firing_rate_str += f", UpdateMag={adapt_metrics['UpdateMagnitude']:.4f}"
                 else:
                     # Original single-pass continuous evaluation
-                    metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=(current_method == 'frozen'), update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c)
+                    metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=(current_method == 'frozen'), update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, reproduce_bug=getattr(args, 'reproduce_bug', False))
                     if len(metrics["mIoU"]) > 0:
                         initial_miou = metrics["mIoU"][0]
                         final_miou = metrics["mIoU"][-1]
+                        online_miou = final_miou
                         initial_acc = metrics["Accuracy"][0]
                         final_acc = metrics["Accuracy"][-1]
                     else:
-                        initial_miou = final_miou = initial_acc = final_acc = 0.0
+                        initial_miou = final_miou = online_miou = initial_acc = final_acc = 0.0
                         
                     firing_rate_str = ""
                     if "FiringRate" in metrics:
                         firing_rate_str = f", FiringRate={metrics['FiringRate']*100:.2f}%"
                         if "UpdateMagnitude" in metrics:
                             firing_rate_str += f", UpdateMag={metrics['UpdateMagnitude']:.4f}"
+                            
+                logger.info(f"Result for {ctype}-{sev}: Initial mIoU={initial_miou:.4f} -> Final (Online)={online_miou:.4f} -> Final (Frozen)={final_miou:.4f}, Acc={initial_acc:.4f} -> {final_acc:.4f}{firing_rate_str}")
             except Exception as e:
                 import traceback
                 logger.error(f"FATAL ERROR during {ctype} sev {sev} ({current_method}): {e}")
