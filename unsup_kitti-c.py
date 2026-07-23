@@ -734,7 +734,7 @@ def main():
             logger.info(f"Successfully pretrained model on SemanticKITTI. Optimizer state saved to {opt_path}")
             
     sev = args.severity
-    methods_to_run = ['evidential_hdc_tta']
+    methods_to_run = [m.strip() for m in args.method.split(',')]
     
     global_results_path = os.path.join(args.log_dir, 'global_results.json')
     global_results = None
