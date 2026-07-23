@@ -14,8 +14,10 @@ In this phase, we will explore:
 * **Advanced Inter-Class Balancing:** Moving beyond simple inverse frequency to true dynamic semantic weighting that adapts to the shifting class distributions of varying environments.
 * **Intra-Class Balancing:** Rare sub-clusters (e.g., a specific pose of a Pedestrian) within a single class are often vetoed as Out-of-Distribution (OOD) noise. We will investigate methods to protect rare geometries from being smoothed out by the dense "core" of the class manifold, revisiting concepts like the Subcluster Ledger with more refined, non-restrictive math.
 
-### 2. Multi-View Architectures
-Single-frame adaptation is inherently vulnerable to transient noise and occlusions. By leveraging multi-view architectures, we can enforce spatial and semantic consistency across multiple perspectives or temporal frames before committing to a permanent weight update. 
+### 2. Multi-View Architectures (Microscopic Temporal Consistency)
+Single-frame adaptation is inherently vulnerable to transient noise and occlusions. By leveraging multi-view architectures, we can enforce spatial and semantic consistency across multiple perspectives or consecutive temporal frames before committing to a permanent weight update. 
+
+Crucially, if we move to disable static Macroscopic Temporal Drift tracking (e.g., the static `anchor_spring`) to allow the prototypes greater flexibility to adapt, Microscopic Temporal Consistency becomes the primary defense mechanism against catastrophic drift, dynamically filtering out transient geometric noise before it ever enters the continuous epistemic gates.
 
 In this phase, we will investigate:
 * **Multi-View Consistency Gating:** Requiring consensus across multiple spatial projections (or consecutive LiDAR sweeps) before allowing high-magnitude updates.
