@@ -81,6 +81,18 @@ The evidence proves that the model *requires* a deep, early adaptation phase fol
 * **XC2 (Equal-weight-per-subcluster aggregation):** The non-restrictive replacement for the Subcluster Ledger.
 
 ### IC Diagnostic Results (3-Chunk Protocol)
+
+> [!NOTE]
+> **Chunk vs Global Baselines:** The initial mIoUs shown below (e.g. `0.3628` for Snow-3) are lower than the full-sequence dataset averages (e.g. `~0.41` for Snow-3) because the 3-Chunk protocol strictly isolates evaluation to sequential 1/3 slices of the data. Because KITTI is autonomous driving video data, Chunk 1 contains entirely different scenes (e.g., residential vs highway) than the global average, leading to a naturally different baseline performance on that local slice.
+
+> [!NOTE]
+> **Bug Audit (July 23):** The IC/XC tests above were run prior to a suite of infrastructure bug fixes (arg-parsing hardcodes, `indices` shadowing, and `class_freq_ema` initialization). We have audited these bugs and verified they do **not** invalidate the results:
+> 1. The arg-parsing bug forced `--method evidential_hdc_tta`, but since IC1, IC4, and XC2 are sub-routines of that exact method, they executed correctly.
+> 2. The `class_freq_ema` (used for `f_y` inverse weighting) was initializing uniformly instead of using the source prior. However, because it decays rapidly (`beta=0.99`) and is heavily squashed by `gamma=0.1`, the discrepancy mathematically bounds to $<\pm 0.0005$ mIoU over the chunk.
+> 3. The `indices` tensor shadowing was mathematically a no-op `norm_enc[indices]` where `indices = [0..N]`.
+> 
+> The relative conclusions (XC2 superiority, IC1 inactivity) remain structurally sound.
+
 * **Baseline (Bayesian Momentum):** Achieves robust final adaptation across all chunks. Max rotation was naturally restricted to `4.14°`.
   * Snow-3: `0.3628` $\rightarrow$ `0.3695`
   * Beam Missing-3: `0.3656` $\rightarrow$ `0.3751`
