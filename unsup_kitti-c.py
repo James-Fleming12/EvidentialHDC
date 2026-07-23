@@ -38,7 +38,7 @@ SEVERITY_MAP = {1: 'light', 2: 'moderate', 3: 'heavy', 4: 'extreme'}
 CONFIG_ARCH = "config/arch/senet-2048p.yml"
 CONFIG_LABELS_KITTI_ALL = "config/labels/semantic-kitti-all.yaml"  # Standard 17 classes
 
-def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, test_1b='none', test_1c=1.0, ic_method='none', tau=0.0):
+def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, test_1b='none', test_1c=1.0, ic_method='none', tau=None):
     if ic_method not in ['none', 'ic1', 'ic4', 'xc2']:
         raise ValueError(f"Unknown ic_method: {ic_method}")
 
@@ -104,14 +104,17 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     if norm_enc.dtype != model.classify.weight.dtype:
                         norm_enc = norm_enc.to(model.classify.weight.dtype)
                     
-                    w_norm = F.normalize(model.classify.weight, p=2, dim=1)
-                    kappa = 15.0 # Scale to match Bayesian Momentum magnitude
-                    logits = F.linear(norm_enc, w_norm) * kappa
-                    
-                    if tau != 0.0 and hasattr(model, 'source_class_freq'):
-                        # C1: Explicit Prior Logit Adjustment
-                        pi = torch.clamp(model.source_class_freq, min=1e-5).to(device)
-                        logits = logits - tau * torch.log(pi).unsqueeze(0)
+                    if tau is not None:
+                        w_norm = F.normalize(model.classify.weight, p=2, dim=1)
+                        kappa = 15.0 # Scale to match Bayesian Momentum magnitude
+                        logits = F.linear(norm_enc, w_norm) * kappa
+                        
+                        if tau != 0.0 and hasattr(model, 'source_class_freq'):
+                            # C1: Explicit Prior Logit Adjustment
+                            pi = torch.clamp(model.source_class_freq, min=1e-5).to(device)
+                            logits = logits - tau * torch.log(pi).unsqueeze(0)
+                    else:
+                        logits = model.classify(norm_enc)
 
                     predictions = torch.argmax(logits, dim=1)
                 
@@ -155,12 +158,20 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     latent_x_valid = latent_x[indices]
 
                     if not hasattr(model, 'class_freq_ema'):
-                        model.class_freq_ema = torch.ones(num_classes, device=device) / num_classes
+                        if hasattr(model, 'source_class_freq'):
+                            model.class_freq_ema = model.source_class_freq.clone().to(device)
+                        else:
+                            model.class_freq_ema = torch.ones(num_classes, device=device) / num_classes
                     if not hasattr(model, 'class_update_counts'):
                         model.class_update_counts = torch.zeros(num_classes, device=device)
                     
                     beta = 0.99
-                    batch_freq = torch.bincount(pseudo_labels, minlength=num_classes).float() / max(1, pseudo_labels.size(0))
+                    # IC-b: Accumulate Σ update_weights instead of pseudo-label counts
+                    batch_freq = torch.zeros(num_classes, device=device)
+                    batch_freq.scatter_add_(0, pseudo_labels, update_weights)
+                    batch_sum = max(1.0, update_weights.sum().item())
+                    batch_freq = batch_freq / batch_sum
+                    
                     model.class_freq_ema = beta * model.class_freq_ema + (1 - beta) * batch_freq
                     
                     # Hard lower bound to prevent network freeze when rare classes drop to 0 in a batch size of 1
@@ -678,7 +689,7 @@ def main():
     parser.add_argument('--test_1b', type=str, default='none', help='Test 1b: Comma-separated list of step magnitudes (e.g., none,count_throttle,rotation_cap,anchor_spring)')
     parser.add_argument('--test_1c', type=str, default='1.0', help='Test 1c: Comma-separated list of shrinkage lambdas (e.g., 1.0,0.75,0.50)')
     parser.add_argument('--ic_method', type=str, default='none', help='Inter/Intra-Class balancing method: none, ic1, ic4, xc1, xc2')
-    parser.add_argument('--tau', type=float, default=0.0, help='Logit adjustment tau for inference prior. τ=0 is normalized baseline. τ<0 is majority amplifier. τ>0 is balanced softmax.')
+    parser.add_argument('--tau', type=float, default=None, help='Logit adjustment tau for inference prior. If not set, BM is used. τ=0 is normalized baseline. τ<0 is majority amplifier. τ>0 is balanced softmax.')
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
