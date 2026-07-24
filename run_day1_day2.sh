@@ -66,6 +66,7 @@ DRY_RUN_FLAG=""
         --ic_method none \
         --chunked \
         --reset_per_corruption \
+        --tau 0.0 \
         --normalize_weights \
         ${DRY_RUN_FLAG} \
         --log_dir logs/day2_normalized_tau_0
