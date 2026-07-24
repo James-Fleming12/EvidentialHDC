@@ -38,4 +38,24 @@ As the model adapts indefinitely, there is a risk that the continuous incorporat
 * **Continual Veto Purity:** Ensure that the hyperdimensional Dirichlet gates do not gradually widen and accept noise over millions of frames.
 * **Dynamic Anchor Re-weighting:** Investigate if the $w_0$ (Clean pre-trained weights) anchor needs to be updated or if it should permanently anchor the system against infinite drift.
 
+---
+
+## Part D: Geometric (HDC) Uncertainty Re-integration Diagnostics
+
+While the single-view pipeline successfully relies entirely on **Epistemic Uncertainty (Dirichlet Density)**, this leaves the purely geometric **HDC Latent Density (Free Energy / 128D Gaussian)** temporarily abandoned due to the Representation Shrinkage (Ensemble Paradox) failure mode. 
+
+Before completely discarding the geometric metric, we can run the following diagnostic tests to determine if there is a mathematically sound way to re-integrate it without causing shrinkage:
+
+1. **Decoupled Gate Analysis (The AND vs OR Paradox):**
+   * **Test:** What if we logically `OR` the gates instead of `AND`ing them? A point is admitted if it has *either* high Epistemic certainty *or* high Geometric certainty.
+   * **Goal:** Determine if Geometric Density captures true-positive hard examples that the Epistemic gate incorrectly vetoes. If the union increases the firing rate while maintaining high precision, the metrics are complementary.
+
+2. **The Multi-View Orthogonality Hypothesis:**
+   * **Test:** Compute Geometric Uncertainty *across* views (e.g., LiDAR $\rightarrow$ Camera $\rightarrow$ LiDAR) instead of within a single view.
+   * **Goal:** In single-view TTA, Epistemic and Geometric uncertainties are heavily correlated (both fail on snow). If geometric consistency is measured across temporal/spatial sweeps rather than single-view feature density, it becomes orthogonal. This would justify resurrecting the metric for the Multi-View setting.
+
+3. **Class-Conditioned Geometric Thresholds:**
+   * **Test:** Normalize the Geometric Uncertainty dynamically using the running batch variance instead of the frozen source variance.
+   * **Goal:** A dynamic threshold acts as a "soft boundary" rather than a hard veto, allowing the model to smoothly admit deformed points while still rejecting extreme, structureless OOD scatter like fog.
+
 *(Note: Execution of Phase 3 is paused pending the full resolution of Phase 2 Inter/Intra-class balancing and Multi-View Architecture tests).*
