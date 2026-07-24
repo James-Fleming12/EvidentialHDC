@@ -269,8 +269,9 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             c_mask = (pseudo_labels == c)
                             if c_mask.any():
                                 c_weights = update_weights[c_mask].unsqueeze(1)
-                                if ic_method == 'xc2' and c_mask.sum().item() >= 5:
+                                if ic_method == 'xc2':
                                     pts = valid_enc[c_mask]
+                                    wts = c_weights
                                     k = min(5, len(pts))
                                     # Fast PyTorch Native K-Means on GPU
                                     km_indices = torch.randperm(len(pts), device=device)[:k]
@@ -281,7 +282,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                         new_c = []
                                         for i in range(k):
                                             m = (labels == i)
-                                            if m.any(): new_c.append(pts[m].mean(dim=0))
+                                            if m.any(): new_c.append((pts[m] * wts[m]).mean(dim=0))
                                             else: new_c.append(centroids[i])
                                         centroids = torch.stack(new_c)
                                     c_update = centroids.mean(dim=0)
@@ -602,8 +603,11 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device, dry_
                     if c_mask.any():
                         all_dists_per_class[c].append(dists[c_mask].cpu())
                         all_cos_per_class[c].append(true_cos[c_mask].cpu())
-                        if len(model.class_latents_for_clustering[c]) < max_cluster_samples_per_class:
-                            model.class_latents_for_clustering[c].append(norm_enc[c_mask].detach().cpu())
+                        current_points = sum(t.size(0) for t in model.class_latents_for_clustering[c])
+                        if current_points < max_cluster_samples_per_class:
+                            pts = norm_enc[c_mask].detach().cpu()
+                            rem = max_cluster_samples_per_class - current_points
+                            model.class_latents_for_clustering[c].append(pts[:rem])
                 
     
     model.source_density_std = torch.zeros(num_classes, device=device)
