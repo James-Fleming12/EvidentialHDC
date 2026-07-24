@@ -282,10 +282,19 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                         new_c = []
                                         for i in range(k):
                                             m = (labels == i)
-                                            if m.any(): new_c.append((pts[m] * wts[m]).mean(dim=0))
+                                            if m.any(): new_c.append(pts[m].mean(dim=0))
                                             else: new_c.append(centroids[i])
                                         centroids = torch.stack(new_c)
-                                    c_update = centroids.mean(dim=0)
+                                        
+                                    # Apply confidence gating to the converged centroids
+                                    c_update_wts = []
+                                    for i in range(k):
+                                        m = (labels == i)
+                                        if m.any(): c_update_wts.append(wts[m].mean())
+                                        else: c_update_wts.append(torch.tensor(0.0, device=device))
+                                    
+                                    c_update_wts = torch.stack(c_update_wts).unsqueeze(1)
+                                    c_update = (centroids * c_update_wts).mean(dim=0)
                                 else:
                                     c_update = (valid_enc[c_mask] * c_weights).mean(dim=0)
                                 
@@ -326,11 +335,9 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
     
     if hasattr(model, '_veto_stats') and model._veto_stats['correct_labels_rejected'] > 0:
         purity_ratio = model._veto_stats['true_errors_rejected'] / model._veto_stats['correct_labels_rejected']
-        # print(f"\n[Stats] Veto Purity Ratio: {purity_ratio:.2f} ({model._veto_stats['true_errors_rejected']} true errors rejected / {model._veto_stats['correct_labels_rejected']} correct labels rejected)")
         model._veto_stats = {'true_errors_rejected': 0, 'correct_labels_rejected': 0}
         
-    if not eval_only and hasattr(model, 'initial_classify_weights'):
-
+    if hasattr(model, 'initial_classify_weights'):
         logger = logging.getLogger("EvalAdapt")
         class_rotations = {}
         for c in range(num_classes):
@@ -341,16 +348,16 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
             angle = torch.acos(torch.tensor(cos_sim)).item() * (180.0 / torch.pi)
             class_rotations[c] = angle
             
-        logger.info(f"\n[Stats] Prototype Rotation (Degrees):")
+        logger.debug(f"\n[Stats] Prototype Rotation (Degrees):")
         head_rot = {c: round(class_rotations[c], 2) for c in [11, 13, 14, 15, 16]}
         tail_rot = {c: round(class_rotations[c], 2) for c in [2, 3, 6, 7, 10]}
-        logger.info(f"  Head Rotation: {head_rot}")
-        logger.info(f"  Tail Rotation: {tail_rot}")
+        logger.debug(f"  Head Rotation: {head_rot}")
+        logger.debug(f"  Tail Rotation: {tail_rot}")
         
     if hasattr(model, '_class_veto_stats') and not eval_only:
 
         logger = logging.getLogger("EvalAdapt")
-        logger.info(f"\n[Stats] Per-Class Veto Purity (True Errors / Correct Labels Rejected):")
+        logger.debug(f"\n[Stats] Per-Class Veto Purity (True Errors / Correct Labels Rejected):")
         head_purity = {}
         tail_purity = {}
         for c in range(num_classes):
@@ -363,8 +370,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                 head_purity[c] = round(purity, 2)
             elif c in [2, 3, 6, 7, 10]:
                 tail_purity[c] = round(purity, 2)
-        logger.info(f"  Head Purity: {head_purity}")
-        logger.info(f"  Tail Purity: {tail_purity}")
+        logger.debug(f"  Head Purity: {head_purity}")
+        logger.debug(f"  Tail Purity: {tail_purity}")
         model._class_veto_stats = {c: {'true_errors_rejected': 0, 'correct_labels_rejected': 0} for c in range(num_classes)}
         
     if hasattr(model, '_class_firing_log') and not eval_only:
@@ -375,22 +382,16 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         for c in range(num_classes):
             logs = model._class_firing_log[c]
             if len(logs) > 0:
-                n_frames = len(logs)
                 n_points = sum(l['n_points'] for l in logs)
                 n_fired = sum(l['n_fired'] for l in logs)
-                mean_w = sum(l['sum_w'] for l in logs) / n_points if n_points > 0 else 0
                 
                 # Firing rate is now true fired points / total points
-                rate = n_fired / n_points if n_points > 0 else 0.0
-            else:
-                rate = 0.0
-            if c in [11, 13, 14, 15, 16]:
-                head_firing[c] = round(rate, 4)
-            elif c in [2, 3, 6, 7, 10]:
-                tail_firing[c] = round(rate, 4)
-        logger.info(f"\n[Stats] Per-Class Firing Rates (True Fired/Total):")
-        logger.info(f"  Head Firing: {head_firing}")
-        logger.info(f"  Tail Firing: {tail_firing}")
+                head_firing[c] = f"{n_fired}/{n_points} ({n_fired/n_points*100:.2f}%)" if c in [11, 13, 14, 15, 16] else head_firing.get(c, "")
+                tail_firing[c] = f"{n_fired}/{n_points} ({n_fired/n_points*100:.2f}%)" if c in [2, 3, 6, 7, 10] else tail_firing.get(c, "")
+                
+        logger.debug(f"\n[Stats] Per-Class Firing Rates (True Fired/Total):")
+        logger.debug(f"  Head Firing: {head_firing}")
+        logger.debug(f"  Tail Firing: {tail_firing}")
         model._class_firing_log = {c: [] for c in range(num_classes)}
         
     avg_firing_rate = 0.0
@@ -412,7 +413,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         "IoU_per_class": iou_per_class_history, 
         "FiringRate": avg_firing_rate, 
         "UpdateMagnitude": avg_update_magnitude,
-        "ConfusionMatrix": cumulative_confusion_matrix.cpu().numpy()
+        "ConfusionMatrix": cumulative_confusion_matrix.cpu().numpy().tolist()
     }
 
 
@@ -474,7 +475,7 @@ def save_degradation_plot(save_path, title, data_dict, metric="mIoU", baseline_v
 
 
 def load_hdc_model(path, num_classes=NUM_CLASSES):
-    print(f"Loading pretrained HDC model from {path}...")
+    # print(f"Loading pretrained HDC model from {path}...")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     ARCH = yaml.safe_load(open(CONFIG_ARCH, 'r'))
     modeldir = os.path.dirname(path)
@@ -486,7 +487,7 @@ def load_hdc_model(path, num_classes=NUM_CLASSES):
     return model
 
 def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device, dry_run=False):
-    print(f"Populating source statistics from {data_dir}...")
+    # print(f"Populating source statistics from {data_dir}...")
     parser = Parser(root=data_dir,
                     train_sequences=data_cfg["split"]["train"],
                     valid_sequences=data_cfg["split"]["valid"],
@@ -968,23 +969,23 @@ def main():
                 if not args.chunked or args.reset_per_corruption:
                     # Pass 1: True Initial (Frozen on chunk)
                     if (ctype, sev) not in shared_init_metrics:
-                        logger.info("  -> Pass 1: Computing True Initial metrics (Frozen)")
+                        logger.debug("  -> Pass 1: Computing True Initial metrics (Frozen)")
                         init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b='none', test_1c=1.0, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights)
                         shared_init_metrics[(ctype, sev)] = init_metrics
                     else:
-                        logger.info("  -> Pass 1: Reusing cached True Initial metrics (Frozen)")
+                        logger.debug("  -> Pass 1: Reusing cached True Initial metrics (Frozen)")
                         init_metrics = shared_init_metrics[(ctype, sev)]
                     
                     # Pass 2: Adapt (only if method is not frozen)
                     if current_method != 'frozen':
-                        logger.info("  -> Pass 2: Adapting model weights")
+                        logger.debug("  -> Pass 2: Adapting model weights")
                         eval_model.train()
                         adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights)
                     else:
                         adapt_metrics = init_metrics
                         
                     # Pass 3: True Final (Frozen on chunk using adapted weights)
-                    logger.info("  -> Pass 3: Computing True Final metrics (Frozen)")
+                    logger.debug("  -> Pass 3: Computing True Final metrics (Frozen)")
                     eval_model.eval()
                     final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights)
                     
@@ -998,7 +999,7 @@ def main():
                         final_acc = final_metrics["Accuracy"][-1]
                         
                         if 'ConfusionMatrix' in init_metrics:
-                            cm = init_metrics['ConfusionMatrix']
+                            cm = np.array(init_metrics['ConfusionMatrix'])
                             tp = np.diag(cm)
                             fp = cm.sum(axis=0) - tp
                             fn = cm.sum(axis=1) - tp

@@ -121,7 +121,7 @@ class SemanticKitti(Dataset):
 
     # make sure directory exists
     if os.path.isdir(self.root):
-      print("Sequences folder exists! Using sequences from %s" % self.root)
+      pass # print("Sequences folder exists! Using sequences from %s" % self.root)
     else:
       raise ValueError("Sequences folder doesn't exist! Exiting...")
 
@@ -142,7 +142,7 @@ class SemanticKitti(Dataset):
     self.label_files = []
 
     # fill in with names, checking that all sequences are complete
-    print("sequences: ", self.sequences)
+    # print("sequences: ", self.sequences)
     for seq_idx in self.sequences:
       # Try 2-digit padding (Official KITTI) first, then 4-digit (NuScenes-Kitti)
       seq_2 = '{0:02d}'.format(int(seq_idx))
@@ -167,7 +167,7 @@ class SemanticKitti(Dataset):
           os.path.expanduser(scan_path)) for f in fn if is_scan(f)]
       label_files = [os.path.join(dp, f) for dp, dn, fn in os.walk(
           os.path.expanduser(label_path)) for f in fn if is_label(f)]
-      print("Found {} scans in sequence {}".format(len(scan_files), seq))
+      # print("Found {} scans in sequence {}".format(len(scan_files), seq))
       # check all scans have labels
       if self.gt:
         assert(len(scan_files) == len(label_files))
@@ -180,8 +180,8 @@ class SemanticKitti(Dataset):
     self.scan_files.sort()
     self.label_files.sort()
 
-    print("Using {} scans from sequences {}".format(len(self.scan_files),
-                                                    self.sequences))
+    # print("Using {} scans from sequences {}".format(len(self.scan_files),
+    #                                                self.sequences))
 
   def __getitem__(self, index):
     # get item in tensor shape
@@ -441,7 +441,7 @@ class Parser:
             self.testloader = None
             self.testiter = None
  
-        print(f"[Parser|kitti] train={len(train_ds)}  valid={len(valid_ds)}")
+        # print(f"[Parser|kitti] train={len(train_ds)}  valid={len(valid_ds)}")
 
     def set_curriculum_phase(self, phase: int):
         """
