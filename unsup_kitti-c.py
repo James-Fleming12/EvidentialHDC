@@ -39,7 +39,7 @@ SEVERITY_MAP = {1: 'light', 2: 'moderate', 3: 'heavy', 4: 'extreme'}
 CONFIG_ARCH = "config/arch/senet-2048p.yml"
 CONFIG_LABELS_KITTI_ALL = "config/labels/semantic-kitti-all.yaml"  # Standard 17 classes
 
-def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, test_1b='none', test_1c=1.0, ic_method='none', tau=None):
+def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, test_1b='none', test_1c=1.0, ic_method='none', tau=None, kappa=15.0, normalize_weights=False):
     if ic_method not in ['none', 'ic1', 'ic4', 'xc2']:
         raise ValueError(f"Unknown ic_method: {ic_method}")
 
@@ -107,7 +107,6 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     
                     if tau is not None:
                         w_norm = F.normalize(model.classify.weight, p=2, dim=1)
-                        kappa = 15.0 # Scale to match Bayesian Momentum magnitude
                         logits = F.linear(norm_enc, w_norm) * kappa
                         
                         if tau != 0.0 and hasattr(model, 'source_class_freq'):
@@ -147,7 +146,16 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     update_lr = 0.01
                     proto_norm = F.normalize(model.classify.weight, dim=1)
                     cos_sims = F.linear(norm_enc, proto_norm)
-                    max_cos_sim, pseudo_labels = torch.max(cos_sims, dim=1)
+                    
+                    if tau is not None and tau != 0.0 and hasattr(model, 'source_class_freq'):
+                        pl_logits = cos_sims * kappa
+                        pi = torch.clamp(model.source_class_freq, min=1e-5).to(device)
+                        pl_logits = pl_logits - tau * torch.log(pi).unsqueeze(0)
+                        pseudo_labels = torch.argmax(pl_logits, dim=1)
+                    else:
+                        pseudo_labels = torch.argmax(cos_sims, dim=1)
+                        
+                    max_cos_sim = cos_sims[torch.arange(cos_sims.size(0)), pseudo_labels]
                     
                     # Soft Gating Initialization
                     # HDC cosine similarities are extremely small (e.g. ~0.05 to ~0.15). 
@@ -308,6 +316,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                     # The unnormalized weight vector accumulates norms proportional to frequency.
                                     # This creates both an emergent 1/t LR schedule AND a Bayesian Prior for the final logits.
                                     model.classify.weight[c].data += step_mag * c_update.to(model.classify.weight.dtype)
+                                    if normalize_weights:
+                                        model.classify.weight[c].data = F.normalize(model.classify.weight[c].data, p=2, dim=0)
                                     
                                     if not hasattr(model, '_update_magnitude_log'):
                                         model._update_magnitude_log = []
@@ -400,7 +410,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         "Accuracy": acc_history, 
         "IoU_per_class": iou_per_class_history, 
         "FiringRate": avg_firing_rate, 
-        "UpdateMagnitude": avg_update_magnitude
+        "UpdateMagnitude": avg_update_magnitude,
+        "ConfusionMatrix": cumulative_confusion_matrix.cpu().numpy()
     }
 
 
@@ -691,6 +702,8 @@ def main():
     parser.add_argument('--test_1c', type=str, default='1.0', help='Test 1c: Comma-separated list of shrinkage lambdas (e.g., 1.0,0.75,0.50)')
     parser.add_argument('--ic_method', type=str, default='none', help='Inter/Intra-Class balancing method: none, ic1, ic4, xc1, xc2')
     parser.add_argument('--tau', type=float, default=None, help='Logit adjustment tau for inference prior. If not set, BM is used. τ=0 is normalized baseline. τ<0 is majority amplifier. τ>0 is balanced softmax.')
+    parser.add_argument('--kappa', type=float, default=15.0, help='Logit scale kappa used with tau. Controls evidence weighting vs prior.')
+    parser.add_argument('--normalize_weights', action='store_true', help='Force weights to be normalized after every update (disables Bayesian Momentum accumulator).')
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -952,7 +965,7 @@ def main():
                     # Pass 1: True Initial (Frozen on chunk)
                     if (ctype, sev) not in shared_init_metrics:
                         logger.info("  -> Pass 1: Computing True Initial metrics (Frozen)")
-                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b='none', test_1c=1.0, ic_method=args.ic_method, tau=args.tau)
+                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b='none', test_1c=1.0, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights)
                         shared_init_metrics[(ctype, sev)] = init_metrics
                     else:
                         logger.info("  -> Pass 1: Reusing cached True Initial metrics (Frozen)")
@@ -962,14 +975,14 @@ def main():
                     if current_method != 'frozen':
                         logger.info("  -> Pass 2: Adapting model weights")
                         eval_model.train()
-                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method, tau=args.tau)
+                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights)
                     else:
                         adapt_metrics = init_metrics
                         
                     # Pass 3: True Final (Frozen on chunk using adapted weights)
                     logger.info("  -> Pass 3: Computing True Final metrics (Frozen)")
                     eval_model.eval()
-                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method, tau=args.tau)
+                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights)
                     
                     # We only care about the absolute end of the frozen evaluations for the sequence
                     metrics = adapt_metrics  # Just for the trajectory json
@@ -979,6 +992,16 @@ def main():
                         online_miou = adapt_metrics["mIoU"][-1]
                         initial_acc = init_metrics["Accuracy"][-1]
                         final_acc = final_metrics["Accuracy"][-1]
+                        
+                        if 'ConfusionMatrix' in init_metrics:
+                            cm = init_metrics['ConfusionMatrix']
+                            tp = np.diag(cm)
+                            fp = cm.sum(axis=0) - tp
+                            fn = cm.sum(axis=1) - tp
+                            tail_classes = [2, 3, 6, 7, 10]
+                            logger.info(f"  -> Initial Tail TP:  {tp[tail_classes].tolist()}")
+                            logger.info(f"  -> Initial Tail FP:  {fp[tail_classes].tolist()}")
+                            logger.info(f"  -> Initial Tail FN:  {fn[tail_classes].tolist()}")
                     else:
                         initial_miou = final_miou = online_miou = initial_acc = final_acc = 0.0
                         
@@ -989,7 +1012,7 @@ def main():
                             firing_rate_str += f", UpdateMag={adapt_metrics['UpdateMagnitude']:.4f}"
                 else:
                     # Original single-pass continuous evaluation
-                    metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=(current_method == 'frozen'), update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method, tau=args.tau)
+                    metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=(current_method == 'frozen'), update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights)
                     if len(metrics["mIoU"]) > 0:
                         initial_miou = metrics["mIoU"][0]
                         final_miou = metrics["mIoU"][-1]
