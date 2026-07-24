@@ -189,16 +189,16 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     
                     if update_method == 'evidential_hdc_tta':
                         # 1. Balanced Updates: Inverse Frequency Soft Weighting (gamma = 0.1)
-                        gamma = 0.1
-                        balance_weights = (min_freq / f_y) ** gamma
-                        update_weights = update_weights * balance_weights
+                        # gamma = 0.1
+                        # balance_weights = (min_freq / f_y) ** gamma
+                        # update_weights = update_weights * balance_weights
                         
                         # 2. Network Uncertainty (128D Manifold Anchor)
-                        pred_means = model.class_latent_means[pseudo_labels]
-                        dist_sq = torch.norm(latent_x_valid.float() - pred_means, p=2, dim=1) ** 2
-                        variance = 2.0 * (model.source_density_std[pseudo_labels] ** 2) + 1e-8
-                        tier1_decay = torch.exp(-dist_sq / variance)
-                        update_weights = update_weights * tier1_decay
+                        # pred_means = model.class_latent_means[pseudo_labels]
+                        # dist_sq = torch.norm(latent_x_valid.float() - pred_means, p=2, dim=1) ** 2
+                        # variance = 2.0 * (model.source_density_std[pseudo_labels] ** 2) + 1e-8
+                        # tier1_decay = torch.exp(-dist_sq / variance)
+                        # update_weights = update_weights * tier1_decay
                         
                         # 3. Hypervector Uncertainty: Z-Score Calibrated Dirichlet Evidence
                         z_c = (cos_sims - active_mu_cos) / (active_sigma_cos + 1e-8)
