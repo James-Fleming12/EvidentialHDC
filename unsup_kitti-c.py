@@ -219,8 +219,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     # Calculate tracking metrics
                     # We define a "veto" as any point where the uncertainty method cut the base confidence by >50%
                     veto_mask = update_weights < (0.5 * base_weights)
-                    # We define a point as "fired" if it contributes more than 1% weight
-                    fired_mask = update_weights > 0.01
+                    # We define a point as "fired" if it passed the Epistemic Veto
+                    fired_mask = ~veto_mask
                     
                     if not hasattr(model, '_firing_log'):
                         model._firing_log = []
@@ -266,11 +266,11 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     if fired_mask.any():
                         valid_enc = norm_enc[indices]
                         for c in range(num_classes):
-                            c_mask = (pseudo_labels == c)
-                            if c_mask.any():
-                                c_weights = update_weights[c_mask].unsqueeze(1)
+                            fired_c_mask = (pseudo_labels == c) & fired_mask
+                            if fired_c_mask.any():
+                                c_weights = update_weights[fired_c_mask].unsqueeze(1)
                                 if ic_method == 'xc2':
-                                    pts = valid_enc[c_mask]
+                                    pts = valid_enc[fired_c_mask]
                                     wts = c_weights
                                     k = min(5, len(pts))
                                     # Fast PyTorch Native K-Means on GPU
@@ -296,14 +296,10 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                     c_update_wts = torch.stack(c_update_wts).unsqueeze(1)
                                     c_update = (centroids * c_update_wts).mean(dim=0)
                                 else:
-                                    c_update = (valid_enc[c_mask] * c_weights).mean(dim=0)
+                                    c_update = (valid_enc[fired_c_mask] * c_weights).mean(dim=0)
                                 
                                 if c_update.norm(p=2) > 1e-6:
                                     c_update = F.normalize(c_update, p=2, dim=0)
-                                    
-                                    fired_c_mask = c_mask & fired_mask
-                                    if not fired_c_mask.any():
-                                        continue
                                         
                                     step_mag = update_lr * update_weights[fired_c_mask].mean().item()
                                     
