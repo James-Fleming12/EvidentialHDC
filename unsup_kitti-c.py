@@ -723,8 +723,7 @@ def main():
     parser.add_argument('--kitti_dir', type=str, default='/mnt/alpha/jmfleming/KITTI', help='Path to SemanticKITTI dataset for pretraining')
     parser.add_argument('--kittic_dir', type=str, default='/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C', help='Path to real SemanticKITTI-C dataset')
     parser.add_argument('--corruptions', type=str, default='snow,beam_missing,wet_ground', help='Comma separated list of corruptions to test. Defaults to diagnostic panel.')
-    parser.add_argument('--test_1b', type=str, default='none', help='Test 1b: Comma-separated list of step magnitudes (e.g., none,count_throttle,rotation_cap,anchor_spring)')
-    parser.add_argument('--test_1c', type=str, default='1.0', help='Test 1c: Comma-separated list of shrinkage lambdas (e.g., 1.0,0.75,0.50)')
+    parser.add_argument('--mv_tta', type=str, default='none', help='Multi-View TTA Strategy (none, bundle, mean_uncert, min_uncert)')
     parser.add_argument('--ic_method', type=str, default='none', help='Inter/Intra-Class balancing method: none, ic1, ic4, xc1, xc2')
     parser.add_argument('--tau', type=float, default=None, help='Logit adjustment tau for inference prior. If not set, BM is used. τ=0 is normalized baseline. τ<0 is majority amplifier. τ>0 is balanced softmax.')
     parser.add_argument('--kappa', type=float, default=15.0, help='Logit scale kappa used with tau. Controls evidence weighting vs prior.')
@@ -784,19 +783,15 @@ def main():
         except json.JSONDecodeError:
             global_results = None
             
-    test_1b_list = args.test_1b.split(',')
-    test_1c_list = [float(x) for x in args.test_1c.split(',')]
-    
-    configs_to_run = []
+    full_method_names = []
     for m in methods_to_run:
         if m == 'frozen':
-            configs_to_run.append((m, 'none', 1.0))
+            if args.tau is not None and args.tau != 0.0:
+                full_method_names.append(f"frozen_tau_{args.tau}")
+            else:
+                full_method_names.append('frozen')
         else:
-            for tb in test_1b_list:
-                for tc in test_1c_list:
-                    configs_to_run.append((m, tb, tc))
-    
-    full_method_names = [f"{m}_1b_{tb}_1c_{tc}" if m != 'frozen' else 'frozen' for (m, tb, tc) in configs_to_run]
+            full_method_names.append(f"{m}_{args.ic_method}_tau_{args.tau}_mv_{args.mv_tta}")
                     
     if global_results is not None:
         # Ensure the dicts for the current methods exist in case they were never run
@@ -901,7 +896,7 @@ def main():
         model.source_subclusters = source_stats_cache['source_subclusters']
         model.source_class_freq = source_stats_cache['source_class_freq'].to(device)
 
-    for (current_method, t1b, t1c), full_method_name in zip(configs_to_run, full_method_names):
+    for current_method, full_method_name in zip(methods_to_run, full_method_names):
         logger.info(f"=========================================")
         logger.info(f"Starting Evaluation for Method: {full_method_name}")
         logger.info(f"=========================================")
