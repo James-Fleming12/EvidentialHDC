@@ -97,7 +97,12 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     # === MULTI-VIEW TTA AUGMENTATIONS (BATCHED) ===
                     if mv_tta != 'none':
                         B_val, _, H_val, W_val = proj_in.shape
-                        shift_amount = W_val // 32 if mv_tta == 'bundle_gentle' else W_val // 4
+                        if mv_tta == 'bundle_gentle':
+                            shift_amount = W_val // 32
+                        elif mv_tta == 'bundle_moderate':
+                            shift_amount = W_val // 16
+                        else:
+                            shift_amount = W_val // 4
                         proj_m1 = torch.roll(proj_in, shifts=shift_amount, dims=3)
                         proj_m2 = proj_in * 0.95
                         
@@ -126,7 +131,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         
                         norm_enc_base = norm_enc.clone()
                         
-                        if mv_tta in ['bundle', 'bundle_gentle']:
+                        if mv_tta in ['bundle', 'bundle_gentle', 'bundle_moderate']:
                             # Phase 1 TTA: Consensus Bundling in Feature Space
                             bundled_enc = norm_enc + norm_enc_m1 + norm_enc_m2
                             norm_enc = F.normalize(bundled_enc, dim=1)
@@ -137,6 +142,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     
                     if norm_enc.dtype != model.classify.weight.dtype:
                         norm_enc = norm_enc.to(model.classify.weight.dtype)
+                        if 'norm_enc_base' in locals():
+                            norm_enc_base = norm_enc_base.to(model.classify.weight.dtype)
                     
                     if tau is not None:
                         w_norm = F.normalize(model.classify.weight, p=2, dim=1)
@@ -838,7 +845,7 @@ def main():
     parser.add_argument('--tau', type=float, default=None, help='Logit adjustment tau for inference prior. If not set, BM is used. τ=0 is normalized baseline. τ<0 is majority amplifier. τ>0 is balanced softmax.')
     parser.add_argument('--kappa', type=float, default=15.0, help='Logit scale kappa used with tau. Controls evidence weighting vs prior.')
     parser.add_argument('--normalize_weights', action='store_true', help='Force weights to be normalized after every update (disables Bayesian Momentum accumulator).')
-    parser.add_argument('--mv_tta', type=str, default='none', help='Multi-View TTA method. Options: none, bundle, bundle_gentle, min_uncert, mean_uncert, vote_pred, conf_pred')
+    parser.add_argument('--mv_tta', type=str, default='none', help='Multi-View TTA method. Options: none, bundle, bundle_gentle, bundle_moderate, min_uncert, mean_uncert, vote_pred, conf_pred')
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)

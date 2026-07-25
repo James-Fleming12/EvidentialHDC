@@ -19,6 +19,10 @@ LOG_FILE="phase2_diagnostics.log"
     uv run unsup_kitti-c.py --corruptions snow --method evidential_hdc_tta --ic_method none --tau 0.0 --mv_tta bundle --log_dir ../Logs/tau_0_bundle
     
     echo "------------------------------------------"
+    echo "------------------------------------------"
+    echo "Step 0: bundle_moderate (tau=0.0) [22 degree yaw]"
+    uv run unsup_kitti-c.py --corruptions snow --method evidential_hdc_tta --ic_method none --tau 0.0 --mv_tta bundle_moderate --log_dir ../Logs/tau_0_bundle_moderate
+
     echo "Step 0: bundle_gentle (tau=0.0) [11 degree yaw]"
     uv run unsup_kitti-c.py --corruptions snow --method evidential_hdc_tta --ic_method none --tau 0.0 --mv_tta bundle_gentle --log_dir ../Logs/tau_0_bundle_gentle
 
