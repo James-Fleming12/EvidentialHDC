@@ -1,6 +1,7 @@
 #!/bin/bash
 
 export CUDA_VISIBLE_DEVICES=3
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Clean old logs
 rm -f ../Logs/week2_results.log
