@@ -52,6 +52,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
     iou_per_class_history = []
     num_classes = model.num_classes
     cumulative_confusion_matrix = torch.zeros((num_classes, num_classes), dtype=torch.int64, device=device)
+    agree_conf_matrix = torch.zeros((num_classes, num_classes), dtype=torch.int64, device=device)
+    disagree_conf_matrix = torch.zeros((num_classes, num_classes), dtype=torch.int64, device=device)
     
     prev_preds_2d = None
 
@@ -95,7 +97,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     # === MULTI-VIEW TTA AUGMENTATIONS (BATCHED) ===
                     if mv_tta != 'none':
                         B_val, _, H_val, W_val = proj_in.shape
-                        proj_m1 = torch.roll(proj_in, shifts=W_val//4, dims=3)
+                        shift_amount = W_val // 32 if mv_tta == 'bundle_gentle' else W_val // 4
+                        proj_m1 = torch.roll(proj_in, shifts=shift_amount, dims=3)
                         proj_m2 = proj_in * 0.95
                         
                         # Batch all 3 views into a single forward pass! (Size: [3 * B, 5, H, W])
@@ -114,14 +117,14 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         
                         # M1 (Yaw Shift) - Roll back horizontally to align features
                         raw_enc_m1 = raw_enc_batched[1]
-                        raw_enc_m1 = torch.roll(raw_enc_m1, shifts=-W_val//4, dims=2).view(-1, C_val)
+                        raw_enc_m1 = torch.roll(raw_enc_m1, shifts=-shift_amount, dims=2).view(-1, C_val)
                         norm_enc_m1 = F.normalize(raw_enc_m1, dim=1).to(model.classify.weight.dtype)
                         
                         # M2 (Depth Scale)
                         raw_enc_m2 = raw_enc_batched[2].view(-1, C_val)
                         norm_enc_m2 = F.normalize(raw_enc_m2, dim=1).to(model.classify.weight.dtype)
                         
-                        if mv_tta == 'bundle':
+                        if mv_tta in ['bundle', 'bundle_gentle']:
                             # Phase 1 TTA: Consensus Bundling in Feature Space
                             bundled_enc = norm_enc + norm_enc_m1 + norm_enc_m2
                             norm_enc = F.normalize(bundled_enc, dim=1)
@@ -135,16 +138,55 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     
                     if tau is not None:
                         w_norm = F.normalize(model.classify.weight, p=2, dim=1)
-                        logits = F.linear(norm_enc, w_norm) * kappa
                         
-                        if tau != 0.0 and hasattr(model, 'source_class_freq'):
-                            # C1: Explicit Prior Logit Adjustment
-                            pi = torch.clamp(model.source_class_freq, min=1e-5).to(device)
-                            logits = logits - tau * torch.log(pi).unsqueeze(0)
+                        def get_logits(enc):
+                            l = F.linear(enc, w_norm) * kappa
+                            if tau != 0.0 and hasattr(model, 'source_class_freq'):
+                                pi = torch.clamp(model.source_class_freq, min=1e-5).to(device)
+                                l = l - tau * torch.log(pi).unsqueeze(0)
+                            return l
+                            
+                        logits = get_logits(norm_enc)
                     else:
-                        logits = model.classify(norm_enc)
+                        def get_logits(enc):
+                            return model.classify(enc)
+                            
+                        logits = get_logits(norm_enc)
+                        
+                    # Calculate multi-view predictions if needed for MV-1
+                    if mv_tta in ['vote_pred', 'conf_pred'] and 'norm_enc_m1' in locals():
+                        logits_m1 = get_logits(norm_enc_m1)
+                        logits_m2 = get_logits(norm_enc_m2)
+                        
+                        if mv_tta == 'conf_pred':
+                            # Average probabilities across views
+                            prob_base = F.softmax(logits, dim=1)
+                            prob_m1 = F.softmax(logits_m1, dim=1)
+                            prob_m2 = F.softmax(logits_m2, dim=1)
+                            mean_probs = (prob_base + prob_m1 + prob_m2) / 3.0
+                            predictions = torch.argmax(mean_probs, dim=1)
+                        elif mv_tta == 'vote_pred':
+                            # Majority vote per point
+                            pred_base = torch.argmax(logits, dim=1)
+                            pred_m1 = torch.argmax(logits_m1, dim=1)
+                            pred_m2 = torch.argmax(logits_m2, dim=1)
+                            
+                            # Stack and find mode
+                            stacked_preds = torch.stack([pred_base, pred_m1, pred_m2], dim=1)
+                            predictions, _ = torch.mode(stacked_preds, dim=1)
+                    else:
+                        predictions = torch.argmax(logits, dim=1)
+                        
+                    # MV-2: View Disagreement Precision Tracking
+                    if mv_tta != 'none' and 'norm_enc_m1' in locals():
+                        pred_base_mv2 = torch.argmax(get_logits(norm_enc), dim=1)
+                        pred_m1_mv2 = torch.argmax(get_logits(norm_enc_m1), dim=1)
+                        pred_m2_mv2 = torch.argmax(get_logits(norm_enc_m2), dim=1)
+                        view_disagreement = (pred_base_mv2 != pred_m1_mv2) | (pred_base_mv2 != pred_m2_mv2)
+                        # We will log precision of agreeing vs disagreeing points below
+                    else:
+                        view_disagreement = torch.zeros_like(predictions, dtype=torch.bool)
 
-                    predictions = torch.argmax(logits, dim=1)
                 
                 selected_labels = proj_labels[indices]
                 mask = (selected_labels >= 0) & (selected_labels < num_classes)
@@ -154,6 +196,23 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         minlength=num_classes ** 2
                     ).reshape(num_classes, num_classes)
                     cumulative_confusion_matrix += hist
+                    
+                    if mv_tta != 'none':
+                        agree_mask = mask & (~view_disagreement)
+                        if agree_mask.any():
+                            agree_hist = torch.bincount(
+                                num_classes * selected_labels[agree_mask] + predictions[agree_mask], 
+                                minlength=num_classes ** 2
+                            ).reshape(num_classes, num_classes)
+                            agree_conf_matrix += agree_hist
+                            
+                        disagree_mask = mask & view_disagreement
+                        if disagree_mask.any():
+                            disagree_hist = torch.bincount(
+                                num_classes * selected_labels[disagree_mask] + predictions[disagree_mask], 
+                                minlength=num_classes ** 2
+                            ).reshape(num_classes, num_classes)
+                            disagree_conf_matrix += disagree_hist
                 
             cumulative_miou, head_miou, mid_miou, tail_miou, cumulative_acc, cumulative_iou_per_class = extract_metrics_from_conf_matrix(cumulative_confusion_matrix)
             miou_history.append(cumulative_miou)
@@ -386,6 +445,9 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         logger.debug(f"  Head Rotation: {head_rot}")
         logger.debug(f"  Tail Rotation: {tail_rot}")
         
+        final_norms = {c: round(model.classify.weight[c].norm().item(), 4) for c in range(17)}
+        logger.info(f"[Stats] Final Prototype Norms: {final_norms}")
+
     if hasattr(model, '_class_veto_stats') and not eval_only:
 
         logger = logging.getLogger("EvalAdapt")
@@ -426,6 +488,35 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         logger.debug(f"  Tail Firing: {tail_firing}")
         model._class_firing_log = {c: [] for c in range(num_classes)}
         
+    if mv_tta != 'none':
+        logger = logging.getLogger("EvalAdapt")
+        logger.info(f"\n[MV-2] View Disagreement Precision Tracking")
+        
+        # Calculate overall precision for agreeing points
+        agree_diag = torch.diag(agree_conf_matrix).sum().item()
+        agree_total = agree_conf_matrix.sum().item()
+        agree_precision = agree_diag / max(1, agree_total)
+        
+        # Calculate overall precision for disagreeing points
+        disagree_diag = torch.diag(disagree_conf_matrix).sum().item()
+        disagree_total = disagree_conf_matrix.sum().item()
+        disagree_precision = disagree_diag / max(1, disagree_total)
+        
+        logger.info(f"  Agreeing Points Precision: {agree_precision:.4f} (Total: {agree_total})")
+        logger.info(f"  Disagreeing Points Precision: {disagree_precision:.4f} (Total: {disagree_total})")
+        
+        # Tail classes Person (7), Bus (3), Truck (10)
+        for t_class in [3, 7, 10]:
+            tp_agree = agree_conf_matrix[t_class, t_class].item()
+            fp_agree = agree_conf_matrix[:, t_class].sum().item() - tp_agree
+            tp_disagree = disagree_conf_matrix[t_class, t_class].item()
+            fp_disagree = disagree_conf_matrix[:, t_class].sum().item() - tp_disagree
+            
+            p_agree = tp_agree / max(1, tp_agree + fp_agree)
+            p_disagree = tp_disagree / max(1, tp_disagree + fp_disagree)
+            
+            logger.info(f"  Class {t_class} Precision: Agreeing={p_agree:.4f} ({tp_agree} TP, {fp_agree} FP), Disagreeing={p_disagree:.4f} ({tp_disagree} TP, {fp_disagree} FP)")
+            
     avg_firing_rate = 0.0
     if hasattr(model, '_firing_log') and len(model._firing_log) > 0:
         avg_firing_rate = sum(model._firing_log) / len(model._firing_log)
@@ -740,7 +831,7 @@ def main():
     parser.add_argument('--tau', type=float, default=None, help='Logit adjustment tau for inference prior. If not set, BM is used. τ=0 is normalized baseline. τ<0 is majority amplifier. τ>0 is balanced softmax.')
     parser.add_argument('--kappa', type=float, default=15.0, help='Logit scale kappa used with tau. Controls evidence weighting vs prior.')
     parser.add_argument('--normalize_weights', action='store_true', help='Force weights to be normalized after every update (disables Bayesian Momentum accumulator).')
-    parser.add_argument('--mv_tta', type=str, default='none', help='Multi-View TTA method. Options: none, bundle, min_uncert, mean_uncert')
+    parser.add_argument('--mv_tta', type=str, default='none', help='Multi-View TTA method. Options: none, bundle, bundle_gentle, min_uncert, mean_uncert, vote_pred, conf_pred')
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
