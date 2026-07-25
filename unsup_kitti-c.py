@@ -723,7 +723,7 @@ def main():
     parser.add_argument('--kitti_dir', type=str, default='/mnt/alpha/jmfleming/KITTI', help='Path to SemanticKITTI dataset for pretraining')
     parser.add_argument('--kittic_dir', type=str, default='/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C', help='Path to real SemanticKITTI-C dataset')
     parser.add_argument('--corruptions', type=str, default='snow,beam_missing,wet_ground', help='Comma separated list of corruptions to test. Defaults to diagnostic panel.')
-    parser.add_argument('--mv_tta', type=str, default='none', help='Multi-View TTA Strategy (none, bundle, mean_uncert, min_uncert)')
+
     parser.add_argument('--ic_method', type=str, default='none', help='Inter/Intra-Class balancing method: none, ic1, ic4, xc1, xc2')
     parser.add_argument('--tau', type=float, default=None, help='Logit adjustment tau for inference prior. If not set, BM is used. τ=0 is normalized baseline. τ<0 is majority amplifier. τ>0 is balanced softmax.')
     parser.add_argument('--kappa', type=float, default=15.0, help='Logit scale kappa used with tau. Controls evidence weighting vs prior.')
