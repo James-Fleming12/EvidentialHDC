@@ -208,7 +208,13 @@ We tested standard TTA (unnormalized weights) against Normalized TTA (weights co
 * Normalized (Day 2): Snow `0.4682 -> 0.4685`, Wet `0.5182 -> 0.5186` (+0.04%)
 
 **Takeaway 1: Bayesian Momentum is Inertia.** Without an explicit prior, unnormalized weight magnitudes grow over time. This acts as an implicit learning rate decay, preventing the uncalibrated model from swinging wildly due to its hallucinations (+2.58% vs +0.67%).
-**Takeaway 2: Inert Adaptation.** When the $\tau=-1$ prior perfectly filters the false positives, the pseudo-labels become too clean, and the static prior shift heavily overpowers the small geometric updates. Adaptation flatlines (+0.04%).
+
+**Takeaway 2: Inert Adaptation (The Step Dilution Bug).** When the $\tau=-1$ prior perfectly filters the false positives, the pseudo-labels become too clean, and the static prior shift heavily overpowers the small geometric updates. Adaptation flatlines (+0.04%). 
+However, an audit of the logs revealed that this flatline was actually caused by a mathematical bug: **The Step Dilution Bug**. 
+
+Because 80-90% of LiDAR point clouds are unlabeled "background" points, the `argmax` operation dumps them into the 17 semantic classes. Our Epistemic Veto brilliantly caught this and assigned them all an update weight of `~0.0`, which successfully protected the *direction* of the geometric update from being corrupted. 
+However, because the code calculated the *step magnitude* (learning rate) by taking the `mean()` over the *entire class mask* (which includes those 80,000 background points), the mean was diluted down to `0.0224`. The learning rate of `0.01` was multiplied by `0.0224`, resulting in a microscopic step size of `0.0002` that essentially froze the model in place.
 
 ### Next Steps (Week 1)
-To achieve powerful adaptation on top of the $\tau=-1$ prior, we must unfreeze the boundaries via **Inter/Intra-Class Balancing**. We will sweep the fully functional `IC4` (epistemic gradient scaling) and `XC2` (subcluster geometric aggregation) now that pseudo-labels are calibrated!
+We have fixed the Step Dilution Bug by evaluating the `step_mag` mean strictly on the `fired_c_mask` (valid foreground points) instead of the raw `c_mask`. This ensures the learning rate reflects the true confidence of the target object, rather than the emptiness of the background.
+We will now re-run the Week 1 sweep of `IC4` (epistemic gradient scaling) and `XC2` (subcluster geometric aggregation) to finally unleash the true geometric adaptation!

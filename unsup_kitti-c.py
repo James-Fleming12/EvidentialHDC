@@ -301,25 +301,28 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                 if c_update.norm(p=2) > 1e-6:
                                     c_update = F.normalize(c_update, p=2, dim=0)
                                     
-                                    step_mag = update_lr * update_weights[c_mask].mean().item()
+                                    fired_c_mask = c_mask & fired_mask
+                                    if not fired_c_mask.any():
+                                        continue
+                                        
+                                    step_mag = update_lr * update_weights[fired_c_mask].mean().item()
                                     
                                     if ic_method == 'ic1':
                                         # Strict 5 degree per chunk budget limit
-
                                         max_step = (5.0 * math.pi / 180.0) * model.classify.weight[c].norm(p=2).item()
                                         step_mag = min(step_mag, max_step)
                                     elif ic_method == 'ic4':
                                         # Epistemic weighting: faster updates for high uncertainty
                                         if 'uncertainty' in locals():
-                                            step_mag *= uncertainty[c_mask].mean().item()
+                                            step_mag *= uncertainty[fired_c_mask].mean().item()
                                             
                                     model.class_update_counts[c] += 1
                                     
                                     if test_1b == 'mean_evidence':
-                                        g = evidence[c_mask, c].mean().item()
+                                        g = evidence[fired_c_mask, c].mean().item()
                                         step_mag = step_mag * g
                                     elif test_1b == 'coherence':
-                                        g = (valid_enc[c_mask].mean(dim=0).norm(p=2).item())
+                                        g = (valid_enc[fired_c_mask].mean(dim=0).norm(p=2).item())
                                         step_mag = step_mag * g
                                         
                                     # Bayesian Momentum Prototypes
