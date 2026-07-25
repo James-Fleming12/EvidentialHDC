@@ -275,3 +275,60 @@ These methods were evaluated via `run_week2.sh`, utilizing `IC4` and `tau=-1.0` 
 2. **Latent Bundling Degrades Zero-Shot:** The `bundle` strategy actually *degraded* the initial zero-shot mIoU (e.g. `0.4682 -> 0.4679` on Snow), proving that averaging corrupted spatial features introduces more topological noise than it suppresses.
 3. **Veto TTA is Inert:** The `min` and `mean` uncertainty methods successfully dropped the update firing rate (from 47.1% to 43.6%), meaning the consensus veto worked mechanically. However, it completely failed to improve the final mIoU, indicating that the samples it vetoed were already low-impact, leaving the structural centroid adjustments identical.
 4. **Conclusion:** Multi-View spatial TTA triples VRAM usage and drastically increases compute overhead while providing zero downstream improvement. The true driver of robust test-time adaptation is the **Precision Paradigm** (explicit `tau=-1.0` prior) paired with **Intra-Class Density Scaling** (`IC4`). Multi-View TTA is formally discarded.
+
+---
+
+## Part J: Re-evaluating Multi-View TTA (Phase 2 Diagnostic Suite)
+
+Following the initial conclusion in Part I, we conducted a rigorous code audit and formulated the Phase 2 Diagnostic Suite to investigate whether Multi-View TTA was discarded prematurely due to implementation confounds (such as extreme 90° yaw over-rotation and prediction-path vs. feature-path distinctions) and to test the **MV-2 Hypothesis: View Disagreement as an Unsupervised Precision Filter**.
+
+### J1. MV-1: Prediction-Path Consensus (`vote_pred` & `conf_pred`)
+Unlike feature-space bundling (`bundle`), which averages latent vectors before the classification head, prediction-path consensus evaluates each augmented view independently and aggregates in logit/probability space:
+* **`vote_pred`**: Majority voting across class predictions from the 3 views (with fallback to base prediction on 3-way ties).
+* **`conf_pred`**: Softmax probability averaging across all 3 views before taking the argmax prediction.
+
+**Validated Results on Snow-3 (3-Chunk Protocol):**
+
+| Strategy | $\tau$ | Initial mIoU | Final Online mIoU | Final Frozen mIoU | Tail mIoU (Frozen) | Accuracy |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Baseline (`none`)** | $0.0$ | 0.4078 | 0.4112 | 0.4135 | 0.1223 $\rightarrow$ 0.1430 | 86.17% $\rightarrow$ 83.97% |
+| **`vote_pred`** | $0.0$ | 0.4088 | 0.4121 | 0.4144 *(+0.09%)* | 0.1240 $\rightarrow$ 0.1441 | 86.20% $\rightarrow$ 84.01% |
+| **`conf_pred`** | $0.0$ | 0.4100 | 0.4133 | **0.4155** *(+0.20%)* | 0.1252 $\rightarrow$ 0.1449 | 86.26% $\rightarrow$ 84.08% |
+| | | | | | | |
+| **Baseline (`none`)** | $-1.0$ | 0.5524 | 0.5462 | 0.5465 | 0.4045 $\rightarrow$ 0.4098 | 87.47% $\rightarrow$ 86.15% |
+| **`vote_pred`** | $-1.0$ | 0.5536 | 0.5474 | 0.5477 *(+0.12%)* | 0.4069 $\rightarrow$ 0.4120 | 87.49% $\rightarrow$ 86.17% |
+| **`conf_pred`** | $-1.0$ | 0.5549 | 0.5488 | **0.5492** *(+0.27%)* | 0.4088 $\rightarrow$ **0.4140** | 87.53% $\rightarrow$ 86.22% |
+
+**Key Takeaways:**
+1. **Confidence Averaging Outperforms Voting:** Probability averaging (`conf_pred`) consistently surpasses discrete majority voting (`vote_pred`), delivering a **+0.27% mIoU** gain over baseline at $\tau=-1.0$.
+2. **Synergy with Calibration:** At $\tau=-1.0$, `conf_pred` boosts Tail mIoU by **+0.42%** over baseline (`0.4140` vs `0.4098`), demonstrating that multi-view probability consensus helps stabilize minority class boundaries under heavy corruption.
+
+---
+
+### J2. MV-2: View-Disagreement Precision Tracking (Empirical Proof)
+To test whether view disagreement between spatial augmentations can serve as an unsupervised signal to identify false-positive pseudo-labels, we logged the true precision of agreeing vs. disagreeing points across the 3 views.
+
+**Global Precision (All 17 Classes, $\tau=-1.0$):**
+* **When Views AGREE:** Precision is **87.8% – 89.3%** (~525M points).
+* **When Views DISAGREE:** Precision drops to **38.1% – 43.0%** (~8M–12M points).
+
+**Tail Class Precision (Class 10: Truck, $\tau=-1.0$):**
+* **Agreeing Points Precision:** **70.7% $\rightarrow$ 75.4%** (~205k–211k True Positives vs. ~66k–87k False Positives).
+* **Disagreeing Points Precision:** **13.1% $\rightarrow$ 22.3%** (~5k–6k True Positives vs. **~22k–35k False Positives**).
+
+**Takeaway:** For vulnerable tail classes like Class 10, when the three views disagree, **78% to 87% of those predictions are False Positives**. This empirically validates the MV-2 hypothesis: view disagreement provides an exceptionally strong unsupervised filtering signal that can be used to veto or dampen noisy gradient updates during test-time adaptation.
+
+---
+
+### J3. Step Dilution Verification (Ablation 3.1 & 3.2)
+* **Ablation 3.1 (`ic4` vs `none` at $\tau=0.0$):** Comparing `ic4` against the unconstrained baseline confirmed that `ic4` reduces the average adaptation step magnitude (`UpdateMag`) from `0.0062` to `0.0046` (~26% step dilution). This dilution improved Final Frozen mIoU from `0.4135` to `0.4142`, confirming that `ic4` acts as a beneficial step-dilution guard against noisy pseudo-labels.
+* **Ablation 3.2 (`none` at $\tau=-1.0$):** Established the uncalibrated adaptation baseline (`0.5465` Final Frozen mIoU) against which `conf_pred` and `vote_pred` were evaluated.
+
+---
+
+### J4. Feature-Space Bundling (`bundle` Series) - [TODO / In Progress]
+We are currently evaluating feature-space latent bundling across varying degrees of yaw rotation to determine if milder rotations preserve spatial structure better than extreme rotations:
+* **`bundle` (90° yaw)**: *[TODO - results pending]*
+* **`bundle_moderate` (22° yaw)**: *[TODO - results pending]*
+* **`bundle_gentle` (11° yaw)**: *[TODO - results pending]*
+
