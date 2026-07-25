@@ -124,6 +124,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         raw_enc_m2 = raw_enc_batched[2].view(-1, C_val)
                         norm_enc_m2 = F.normalize(raw_enc_m2, dim=1).to(model.classify.weight.dtype)
                         
+                        norm_enc_base = norm_enc.clone()
+                        
                         if mv_tta in ['bundle', 'bundle_gentle']:
                             # Phase 1 TTA: Consensus Bundling in Feature Space
                             bundled_enc = norm_enc + norm_enc_m1 + norm_enc_m2
@@ -171,15 +173,20 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             pred_m1 = torch.argmax(logits_m1, dim=1)
                             pred_m2 = torch.argmax(logits_m2, dim=1)
                             
-                            # Stack and find mode
+                            # Stack and check for ties
                             stacked_preds = torch.stack([pred_base, pred_m1, pred_m2], dim=1)
-                            predictions, _ = torch.mode(stacked_preds, dim=1)
+                            mode_preds, _ = torch.mode(stacked_preds, dim=1)
+                            
+                            # torch.mode returns the smallest value on a 3-way tie.
+                            # We want to default to pred_base if all 3 are different.
+                            three_way_tie = (pred_base != pred_m1) & (pred_m1 != pred_m2) & (pred_base != pred_m2)
+                            predictions = torch.where(three_way_tie, pred_base, mode_preds)
                     else:
                         predictions = torch.argmax(logits, dim=1)
                         
                     # MV-2: View Disagreement Precision Tracking
                     if mv_tta != 'none' and 'norm_enc_m1' in locals():
-                        pred_base_mv2 = torch.argmax(get_logits(norm_enc), dim=1)
+                        pred_base_mv2 = torch.argmax(get_logits(norm_enc_base), dim=1)
                         pred_m1_mv2 = torch.argmax(get_logits(norm_enc_m1), dim=1)
                         pred_m2_mv2 = torch.argmax(get_logits(norm_enc_m2), dim=1)
                         view_disagreement = (pred_base_mv2 != pred_m1_mv2) | (pred_base_mv2 != pred_m2_mv2)
