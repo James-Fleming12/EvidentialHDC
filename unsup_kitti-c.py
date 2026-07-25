@@ -232,7 +232,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     
                     # Guard against empty tensors causing NaN
                     if len(update_weights) > 0:
-                        model._firing_log.append(update_weights.mean().item())
+                        model._firing_log.append(fired_mask.float().mean().item())
                         for c in range(num_classes):
                             c_mask = (pseudo_labels == c)
                             if c_mask.any():
