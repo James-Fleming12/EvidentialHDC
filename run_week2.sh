@@ -35,4 +35,4 @@ DRY_RUN_FLAG=""
     echo "=========================================="
     echo "Week 2 Multi-View TTA tests complete."
     echo "=========================================="
-} 2>&1 | tee ../Logs/week2_results.log
+} 2>&1 | tee week2_results.log
