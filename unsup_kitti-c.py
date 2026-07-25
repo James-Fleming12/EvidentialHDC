@@ -333,6 +333,9 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     veto_mask = update_weights < (0.5 * base_weights)
                     # We define a point as "fired" if it passed the Epistemic Veto
                     fired_mask = ~veto_mask
+                    if mv_tta == 'veto_disagree' and 'view_disagreement' in locals():
+                        fired_mask = fired_mask & (~view_disagreement)
+                    effective_veto = ~fired_mask
                     
                     if not hasattr(model, '_firing_log'):
                         model._firing_log = []
@@ -357,8 +360,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     
                     if update_method != 'prototype_cosine':
                         valid_gt_mask = (selected_labels >= 0) & (selected_labels < num_classes)
-                        true_errors_rejected = (veto_mask & valid_gt_mask & (pseudo_labels != selected_labels)).sum().item()
-                        correct_labels_rejected = (veto_mask & valid_gt_mask & (pseudo_labels == selected_labels)).sum().item()
+                        true_errors_rejected = (effective_veto & valid_gt_mask & (pseudo_labels != selected_labels)).sum().item()
+                        correct_labels_rejected = (effective_veto & valid_gt_mask & (pseudo_labels == selected_labels)).sum().item()
                         if not hasattr(model, '_veto_stats'):
                             model._veto_stats = {'true_errors_rejected': 0, 'correct_labels_rejected': 0}
                         if not hasattr(model, '_class_veto_stats'):
@@ -370,8 +373,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         for c in range(num_classes):
                             c_mask = (pseudo_labels == c)
                             if c_mask.any():
-                                true_errs = (veto_mask & valid_gt_mask & c_mask & (pseudo_labels != selected_labels)).sum().item()
-                                corr_labels = (veto_mask & valid_gt_mask & c_mask & (pseudo_labels == selected_labels)).sum().item()
+                                true_errs = (effective_veto & valid_gt_mask & c_mask & (pseudo_labels != selected_labels)).sum().item()
+                                corr_labels = (effective_veto & valid_gt_mask & c_mask & (pseudo_labels == selected_labels)).sum().item()
                                 model._class_veto_stats[c]['true_errors_rejected'] += true_errs
                                 model._class_veto_stats[c]['correct_labels_rejected'] += corr_labels
                     
@@ -842,7 +845,7 @@ def main():
     parser.add_argument('--tau', type=float, default=None, help='Logit adjustment tau for inference prior. If not set, BM is used. τ=0 is normalized baseline. τ<0 is majority amplifier. τ>0 is balanced softmax.')
     parser.add_argument('--kappa', type=float, default=15.0, help='Logit scale kappa used with tau. Controls evidence weighting vs prior.')
     parser.add_argument('--normalize_weights', action='store_true', help='Force weights to be normalized after every update (disables Bayesian Momentum accumulator).')
-    parser.add_argument('--mv_tta', type=str, default='none', help='Multi-View TTA method. Options: none, bundle, bundle_gentle, bundle_moderate, min_uncert, mean_uncert, vote_pred, conf_pred')
+    parser.add_argument('--mv_tta', type=str, default='none', help='Multi-View TTA method. Options: none, bundle, bundle_gentle, bundle_moderate, min_uncert, mean_uncert, vote_pred, conf_pred, veto_disagree')
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
