@@ -1,6 +1,7 @@
 #!/bin/bash
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export CUDA_VISIBLE_DEVICES=3
 
 LOG_FILE="phase3_diagnostics.log"
