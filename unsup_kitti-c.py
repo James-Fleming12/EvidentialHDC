@@ -92,30 +92,42 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         latent_x = model.net(proj_in, only_feat=True)
                     latent_x = latent_x.permute(0, 2, 3, 1).reshape(-1, 128)
                     
-                    raw_enc, indices, _ = model.encode(proj_in)
-                    norm_enc = F.normalize(raw_enc, dim=1)
-                    
-                    # === MULTI-VIEW TTA AUGMENTATIONS ===
+                    # === MULTI-VIEW TTA AUGMENTATIONS (BATCHED) ===
                     if mv_tta != 'none':
                         B_val, _, H_val, W_val = proj_in.shape
-                        # Augment 1: Yaw Shift (Roll horizontally by W/4)
                         proj_m1 = torch.roll(proj_in, shifts=W_val//4, dims=3)
-                        raw_enc_m1, _, _ = model.encode(proj_m1)
-                        # Re-align spatially
-                        C_val = raw_enc_m1.shape[-1]
-                        raw_enc_m1 = raw_enc_m1.view(B_val, H_val, W_val, C_val)
+                        proj_m2 = proj_in * 0.95
+                        
+                        # Batch all 3 views into a single forward pass! (Size: [3 * B, 5, H, W])
+                        batched_proj = torch.cat([proj_in, proj_m1, proj_m2], dim=0)
+                        raw_enc_batched, _, _ = model.encode(batched_proj)
+                        C_val = raw_enc_batched.shape[-1]
+                        
+                        # Unpack batched encodings: shape [3, B, H, W, C]
+                        raw_enc_batched = raw_enc_batched.view(3, B_val, H_val, W_val, C_val)
+                        
+                        # Base view
+                        raw_enc = raw_enc_batched[0].view(-1, C_val)
+                        norm_enc = F.normalize(raw_enc, dim=1)
+                        # We still need indices to match the original single-batch size
+                        indices = torch.arange(raw_enc.shape[0], device=device)
+                        
+                        # M1 (Yaw Shift) - Roll back horizontally to align features
+                        raw_enc_m1 = raw_enc_batched[1]
                         raw_enc_m1 = torch.roll(raw_enc_m1, shifts=-W_val//4, dims=2).view(-1, C_val)
                         norm_enc_m1 = F.normalize(raw_enc_m1, dim=1).to(model.classify.weight.dtype)
                         
-                        # Augment 2: Depth Scaling (Shrink ranges by 0.95)
-                        proj_m2 = proj_in * 0.95
-                        raw_enc_m2, _, _ = model.encode(proj_m2)
+                        # M2 (Depth Scale)
+                        raw_enc_m2 = raw_enc_batched[2].view(-1, C_val)
                         norm_enc_m2 = F.normalize(raw_enc_m2, dim=1).to(model.classify.weight.dtype)
                         
                         if mv_tta == 'bundle':
                             # Phase 1 TTA: Consensus Bundling in Feature Space
                             bundled_enc = norm_enc + norm_enc_m1 + norm_enc_m2
                             norm_enc = F.normalize(bundled_enc, dim=1)
+                    else:
+                        raw_enc, indices, _ = model.encode(proj_in)
+                        norm_enc = F.normalize(raw_enc, dim=1)
                     # ====================================
                     
                     if norm_enc.dtype != model.classify.weight.dtype:
