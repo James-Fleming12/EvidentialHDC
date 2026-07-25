@@ -39,7 +39,7 @@ SEVERITY_MAP = {1: 'light', 2: 'moderate', 3: 'heavy', 4: 'extreme'}
 CONFIG_ARCH = "config/arch/senet-2048p.yml"
 CONFIG_LABELS_KITTI_ALL = "config/labels/semantic-kitti-all.yaml"  # Standard 17 classes
 
-def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, test_1b='none', test_1c=1.0, ic_method='none', tau=None, kappa=15.0, normalize_weights=False):
+def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, ic_method='none', tau=None, kappa=15.0, normalize_weights=False, mv_tta='none'):
     if ic_method not in ['none', 'ic1', 'ic4', 'xc2']:
         raise ValueError(f"Unknown ic_method: {ic_method}")
 
@@ -55,15 +55,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
     
     prev_preds_2d = None
 
-    # Test 1c: Partial Calibration (Shrinkage)
-    if test_1c < 1.0:
-        global_mu = model.source_mu_cos.mean()
-        global_sigma = model.source_sigma_cos.mean()
-        active_mu_cos = test_1c * model.source_mu_cos + (1 - test_1c) * global_mu
-        active_sigma_cos = test_1c * model.source_sigma_cos + (1 - test_1c) * global_sigma
-    else:
-        active_mu_cos = model.source_mu_cos
-        active_sigma_cos = model.source_sigma_cos
+    active_mu_cos = model.source_mu_cos
+    active_sigma_cos = model.source_sigma_cos
 
     if not eval_only and hasattr(model, 'classify'):
 
@@ -101,6 +94,29 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     
                     raw_enc, indices, _ = model.encode(proj_in)
                     norm_enc = F.normalize(raw_enc, dim=1)
+                    
+                    # === MULTI-VIEW TTA AUGMENTATIONS ===
+                    if mv_tta != 'none':
+                        B_val, _, H_val, W_val = proj_in.shape
+                        # Augment 1: Yaw Shift (Roll horizontally by W/4)
+                        proj_m1 = torch.roll(proj_in, shifts=W_val//4, dims=3)
+                        raw_enc_m1, _, _ = model.encode(proj_m1)
+                        # Re-align spatially
+                        C_val = raw_enc_m1.shape[-1]
+                        raw_enc_m1 = raw_enc_m1.view(B_val, H_val, W_val, C_val)
+                        raw_enc_m1 = torch.roll(raw_enc_m1, shifts=-W_val//4, dims=2).view(-1, C_val)
+                        norm_enc_m1 = F.normalize(raw_enc_m1, dim=1).to(model.classify.weight.dtype)
+                        
+                        # Augment 2: Depth Scaling (Shrink ranges by 0.95)
+                        proj_m2 = proj_in * 0.95
+                        raw_enc_m2, _, _ = model.encode(proj_m2)
+                        norm_enc_m2 = F.normalize(raw_enc_m2, dim=1).to(model.classify.weight.dtype)
+                        
+                        if mv_tta == 'bundle':
+                            # Phase 1 TTA: Consensus Bundling in Feature Space
+                            bundled_enc = norm_enc + norm_enc_m1 + norm_enc_m2
+                            norm_enc = F.normalize(bundled_enc, dim=1)
+                    # ====================================
                     
                     if norm_enc.dtype != model.classify.weight.dtype:
                         norm_enc = norm_enc.to(model.classify.weight.dtype)
@@ -201,12 +217,24 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         # update_weights = update_weights * tier1_decay
                         
                         # 3. Hypervector Uncertainty: Z-Score Calibrated Dirichlet Evidence
-                        z_c = (cos_sims - active_mu_cos) / (active_sigma_cos + 1e-8)
-                        gamma_sharpness = 5.0
-                        evidence = F.softplus(gamma_sharpness * z_c)
-                        alpha = evidence + 1.0
-                        S = torch.sum(alpha, dim=1, keepdim=True)
-                        uncertainty = num_classes / S.squeeze(1) # Epistemic uncertainty
+                        def get_uncert(enc, c_sims=None):
+                            if c_sims is None:
+                                c_sims = F.linear(enc, proto_norm)
+                            z = (c_sims - active_mu_cos) / (active_sigma_cos + 1e-8)
+                            gamma_s = 5.0
+                            ev = F.softplus(gamma_s * z)
+                            S_val = torch.sum(ev + 1.0, dim=1)
+                            return num_classes / S_val
+                            
+                        uncertainty = get_uncert(norm_enc, cos_sims)
+                        
+                        if mv_tta in ['min_uncert', 'mean_uncert']:
+                            u_m1 = get_uncert(norm_enc_m1)
+                            u_m2 = get_uncert(norm_enc_m2)
+                            if mv_tta == 'min_uncert':
+                                uncertainty = torch.min(torch.min(uncertainty, u_m1), u_m2)
+                            elif mv_tta == 'mean_uncert':
+                                uncertainty = (uncertainty + u_m1 + u_m2) / 3.0
                         
                         # Soft Veto: High uncertainty scales down update weight
                         u_threshold = 0.5 
@@ -314,13 +342,6 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                             
                                     model.class_update_counts[c] += 1
                                     
-                                    if test_1b == 'mean_evidence':
-                                        g = evidence[fired_c_mask, c].mean().item()
-                                        step_mag = step_mag * g
-                                    elif test_1b == 'coherence':
-                                        g = (valid_enc[fired_c_mask].mean(dim=0).norm(p=2).item())
-                                        step_mag = step_mag * g
-                                        
                                     # Bayesian Momentum Prototypes
                                     # The unnormalized weight vector accumulates norms proportional to frequency.
                                     # This creates both an emergent 1/t LR schedule AND a Bayesian Prior for the final logits.
@@ -708,6 +729,7 @@ def main():
     parser.add_argument('--tau', type=float, default=None, help='Logit adjustment tau for inference prior. If not set, BM is used. τ=0 is normalized baseline. τ<0 is majority amplifier. τ>0 is balanced softmax.')
     parser.add_argument('--kappa', type=float, default=15.0, help='Logit scale kappa used with tau. Controls evidence weighting vs prior.')
     parser.add_argument('--normalize_weights', action='store_true', help='Force weights to be normalized after every update (disables Bayesian Momentum accumulator).')
+    parser.add_argument('--mv_tta', type=str, default='none', help='Multi-View TTA method. Options: none, bundle, min_uncert, mean_uncert')
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -969,7 +991,7 @@ def main():
                     # Pass 1: True Initial (Frozen on chunk)
                     if (ctype, sev) not in shared_init_metrics:
                         logger.debug("  -> Pass 1: Computing True Initial metrics (Frozen)")
-                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b='none', test_1c=1.0, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights)
+                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta)
                         shared_init_metrics[(ctype, sev)] = init_metrics
                     else:
                         logger.debug("  -> Pass 1: Reusing cached True Initial metrics (Frozen)")
@@ -979,14 +1001,14 @@ def main():
                     if current_method != 'frozen':
                         logger.debug("  -> Pass 2: Adapting model weights")
                         eval_model.train()
-                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights)
+                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta)
                     else:
                         adapt_metrics = init_metrics
                         
                     # Pass 3: True Final (Frozen on chunk using adapted weights)
                     logger.debug("  -> Pass 3: Computing True Final metrics (Frozen)")
                     eval_model.eval()
-                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights)
+                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta)
                     
                     # We only care about the absolute end of the frozen evaluations for the sequence
                     metrics = adapt_metrics  # Just for the trajectory json
@@ -1016,7 +1038,7 @@ def main():
                             firing_rate_str += f", UpdateMag={adapt_metrics['UpdateMagnitude']:.4f}"
                 else:
                     # Original single-pass continuous evaluation
-                    metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=(current_method == 'frozen'), update_method=current_method, dry_run=args.dry_run, test_1b=t1b, test_1c=t1c, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights)
+                    metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=(current_method == 'frozen'), update_method=current_method, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta)
                     if len(metrics["mIoU"]) > 0:
                         initial_miou = metrics["mIoU"][0]
                         final_miou = metrics["mIoU"][-1]

@@ -79,3 +79,19 @@ We ablated standard unnormalized TTA (Bayesian Momentum) against Normalized TTA 
 > * The mathematical formulation of multi-view projection mapping in HDC latent space.
 > * Variance reduction via cross-view ensemble pseudo-labeling.
 > * Ablations on view-discrepancy as an orthogonal uncertainty metric.
+5. **Multi-View Consensus TTA (Phase 2 - Testing)**: To prevent overfitting and extreme rotation on highly calibrated domains, the adaptation pipeline leverages geometric test-time augmentation (TTA). The input range image is subjected to spatial transformations (e.g., yaw-shifting via horizontal roll, and depth scaling). The resulting multiple views can be bundled either in the high-dimensional feature space ($Z_{bundle}$) to create a robust topological representation, or at the uncertainty level via Soft/Optimistic Consensus combinations.
+
+---
+
+## 3. Multi-View Consensus (Test-Time Augmentation)
+To address minor regressions caused by over-rotation on stable domains (e.g., Wet Ground), the model evaluates the consistency of the point cloud across multiple geometric views before committing to a gradient update.
+
+For a given 360-degree LiDAR range image $X \in \mathbb{R}^{5 \times H \times W}$, we define $M$ spatial augmentations:
+1. $X_{base}$: The original projection.
+2. $X_{yaw}$: A yaw-shifted projection, computed by rolling the panorama horizontally (e.g., by $W/4$).
+3. $X_{scale}$: A depth-scaled projection (e.g., $X_{base} \times 0.95$).
+
+These views are passed independently through the encoder $f_\theta$. The predictions and uncertainties are aggregated using one of three candidate methods:
+* **Feature Bundling (Exp A)**: Averaging the normalized latent encodings $\bar{Z} = \frac{Z_{base} + Z_{yaw} + Z_{scale}}{\| \dots \|_2}$ prior to classification.
+* **Soft Consensus (Mean Uncertainty)**: Averaging the Epistemic Dirichlet Uncertainty across the $M$ views to softly penalize gradient updates where the views disagree.
+* **Optimistic Consensus (Min Uncertainty)**: Selecting the minimum epistemic uncertainty across the $M$ views to dictate the update magnitude, allowing the model to adapt strongly if *any* view achieves high confidence.

@@ -1,14 +1,13 @@
-# Phase 2: Audit of Phase 1 Takeaways and Balancing Test Suite
-**Date:** July 22-23, 2026 (v3)
+# Phase 2: Audit of Initial Takeaways and Balancing Test Suite
 
 ## Objective
 Establish mathematically rigorous diagnostics to audit the early Phase 1 hypotheses, and explicitly shift from heuristic fixes to explicit magnitude/rotation schedules and inter/intra-class balancing. 
 
 ---
 
-## Part A: The True Phase 1 Takeaways & Overnight Diagnostics (July 23)
+## Part A: The True Initial Takeaways & Extended Diagnostics
 
-We implemented an overnight diagnostic suite (V1-V7) to formally test the takeaways from Phase 1. 
+We implemented an extended diagnostic suite (V1-V7) to formally test the initial takeaways. 
 
 | Run | Snow-3 (Online / Frozen) | Wet Ground-3 (Online / Frozen) |
 | :--- | :--- | :--- |
@@ -22,12 +21,12 @@ Because the classification layer always normalized on the forward pass, the unco
 `rotation per step ≈ step_mag / ||w_c||`
 As `||w_c||` grew linearly via accumulation, the effective angular learning rate decayed like **$1/t$**. 
 
-**Overnight Proof:** By simply disabling the post-step normalization in Run 2 (`--reproduce_bug`), we completely restored the massive Phase 1 performance delta. Snow's frozen mIoU jumped from **0.4126 to 0.4545**, and Wet Ground jumped from **0.4337 to 0.4766**.
+**Diagnostic Proof:** By simply disabling the post-step normalization in Run 2 (`--reproduce_bug`), we completely restored the massive initial performance delta. Snow's frozen mIoU jumped from **0.4126 to 0.4545**, and Wet Ground jumped from **0.4337 to 0.4766**.
 
 ### A1. The 50–60° Rotation was a Prototype-Norm Artifact
 The claim that a single phantom point dragged prototypes 60° was false. The massive rotations occurred because rare classes happened to have small initial prototype norms from pretraining, making their initial `1/||w_c||` multiplier massive. 
 
-**Overnight Proof:** We updated the pretraining pipeline to correctly guarantee `||w_0|| = 1.0` for all classes right out of the gate. As a result, the Bug Reproduction run (Run 2) only saw a max rotation of ~11°, instead of 60°. The step sizes started reasonably small and decayed, rather than starting massive.
+**Diagnostic Proof:** We updated the pretraining pipeline to correctly guarantee `||w_0|| = 1.0` for all classes right out of the gate. As a result, the Bug Reproduction run (Run 2) only saw a max rotation of ~11°, instead of 60°. The step sizes started reasonably small and decayed, rather than starting massive.
 
 ### A2. The Epistemic Anchor ($k=0$) does nothing
 The regression from $k=0.0001$ to $k=0.0$ was only 0.0004 mIoU—well below the noise floor. The spring is neither the cause of the `0.4840` shortfall nor a necessary anchor. 
@@ -35,7 +34,7 @@ The regression from $k=0.0001$ to $k=0.0$ was only 0.0004 mIoU—well below the 
 ### A3. The `0.4840` vs `0.4129` Comparison is Confounded
 The `0.4840` metric was reported as a *cumulative online* mIoU during the adaptation pass. The `0.4129` metric was reported as a *final frozen* mIoU post-adaptation.
 
-**Overnight Proof:** Run 2 demonstrated that **Frozen** final mIoU (0.4545) is significantly higher than the **Online** cumulative mIoU (0.4362). As the model adapted with the $1/t$ decay, it eventually found a highly optimized geometry. The online metric was simply dragged down by early frames where the model was actively rotating.
+**Diagnostic Proof:** Run 2 demonstrated that **Frozen** final mIoU (0.4545) is significantly higher than the **Online** cumulative mIoU (0.4362). As the model adapted with the $1/t$ decay, it eventually found a highly optimized geometry. The online metric was simply dragged down by early frames where the model was actively rotating.
 
 ### A4. The Noise Floor is Tight
 Run 3 established that the variance of the baseline is extremely tight ($\pm 0.0014$ on Snow). The massive $+0.0419$ jump from the Bug Reproduction is purely structural, not noise.
@@ -73,7 +72,7 @@ Because we transitioned to the 3-Chunk testing protocol, we ran the Baseline TTA
 The evidence proves that the model *requires* a deep, early adaptation phase followed by a decay, rather than a continuous constant equilibrium. We must implement this mathematically rather than relying on a tensor accumulation bug.
 
 1. **S1 (Global LR Schedules):** We explicitly tested constant, $1/t$, and cosine decay globally. They **failed** entirely (freezing the network). Why? Because a global schedule decays learning rates equally across all classes, meaning rare classes are frozen before they ever see enough points to adapt.
-2. **S2 (Bayesian Momentum Prototypes):** Through rigorous ablation, we discovered the Phase 1 PyTorch `.data` bug was actually an emergent, dual-purpose mathematical mechanism:
+2. **S2 (Bayesian Momentum Prototypes):** Through rigorous ablation, we discovered the initial PyTorch `.data` bug was actually an emergent, dual-purpose mathematical mechanism:
    * **The Mathematical Proof:** We ran a decoupled ablation (`S2.1`) that mathematically extracted the unnormalized momentum logic into a separate tracking tensor (`momentum_prototypes`), while forcing the final classification layer to evaluate on perfectly normalized vectors. The adaptation firing rates perfectly matched the PyTorch bug down to the 4th decimal (e.g. `11: 0.7295`), proving the geometric rotations were identical. However, the final `S2.1` mIoU crashed back to baseline (0.4125). This proved conclusively that the 0.4545 spike was strictly dependent on the final logits remaining unnormalized.
    * **Geometric Phase (Dynamic LR):** As the unnormalized weight vector accumulates updates, its norm inflates proportionally to how often it fires. For majority classes, the norm hits $30.0$, scaling the angular rotation by $1/30$ and freezing the geometry. For rare classes, the norm stays near $1.0$, allowing rapid adaptation. 
    * **Calibration Phase (Bayesian Prior):** During the final forward pass, the unnormalized prototype vector inherently scales the logits by its norm. Because the norm perfectly tracks the target domain's class frequencies, `logits = norm_enc @ W_unnorm` is mathematically identical to computing a Baye's Rule Prior $P(X|Y)P(Y)$.
@@ -97,7 +96,7 @@ The evidence proves that the model *requires* a deep, early adaptation phase fol
 > **Chunk vs Global Baselines:** The initial mIoUs shown below (e.g. `0.3628` for Snow-3) are lower than the full-sequence dataset averages (e.g. `~0.41` for Snow-3) because the 3-Chunk protocol strictly isolates evaluation to sequential 1/3 slices of the data. Because KITTI is autonomous driving video data, Chunk 1 contains entirely different scenes (e.g., residential vs highway) than the global average, leading to a naturally different baseline performance on that local slice.
 
 > [!NOTE]
-> **Bug Audit (July 23):** The IC/XC tests above were run prior to a suite of infrastructure bug fixes (arg-parsing hardcodes, `indices` shadowing, and `class_freq_ema` initialization). We have audited these bugs and verified they do **not** invalidate the results:
+> **Bug Audit:** The IC/XC tests above were run prior to a suite of infrastructure bug fixes (arg-parsing hardcodes, `indices` shadowing, and `class_freq_ema` initialization). We have audited these bugs and verified they do **not** invalidate the results:
 > 1. The arg-parsing bug forced `--method evidential_hdc_tta`, but since IC1, IC4, and XC2 are sub-routines of that exact method, they executed correctly.
 > 2. The `class_freq_ema` (used for `f_y` inverse weighting) was initializing uniformly instead of using the source prior. However, because it decays rapidly (`beta=0.99`) and is heavily squashed by `gamma=0.1`, the discrepancy mathematically bounds to $<\pm 0.0005$ mIoU over the chunk.
 > 3. The `indices` tensor shadowing was mathematically a no-op `norm_enc[indices]` where `indices = [0..N]`.
@@ -168,9 +167,9 @@ By pushing `tau` into the pseudo-label path (`cos_sims`), we can run our full TT
 
 ---
 
-## Part H: Day 1 & Day 2 Calibration Results (July 24, 2026)
+## Part H: Unnormalized vs Normalized Calibration Results
 
-To fully lock in the zero-shot calibration and unblock the Week 1 balancing experiments, we executed the Day 1 and Day 2 sweeps.
+To fully lock in the zero-shot calibration and unblock the IC/XC balancing experiments, we executed both Unnormalized and Normalized sweeps.
 
 ### H1. The Precision Paradigm Confirmed
 By extracting the Frozen Initial (Pass 1) Confusion Matrix for Snow-3, we decomposed the True Positives, False Positives, and False Negatives for the Tail Classes:
@@ -200,12 +199,12 @@ Because `argmax` is scale-invariant, the calibration mechanism is entirely contr
 We tested standard TTA (unnormalized weights) against Normalized TTA (weights continuously re-normalized to length 1.0, disabling "Bayesian Momentum").
 
 **Baseline (No Explicit Prior, $\tau=0$):**
-* Unnormalized (Day 1): Snow `0.3628 -> 0.3698`, Wet `0.4175 -> 0.4433` (+2.58%)
-* Normalized (Day 2): Snow `0.3628 -> 0.3642`, Wet `0.4175 -> 0.4242` (+0.67%)
+* Unnormalized: Snow `0.3628 -> 0.3698`, Wet `0.4175 -> 0.4433` (+2.58%)
+* Normalized: Snow `0.3628 -> 0.3642`, Wet `0.4175 -> 0.4242` (+0.67%)
 
 **Calibrated (Explicit Prior, $\tau=-1$):**
-* Unnormalized (Day 1): Snow `0.4682 -> 0.4685`, Wet `0.5182 -> 0.5186` (+0.04%)
-* Normalized (Day 2): Snow `0.4682 -> 0.4685`, Wet `0.5182 -> 0.5186` (+0.04%)
+* Unnormalized: Snow `0.4682 -> 0.4685`, Wet `0.5182 -> 0.5186` (+0.04%)
+* Normalized: Snow `0.4682 -> 0.4685`, Wet `0.5182 -> 0.5186` (+0.04%)
 
 **Takeaway 1: Bayesian Momentum is Inertia.** Without an explicit prior, unnormalized weight magnitudes grow over time. This acts as an implicit learning rate decay, preventing the uncalibrated model from swinging wildly due to its hallucinations (+2.58% vs +0.67%).
 
@@ -215,6 +214,36 @@ However, an audit of the logs revealed that this flatline was actually caused by
 Because 80-90% of LiDAR point clouds are unlabeled "background" points, the `argmax` operation dumps them into the 17 semantic classes. Our Epistemic Veto brilliantly caught this and assigned them all an update weight of `~0.0`, which successfully protected the *direction* of the geometric update from being corrupted. 
 However, because the code calculated the *step magnitude* (learning rate) by taking the `mean()` over the *entire class mask* (which includes those 80,000 background points), the mean was diluted down to `0.0224`. The learning rate of `0.01` was multiplied by `0.0224`, resulting in a microscopic step size of `0.0002` that essentially froze the model in place.
 
-### Next Steps (Week 1)
+### Next Steps
 We have fixed the Step Dilution Bug by evaluating the `step_mag` mean strictly on the `fired_c_mask` (valid foreground points) instead of the raw `c_mask`. This ensures the learning rate reflects the true confidence of the target object, rather than the emptiness of the background.
-We will now re-run the Week 1 sweep of `IC4` (epistemic gradient scaling) and `XC2` (subcluster geometric aggregation) to finally unleash the true geometric adaptation!
+
+### Final Sweep Results: Unleashing Adaptation
+After fixing the Step Dilution Bug and the Veto threshold, we re-ran `IC4` and `XC2` on the Calibrated pseudo-labels (`tau=-1`). The geometric adaptation successfully un-froze, delivering massive improvements on top of the already-calibrated baseline!
+
+**IC4 (Epistemic Weighting):**
+* Snow-3: `0.4682` $\rightarrow$ **`0.5064`** (+3.82%)
+  * Tail IoU: `0.2594` $\rightarrow$ **`0.3232`**
+* Beam Missing-3: `0.4472` $\rightarrow$ `0.4517` (+0.45%)
+* Wet Ground-3: `0.5182` $\rightarrow$ `0.5158` (-0.24%)
+* **Diagnostics:** Firing Rate perfectly tracked the real object density ($\sim 43\%$), and the Update Magnitude was restored from `0.0002` to `0.0045`.
+
+**XC2 (Geometric Sub-clustering):**
+* Snow-3: `0.4682` $\rightarrow$ `0.5059` (+3.77%)
+  * Tail IoU: `0.2594` $\rightarrow$ `0.3225`
+* Beam Missing-3: `0.4472` $\rightarrow$ `0.4517` (+0.45%)
+* Wet Ground-3: `0.5182` $\rightarrow$ `0.5154` (-0.28%)
+
+**Takeaways:**
+1. **The Architecture is Unlocked:** The model broke through the 0.468 boundary and soared past **0.50 mIoU** on Snow! The Tail IoU also experienced a massive second wind, jumping from 0.25 to 0.32.
+2. **IC4 vs XC2:** `IC4` (epistemic scaling) slightly edged out `XC2` (subcluster aggregation). Because `IC4` is significantly faster to compute than K-Means, it is the clear winner for the final pipeline.
+3. **The Wet Ground Regression:** Wet Ground saw a slight regression ($\sim -0.2\%$). This suggests that when the initial calibration is already near-perfect ($0.5182$), blindly stretching the manifold can introduce slight overfitting to the current frame. This perfectly motivates Phase 2: **Multi-View Consistency**, which will lock the geometry across frames to prevent this over-rotation.
+
+## Part I: Multi-View Consensus (Test-Time Augmentation)
+To address the minor regression on highly stable domains like Wet Ground, we introduce **Multi-View Consensus TTA** (Phase 2). By subjecting the input point cloud to multiple geometric augmentations (e.g., yaw shifts, depth scaling) and aggregating the representations *before* taking a gradient step, we can prevent a single anomalous feature vector from over-rotating the prototypes. 
+
+We have injected three consensus aggregation variants into `unsup_kitti-c.py` for testing:
+1. **`bundle` (Exp A Formulation)**: $Z_{bundle} = \frac{\sum Z_m}{\|\sum Z_m\|_2}$. Averages the high-dimensional latent vectors *before* evaluating cosine similarity, enforcing topological robustness at the feature level.
+2. **`mean_uncert` (Soft Consensus)**: Computes Dirichlet epistemic uncertainty on each view independently, and takes the mathematical average of the uncertainties to scale the gradient update.
+3. **`min_uncert` (Optimistic Consensus)**: Computes Dirichlet epistemic uncertainty on each view independently, and uses the lowest uncertainty (most confident view) to scale the gradient update.
+
+These methods are currently queued for evaluation in `run_week2.sh`, utilizing `IC4` and `tau=-1.0` as the foundation.
