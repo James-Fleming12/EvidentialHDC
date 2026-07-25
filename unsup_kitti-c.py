@@ -116,7 +116,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         
                         # Base view
                         raw_enc = raw_enc_batched[0].view(-1, C_val)
-                        norm_enc = F.normalize(raw_enc, dim=1)
+                        norm_enc = F.normalize(raw_enc, dim=1).to(model.classify.weight.dtype)
                         # We still need indices to match the original single-batch size
                         indices = torch.arange(raw_enc.shape[0], device=device)
                         
@@ -134,16 +134,15 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         if mv_tta in ['bundle', 'bundle_gentle', 'bundle_moderate']:
                             # Phase 1 TTA: Consensus Bundling in Feature Space
                             bundled_enc = norm_enc + norm_enc_m1 + norm_enc_m2
-                            norm_enc = F.normalize(bundled_enc, dim=1)
+                            norm_enc = F.normalize(bundled_enc, dim=1).to(model.classify.weight.dtype)
                     else:
                         raw_enc, indices, _ = model.encode(proj_in)
-                        norm_enc = F.normalize(raw_enc, dim=1)
+                        norm_enc = F.normalize(raw_enc, dim=1).to(model.classify.weight.dtype)
                     # ====================================
                     
-                    if norm_enc.dtype != model.classify.weight.dtype:
-                        norm_enc = norm_enc.to(model.classify.weight.dtype)
-                        if 'norm_enc_base' in locals():
-                            norm_enc_base = norm_enc_base.to(model.classify.weight.dtype)
+                    norm_enc = norm_enc.to(model.classify.weight.dtype)
+                    if 'norm_enc_base' in locals():
+                        norm_enc_base = norm_enc_base.to(model.classify.weight.dtype)
                     
                     if tau is not None:
                         w_norm = F.normalize(model.classify.weight, p=2, dim=1)
@@ -730,9 +729,7 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device, dry_
                 dists = torch.norm(latent_valid - pred_means, p=2, dim=1)
                 
                 # Compute cos sims for Z-score calibration
-                norm_enc = F.normalize(raw_enc[valid_mask], dim=1)
-                if norm_enc.dtype != model.classify.weight.dtype:
-                    norm_enc = norm_enc.to(model.classify.weight.dtype)
+                norm_enc = F.normalize(raw_enc[valid_mask], dim=1).to(model.classify.weight.dtype)
                 logits = model.classify(norm_enc)
                 true_cos = logits[torch.arange(logits.size(0)), labels_valid]
                 
