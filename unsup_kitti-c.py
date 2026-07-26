@@ -31,16 +31,13 @@ CORRUPTIONS = [
     'incomplete_echo', 
     'cross_sensor'
 ]
-# Note on Severity: D3CTTA evaluates on "moderate" severity. 
-# Depending on Robo3D version, this maps to severity 2 (light/moderate/heavy) or 3 (1-5 scale).
-# When comparing to D3CTTA, ensure you run with the severity integer that maps to 'moderate'.
 SEVERITY_MAP = {1: 'light', 2: 'moderate', 3: 'heavy', 4: 'extreme'}
 
 CONFIG_ARCH = "config/arch/senet-2048p.yml"
 CONFIG_LABELS_KITTI_ALL = "config/labels/semantic-kitti-all.yaml"  # Standard 17 classes
 
 def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, ic_method='none', tau=None, kappa=15.0, normalize_weights=False, mv_tta='none'):
-    if ic_method not in ['none', 'ic1', 'ic4', 'xc2']:
+    if ic_method not in ['none', 'ic4']:
         raise ValueError(f"Unknown ic_method: {ic_method}")
 
     model_was_training = model.training
@@ -85,120 +82,90 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         if proj_in.shape[1] > 0:
             model.eval()
             with torch.no_grad():
-                if type(model).__name__ == 'D3CTTA':
-                    logits, _, indices, h = model(proj_in, xyz=proj_xyz)
-                    predictions = torch.argmax(logits, dim=1)
+                # Get raw latent and encodings for updates
+                with torch.amp.autocast('cuda', enabled=True):
+                    latent_x = model.net(proj_in, only_feat=True)
+                latent_x = latent_x.permute(0, 2, 3, 1).reshape(-1, 128)
+                
+                # === MULTI-VIEW TTA AUGMENTATIONS (BATCHED) ===
+                if mv_tta != 'none':
+                    B_val, _, H_val, W_val = proj_in.shape
+                    shift_amount = W_val // 4
+                    proj_m1 = torch.roll(proj_in, shifts=shift_amount, dims=3)
+                    proj_m2 = proj_in * 0.95
+                    
+                    # Batch all 3 views into a single forward pass! (Size: [3 * B, 5, H, W])
+                    batched_proj = torch.cat([proj_in, proj_m1, proj_m2], dim=0)
+                    raw_enc_batched, _, _ = model.encode(batched_proj)
+                    C_val = raw_enc_batched.shape[-1]
+                    
+                    # Unpack batched encodings: shape [3, B, H, W, C]
+                    raw_enc_batched = raw_enc_batched.view(3, B_val, H_val, W_val, C_val)
+                    
+                    # Base view
+                    raw_enc = raw_enc_batched[0].view(-1, C_val)
+                    norm_enc = F.normalize(raw_enc, dim=1).to(model.classify.weight.dtype)
+                    indices = torch.arange(raw_enc.shape[0], device=device)
+                    
+                    # M1 (Yaw Shift) - Roll back horizontally to align features
+                    raw_enc_m1 = raw_enc_batched[1]
+                    raw_enc_m1 = torch.roll(raw_enc_m1, shifts=-shift_amount, dims=2).view(-1, C_val)
+                    norm_enc_m1 = F.normalize(raw_enc_m1, dim=1).to(model.classify.weight.dtype)
+                    
+                    # M2 (Depth Scale)
+                    raw_enc_m2 = raw_enc_batched[2].view(-1, C_val)
+                    norm_enc_m2 = F.normalize(raw_enc_m2, dim=1).to(model.classify.weight.dtype)
+                    
+                    norm_enc_base = norm_enc.clone()
                 else:
-                    # Get raw latent and encodings for updates
-                    with torch.amp.autocast('cuda', enabled=True):
-                        latent_x = model.net(proj_in, only_feat=True)
-                    latent_x = latent_x.permute(0, 2, 3, 1).reshape(-1, 128)
+                    raw_enc, indices, _ = model.encode(proj_in)
+                    norm_enc = F.normalize(raw_enc, dim=1).to(model.classify.weight.dtype)
+                # ====================================
+                
+                norm_enc = norm_enc.to(model.classify.weight.dtype)
+                if 'norm_enc_base' in locals():
+                    norm_enc_base = norm_enc_base.to(model.classify.weight.dtype)
+                
+                if tau is not None:
+                    w_norm = F.normalize(model.classify.weight, p=2, dim=1)
                     
-                    # === MULTI-VIEW TTA AUGMENTATIONS (BATCHED) ===
-                    if mv_tta != 'none':
-                        B_val, _, H_val, W_val = proj_in.shape
-                        if mv_tta == 'bundle_gentle':
-                            shift_amount = W_val // 32
-                        elif mv_tta == 'bundle_moderate':
-                            shift_amount = W_val // 16
-                        else:
-                            shift_amount = W_val // 4
-                        proj_m1 = torch.roll(proj_in, shifts=shift_amount, dims=3)
-                        proj_m2 = proj_in * 0.95
+                    def get_logits(enc):
+                        l = F.linear(enc, w_norm) * kappa
+                        if tau != 0.0 and hasattr(model, 'source_class_freq'):
+                            pi = torch.clamp(model.source_class_freq, min=1e-5).to(device)
+                            l = l - tau * torch.log(pi).unsqueeze(0)
+                        return l
                         
-                        # Batch all 3 views into a single forward pass! (Size: [3 * B, 5, H, W])
-                        batched_proj = torch.cat([proj_in, proj_m1, proj_m2], dim=0)
-                        raw_enc_batched, _, _ = model.encode(batched_proj)
-                        C_val = raw_enc_batched.shape[-1]
+                    logits = get_logits(norm_enc)
+                else:
+                    def get_logits(enc):
+                        return model.classify(enc)
                         
-                        # Unpack batched encodings: shape [3, B, H, W, C]
-                        raw_enc_batched = raw_enc_batched.view(3, B_val, H_val, W_val, C_val)
-                        
-                        # Base view
-                        raw_enc = raw_enc_batched[0].view(-1, C_val)
-                        norm_enc = F.normalize(raw_enc, dim=1).to(model.classify.weight.dtype)
-                        # We still need indices to match the original single-batch size
-                        indices = torch.arange(raw_enc.shape[0], device=device)
-                        
-                        # M1 (Yaw Shift) - Roll back horizontally to align features
-                        raw_enc_m1 = raw_enc_batched[1]
-                        raw_enc_m1 = torch.roll(raw_enc_m1, shifts=-shift_amount, dims=2).view(-1, C_val)
-                        norm_enc_m1 = F.normalize(raw_enc_m1, dim=1).to(model.classify.weight.dtype)
-                        
-                        # M2 (Depth Scale)
-                        raw_enc_m2 = raw_enc_batched[2].view(-1, C_val)
-                        norm_enc_m2 = F.normalize(raw_enc_m2, dim=1).to(model.classify.weight.dtype)
-                        
-                        norm_enc_base = norm_enc.clone()
-                        
-                        if mv_tta in ['bundle', 'bundle_gentle', 'bundle_moderate']:
-                            # Phase 1 TTA: Consensus Bundling in Feature Space
-                            bundled_enc = norm_enc + norm_enc_m1 + norm_enc_m2
-                            norm_enc = F.normalize(bundled_enc, dim=1).to(model.classify.weight.dtype)
-                    else:
-                        raw_enc, indices, _ = model.encode(proj_in)
-                        norm_enc = F.normalize(raw_enc, dim=1).to(model.classify.weight.dtype)
-                    # ====================================
+                    logits = get_logits(norm_enc)
                     
-                    norm_enc = norm_enc.to(model.classify.weight.dtype)
-                    if 'norm_enc_base' in locals():
-                        norm_enc_base = norm_enc_base.to(model.classify.weight.dtype)
+                # Calculate multi-view predictions if needed for MV-1
+                if mv_tta == 'conf_pred' and 'norm_enc_m1' in locals():
+                    logits_m1 = get_logits(norm_enc_m1)
+                    logits_m2 = get_logits(norm_enc_m2)
                     
-                    if tau is not None:
-                        w_norm = F.normalize(model.classify.weight, p=2, dim=1)
-                        
-                        def get_logits(enc):
-                            l = F.linear(enc, w_norm) * kappa
-                            if tau != 0.0 and hasattr(model, 'source_class_freq'):
-                                pi = torch.clamp(model.source_class_freq, min=1e-5).to(device)
-                                l = l - tau * torch.log(pi).unsqueeze(0)
-                            return l
-                            
-                        logits = get_logits(norm_enc)
-                    else:
-                        def get_logits(enc):
-                            return model.classify(enc)
-                            
-                        logits = get_logits(norm_enc)
-                        
-                    # Calculate multi-view predictions if needed for MV-1
-                    if mv_tta in ['vote_pred', 'conf_pred'] and 'norm_enc_m1' in locals():
-                        logits_m1 = get_logits(norm_enc_m1)
-                        logits_m2 = get_logits(norm_enc_m2)
-                        
-                        if mv_tta == 'conf_pred':
-                            # Average probabilities across views
-                            prob_base = F.softmax(logits, dim=1)
-                            prob_m1 = F.softmax(logits_m1, dim=1)
-                            prob_m2 = F.softmax(logits_m2, dim=1)
-                            mean_probs = (prob_base + prob_m1 + prob_m2) / 3.0
-                            predictions = torch.argmax(mean_probs, dim=1)
-                        elif mv_tta == 'vote_pred':
-                            # Majority vote per point
-                            pred_base = torch.argmax(logits, dim=1)
-                            pred_m1 = torch.argmax(logits_m1, dim=1)
-                            pred_m2 = torch.argmax(logits_m2, dim=1)
-                            
-                            # Stack and check for ties
-                            stacked_preds = torch.stack([pred_base, pred_m1, pred_m2], dim=1)
-                            mode_preds, _ = torch.mode(stacked_preds, dim=1)
-                            
-                            # torch.mode returns the smallest value on a 3-way tie.
-                            # We want to default to pred_base if all 3 are different.
-                            three_way_tie = (pred_base != pred_m1) & (pred_m1 != pred_m2) & (pred_base != pred_m2)
-                            predictions = torch.where(three_way_tie, pred_base, mode_preds)
-                    else:
-                        predictions = torch.argmax(logits, dim=1)
-                        
-                    # MV-2: View Disagreement Precision Tracking
-                    if mv_tta != 'none' and 'norm_enc_m1' in locals():
-                        pred_base_mv2 = torch.argmax(get_logits(norm_enc_base), dim=1)
-                        pred_m1_mv2 = torch.argmax(get_logits(norm_enc_m1), dim=1)
-                        pred_m2_mv2 = torch.argmax(get_logits(norm_enc_m2), dim=1)
-                        view_disagreement = (pred_base_mv2 != pred_m1_mv2) | (pred_base_mv2 != pred_m2_mv2)
-                        # We will log precision of agreeing vs disagreeing points below
-                    else:
-                        view_disagreement = torch.zeros_like(predictions, dtype=torch.bool)
+                    # Average probabilities across views
+                    prob_base = F.softmax(logits, dim=1)
+                    prob_m1 = F.softmax(logits_m1, dim=1)
+                    prob_m2 = F.softmax(logits_m2, dim=1)
+                    mean_probs = (prob_base + prob_m1 + prob_m2) / 3.0
+                    predictions = torch.argmax(mean_probs, dim=1)
+                else:
+                    predictions = torch.argmax(logits, dim=1)
+                    
+                # MV-2: View Disagreement Precision Tracking
+                if mv_tta != 'none' and 'norm_enc_m1' in locals():
+                    pred_base_mv2 = torch.argmax(get_logits(norm_enc_base), dim=1)
+                    pred_m1_mv2 = torch.argmax(get_logits(norm_enc_m1), dim=1)
+                    pred_m2_mv2 = torch.argmax(get_logits(norm_enc_m2), dim=1)
+                    view_disagreement = (pred_base_mv2 != pred_m1_mv2) | (pred_base_mv2 != pred_m2_mv2)
+                    # We will log precision of agreeing vs disagreeing points below
+                else:
+                    view_disagreement = torch.zeros_like(predictions, dtype=torch.bool)
 
                 
                 selected_labels = proj_labels[indices]
@@ -239,10 +206,6 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
             if not eval_only and update_method != 'frozen':
                 model.eval()
                 with torch.no_grad():
-                    if type(model).__name__ == 'D3CTTA':
-                        model.inference_update(h, predictions, proj_xyz)
-                        continue
-                        
                     update_lr = 0.01
                     proto_norm = F.normalize(model.classify.weight, dim=1)
                     cos_sims = F.linear(norm_enc, proto_norm)
@@ -312,21 +275,10 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             
                         uncertainty = get_uncert(norm_enc, cos_sims)
                         
-                        if mv_tta in ['min_uncert', 'mean_uncert']:
-                            u_m1 = get_uncert(norm_enc_m1)
-                            u_m2 = get_uncert(norm_enc_m2)
-                            if mv_tta == 'min_uncert':
-                                uncertainty = torch.min(torch.min(uncertainty, u_m1), u_m2)
-                            elif mv_tta == 'mean_uncert':
-                                uncertainty = (uncertainty + u_m1 + u_m2) / 3.0
-                        
                         # Soft Veto: High uncertainty scales down update weight
                         u_threshold = 0.5 
                         dirichlet_decay = torch.exp(-2.0 * torch.relu(uncertainty - u_threshold))
                         update_weights = update_weights * dirichlet_decay
-                    
-                    # 4. Temporal Uncertainty (Latent Prototype Drift Tracking)
-                    # Handled by anchor_spring inside the prototype update block!
                         
                     # Calculate tracking metrics
                     # We define a "veto" as any point where the uncertainty method cut the base confidence by >50%
@@ -358,25 +310,24 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     else:
                         model._firing_log.append(0.0)
                     
-                    if update_method != 'prototype_cosine':
-                        valid_gt_mask = (selected_labels >= 0) & (selected_labels < num_classes)
-                        true_errors_rejected = (effective_veto & valid_gt_mask & (pseudo_labels != selected_labels)).sum().item()
-                        correct_labels_rejected = (effective_veto & valid_gt_mask & (pseudo_labels == selected_labels)).sum().item()
-                        if not hasattr(model, '_veto_stats'):
-                            model._veto_stats = {'true_errors_rejected': 0, 'correct_labels_rejected': 0}
-                        if not hasattr(model, '_class_veto_stats'):
-                            model._class_veto_stats = {c: {'true_errors_rejected': 0, 'correct_labels_rejected': 0} for c in range(num_classes)}
-                            
-                        model._veto_stats['true_errors_rejected'] += true_errors_rejected
-                        model._veto_stats['correct_labels_rejected'] += correct_labels_rejected
+                    valid_gt_mask = (selected_labels >= 0) & (selected_labels < num_classes)
+                    true_errors_rejected = (effective_veto & valid_gt_mask & (pseudo_labels != selected_labels)).sum().item()
+                    correct_labels_rejected = (effective_veto & valid_gt_mask & (pseudo_labels == selected_labels)).sum().item()
+                    if not hasattr(model, '_veto_stats'):
+                        model._veto_stats = {'true_errors_rejected': 0, 'correct_labels_rejected': 0}
+                    if not hasattr(model, '_class_veto_stats'):
+                        model._class_veto_stats = {c: {'true_errors_rejected': 0, 'correct_labels_rejected': 0} for c in range(num_classes)}
                         
-                        for c in range(num_classes):
-                            c_mask = (pseudo_labels == c)
-                            if c_mask.any():
-                                true_errs = (effective_veto & valid_gt_mask & c_mask & (pseudo_labels != selected_labels)).sum().item()
-                                corr_labels = (effective_veto & valid_gt_mask & c_mask & (pseudo_labels == selected_labels)).sum().item()
-                                model._class_veto_stats[c]['true_errors_rejected'] += true_errs
-                                model._class_veto_stats[c]['correct_labels_rejected'] += corr_labels
+                    model._veto_stats['true_errors_rejected'] += true_errors_rejected
+                    model._veto_stats['correct_labels_rejected'] += correct_labels_rejected
+                    
+                    for c in range(num_classes):
+                        c_mask = (pseudo_labels == c)
+                        if c_mask.any():
+                            true_errs = (effective_veto & valid_gt_mask & c_mask & (pseudo_labels != selected_labels)).sum().item()
+                            corr_labels = (effective_veto & valid_gt_mask & c_mask & (pseudo_labels == selected_labels)).sum().item()
+                            model._class_veto_stats[c]['true_errors_rejected'] += true_errs
+                            model._class_veto_stats[c]['correct_labels_rejected'] += corr_labels
                     
                     if fired_mask.any():
                         valid_enc = norm_enc[indices]
@@ -384,45 +335,14 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             fired_c_mask = (pseudo_labels == c) & fired_mask
                             if fired_c_mask.any():
                                 c_weights = update_weights[fired_c_mask].unsqueeze(1)
-                                if ic_method == 'xc2':
-                                    pts = valid_enc[fired_c_mask]
-                                    wts = c_weights
-                                    k = min(5, len(pts))
-                                    # Fast PyTorch Native K-Means on GPU
-                                    km_indices = torch.randperm(len(pts), device=device)[:k]
-                                    centroids = pts[km_indices]
-                                    for _ in range(5): # 5 iters is plenty for small clusters
-                                        dists = torch.cdist(pts, centroids)
-                                        labels = dists.argmin(dim=1)
-                                        new_c = []
-                                        for i in range(k):
-                                            m = (labels == i)
-                                            if m.any(): new_c.append(pts[m].mean(dim=0))
-                                            else: new_c.append(centroids[i])
-                                        centroids = torch.stack(new_c)
-                                        
-                                    # Apply confidence gating to the converged centroids
-                                    c_update_wts = []
-                                    for i in range(k):
-                                        m = (labels == i)
-                                        if m.any(): c_update_wts.append(wts[m].mean())
-                                        else: c_update_wts.append(torch.tensor(0.0, device=device))
-                                    
-                                    c_update_wts = torch.stack(c_update_wts).unsqueeze(1)
-                                    c_update = (centroids * c_update_wts).mean(dim=0)
-                                else:
-                                    c_update = (valid_enc[fired_c_mask] * c_weights).mean(dim=0)
+                                c_update = (valid_enc[fired_c_mask] * c_weights).mean(dim=0)
                                 
                                 if c_update.norm(p=2) > 1e-6:
                                     c_update = F.normalize(c_update, p=2, dim=0)
                                         
                                     step_mag = update_lr * update_weights[fired_c_mask].mean().item()
                                     
-                                    if ic_method == 'ic1':
-                                        # Strict 5 degree per chunk budget limit
-                                        max_step = (5.0 * math.pi / 180.0) * model.classify.weight[c].norm(p=2).item()
-                                        step_mag = min(step_mag, max_step)
-                                    elif ic_method == 'ic4':
+                                    if ic_method == 'ic4':
                                         # Epistemic weighting: faster updates for high uncertainty
                                         if 'uncertainty' in locals():
                                             step_mag *= uncertainty[fired_c_mask].mean().item()
@@ -650,10 +570,6 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device, dry_
     class_latent_sums = torch.zeros(num_classes, 128, device=device)
     class_latent_counts = torch.zeros(num_classes, device=device)
     
-    # Collect latents for KMeans subcluster initialization
-    model.class_latents_for_clustering = {c: [] for c in range(num_classes)}
-    max_cluster_samples_per_class = 10000
-    
     num_rp = 5
     model.multi_rp_projs = []
     model.multi_rp_prototypes = torch.zeros(num_rp, num_classes, model.hd_dim, device=device)
@@ -741,12 +657,6 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device, dry_
                     if c_mask.any():
                         all_dists_per_class[c].append(dists[c_mask].cpu())
                         all_cos_per_class[c].append(true_cos[c_mask].cpu())
-                        current_points = sum(t.size(0) for t in model.class_latents_for_clustering[c])
-                        if current_points < max_cluster_samples_per_class:
-                            pts = norm_enc[c_mask].detach().cpu()
-                            rem = max_cluster_samples_per_class - current_points
-                            model.class_latents_for_clustering[c].append(pts[:rem])
-                
     
     model.source_density_std = torch.zeros(num_classes, device=device)
     model.source_mu_cos = torch.zeros(num_classes, device=device)
@@ -783,40 +693,12 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device, dry_
             model.source_mu_cos[c] = global_cos_mean
             model.source_sigma_cos[c] = global_cos_std
     
-    
-    # B4: Persistent Source Subclusters
-    model.source_subclusters = {}
-    print("Computing persistent source subclusters for XC tests...")
-    for c in range(num_classes):
-        if len(model.class_latents_for_clustering[c]) > 0:
-            c_latents = torch.cat(model.class_latents_for_clustering[c], dim=0)
-            if len(c_latents) > max_cluster_samples_per_class:
-                c_latents = c_latents[torch.randperm(len(c_latents))[:max_cluster_samples_per_class]]
-            c_latents = c_latents.to(device)
-            k = min(5, len(c_latents))
-            # PyTorch Native K-Means
-            km_indices = torch.randperm(len(c_latents), device=device)[:k]
-            centroids = c_latents[km_indices]
-            for _ in range(10): # Offline so we can afford 10 iters
-                dists = torch.cdist(c_latents, centroids)
-                labels = dists.argmin(dim=1)
-                new_c = []
-                for i in range(k):
-                    m = (labels == i)
-                    if m.any(): new_c.append(c_latents[m].mean(dim=0))
-                    else: new_c.append(centroids[i])
-                centroids = torch.stack(new_c)
-            model.source_subclusters[c] = centroids
-        else:
-            model.source_subclusters[c] = F.normalize(model.classify.weight[c].unsqueeze(0), dim=1)
-
     model.source_class_freq = (class_latent_counts / class_latent_counts.sum()).cpu()
     return {
         'source_density_std': model.source_density_std,
         'source_mu_cos': model.source_mu_cos,
         'source_sigma_cos': model.source_sigma_cos,
         'drift_mu_0': model.drift_mu_0.clone().cpu(),
-        'source_subclusters': {c: v.clone().cpu() for c, v in model.source_subclusters.items()},
         'source_class_freq': model.source_class_freq
     }
 
@@ -824,7 +706,7 @@ def main():
     import random
     parser = argparse.ArgumentParser(description="Test Unsupervised Updates on KITTI-C")
     parser.add_argument('--pretrain', action='store_true', help='Run pretraining on SemanticKITTI before evaluating')
-    parser.add_argument('--chunked', action='store_true', help='Use D3CTTA chunked protocol: continuous adaptation across disjoint 1/7th splits instead of full independent sequences.')
+    parser.add_argument('--chunked', action='store_true', help='Use chunked protocol: continuous adaptation across disjoint 1/7th splits instead of full independent sequences.')
     parser.add_argument('--reset_per_corruption', action='store_true', help='Reset the model to the clean pretrained weights before adapting on each corruption (requires --chunked).')
     parser.add_argument('--pretrained_path', type=str, default='logs/kitti_pretrain/hdc_sub.pth', help='Path to load pretrained model')
     parser.add_argument('--log_dir', type=str, default='logs/kitti_c_test', help='Directory to save logs and graphics')
@@ -841,11 +723,11 @@ def main():
     parser.add_argument('--kittic_dir', type=str, default='/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C', help='Path to real SemanticKITTI-C dataset')
     parser.add_argument('--corruptions', type=str, default='snow,beam_missing,wet_ground', help='Comma separated list of corruptions to test. Defaults to diagnostic panel.')
 
-    parser.add_argument('--ic_method', type=str, default='none', help='Inter/Intra-Class balancing method: none, ic1, ic4, xc1, xc2')
+    parser.add_argument('--ic_method', type=str, default='none', help='Inter/Intra-Class balancing method: none, ic4')
     parser.add_argument('--tau', type=float, default=None, help='Logit adjustment tau for inference prior. If not set, BM is used. τ=0 is normalized baseline. τ<0 is majority amplifier. τ>0 is balanced softmax.')
     parser.add_argument('--kappa', type=float, default=15.0, help='Logit scale kappa used with tau. Controls evidence weighting vs prior.')
     parser.add_argument('--normalize_weights', action='store_true', help='Force weights to be normalized after every update (disables Bayesian Momentum accumulator).')
-    parser.add_argument('--mv_tta', type=str, default='none', help='Multi-View TTA method. Options: none, bundle, bundle_gentle, bundle_moderate, min_uncert, mean_uncert, vote_pred, conf_pred, veto_disagree')
+    parser.add_argument('--mv_tta', type=str, default='none', help='Multi-View TTA method. Options: none, conf_pred, veto_disagree')
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -926,9 +808,9 @@ def main():
     shared_init_metrics = {}
     
     # Load dataset once and partition it to find chunks
-    # Note on Protocol: D3CTTA divides the valid set into 7 disjoint chunks (1 per corruption).
+    # Note on Protocol: Divides the valid set into 7 disjoint chunks (1 per corruption).
     # This evaluates each corruption on 1/7 of the validation set (e.g., ~581 frames) instead 
-    # of the full set. We are preserving this behavior to identically match their protocol. 
+    # of the full set. We are preserving this behavior to identically match the 3-chunk protocol. 
     # Per-domain metrics will be noisier on 400 frames, so do not directly compare these 
     # chunked metrics to full-set benchmarks.
     logger.info("Initializing baseline dataset to calculate chunk sizes...")
@@ -967,7 +849,6 @@ def main():
         'source_mu_cos': getattr(base_model, 'source_mu_cos', None),
         'source_sigma_cos': getattr(base_model, 'source_sigma_cos', None),
         'drift_mu_0': getattr(base_model, 'drift_mu_0', None),
-        'source_subclusters': getattr(base_model, 'source_subclusters', None),
         'source_class_freq': getattr(base_model, 'source_class_freq', None)
     }
 
@@ -1010,7 +891,6 @@ def main():
         model.source_mu_cos = source_stats_cache['source_mu_cos']
         model.source_sigma_cos = source_stats_cache['source_sigma_cos']
         model.drift_mu_0 = source_stats_cache['drift_mu_0']
-        model.source_subclusters = source_stats_cache['source_subclusters']
         model.source_class_freq = source_stats_cache['source_class_freq'].to(device)
 
     for current_method, full_method_name in zip(methods_to_run, full_method_names):
@@ -1037,14 +917,8 @@ def main():
             del model.class_update_counts
         if hasattr(model, 'class_M'):
             del model.class_M
-        if hasattr(model, 'subcluster_update_counts') and model.subcluster_update_counts is not None:
-            model.subcluster_update_counts.zero_()
             
-        if current_method == 'd3ctta':
-            from modules.D3CTTA import D3CTTA
-            eval_model = D3CTTA(model.net, num_classes=NUM_CLASSES, feature_dim=128).to(device)
-        else:
-            eval_model = model
+        eval_model = model
 
         for i, ctype in enumerate(active_corruptions):
             if args.reset_per_corruption and args.chunked:
@@ -1060,8 +934,6 @@ def main():
                     del model.class_update_counts
                 if hasattr(model, 'class_M'):
                     del model.class_M
-                if hasattr(model, 'subcluster_update_counts') and model.subcluster_update_counts is not None:
-                    model.subcluster_update_counts.zero_()
                 
             logger.info(f"Testing {ctype} severity {sev} (Chunk {i+1}/{len(active_corruptions)})")
             
@@ -1090,10 +962,7 @@ def main():
                     del model.class_freq_ema
                 if hasattr(model, 'class_update_counts'):
                     del model.class_update_counts
-                if hasattr(model, 'subcluster_update_counts') and model.subcluster_update_counts is not None:
-                    model.subcluster_update_counts.zero_()
-            else:
-                # D3CTTA protocol: chunks, continuous adaptation
+                # Chunked protocol: continuous adaptation across disjoint splits
                 chunk_dataset = torch.utils.data.Subset(full_corruption_dataset, chunks[i])
             
             target_dataloader = DataLoader(chunk_dataset, batch_size=1, shuffle=False, num_workers=ARCH["train"]["workers"])
