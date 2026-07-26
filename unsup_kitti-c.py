@@ -36,7 +36,7 @@ SEVERITY_MAP = {1: 'light', 2: 'moderate', 3: 'heavy', 4: 'extreme'}
 CONFIG_ARCH = "config/arch/senet-2048p.yml"
 CONFIG_LABELS_KITTI_ALL = "config/labels/semantic-kitti-all.yaml"  # Standard 17 classes
 
-def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, ic_method='none', tau=None, kappa=15.0, normalize_weights=False, mv_tta='none'):
+def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, ic_method='none', tau=None, kappa=15.0, normalize_weights=False, mv_tta='none', gate_mode='epistemic', dynamic_geom=False):
     if ic_method not in ['none', 'ic4']:
         raise ValueError(f"Unknown ic_method: {ic_method}")
 
@@ -251,19 +251,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     f_y = torch.clamp(model.class_freq_ema[pseudo_labels], min=0.01)
                     
                     if update_method == 'evidential_hdc_tta':
-                        # 1. Balanced Updates: Inverse Frequency Soft Weighting (gamma = 0.1)
-                        # gamma = 0.1
-                        # balance_weights = (min_freq / f_y) ** gamma
-                        # update_weights = update_weights * balance_weights
-                        
-                        # 2. Network Uncertainty (128D Manifold Anchor)
-                        # pred_means = model.class_latent_means[pseudo_labels]
-                        # dist_sq = torch.norm(latent_x_valid.float() - pred_means, p=2, dim=1) ** 2
-                        # variance = 2.0 * (model.source_density_std[pseudo_labels] ** 2) + 1e-8
-                        # tier1_decay = torch.exp(-dist_sq / variance)
-                        # update_weights = update_weights * tier1_decay
-                        
-                        # 3. Hypervector Uncertainty: Z-Score Calibrated Dirichlet Evidence
+                        # 1. Network Epistemic Uncertainty (Dirichlet Evidence Decay)
                         def get_uncert(enc, c_sims=None):
                             if c_sims is None:
                                 c_sims = F.linear(enc, proto_norm)
@@ -274,11 +262,37 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             return num_classes / S_val
                             
                         uncertainty = get_uncert(norm_enc, cos_sims)
-                        
-                        # Soft Veto: High uncertainty scales down update weight
                         u_threshold = 0.5 
-                        dirichlet_decay = torch.exp(-2.0 * torch.relu(uncertainty - u_threshold))
-                        update_weights = update_weights * dirichlet_decay
+                        epistemic_decay = torch.exp(-2.0 * torch.relu(uncertainty - u_threshold))
+                        
+                        # 2. Geometric HDC Latent Free Energy (Gaussian Mahalanobis Density)
+                        pred_means = model.class_latent_means[pseudo_labels]
+                        dist_sq = torch.norm(latent_x_valid.float() - pred_means, p=2, dim=1) ** 2
+                        if dynamic_geom:
+                            if not hasattr(model, 'running_density_std'):
+                                model.running_density_std = model.source_density_std.clone()
+                            for c_idx in range(num_classes):
+                                c_mask = (pseudo_labels == c_idx)
+                                if c_mask.sum() > 1:
+                                    batch_std = dist_sq[c_mask].sqrt().std().item()
+                                    if not torch.isnan(torch.tensor(batch_std)) and batch_std > 0:
+                                        model.running_density_std[c_idx] = 0.95 * model.running_density_std[c_idx] + 0.05 * batch_std
+                            variance = 2.0 * (model.running_density_std[pseudo_labels] ** 2) + 1e-8
+                        else:
+                            variance = 2.0 * (model.source_density_std[pseudo_labels] ** 2) + 1e-8
+                        geom_decay = torch.exp(-dist_sq / variance)
+                        
+                        # 3. Apply Dual-Uncertainty Gating Strategy
+                        if gate_mode == 'epistemic':
+                            update_weights = update_weights * epistemic_decay
+                        elif gate_mode == 'geometric':
+                            update_weights = update_weights * geom_decay
+                        elif gate_mode == 'and_gate':
+                            update_weights = update_weights * torch.min(geom_decay, epistemic_decay)
+                        elif gate_mode == 'or_gate':
+                            update_weights = update_weights * torch.max(geom_decay, epistemic_decay)
+                        else:
+                            raise ValueError(f"Unknown gate_mode: {gate_mode}")
                         
                     # Calculate tracking metrics
                     # We define a "veto" as any point where the uncertainty method cut the base confidence by >50%
@@ -728,6 +742,8 @@ def main():
     parser.add_argument('--kappa', type=float, default=15.0, help='Logit scale kappa used with tau. Controls evidence weighting vs prior.')
     parser.add_argument('--normalize_weights', action='store_true', help='Force weights to be normalized after every update (disables Bayesian Momentum accumulator).')
     parser.add_argument('--mv_tta', type=str, default='none', help='Multi-View TTA method. Options: none, conf_pred, veto_disagree')
+    parser.add_argument('--gate_mode', type=str, default='epistemic', help='Uncertainty gating strategy: epistemic, geometric, and_gate, or_gate')
+    parser.add_argument('--dynamic_geom', action='store_true', help='Use running batch EMA variance for geometric HDC density thresholding.')
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -790,7 +806,12 @@ def main():
             else:
                 full_method_names.append('frozen')
         else:
-            full_method_names.append(f"{m}_{args.ic_method}_tau_{args.tau}_mv_{args.mv_tta}")
+            m_name = f"{m}_{args.ic_method}_tau_{args.tau}_mv_{args.mv_tta}"
+            if args.gate_mode != 'epistemic':
+                m_name += f"_gate_{args.gate_mode}"
+            if args.dynamic_geom:
+                m_name += "_dyn"
+            full_method_names.append(m_name)
                     
     if global_results is not None:
         # Ensure the dicts for the current methods exist in case they were never run
@@ -972,7 +993,7 @@ def main():
                     # Pass 1: True Initial (Frozen on chunk)
                     if (ctype, sev) not in shared_init_metrics:
                         logger.debug("  -> Pass 1: Computing True Initial metrics (Frozen)")
-                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta)
+                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom)
                         shared_init_metrics[(ctype, sev)] = init_metrics
                     else:
                         logger.debug("  -> Pass 1: Reusing cached True Initial metrics (Frozen)")
@@ -982,14 +1003,14 @@ def main():
                     if current_method != 'frozen':
                         logger.debug("  -> Pass 2: Adapting model weights")
                         eval_model.train()
-                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta)
+                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom)
                     else:
                         adapt_metrics = init_metrics
                         
                     # Pass 3: True Final (Frozen on chunk using adapted weights)
                     logger.debug("  -> Pass 3: Computing True Final metrics (Frozen)")
                     eval_model.eval()
-                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta)
+                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom)
                     
                     # We only care about the absolute end of the frozen evaluations for the sequence
                     metrics = adapt_metrics  # Just for the trajectory json
@@ -1019,7 +1040,7 @@ def main():
                             firing_rate_str += f", UpdateMag={adapt_metrics['UpdateMagnitude']:.4f}"
                 else:
                     # Original single-pass continuous evaluation
-                    metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=(current_method == 'frozen'), update_method=current_method, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta)
+                    metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=(current_method == 'frozen'), update_method=current_method, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom)
                     if len(metrics["mIoU"]) > 0:
                         initial_miou = metrics["mIoU"][0]
                         final_miou = metrics["mIoU"][-1]
