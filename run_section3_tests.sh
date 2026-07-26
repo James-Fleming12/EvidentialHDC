@@ -22,30 +22,34 @@ LOG_FILE="section3_tests.log"
     
     # --- 1. Test 3.1: Decoupled Dual-Uncertainty Gating (AND vs OR) ---
     echo "----------------------------------------------------------"
-    echo "[Test 1/6] Running gate_mode=epistemic (Dirichlet evidence baseline)..."
-    uv run unsup_kitti-c.py --corruptions $PANEL --method evidential_hdc_tta --tau -1.0 --mv_tta veto_disagree --gate_mode epistemic --log_dir ../Logs/section3_gating/epistemic
+    echo "[Test 1/7] Running gate_mode=epistemic (Dirichlet evidence baseline)..."
+    uv run unsup_kitti-c.py --corruptions $PANEL --method evidential_hdc_tta --tau -1.0 --mv_tta veto_disagree --gate_mode epistemic --log_dir logs/section3_gating/epistemic
     
     echo "----------------------------------------------------------"
-    echo "[Test 2/6] Running gate_mode=geometric (128D Mahalanobis distance)..."
-    uv run unsup_kitti-c.py --corruptions $PANEL --method evidential_hdc_tta --tau -1.0 --mv_tta veto_disagree --gate_mode geometric --log_dir ../Logs/section3_gating/geometric
+    echo "[Test 2/7] Running gate_mode=geometric (128D Mahalanobis distance)..."
+    uv run unsup_kitti-c.py --corruptions $PANEL --method evidential_hdc_tta --tau -1.0 --mv_tta veto_disagree --gate_mode geometric --log_dir logs/section3_gating/geometric
     
     echo "----------------------------------------------------------"
-    echo "[Test 3/6] Running gate_mode=and_gate (Logical AND intersection)..."
-    uv run unsup_kitti-c.py --corruptions $PANEL --method evidential_hdc_tta --tau -1.0 --mv_tta veto_disagree --gate_mode and_gate --log_dir ../Logs/section3_gating/and_gate
+    echo "[Test 3/7] Running gate_mode=and_gate (Logical AND intersection)..."
+    uv run unsup_kitti-c.py --corruptions $PANEL --method evidential_hdc_tta --tau -1.0 --mv_tta veto_disagree --gate_mode and_gate --log_dir logs/section3_gating/and_gate
     
     echo "----------------------------------------------------------"
-    echo "[Test 4/6] Running gate_mode=or_gate (Logical OR union)..."
-    uv run unsup_kitti-c.py --corruptions $PANEL --method evidential_hdc_tta --tau -1.0 --mv_tta veto_disagree --gate_mode or_gate --log_dir ../Logs/section3_gating/or_gate
+    echo "[Test 4/7] Running gate_mode=or_gate (Logical OR union)..."
+    uv run unsup_kitti-c.py --corruptions $PANEL --method evidential_hdc_tta --tau -1.0 --mv_tta veto_disagree --gate_mode or_gate --log_dir logs/section3_gating/or_gate
     
     # --- 2. Test 3.2: Cross-View Orthogonality Hypothesis ---
     echo "----------------------------------------------------------"
-    echo "[Test 5/6] Running gate_mode=or_gate with mv_tta=none (Single-View OR Gating)..."
-    uv run unsup_kitti-c.py --corruptions $PANEL --method evidential_hdc_tta --tau -1.0 --mv_tta none --gate_mode or_gate --log_dir ../Logs/section3_gating/or_gate_single_view
+    echo "[Test 5/7] Running gate_mode=epistemic with mv_tta=none (Single-View Epistemic Baseline)..."
+    uv run unsup_kitti-c.py --corruptions $PANEL --method evidential_hdc_tta --tau -1.0 --mv_tta none --gate_mode epistemic --log_dir logs/section3_gating/epistemic_single_view
+    
+    echo "----------------------------------------------------------"
+    echo "[Test 6/7] Running gate_mode=or_gate with mv_tta=none (Single-View OR Gating)..."
+    uv run unsup_kitti-c.py --corruptions $PANEL --method evidential_hdc_tta --tau -1.0 --mv_tta none --gate_mode or_gate --log_dir logs/section3_gating/or_gate_single_view
     
     # --- 3. Test 3.3: Dynamic Geometric Thresholding (--dynamic_geom) ---
     echo "----------------------------------------------------------"
-    echo "[Test 6/6] Running gate_mode=or_gate with dynamic_geom (Running batch variance)..."
-    uv run unsup_kitti-c.py --corruptions $PANEL --method evidential_hdc_tta --tau -1.0 --mv_tta veto_disagree --gate_mode or_gate --dynamic_geom --log_dir ../Logs/section3_gating/or_gate_dyn
+    echo "[Test 7/7] Running gate_mode=or_gate with dynamic_geom (Running batch variance)..."
+    uv run unsup_kitti-c.py --corruptions $PANEL --method evidential_hdc_tta --tau -1.0 --mv_tta veto_disagree --gate_mode or_gate --dynamic_geom --log_dir logs/section3_gating/or_gate_dyn
 
     echo ""
     echo "=========================================================="

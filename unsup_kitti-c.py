@@ -119,6 +119,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     norm_enc_base = norm_enc.clone()
                 else:
                     raw_enc, indices, _ = model.encode(proj_in)
+                    assert torch.equal(indices, torch.arange(raw_enc.shape[0], device=device)), "encode() indices do not match full arange point set!"
                     norm_enc = F.normalize(raw_enc, dim=1).to(model.classify.weight.dtype)
                 # ====================================
                 
@@ -266,22 +267,65 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         epistemic_decay = torch.exp(-2.0 * torch.relu(uncertainty - u_threshold))
                         
                         # 2. Geometric HDC Latent Free Energy (Gaussian Mahalanobis Density)
-                        pred_means = model.class_latent_means[pseudo_labels]
-                        dist_sq = torch.norm(latent_x_valid.float() - pred_means, p=2, dim=1) ** 2
-                        if dynamic_geom:
-                            if not hasattr(model, 'running_density_std'):
-                                model.running_density_std = model.source_density_std.clone()
-                            for c_idx in range(num_classes):
-                                c_mask = (pseudo_labels == c_idx)
-                                if c_mask.sum() > 1:
-                                    batch_std = dist_sq[c_mask].sqrt().std().item()
-                                    if not torch.isnan(torch.tensor(batch_std)) and batch_std > 0:
-                                        model.running_density_std[c_idx] = 0.95 * model.running_density_std[c_idx] + 0.05 * batch_std
-                            variance = 2.0 * (model.running_density_std[pseudo_labels] ** 2) + 1e-8
+                        if hasattr(model, 'class_latent_means') and model.class_latent_means is not None:
+                            model.class_latent_means = model.class_latent_means.to(device)
+                            pred_means = model.class_latent_means[pseudo_labels]
+                            dist_sq = torch.norm(latent_x_valid.float() - pred_means.float(), p=2, dim=1) ** 2
+                            if dynamic_geom:
+                                if not hasattr(model, 'running_density_std') or model.running_density_std is None:
+                                    model.running_density_std = model.source_density_std.clone().to(device)
+                                model.running_density_std = model.running_density_std.to(device)
+                                for c_idx in range(num_classes):
+                                    c_mask = (pseudo_labels == c_idx)
+                                    if c_mask.sum() > 1:
+                                        batch_std = dist_sq[c_mask].sqrt().std().item()
+                                        if not torch.isnan(torch.tensor(batch_std)) and batch_std > 0:
+                                            model.running_density_std[c_idx] = 0.95 * model.running_density_std[c_idx] + 0.05 * batch_std
+                                variance = 2.0 * (model.running_density_std[pseudo_labels] ** 2) + 1e-8
+                            else:
+                                model.source_density_std = model.source_density_std.to(device)
+                                variance = 2.0 * (model.source_density_std[pseudo_labels] ** 2) + 1e-8
+                            geom_decay = torch.exp(-dist_sq / variance)
                         else:
-                            variance = 2.0 * (model.source_density_std[pseudo_labels] ** 2) + 1e-8
-                        geom_decay = torch.exp(-dist_sq / variance)
+                            if gate_mode in ['geometric', 'and_gate', 'or_gate']:
+                                raise ValueError("Geometric gating requires model.class_latent_means from source pretraining.")
+                            geom_decay = torch.ones_like(epistemic_decay)
                         
+                        # Track decay statistics and GT-labelled contingency table
+                        if not hasattr(model, '_decay_logs'):
+                            model._decay_logs = {'geom': [], 'epi': []}
+                        model._decay_logs['geom'].append(geom_decay.detach().cpu())
+                        model._decay_logs['epi'].append(epistemic_decay.detach().cpu())
+                        
+                        if not hasattr(model, '_contingency_table'):
+                            model._contingency_table = {
+                                'geom_adm_epi_adm': {'n': 0, 'correct': 0},
+                                'geom_adm_epi_rej': {'n': 0, 'correct': 0},
+                                'geom_rej_epi_adm': {'n': 0, 'correct': 0},
+                                'geom_rej_epi_rej': {'n': 0, 'correct': 0},
+                            }
+                        valid_gt_mask = (selected_labels >= 0) & (selected_labels < num_classes)
+                        if valid_gt_mask.any():
+                            ga = (geom_decay >= 0.5)[valid_gt_mask]
+                            ea = (epistemic_decay >= 0.5)[valid_gt_mask]
+                            corr = (pseudo_labels[valid_gt_mask] == selected_labels[valid_gt_mask])
+                            
+                            m_aa = ga & ea
+                            model._contingency_table['geom_adm_epi_adm']['n'] += m_aa.sum().item()
+                            model._contingency_table['geom_adm_epi_adm']['correct'] += (m_aa & corr).sum().item()
+                            
+                            m_ar = ga & (~ea) # The rescue cell
+                            model._contingency_table['geom_adm_epi_rej']['n'] += m_ar.sum().item()
+                            model._contingency_table['geom_adm_epi_rej']['correct'] += (m_ar & corr).sum().item()
+                            
+                            m_ra = (~ga) & ea
+                            model._contingency_table['geom_rej_epi_adm']['n'] += m_ra.sum().item()
+                            model._contingency_table['geom_rej_epi_adm']['correct'] += (m_ra & corr).sum().item()
+                            
+                            m_rr = (~ga) & (~ea)
+                            model._contingency_table['geom_rej_epi_rej']['n'] += m_rr.sum().item()
+                            model._contingency_table['geom_rej_epi_rej']['correct'] += (m_rr & corr).sum().item()
+
                         # 3. Apply Dual-Uncertainty Gating Strategy
                         if gate_mode == 'epistemic':
                             update_weights = update_weights * epistemic_decay
@@ -376,6 +420,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
     
     if hasattr(model, '_veto_stats') and model._veto_stats['correct_labels_rejected'] > 0:
         purity_ratio = model._veto_stats['true_errors_rejected'] / model._veto_stats['correct_labels_rejected']
+        logger = logging.getLogger("EvalAdapt")
+        logger.info(f"[Stats] Global Veto Purity Ratio (True Errors / Correct Rejected): {purity_ratio:.4f} (True Errors Rejected: {model._veto_stats['true_errors_rejected']}, Correct Rejected: {model._veto_stats['correct_labels_rejected']})")
         model._veto_stats = {'true_errors_rejected': 0, 'correct_labels_rejected': 0}
         
     if hasattr(model, 'initial_classify_weights'):
@@ -389,11 +435,11 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
             angle = torch.acos(torch.tensor(cos_sim)).item() * (180.0 / torch.pi)
             class_rotations[c] = angle
             
-        logger.debug(f"\n[Stats] Prototype Rotation (Degrees):")
+        logger.info(f"\n[Stats] Prototype Rotation (Degrees):")
         head_rot = {c: round(class_rotations[c], 2) for c in [11, 13, 14, 15, 16]}
         tail_rot = {c: round(class_rotations[c], 2) for c in [2, 3, 6, 7, 10]}
-        logger.debug(f"  Head Rotation: {head_rot}")
-        logger.debug(f"  Tail Rotation: {tail_rot}")
+        logger.info(f"  Head Rotation: {head_rot}")
+        logger.info(f"  Tail Rotation: {tail_rot}")
         
         final_norms = {c: round(model.classify.weight[c].norm().item(), 4) for c in range(17)}
         logger.info(f"[Stats] Final Prototype Norms: {final_norms}")
@@ -401,7 +447,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
     if hasattr(model, '_class_veto_stats') and not eval_only:
 
         logger = logging.getLogger("EvalAdapt")
-        logger.debug(f"\n[Stats] Per-Class Veto Purity (True Errors / Correct Labels Rejected):")
+        logger.info(f"\n[Stats] Per-Class Veto Purity (True Errors / Correct Labels Rejected):")
         head_purity = {}
         tail_purity = {}
         for c in range(num_classes):
@@ -414,8 +460,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                 head_purity[c] = round(purity, 2)
             elif c in [2, 3, 6, 7, 10]:
                 tail_purity[c] = round(purity, 2)
-        logger.debug(f"  Head Purity: {head_purity}")
-        logger.debug(f"  Tail Purity: {tail_purity}")
+        logger.info(f"  Head Purity: {head_purity}")
+        logger.info(f"  Tail Purity: {tail_purity}")
         model._class_veto_stats = {c: {'true_errors_rejected': 0, 'correct_labels_rejected': 0} for c in range(num_classes)}
         
     if hasattr(model, '_class_firing_log') and not eval_only:
@@ -433,10 +479,61 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                 head_firing[c] = f"{n_fired}/{n_points} ({n_fired/n_points*100:.2f}%)" if c in [11, 13, 14, 15, 16] else head_firing.get(c, "")
                 tail_firing[c] = f"{n_fired}/{n_points} ({n_fired/n_points*100:.2f}%)" if c in [2, 3, 6, 7, 10] else tail_firing.get(c, "")
                 
-        logger.debug(f"\n[Stats] Per-Class Firing Rates (True Fired/Total):")
-        logger.debug(f"  Head Firing: {head_firing}")
-        logger.debug(f"  Tail Firing: {tail_firing}")
+        logger.info(f"\n[Stats] Per-Class Firing Rates (True Fired/Total):")
+        logger.info(f"  Head Firing: {head_firing}")
+        logger.info(f"  Tail Firing: {tail_firing}")
         model._class_firing_log = {c: [] for c in range(num_classes)}
+
+    if hasattr(model, '_contingency_table') and not eval_only:
+        logger = logging.getLogger("EvalAdapt")
+        ct = model._contingency_table
+        def get_prec(cell):
+            return cell['correct'] / cell['n'] if cell['n'] > 0 else 0.0
+        logger.info(f"\n[Section 3.2] GT-Labelled Contingency Table (geom vs epi admission):")
+        logger.info(f"  Geom Admits / Epi Admits:  N={ct['geom_adm_epi_adm']['n']}, Prec={get_prec(ct['geom_adm_epi_adm']):.4f}")
+        logger.info(f"  Geom Admits / Epi Rejects (RESCUE CELL): N={ct['geom_adm_epi_rej']['n']}, Prec={get_prec(ct['geom_adm_epi_rej']):.4f}")
+        logger.info(f"  Geom Rejects / Epi Admits: N={ct['geom_rej_epi_adm']['n']}, Prec={get_prec(ct['geom_rej_epi_adm']):.4f}")
+        logger.info(f"  Geom Rejects / Epi Rejects: N={ct['geom_rej_epi_rej']['n']}, Prec={get_prec(ct['geom_rej_epi_rej']):.4f}")
+        model._contingency_table = {k: {'n': 0, 'correct': 0} for k in ct}
+        
+    if hasattr(model, '_decay_logs') and len(model._decay_logs['geom']) > 0 and not eval_only:
+        logger = logging.getLogger("EvalAdapt")
+        g_all = torch.cat(model._decay_logs['geom']).float()
+        e_all = torch.cat(model._decay_logs['epi']).float()
+        
+        def quantiles(t):
+            if len(t) == 0: return "N/A"
+            q = torch.quantile(t, torch.tensor([0.1, 0.5, 0.9]))
+            return f"mean={t.mean().item():.4f}, median={q[1].item():.4f}, p10={q[0].item():.4f}, p90={q[2].item():.4f}"
+            
+        g_stats = quantiles(g_all)
+        e_stats = quantiles(e_all)
+        frac_zero = (g_all < 0.01).float().mean().item() * 100.0 if len(g_all) > 0 else 0.0
+        
+        # Pearson correlation
+        if len(g_all) > 1:
+            g_c = g_all - g_all.mean()
+            e_c = e_all - e_all.mean()
+            denom = torch.sqrt((g_c**2).sum() * (e_c**2).sum()) + 1e-8
+            corr = (g_c * e_c).sum() / denom
+            corr_val = corr.item()
+        else:
+            corr_val = 0.0
+        
+        logger.info(f"\n[Section 3.3] Decay Distribution Stats:")
+        logger.info(f"  Geom Decay: {g_stats} | Fraction < 0.01: {frac_zero:.2f}%")
+        logger.info(f"  Epi Decay:  {e_stats}")
+        logger.info(f"  Pearson Correlation (geom vs epi): {corr_val:.4f}")
+        model._decay_logs = {'geom': [], 'epi': []}
+        
+    if dynamic_geom and hasattr(model, 'running_density_std') and hasattr(model, 'source_density_std') and not eval_only:
+        logger = logging.getLogger("EvalAdapt")
+        ratio = (model.running_density_std / (model.source_density_std + 1e-8)).cpu().numpy()
+        head_r = {c: round(float(ratio[c]), 2) for c in [11, 13, 14, 15, 16]}
+        tail_r = {c: round(float(ratio[c]), 2) for c in [2, 3, 6, 7, 10]}
+        logger.info(f"\n[Section 3.3 / Dynamic Geom] Final Variance Inflation Ratio (running_std / source_std):")
+        logger.info(f"  Head Classes Ratio: {head_r}")
+        logger.info(f"  Tail Classes Ratio: {tail_r}")
         
     if mv_tta != 'none':
         logger = logging.getLogger("EvalAdapt")
@@ -907,12 +1004,12 @@ def main():
     # Initialize the model exactly ONCE to be shared
     model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES)
     if source_stats_cache is not None:
-        model.class_latent_means = source_stats_cache['class_latent_means']
-        model.source_density_std = source_stats_cache['source_density_std']
-        model.source_mu_cos = source_stats_cache['source_mu_cos']
-        model.source_sigma_cos = source_stats_cache['source_sigma_cos']
-        model.drift_mu_0 = source_stats_cache['drift_mu_0']
-        model.source_class_freq = source_stats_cache['source_class_freq'].to(device)
+        model.class_latent_means = source_stats_cache['class_latent_means'].to(device) if source_stats_cache['class_latent_means'] is not None else None
+        model.source_density_std = source_stats_cache['source_density_std'].to(device) if source_stats_cache['source_density_std'] is not None else None
+        model.source_mu_cos = source_stats_cache['source_mu_cos'].to(device) if source_stats_cache['source_mu_cos'] is not None else None
+        model.source_sigma_cos = source_stats_cache['source_sigma_cos'].to(device) if source_stats_cache['source_sigma_cos'] is not None else None
+        model.drift_mu_0 = source_stats_cache['drift_mu_0'].to(device) if source_stats_cache['drift_mu_0'] is not None else None
+        model.source_class_freq = source_stats_cache['source_class_freq'].to(device) if source_stats_cache['source_class_freq'] is not None else None
 
     for current_method, full_method_name in zip(methods_to_run, full_method_names):
         logger.info(f"=========================================")
@@ -938,6 +1035,12 @@ def main():
             del model.class_update_counts
         if hasattr(model, 'class_M'):
             del model.class_M
+        if hasattr(model, 'running_density_std'):
+            del model.running_density_std
+        if hasattr(model, '_contingency_table'):
+            del model._contingency_table
+        if hasattr(model, '_decay_logs'):
+            del model._decay_logs
             
         eval_model = model
 
@@ -955,6 +1058,12 @@ def main():
                     del model.class_update_counts
                 if hasattr(model, 'class_M'):
                     del model.class_M
+                if hasattr(model, 'running_density_std'):
+                    del model.running_density_std
+                if hasattr(model, '_contingency_table'):
+                    del model._contingency_table
+                if hasattr(model, '_decay_logs'):
+                    del model._decay_logs
                 
             logger.info(f"Testing {ctype} severity {sev} (Chunk {i+1}/{len(active_corruptions)})")
             
@@ -970,6 +1079,7 @@ def main():
                 f"Chunks will misalign."
             )
             
+            chunk_dataset = None
             if not args.chunked:
                 # Standard protocol: full sequence, independent adaptation
                 chunk_dataset = full_corruption_dataset
@@ -983,21 +1093,32 @@ def main():
                     del model.class_freq_ema
                 if hasattr(model, 'class_update_counts'):
                     del model.class_update_counts
+                if hasattr(model, 'class_M'):
+                    del model.class_M
+                if hasattr(model, 'running_density_std'):
+                    del model.running_density_std
+                if hasattr(model, '_contingency_table'):
+                    del model._contingency_table
+                if hasattr(model, '_decay_logs'):
+                    del model._decay_logs
+            else:
                 # Chunked protocol: continuous adaptation across disjoint splits
                 chunk_dataset = torch.utils.data.Subset(full_corruption_dataset, chunks[i])
             
+            assert chunk_dataset is not None, "chunk_dataset was not assigned!"
             target_dataloader = DataLoader(chunk_dataset, batch_size=1, shuffle=False, num_workers=ARCH["train"]["workers"])
             
             try:
                 if not args.chunked or args.reset_per_corruption:
                     # Pass 1: True Initial (Frozen on chunk)
-                    if (ctype, sev) not in shared_init_metrics:
+                    init_key = (ctype, sev, args.tau, args.ic_method, args.mv_tta, args.gate_mode, args.chunked)
+                    if init_key not in shared_init_metrics:
                         logger.debug("  -> Pass 1: Computing True Initial metrics (Frozen)")
                         init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom)
-                        shared_init_metrics[(ctype, sev)] = init_metrics
+                        shared_init_metrics[init_key] = init_metrics
                     else:
                         logger.debug("  -> Pass 1: Reusing cached True Initial metrics (Frozen)")
-                        init_metrics = shared_init_metrics[(ctype, sev)]
+                        init_metrics = shared_init_metrics[init_key]
                     
                     # Pass 2: Adapt (only if method is not frozen)
                     if current_method != 'frozen':
@@ -1022,14 +1143,23 @@ def main():
                         final_acc = final_metrics["Accuracy"][-1]
                         
                         if 'ConfusionMatrix' in init_metrics:
-                            cm = np.array(init_metrics['ConfusionMatrix'])
-                            tp = np.diag(cm)
-                            fp = cm.sum(axis=0) - tp
-                            fn = cm.sum(axis=1) - tp
+                            cm_init = np.array(init_metrics['ConfusionMatrix'])
+                            tp_init = np.diag(cm_init)
+                            fp_init = cm_init.sum(axis=0) - tp_init
+                            fn_init = cm_init.sum(axis=1) - tp_init
+                            
+                            if 'ConfusionMatrix' in final_metrics:
+                                cm_fin = np.array(final_metrics['ConfusionMatrix'])
+                                tp_fin = np.diag(cm_fin)
+                                fp_fin = cm_fin.sum(axis=0) - tp_fin
+                                fn_fin = cm_fin.sum(axis=1) - tp_fin
+                            else:
+                                tp_fin, fp_fin, fn_fin = tp_init, fp_init, fn_init
+                                
                             tail_classes = [2, 3, 6, 7, 10]
-                            logger.info(f"  -> Initial Tail TP:  {tp[tail_classes].tolist()}")
-                            logger.info(f"  -> Initial Tail FP:  {fp[tail_classes].tolist()}")
-                            logger.info(f"  -> Initial Tail FN:  {fn[tail_classes].tolist()}")
+                            logger.info(f"  -> Initial Tail TP:  {tp_init[tail_classes].tolist()} | Final Tail TP:  {tp_fin[tail_classes].tolist()} (Delta: {(tp_fin - tp_init)[tail_classes].tolist()})")
+                            logger.info(f"  -> Initial Tail FP:  {fp_init[tail_classes].tolist()} | Final Tail FP:  {fp_fin[tail_classes].tolist()} (Delta: {(fp_fin - fp_init)[tail_classes].tolist()})")
+                            logger.info(f"  -> Initial Tail FN:  {fn_init[tail_classes].tolist()} | Final Tail FN:  {fn_fin[tail_classes].tolist()} (Delta: {(fn_fin - fn_init)[tail_classes].tolist()})")
                     else:
                         initial_miou = final_miou = online_miou = initial_acc = final_acc = 0.0
                         
@@ -1084,7 +1214,9 @@ def main():
                     initial_tail = metrics["Tail_mIoU"][0]
                     final_tail = metrics["Tail_mIoU"][-1]
                 
-                logger.info(f"Result for {ctype}-{sev}: Initial mIoU={initial_miou:.4f} -> Final (Online)={online_miou:.4f} -> Final (Frozen)={final_miou:.4f} (Head: {initial_head:.4f} -> {final_head:.4f}, Mid: {initial_mid:.4f} -> {final_mid:.4f}, Tail: {initial_tail:.4f} -> {final_tail:.4f}), Acc={initial_acc:.4f} -> {final_acc:.4f}{firing_rate_str}")
+                protocol_str = "chunked" if args.chunked else "full"
+                n_frames_str = len(target_dataloader)
+                logger.info(f"Result for {ctype}-{sev} [protocol={protocol_str}, n_frames={n_frames_str}]: Initial mIoU={initial_miou:.4f} -> Final (Online)={online_miou:.4f} -> Final (Frozen)={final_miou:.4f} (Head: {initial_head:.4f} -> {final_head:.4f}, Mid: {initial_mid:.4f} -> {final_mid:.4f}, Tail: {initial_tail:.4f} -> {final_tail:.4f}), Acc={initial_acc:.4f} -> {final_acc:.4f}{firing_rate_str}")
                 suffix = f"_{full_method_name}"
                 
                 traj_json_path = os.path.join(args.log_dir, f'traj_{ctype}_{sev}{suffix}.json')
@@ -1101,7 +1233,7 @@ def main():
             else:
                 logger.info(f"No valid frames evaluated for {ctype}-{sev}")
 
-        suffix = f"_{current_method}"
+        suffix = f"_{full_method_name}"
         save_degradation_plot(os.path.join(args.log_dir, f'degradation_miou{suffix}.png'), 'KITTI-C', results_miou, metric='mIoU', baseline_val=None)
         save_degradation_plot(os.path.join(args.log_dir, f'degradation_acc{suffix}.png'), 'KITTI-C', results_acc, metric='Accuracy', baseline_val=None)
 
