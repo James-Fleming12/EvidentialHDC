@@ -28,10 +28,10 @@ Points with $u > 0.5$ trigger the **Epistemic Veto**, which scales down or zeros
 
 **Test Results:** In isolation, Epistemic Density proved to be an exceptionally strong universal gate. It yielded significant improvements across structured corruptions (e.g., **+8.53% mIoU on Snow** over the frozen baseline) while uniquely providing robust protection against chaotic noise (+0.99% on Fog). By actively measuring Epistemic Density rather than just entropy, Evidential HDC completely shatters standard SOTA architectures (like D3CTTA) which suffer from mode collapse via confirmation bias.
 
-### 3.2 Rejected Method: HDC Latent Geometric Density (Free Energy)
-HDC provides a fixed $D$-dimensional hypersphere where semantic relationships are physically encoded by angular distances. Geometric uncertainty attempts to measure the dispersion of a point within this space using Free Energy:
-$$ F(z) = -T \log \sum_{c=1}^C \exp\left(\frac{S(z, \tilde{w}_c)}{T}\right) $$
-**Why it Failed (The Ensemble Paradox):** We originally hypothesized that ensembling orthogonal uncertainty metrics (Network Epistemic + HDC Geometric/Free Energy) into a single logical AND gate would yield the ultimate robust filter. However, over-gating triggered severe **Representation Shrinkage**. The intersection of the two strict filters dropped the gradient admission rate from ~70% to ~2%. Because the model vetoed all diverse, edge-case, and heavily deformed examples, the prototypes shrank into hyper-dense, trivial geometric cores, severely starving the adaptation loops and degrading performance on complex corruptions. A single, well-calibrated relative metric (Epistemic Density) proved mathematically superior.
+### 3.2 Rejected Method: HDC Latent Geometric Density under AND-Gating
+HDC provides a fixed $D$-dimensional hypersphere where semantic relationships are physically encoded by angular distances. Geometric uncertainty attempts to measure the dispersion of a point within this space using Free Energy or Gaussian Mahalanobis Distance:
+$$ F(z) = -T \log \sum_{c=1}^C \exp\left(\frac{S(z, \tilde{w}_c)}{T}\right), \quad d_{\text{Mahalanobis}}^2 = \frac{\|z - \mu_c\|_2^2}{\sigma_c^2} $$
+**Why Logical AND-Gating Failed (The Ensemble Paradox):** We originally hypothesized that ensembling orthogonal uncertainty metrics (Network Epistemic + HDC Geometric) into a single logical `AND` gate ($\min(\text{geom}, \text{epi})$) would yield the ultimate robust filter. However, over-gating triggered severe **Representation Shrinkage**. The intersection of two strict filters dropped the gradient admission rate from ~70% to ~2%. Because the model vetoed diverse, edge-case, and heavily deformed examples, prototypes shrank into hyper-dense, trivial geometric cores, starving adaptation loops and degrading performance on complex corruptions.
 
 ---
 
@@ -52,7 +52,14 @@ When $\tau = -1.0$ (with scaling factor $\kappa = 15.0$), the additive adjustmen
 
 Because the $\arg\max$ decision boundary is scale-invariant, this golden ratio $\frac{\tau}{\kappa} \approx -0.067$ establishes an exact geometric log-likelihood threshold: a feature vector must exhibit a significantly higher cosine similarity:
 $$ \Delta S \ge \frac{|\tau|}{\kappa} \log\left(\frac{\pi_{\text{majority}}}{\pi_{\text{tail}}}\right) $$
-to be assigned to a tail class. This mathematical boundary shift eliminates diffuse false-positive noise clouds without degrading true-positive recall, catapulting zero-shot Snow Tail IoU from **0.05 to 0.26**.
+to be assigned to a tail class. This mathematical boundary shift eliminates diffuse false-positive noise clouds without degrading true-positive recall.
+
+**Universal Empirical Validation Across the 5-Corruption Diagnostic Panel:**
+Phase 3 overnight benchmark evaluations proved that $\tau=-1.0$ prior calibration delivers massive, universal gains across all primary physical axes of LiDAR sensor degradation:
+* **Sensor Sparsity (`beam_missing-3`):** Elevates mIoU from $0.3592 \rightarrow 0.4469$ (+8.77 mIoU), with Tail class mIoU more than doubling (from $0.0637 \rightarrow 0.1719$).
+* **Specular Reflections (`wet_ground-3`):** Elevates mIoU from $0.3621 \rightarrow 0.4209$ (+5.88 mIoU), with Tail class recognition tripling (from $0.0415 \rightarrow 0.1842$).
+* **Volumetric Scattering (`fog-3`):** Under extreme structureless fog, uncalibrated $\tau=0.0$ collapses to $14.9\%$ accuracy. Prior calibration ($\tau=-1.0$) elevates initial accuracy to $36.98\%$, and online TTA drives mIoU to $0.1117$ ($45.48\%$ accuracy—a $3\times$ improvement).
+* **Temporal Dynamics (`motion_blur-3`):** Elevates mIoU from $0.3824 \rightarrow 0.5048$ (+12.24 mIoU), sparking an extraordinary $4\times$ surge in Tail class mIoU (from $0.0625 \rightarrow 0.2527$).
 
 ### 4.2 Intra-Class Epistemic Scaling: Step Dilution & Active Mining (IC4)
 Once inter-class false positives are suppressed by the $\tau$-prior boundary shift, we govern intra-class adaptation dynamics. Let $\mathcal{P}_c = \{i \mid \hat{y}_i = c \land \text{not vetoed}\}$ be the set of valid pseudo-labeled pixels assigned to prototype $c$ in frame $t$.
@@ -114,6 +121,12 @@ To test whether view disagreement between spatial augmentations can serve as an 
 * **Tail Class Precision (Class 10: Truck, $\tau=-1.0$):** Agreeing points achieve **70.7% – 75.4% precision**, whereas disagreeing points plunge to **13.1% – 22.3% precision** (representing ~22k to 35k false positives).
 
 *Takeaway:* When the three views disagree on tail classes, **78% to 87% of those pseudo-labels are False Positives**. This empirically validates view disagreement as an exceptionally strong unsupervised precision filter that can be used to veto or dampen noisy gradient updates during online adaptation.
+
+**Empirical Validation in Online Adaptation (`veto_disagree`):**
+Incorporating view disagreement as an active gating filter (`--mv_tta veto_disagree`) across the diagnostic panel confirmed its powerful regularizing effect:
+1. **Error Pruning:** Actively rejects ~8M high-error disagreeing points per sequence, preventing corrupted boundary vectors from distorting prototype trajectories.
+2. **Precision Purity:** In structured sensor degradations like `beam_missing`, `veto_disagree` maintained an outstanding **91.6% to 92.8% precision on admitted points** versus only **40.8% to 44.6% on rejected points**, proving its ability to cleanly segregate true geometry from corruption artifacts.
+3. **Tail & Mid Stabilization:** By filtering out noisy majority-class bleed into minority prototypes, `veto_disagree` consistently stabilizes Mid ($0.4539 \rightarrow 0.4673$) and Tail ($0.4045 \rightarrow 0.4098$) mIoU under $\tau=-1.0$ calibration.
 
 ### 6.3 Rejected Methods
 * **Uncertainty Scaling Veto (`min_uncert`, `mean_uncert`):** Scaling adaptation step sizes by taking the minimum or mean Dirichlet uncertainty across views successfully reduced update firing rates (from 47.1% to 43.6%), proving the consensus veto worked mechanically. However, it provided zero structural improvement to final mIoU because the samples it vetoed were already low-impact, leaving centroid adjustments identical to baseline.

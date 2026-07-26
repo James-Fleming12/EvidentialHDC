@@ -48,19 +48,22 @@
 ---
 
 ## 3. Re-Evaluating Dual-Uncertainty Gating (Geometric HDC + Network Epistemic Density)
-* **The Core Scientific Question:** While Phase 2 pruned complex subclustering due to representation shrinkage, this temporarily sidelined the purely geometric **HDC Latent Density (Free Energy / 128D Gaussian)** in favor of Network Epistemic Uncertainty (Dirichlet Density). Is combining Geometric HDC and Network Epistemic uncertainty fundamentally beneficial when implemented cleanly without subclustering?
+* **The Core Scientific Question:** While Phase 1/2 sidelined purely geometric **HDC Latent Density (128D Gaussian Mahalanobis Distance)** due to representation shrinkage under strict logical `AND` gating, Phase 3 re-evaluates whether combining Geometric HDC and Network Epistemic uncertainty is fundamentally beneficial when decoupled via logical `OR` gating or adaptive thresholding.
+* **The 7-Test Factorial Evaluation Suite (`run_section3_tests.sh`):**
+  We implement a comprehensive $2 \times 2$ factorial plus adaptive thresholding suite across the diagnostic corruption panel (`beam_missing`, `wet_ground`, `motion_blur`) to isolate the individual and interactive contributions of dual-uncertainty gating and multi-view consensus:
+  1. **`[Test 1/7]` Multi-View Epistemic Baseline (`--gate_mode epistemic --mv_tta veto_disagree`)**: Standard Dirichlet evidence gating with multi-view consensus.
+  2. **`[Test 2/7]` Multi-View Geometric Baseline (`--gate_mode geometric --mv_tta veto_disagree`)**: Pure 128D Gaussian Mahalanobis distance gating ($\exp(-d^2/\sigma^2)$).
+  3. **`[Test 3/7]` Logical AND Intersection (`--gate_mode and_gate --mv_tta veto_disagree`)**: Admits points only if both gates agree ($\min(\text{geom}, \text{epi})$), testing the over-gating / representation shrinkage hypothesis.
+  4. **`[Test 4/7]` Logical OR Union (`--gate_mode or_gate --mv_tta veto_disagree`)**: Admits points if *either* gate is confident ($\max(\text{geom}, \text{epi})$), testing whether geometric density rescues hard true-positive examples.
+  5. **`[Test 5/7]` Single-View Epistemic Control (`--gate_mode epistemic --mv_tta none`)**: Isolates Dirichlet gating without multi-view consensus.
+  6. **`[Test 6/7]` Single-View OR Control (`--gate_mode or_gate --mv_tta none`)**: Enables a clean $2 \times 2$ factorial ANOVA (`[Epistemic vs OR-Gate] × [Single-View vs Multi-View]`) to prove whether cross-view consensus provides an orthogonal signal.
+  7. **`[Test 7/7]` Dynamic Geometric Normalization (`--gate_mode or_gate --dynamic_geom --mv_tta veto_disagree`)**: Replaces frozen source variance with running batch variance ($0.95 \sigma_{\text{running}} + 0.05 \sigma_{\text{batch}}$) to establish soft decision boundaries under feature scale drift.
 
-### 3.1 Decoupled Dual-Uncertainty Gating (The AND vs. OR Paradox)
-* **Theoretical Hypothesis:** Network Epistemic certainty (classifier confidence) and Geometric HDC certainty (latent feature clustering free energy) capture distinct error distributions.
-* **`[TODO]` Experimental Validation:** Evaluate logical `OR` gating (admitting points if *either* Network certainty *or* Geometric certainty is high) vs logical `AND` gating. Determine whether Geometric HDC density rescues true-positive hard examples (such as structurally deformed road boundaries) that the Dirichlet gate incorrectly vetoes during adaptation.
-
-### 3.2 The Cross-View Orthogonality Hypothesis
-* **Theoretical Hypothesis:** In single-view TTA, Network Epistemic and Geometric HDC uncertainties are heavily correlated (e.g., both degrade similarly under static snow occlusion).
-* **`[TODO]` Experimental Validation:** Compute Geometric HDC consistency *across* multi-view spatial/temporal sweeps rather than within a single static view. Validate whether cross-view geometric consensus provides an orthogonal gating signal that improves pseudo-label precision over single-view Dirichlet gating alone.
-
-### 3.3 Class-Conditioned Dynamic Geometric Thresholding
-* **Theoretical Hypothesis:** Frozen source variance thresholds create rigid hard boundaries that fail when global domain shifts alter feature scale.
-* **`[TODO]` Experimental Validation:** Implement batch-adaptive geometric normalization (running batch variance) to establish soft decision boundaries, allowing the model to smoothly admit structurally deformed in-distribution points while strictly rejecting structureless out-of-distribution scatter (e.g., volumetric fog).
+### 3.1 Advanced Instrumentation & Statistical Diagnostic Tracking
+To definitively answer the Section 3 research questions without hidden confounders, `unsup_kitti-c.py` implements three specialized tracking layers:
+* **GT-Labelled $2 \times 2$ Admission Contingency Table:** Tracks exact sample counts ($N$) and precision ($\text{correct} / N$) across all four admission quadrants (`geom_adm_epi_adm`, `geom_adm_epi_rej`, `geom_rej_epi_adm`, `geom_rej_epi_rej`). In particular, the **Rescue Cell** (`geom_adm_epi_rej`) explicitly measures how many structurally valid points were rejected by Dirichlet evidence but saved by Mahalanobis geometric density.
+* **Decay Distribution Statistics & Saturation Diagnostics:** Logs full distribution quantiles (`mean`, `median`, `p10`, `p90`), the **`Fraction < 0.01`** for geometric decay (to detect exponential distance saturation in 128D space), and the **Pearson Correlation** ($r$) between geometric and epistemic decay values across valid points.
+* **Tail-Class TP / FP / FN Decomposition:** Decomposes initial and final Confusion Matrices for vulnerable tail classes (`Bicycle [2]`, `Bus [3]`, `Motorcycle [6]`, `Person [7]`, `Truck [10]`), explicitly logging $\Delta\text{TP}$, $\Delta\text{FP}$, and $\Delta\text{FN}$ to reveal whether adaptation trades False Negatives for False Positives or genuinely eliminates errors.
 
 ---
 
