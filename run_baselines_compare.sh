@@ -9,12 +9,12 @@
 #   bash run_baselines_compare.sh [PRETRAINED_PATH] [LOG_DIR] [CORRUPTIONS] [SEVERITY]
 #
 # Example:
-#   bash run_baselines_compare.sh logs/kitti_pretrain/hdc_sub.pth logs/baseline_comparisons snow,beam_missing,wet_ground 3
+#   bash run_baselines_compare.sh logs/kitti_pretrain/hdc_sub.pth logs/baseline_comparisons fog,wet_ground,snow,motion_blur,beam_missing,crosstalk,incomplete_echo,cross_sensor 3
 # ==============================================================================
 
 PRETRAINED_PATH=${1:-"logs/kitti_pretrain/hdc_sub.pth"}
 LOG_DIR=${2:-"logs/baseline_comparisons"}
-CORRUPTIONS=${3:-"snow,beam_missing,wet_ground"}
+CORRUPTIONS=${3:-"fog,wet_ground,snow,motion_blur,beam_missing,crosstalk,incomplete_echo,cross_sensor"}
 SEVERITY=${4:-3}
 
 mkdir -p "$LOG_DIR"

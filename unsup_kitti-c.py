@@ -1220,7 +1220,7 @@ def main():
     parser.add_argument('--severity', type=int, default=3, help='Severity level for corruptions')
     parser.add_argument('--kitti_dir', type=str, default='/mnt/alpha/jmfleming/KITTI', help='Path to SemanticKITTI dataset for pretraining')
     parser.add_argument('--kittic_dir', type=str, default='/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C', help='Path to real SemanticKITTI-C dataset')
-    parser.add_argument('--corruptions', type=str, default='snow,beam_missing,wet_ground', help='Comma separated list of corruptions to test. Defaults to diagnostic panel.')
+    parser.add_argument('--corruptions', type=str, default='fog,wet_ground,snow,motion_blur,beam_missing,crosstalk,incomplete_echo,cross_sensor', help='Comma separated list of corruptions to test. Defaults to all 8 corruptions.')
 
     parser.add_argument('--ic_method', type=str, default='none', help='Inter/Intra-Class balancing method: none, ic4')
     parser.add_argument('--tau', type=float, default=None, help='Logit adjustment tau for inference prior. If not set, BM is used. τ=0 is normalized baseline. τ<0 is majority amplifier. τ>0 is balanced softmax.')

@@ -168,6 +168,26 @@ The following table records the initial (frozen) and final adapted performance a
 | **This Method** (Soft Dual-Weighting + BM-IC4, No MV) | — | — | — | — | — | — |
 | **This Method + MV-TTA** (Soft Dual-Weighting + `veto_disagree`) | — | — | — | — | — | — |
 
+### Per-Corruption Final mIoU (%) Breakdown
+| Method | Fog | Wet Ground | Snow | Motion Blur | Beam Missing | Crosstalk | Incomplete Echo | Cross Sensor | Mean mIoU |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Frozen (No TTA)** | — | — | — | — | — | — | — | — | — |
+| **D3CTTA** | — | — | — | — | — | — | — | — | — |
+| **ConformalHDC** | — | — | — | — | — | — | — | — | — |
+| **HyperDUM** | — | — | — | — | — | — | — | — | — |
+| **This Method** (No MV) | — | — | — | — | — | — | — | — | — |
+| **This Method + MV-TTA** | — | — | — | — | — | — | — | — | — |
+
+### Per-Corruption Final Accuracy (%) Breakdown
+| Method | Fog | Wet Ground | Snow | Motion Blur | Beam Missing | Crosstalk | Incomplete Echo | Cross Sensor | Mean Acc |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Frozen (No TTA)** | — | — | — | — | — | — | — | — | — |
+| **D3CTTA** | — | — | — | — | — | — | — | — | — |
+| **ConformalHDC** | — | — | — | — | — | — | — | — | — |
+| **HyperDUM** | — | — | — | — | — | — | — | — | — |
+| **This Method** (No MV) | — | — | — | — | — | — | — | — | — |
+| **This Method + MV-TTA** | — | — | — | — | — | — | — | — | — |
+
 ---
 
 ## 7.3 Key Architectural Takeaways
