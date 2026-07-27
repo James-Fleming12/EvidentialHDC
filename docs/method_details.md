@@ -141,3 +141,42 @@ Incorporating view disagreement as an active gating filter (`--mv_tta veto_disag
 ### 6.3 Rejected Methods
 * **Uncertainty Scaling Veto (`min_uncert`, `mean_uncert`):** Scaling adaptation step sizes by taking the minimum or mean Dirichlet uncertainty across views successfully reduced update firing rates (from 47.1% to 43.6%), proving the consensus veto worked mechanically. However, it provided zero structural improvement to final mIoU because the samples it vetoed were already low-impact, leaving centroid adjustments identical to baseline.
 * **Discrete Majority Voting (`vote_pred`):** Taking a discrete majority vote per point across views performed worse than probability confidence averaging (`conf_pred`) because argmax voting discards relative confidence distributions and struggles with 3-way tie resolution in ambiguous boundary regions.
+
+# Method Comparisons
+
+## 7.1 The Problem Setting: Unsupervised Online Test-Time Adaptation under Spatiotemporal Corruption
+In real-world autonomous navigation and spatial perception, deep learning models deployed in open-world environments inevitably encounter severe out-of-distribution (OOD) shifts and sensor degradations (e.g., LiDAR beam dropouts, heavy snow, wet ground reflections, and sensor misalignments as formalized in SemanticKITTI-C and NuScenes-C). 
+
+We address the problem of **Unsupervised Online Test-Time Adaptation (TTA)**, governed by three critical operational constraints:
+1. **Absence of Ground Truth Supervision:** The model must adapt its internal decision boundaries and class prototypes on the fly using *only* streaming test point clouds and self-generated pseudo-labels. This introduces a severe risk of **confirmation bias**, where confident but erroneous pseudo-labels corrupt class representations over time.
+2. **Streaming Batch Adaptation (Memory & Compute Bounds):** The model operates on sequential frames or disjoint temporal chunks without access to source training data or large replay buffers. Adaptation algorithms must execute within strict latency and memory limits, precluding heavy offline optimization or multi-pass re-training.
+3. **Severe Class Imbalance & Structural Degradation:** Standard perception datasets exhibit extreme Pareto class imbalance (where majority classes like *road* and *building* outnumber minority tail classes like *motorcyclist* or *bicyclist* by orders of magnitude). Under sensor corruption, spatial boundaries blur and minority representations undergo differential collapse. Uncalibrated adaptation causes majority-class bleed, wiping out minority prototypes and degrading overall semantic segmentation precision (mIoU).
+
+To overcome these challenges, an adaptation framework must simultaneously solve two coupled tasks: **robust uncertainty estimation** (identifying which features are trustworthy) and **adaptive prototype regularization** (updating prototypes without suffering from representation shrinkage or boundary drift).
+
+---
+
+## 7.2 Empirical Performance Comparison (Benchmark Table)
+The following table records the initial (frozen) and final adapted performance across the SemanticKITTI-C corruption suite:
+
+| Method | Initial mIoU (%) | Final mIoU (%) | $\Delta$ mIoU | Initial Acc (%) | Final Acc (%) | $\Delta$ Acc |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Frozen (No TTA)** | — | — | — | — | — | — |
+| **D3CTTA** (Distance-Aware Decoupled TTA) | — | — | — | — | — | — |
+| **ConformalHDC** (Conformal Prediction Sets) | — | — | — | — | — | — |
+| **HyperDUM** (Channel-Wise Bundling & $\Omega$) | — | — | — | — | — | — |
+| **This Method** (Soft Dual-Weighting + BM-IC4, No MV) | — | — | — | — | — | — |
+| **This Method + MV-TTA** (Soft Dual-Weighting + `veto_disagree`) | — | — | — | — | — | — |
+
+---
+
+## 7.3 Key Architectural Takeaways
+
+1. **Why Soft Dual-Weighting Outperforms Hard Vetoes (ConformalHDC & D3CTTA):**
+   Hard thresholding mechanisms—whether based on conformal prediction set cardinality ($|\hat{C}_\alpha| == 1$ in ConformalHDC) or top-percentage entropy ranking (D3CTTA)—introduce a severe trade-off between **precision** and **recall**. In severe corruptions like `snow` or `wet_ground`, hard boundaries discard up to 60% of valid minority-class points that sit in moderate-uncertainty boundary regions, leading to representation shrinkage. In contrast, our **Soft Dual-Weighting** ($\exp(-1.5u_{\text{exc}} - 1.0z_{\text{exc}})$) assigns continuous, non-zero gradient weights to boundary samples, preserving prototype diversity while mathematically discounting OOD outliers.
+
+2. **The Complementarity of Epistemic Evidence vs. Channel-Wise Bundling (HyperDUM):**
+   While HyperDUM's learnable channel weight vector $\omega$ effectively dampens noisy latent dimensions, its reliance on normalized softmax entropy ($u$) remains vulnerable to uncalibrated overconfidence (where neural networks assign low entropy to completely incorrect OOD projections). By anchoring our gating mechanism in **Dirichlet Evidential HDC** and **Uncentred Geometric Z-Score Density**, our architecture detects structural geometric drift even when relative softmax similarity distributions appear confident, providing a superior defense against confirmation bias.
+
+3. **Eliminating Heuristic Fragility (Vs. D3CTTA):**
+   D3CTTA relies heavily on domain-specific geometric heuristics (e.g., assuming roads are flat planes within specific Z-height bounds and grouping points into fixed Euclidean distance rings). While effective on clean KITTI benchmarks, these assumptions fail catastrophically under sensor misalignments, varying camera/LiDAR mount pitches, or across different class taxonomies (e.g., migrating from 7-class to 17-class segmentation). Our Evidential HDC framework operates purely on Riemannian latent representations and multi-view geometric invariance (`veto_disagree`), achieving generalizable robustness without a single hand-crafted spatial rule.

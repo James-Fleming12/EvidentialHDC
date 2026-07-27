@@ -635,6 +635,42 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             if not hasattr(model, '_update_magnitude_log'):
                                 model._update_magnitude_log = []
                             model._update_magnitude_log.extend(step_mags[valid_c].detach().cpu().tolist())
+                    elif update_method in ['conformalhdc', 'hyperdum', 'd3ctta']:
+                        if not hasattr(model, '_baseline_adapter') or getattr(model, '_baseline_adapter_name', None) != update_method:
+                            if update_method == 'conformalhdc':
+                                from modules.compare import ConformalHDC
+                                model._baseline_adapter = ConformalHDC(model.net, num_classes=num_classes, feature_dim=128, source_prototypes=model.classify.weight.data.clone())
+                            elif update_method == 'hyperdum':
+                                from modules.compare import HyperDUM
+                                model._baseline_adapter = HyperDUM(model.net, num_classes=num_classes, feature_dim=128, source_prototypes=model.classify.weight.data.clone())
+                            elif update_method == 'd3ctta':
+                                from modules.D3CTTA import D3CTTA
+                                model._baseline_adapter = D3CTTA(model.net, num_classes=num_classes, feature_dim=128)
+                                model._baseline_adapter.source_prototypes = model.classify.weight.data.clone()
+                                model._baseline_adapter.prototypes = model.classify.weight.data.clone()
+                            model._baseline_adapter_name = update_method
+                            model._baseline_adapter.to(device)
+                        
+                        # Sync prototypes before update
+                        if hasattr(model._baseline_adapter, 'prototypes'):
+                            model._baseline_adapter.prototypes.data = model.classify.weight.data.clone()
+                        elif hasattr(model._baseline_adapter, 'proto'):
+                            model._baseline_adapter.feat_source = latent_x_valid
+                            model._baseline_adapter.pred_source = cos_sims
+                            
+                        # Execute baseline adaptation
+                        if update_method == 'd3ctta':
+                            model._baseline_adapter.inference_update(latent_x_valid, cos_sims, proj_xyz)
+                        else:
+                            model._baseline_adapter.inference_update(latent_x_valid, pseudo_labels, proj_xyz)
+                            
+                        # Sync updated prototypes back to model.classify.weight
+                        if hasattr(model._baseline_adapter, 'prototypes'):
+                            model.classify.weight.data = model._baseline_adapter.prototypes.data.clone().to(model.classify.weight.dtype)
+                            if normalize_weights:
+                                model.classify.weight.data = F.normalize(model.classify.weight.data, p=2, dim=1)
+                        if hasattr(model, 'class_update_counts'):
+                            model.class_update_counts += 1
     
     try:
         if hasattr(model, '_veto_stats') and model._veto_stats['correct_labels_rejected'] > 0:
@@ -1257,6 +1293,8 @@ def main():
                 full_method_names.append(f"frozen_tau_{args.tau}")
             else:
                 full_method_names.append('frozen')
+        elif m in ['conformalhdc', 'hyperdum', 'd3ctta']:
+            full_method_names.append(m)
         else:
             m_name = f"{m}_{args.ic_method}_tau_{args.tau}_mv_{args.mv_tta}"
             if args.gate_mode != 'epistemic':
@@ -1384,7 +1422,7 @@ def main():
 
         # Reset model at the start of each new method loop
         model.load_state_dict(clean_state_dict, strict=False)
-        attrs_to_del = ['drift_mu_c', 'class_freq_ema', 'class_update_counts', 'class_M', 'running_density_std', 'running_density_mean', '_contingency_table', '_mv_contingency_table', '_decay_logs', '_class_n_points', '_class_n_fired', '_class_true_errors_rejected', '_class_correct_rejected', '_firing_log', '_veto_stats', '_update_magnitude_log', 'initial_classify_weights', '_feature_dump_list']
+        attrs_to_del = ['drift_mu_c', 'class_freq_ema', 'class_update_counts', 'class_M', 'running_density_std', 'running_density_mean', '_contingency_table', '_mv_contingency_table', '_decay_logs', '_class_n_points', '_class_n_fired', '_class_true_errors_rejected', '_class_correct_rejected', '_firing_log', '_veto_stats', '_update_magnitude_log', 'initial_classify_weights', '_feature_dump_list', '_baseline_adapter', '_baseline_adapter_name']
         for attr in attrs_to_del:
             if hasattr(model, attr):
                 delattr(model, attr)
@@ -1395,7 +1433,7 @@ def main():
             if args.reset_per_corruption and args.chunked and not args.continual:
                 logger.info("Resetting model to clean pretrained weights for this corruption.")
                 model.load_state_dict(clean_state_dict, strict=False)
-                attrs_to_del = ['drift_mu_c', 'class_freq_ema', 'class_update_counts', 'class_M', 'running_density_std', 'running_density_mean', '_contingency_table', '_mv_contingency_table', '_decay_logs', '_class_n_points', '_class_n_fired', '_class_true_errors_rejected', '_class_correct_rejected', '_firing_log', '_veto_stats', '_update_magnitude_log', 'initial_classify_weights', '_feature_dump_list']
+                attrs_to_del = ['drift_mu_c', 'class_freq_ema', 'class_update_counts', 'class_M', 'running_density_std', 'running_density_mean', '_contingency_table', '_mv_contingency_table', '_decay_logs', '_class_n_points', '_class_n_fired', '_class_true_errors_rejected', '_class_correct_rejected', '_firing_log', '_veto_stats', '_update_magnitude_log', 'initial_classify_weights', '_feature_dump_list', '_baseline_adapter', '_baseline_adapter_name']
                 for attr in attrs_to_del:
                     if hasattr(model, attr):
                         delattr(model, attr)
@@ -1421,7 +1459,7 @@ def main():
                 if not args.continual:
                     # Reset model before each corruption
                     model.load_state_dict(clean_state_dict, strict=False)
-                    attrs_to_del = ['drift_mu_c', 'class_freq_ema', 'class_update_counts', 'class_M', 'running_density_std', 'running_density_mean', '_contingency_table', '_mv_contingency_table', '_decay_logs', '_class_n_points', '_class_n_fired', '_class_true_errors_rejected', '_class_correct_rejected', '_firing_log', '_veto_stats', '_update_magnitude_log', 'initial_classify_weights', '_feature_dump_list']
+                    attrs_to_del = ['drift_mu_c', 'class_freq_ema', 'class_update_counts', 'class_M', 'running_density_std', 'running_density_mean', '_contingency_table', '_mv_contingency_table', '_decay_logs', '_class_n_points', '_class_n_fired', '_class_true_errors_rejected', '_class_correct_rejected', '_firing_log', '_veto_stats', '_update_magnitude_log', 'initial_classify_weights', '_feature_dump_list', '_baseline_adapter', '_baseline_adapter_name']
                     for attr in attrs_to_del:
                         if hasattr(model, attr):
                             delattr(model, attr)
