@@ -42,17 +42,17 @@
 * **Empirical Validation (Snow Benchmark Findings):**
   * **Agreeing Points:** Maintain high pseudo-label purity with **~88.0% precision** (525M points evaluated).
   * **Disagreeing Points:** Exhibit severe degradation, dropping to **~39.0% to 43.0% precision** (8M points).
-  * **Tail-Class Vulnerability:** In vulnerable classes such as Class 10 (Sidewalk) and Class 3, disagreeing points collapse to an error-prone **11.9% to 21.6% precision**.
+  * **Tail-Class Vulnerability:** In vulnerable classes such as Class 10 (Truck) and Class 3 (Bus), disagreeing points collapse to an error-prone **11.9% to 21.6% precision**.
 * **Conclusion:** `veto_disagree` actively filters out these 8M high-error disagreeing points, stabilizing Mid ($0.4539 \rightarrow 0.4673$) and Tail ($0.4045 \rightarrow 0.4098$) mIoU under $\tau=-1.0$ calibration.
 
 ---
 
 ## 3. Re-Evaluating Dual-Uncertainty Gating (Geometric HDC + Network Epistemic Density)
-* **The Core Scientific Question:** While Phase 1/2 sidelined purely geometric **HDC Latent Density (128D Gaussian Mahalanobis Distance)** due to representation shrinkage under strict logical `AND` gating, Phase 3 re-evaluates whether combining Geometric HDC and Network Epistemic uncertainty is fundamentally beneficial when decoupled via logical `OR` gating or adaptive thresholding.
+* **The Core Scientific Question:** While Phase 1/2 sidelined purely geometric **HDC Latent Density (128D Isotropic Euclidean Z-Score Density)** due to representation shrinkage under strict logical `AND` gating, Phase 3 re-evaluates whether combining Geometric HDC and Network Epistemic uncertainty is fundamentally beneficial when decoupled via logical `OR` gating or adaptive thresholding.
 * **The 7-Test Factorial Evaluation Suite (`run_section3_tests.sh`):**
   We implement a comprehensive $2 \times 2$ factorial plus adaptive thresholding suite across the diagnostic corruption panel (`beam_missing`, `wet_ground`, `motion_blur`) to isolate the individual and interactive contributions of dual-uncertainty gating and multi-view consensus:
   1. **`[Test 1/7]` Multi-View Epistemic Baseline (`--gate_mode epistemic --mv_tta veto_disagree`)**: Standard Dirichlet evidence gating with multi-view consensus.
-  2. **`[Test 2/7]` Multi-View Geometric Baseline (`--gate_mode geometric --mv_tta veto_disagree`)**: Pure 128D Gaussian Mahalanobis distance gating ($\exp(-d^2/\sigma^2)$).
+  2. **`[Test 2/7]` Multi-View Geometric Baseline (`--gate_mode geometric --mv_tta veto_disagree`)**: Pure 128D Isotropic Euclidean Z-Score distance gating ($\exp(-2 \cdot \text{relu}(z - 0.5))$).
   3. **`[Test 3/7]` Logical AND Intersection (`--gate_mode and_gate --mv_tta veto_disagree`)**: Admits points only if both gates agree ($\min(\text{geom}, \text{epi})$), testing the over-gating / representation shrinkage hypothesis.
   4. **`[Test 4/7]` Logical OR Union (`--gate_mode or_gate --mv_tta veto_disagree`)**: Admits points if *either* gate is confident ($\max(\text{geom}, \text{epi})$), testing whether geometric density rescues hard true-positive examples.
   5. **`[Test 5/7]` Single-View Epistemic Control (`--gate_mode epistemic --mv_tta none`)**: Isolates Dirichlet gating without multi-view consensus.
@@ -61,9 +61,30 @@
 
 ### 3.1 Advanced Instrumentation & Statistical Diagnostic Tracking
 To definitively answer the Section 3 research questions without hidden confounders, `unsup_kitti-c.py` implements three specialized tracking layers:
-* **GT-Labelled $2 \times 2$ Admission Contingency Table:** Tracks exact sample counts ($N$) and precision ($\text{correct} / N$) across all four admission quadrants (`geom_adm_epi_adm`, `geom_adm_epi_rej`, `geom_rej_epi_adm`, `geom_rej_epi_rej`). In particular, the **Rescue Cell** (`geom_adm_epi_rej`) explicitly measures how many structurally valid points were rejected by Dirichlet evidence but saved by Mahalanobis geometric density.
+* **GT-Labelled $2 \times 2$ Admission Contingency Table:** Tracks exact sample counts ($N$) and precision ($\text{correct} / N$) across all four admission quadrants (`geom_adm_epi_adm`, `geom_adm_epi_rej`, `geom_rej_epi_adm`, `geom_rej_epi_rej`). In particular, the **Rescue Cell** (`geom_adm_epi_rej`) explicitly measures how many structurally valid points were rejected by Dirichlet evidence but saved by Isotropic Euclidean Z-Score density.
 * **Decay Distribution Statistics & Saturation Diagnostics:** Logs full distribution quantiles (`mean`, `median`, `p10`, `p90`), the **`Fraction < 0.01`** for geometric decay (to detect exponential distance saturation in 128D space), and the **Pearson Correlation** ($r$) between geometric and epistemic decay values across valid points.
 * **Tail-Class TP / FP / FN Decomposition:** Decomposes initial and final Confusion Matrices for vulnerable tail classes (`Bicycle [2]`, `Bus [3]`, `Motorcycle [6]`, `Person [7]`, `Truck [10]`), explicitly logging $\Delta\text{TP}$, $\Delta\text{FP}$, and $\Delta\text{FN}$ to reveal whether adaptation trades False Negatives for False Positives or genuinely eliminates errors.
+
+### 3.2 Empirical Findings & Critical Analysis from the 7-Test Evaluation Suite (`section3_tests.log`)
+Parsing the complete 21-run execution log (`7 tests × 3 corruptions`) reveals crucial scientific insights into high-dimensional distance kernels, gating complementarity, and pseudo-label rejection costs:
+
+#### 1. The Pre-Crash Diagnostic Readout & Outcome Data Loss
+During the initial 21-run execution, online adaptation completed 100% of frames across all runs (~533 million points per run) and logged complete contingency tables, firing rates, and veto purities. However, at step conclusion, when computing summary quantiles (`torch.quantile(t, ...)`), PyTorch encountered a 32-bit indexing limit ($>16.7\text{M}$ elements) on the accumulated distance tensors. Because this exception fired inside `evaluate_and_adapt` before `return metrics`, Pass 3 (final frozen evaluation) never executed.
+* **Consequence:** All 21 runs produced zero outcome mIoU data (only pre-crash diagnostic tables). Therefore, the observation that "Logical AND (Test 3) failed" is an **algebraic inference** ($\min(\approx 0, \text{epi}) \Rightarrow \approx 0$) rather than an empirical mIoU result.
+* **Instrumentation Fix (Step 0):** Every diagnostic block in `evaluate_and_adapt` has now been isolated in its own non-fatal `try/except` handler, and distance logs are subsampled (`[::64]`) to reduce CPU RAM footprint from ~4.3 GB down to ~67 MB and prevent tensor indexing overflow.
+
+#### 2. Mis-Specified Geometric Kernel vs. High-Dimensional Distance Concentration
+The initial geometric gating implementation evaluated $\exp(-d^2 / 2\sigma_c^2)$, where $\sigma_c$ was the standard deviation of the distance and mean distance was never subtracted. In 128D hyperspace, distances concentrate tightly on a sphere around $\bar{d} \approx \sqrt{128}\sigma_{\text{dim}}$, roughly **16 standard deviations away from zero**.
+* On simulated *perfectly clean, in-distribution* source data ($\bar{d}=11.29, \sigma=0.71$), the uncentred ratio is $d^2/(2\sigma^2) \approx 128$, causing the kernel to evaluate to $\exp(-128) \approx 3 \times 10^{-56}$ and **reject 100.00% of clean in-distribution points**.
+* **Scientific Takeaway:** The observed $0.00\% - 0.12\%$ firing rates in Tests 2 and 3 were an artifact of a zero-centred kernel in 128D space rather than OOD representation shrinkage. 
+* **Kernel Fix (Step 2):** The kernel has been corrected to store `source_density_mean[c]` during pretraining and evaluate **Isotropic Euclidean Z-Score Density**: $z = (d - \text{mean}_c)/\text{std}_c$ with decay $\exp(-2 \cdot \text{relu}(z - 0.5))$, mirroring the validated Dirichlet evidence z-score gate.
+
+#### 3. Contingency Analysis & The Cost of Epistemic Rejection
+Across all runs, the GT-Labelled Contingency Table returned a decisive **$N=0$ for the Rescue Cell** under static thresholding ($\text{geom\_adm} \subseteq \text{epi\_adm}$). While Dynamic Geometric Normalization (`Test 7`) expanded geometric admission by $2.5\times - 4.8\times$, every added point landed inside $\text{geom\_adm} \cap \text{epi\_adm}$ (what Epistemic already admits), representing gate annealing toward inertness rather than complementarity. In `wet_ground-3`, the $N=44$ "rescue" cell represents literally **39 correct points out of half a billion** ($0.0000082\%$).
+
+Crucially, the contingency tables reveal a major, previously unexamined cost of Dirichlet evidence gating:
+* **The Discarded True-Positive Pool:** Across all 533M evaluated points, epistemic gating rejects **36.6% of all points**, and those rejected points are **83.5% correct** (vs. 98.8% for admitted points).
+* **Takeaway:** While Dirichlet evidence discriminates effectively ($98.8\%$ vs. $83.5\%$), it discards approximately **~163 million correct pseudo-labels** per sequence. Whether our newly corrected Z-Score Geometric gate can safely rescue a meaningful fraction of these 163M discarded true-positives without sacrificing precision is the defining empirical question for our re-run.
 
 ---
 
@@ -103,7 +124,7 @@ To definitively answer the Section 3 research questions without hidden confounde
 | **`motion_blur-3`**<br>*(Temporal Dynamics)* | `baseline`<br>`veto_disagree`<br>`conf_pred` | $0.3824 \rightarrow 0.3978$<br>$0.3824 \rightarrow 0.3978$<br>$0.3855 \rightarrow 0.4001$ | **$0.5048 \rightarrow 0.5023$**<br>**$0.5048 \rightarrow 0.5023$**<br>**$0.5076 \rightarrow 0.5045$** | **+12.24 mIoU elevation!** Tail class mIoU experiences an extraordinary 4× surge (from $0.0625$ to **$0.2527$**). `conf_pred` achieves the highest overall mIoU under dynamic blur ($0.5076$). |
 
 * **Methodological Insights:**
-  1. **Universality of Prior Calibration:** Across weather, sensor failure, multipath reflection, scattering, and motion artifacts, $\tau=-1.0$ prior calibration consistently provides massive geometric gains (+5.8 to +12.2 mIoU points), particularly rescuing vulnerable tail classes (Sidewalk, Bicyclist, Traffic Sign).
+  1. **Universality of Prior Calibration:** Across weather, sensor failure, multipath reflection, scattering, and motion artifacts, $\tau=-1.0$ prior calibration consistently provides massive geometric gains (+5.8 to +12.2 mIoU points), particularly rescuing vulnerable tail classes (Truck, Bicyclist, Traffic Sign).
   2. **Precision Tracking Purity:** In structured degradations like `beam_missing`, `veto_disagree` tracked an outstanding **91.6% to 92.8% precision on agreeing points** vs only **40.8% to 44.6% on disagreeing points**, confirming that our epistemic Dirichlet veto reliably isolates and rejects corrupted pseudo-labels across diverse LiDAR failure modes.
 
 ### 5.3 `[TODO]` Forward Transfer vs Catastrophic Forgetting Metrics

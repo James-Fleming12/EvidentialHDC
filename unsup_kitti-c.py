@@ -36,9 +36,44 @@ SEVERITY_MAP = {1: 'light', 2: 'moderate', 3: 'heavy', 4: 'extreme'}
 CONFIG_ARCH = "config/arch/senet-2048p.yml"
 CONFIG_LABELS_KITTI_ALL = "config/labels/semantic-kitti-all.yaml"  # Standard 17 classes
 
-def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, ic_method='none', tau=None, kappa=15.0, normalize_weights=False, mv_tta='none', gate_mode='epistemic', dynamic_geom=False):
+def compute_auroc_torch(scores, labels):
+    if len(scores) == 0: return float('nan')
+    pos_mask = labels.bool()
+    n1 = pos_mask.sum().item()
+    n0 = len(labels) - n1
+    if n1 == 0 or n0 == 0: return float('nan')
+    unique_vals, inv, counts = torch.unique(scores, return_inverse=True, return_counts=True)
+    cum_counts = torch.cumsum(counts, dim=0)
+    start_ranks = cum_counts - counts + 1
+    avg_ranks = (start_ranks + cum_counts) / 2.0
+    ranks = avg_ranks[inv].to(torch.float64)
+    r1 = ranks[pos_mask].sum().item()
+    u1 = r1 - n1 * (n1 + 1) / 2.0
+    return float(u1 / (n1 * n0))
+
+def compute_correlations_torch(x, y):
+    if len(x) < 2: return "N/A"
+    x = x.to(torch.float64); y = y.to(torch.float64)
+    vx = x - x.mean(); vy = y - y.mean()
+    cov = (vx * vy).mean()
+    sx = torch.sqrt((vx**2).mean()); sy = torch.sqrt((vy**2).mean())
+    pearson = float(cov / (sx * sy)) if sx != 0 and sy != 0 else 0.0
+    _, inv_x, counts_x = torch.unique(x, return_inverse=True, return_counts=True)
+    cum_x = torch.cumsum(counts_x, dim=0)
+    ranks_x = ((cum_x - counts_x + 1 + cum_x) / 2.0)[inv_x].to(torch.float64)
+    _, inv_y, counts_y = torch.unique(y, return_inverse=True, return_counts=True)
+    cum_y = torch.cumsum(counts_y, dim=0)
+    ranks_y = ((cum_y - counts_y + 1 + cum_y) / 2.0)[inv_y].to(torch.float64)
+    vrx = ranks_x - ranks_x.mean(); vry = ranks_y - ranks_y.mean()
+    cov_r = (vrx * vry).mean()
+    srx = torch.sqrt((vrx**2).mean()); sry = torch.sqrt((vry**2).mean())
+    spearman = float(cov_r / (srx * sry)) if srx != 0 and sry != 0 else 0.0
+    return f"Pearson r={pearson:.6f}, Spearman rho={spearman:.6f} (over {len(x):,} pairs)"
+
+def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, ic_method='none', tau=None, kappa=15.0, normalize_weights=False, mv_tta='none', gate_mode='epistemic', dynamic_geom=False, diagnostics=True, dump_features=False):
     if ic_method not in ['none', 'ic4']:
         raise ValueError(f"Unknown ic_method: {ic_method}")
+    logger = logging.getLogger("EvalAdapt")
 
     model_was_training = model.training
     miou_history = []
@@ -58,10 +93,14 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
     active_sigma_cos = model.source_sigma_cos
 
     if not eval_only and hasattr(model, 'classify'):
-
-        logger = logging.getLogger("EvalAdapt")
         norms = {c: round(model.classify.weight[c].norm().item(), 4) for c in range(17)}
         logger.info(f"\n[Stats] Initial Prototype Norms: {norms}")
+
+    if hasattr(model, 'class_latent_means') and model.class_latent_means is not None:
+        model.class_latent_means = model.class_latent_means.to(device)
+        means_norm_128_cached = F.normalize(model.class_latent_means.float(), dim=1)
+    else:
+        means_norm_128_cached = None
 
     for batch_idx, batch_data in enumerate(tqdm(target_dataloader, desc="Adapting", leave=False)):
         if dry_run and batch_idx >= 2:
@@ -228,7 +267,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     base_weights = cos_sim_probs.max(dim=1)[0]
                     update_weights = base_weights.clone()
                     
-                    latent_x_valid = latent_x[indices]
+                    # Avoid multi-GB copies since indices is always arange
+                    latent_x_valid = latent_x
 
                     if not hasattr(model, 'class_freq_ema'):
                         if hasattr(model, 'source_class_freq'):
@@ -266,65 +306,175 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         u_threshold = 0.5 
                         epistemic_decay = torch.exp(-2.0 * torch.relu(uncertainty - u_threshold))
                         
-                        # 2. Geometric HDC Latent Free Energy (Gaussian Mahalanobis Density)
-                        if hasattr(model, 'class_latent_means') and model.class_latent_means is not None:
-                            model.class_latent_means = model.class_latent_means.to(device)
-                            pred_means = model.class_latent_means[pseudo_labels]
-                            dist_sq = torch.norm(latent_x_valid.float() - pred_means.float(), p=2, dim=1) ** 2
-                            if dynamic_geom:
-                                if not hasattr(model, 'running_density_std') or model.running_density_std is None:
-                                    model.running_density_std = model.source_density_std.clone().to(device)
-                                model.running_density_std = model.running_density_std.to(device)
-                                for c_idx in range(num_classes):
-                                    c_mask = (pseudo_labels == c_idx)
-                                    if c_mask.sum() > 1:
-                                        batch_std = dist_sq[c_mask].sqrt().std().item()
-                                        if not torch.isnan(torch.tensor(batch_std)) and batch_std > 0:
-                                            model.running_density_std[c_idx] = 0.95 * model.running_density_std[c_idx] + 0.05 * batch_std
-                                variance = 2.0 * (model.running_density_std[pseudo_labels] ** 2) + 1e-8
+                        # 2. Geometric HDC Latent Density (Isotropic Euclidean Z-Score Density)
+                        if diagnostics or gate_mode in ['geometric', 'and_gate', 'or_gate']:
+                            if hasattr(model, 'class_latent_means') and model.class_latent_means is not None and hasattr(model, 'source_density_std') and model.source_density_std is not None:
+                                if not hasattr(model, 'source_density_mean') or model.source_density_mean is None:
+                                    raise ValueError("CRITICAL ERROR: model.source_density_mean is missing or None! Stale checkpoint or cache would cause uncentred 128D geometric distance saturation (exp(-128)).")
+                                pred_means = model.class_latent_means[pseudo_labels]
+                                dist = torch.norm(latent_x_valid.float() - pred_means.float(), p=2, dim=1)
+                                
+                                if dynamic_geom:
+                                    if not hasattr(model, 'running_density_mean') or model.running_density_mean is None:
+                                        model.running_density_mean = model.source_density_mean.clone().to(device)
+                                    if not hasattr(model, 'running_density_std') or model.running_density_std is None:
+                                        model.running_density_std = model.source_density_std.clone().to(device)
+                                    model.running_density_mean = model.running_density_mean.to(device)
+                                    model.running_density_std = model.running_density_std.to(device)
+                                    
+                                    counts = torch.bincount(pseudo_labels, minlength=num_classes).float()
+                                    sum_dist = torch.bincount(pseudo_labels, weights=dist, minlength=num_classes)
+                                    sum_sq_dist = torch.bincount(pseudo_labels, weights=dist**2, minlength=num_classes)
+                                    
+                                    valid_c = (counts > 1)
+                                    batch_means = torch.where(valid_c, sum_dist / torch.clamp(counts, min=1.0), torch.zeros_like(sum_dist))
+                                    batch_vars = torch.where(valid_c, (sum_sq_dist - sum_dist**2 / torch.clamp(counts, min=1.0)) / torch.clamp(counts - 1.0, min=1.0), torch.zeros_like(sum_sq_dist))
+                                    batch_stds = torch.sqrt(torch.clamp(batch_vars, min=0.0))
+                                    
+                                    model.running_density_mean = torch.where(valid_c, 0.95 * model.running_density_mean + 0.05 * batch_means, model.running_density_mean)
+                                    valid_std = valid_c & (batch_stds > 0)
+                                    model.running_density_std = torch.where(valid_std, 0.95 * model.running_density_std + 0.05 * batch_stds, model.running_density_std)
+                                    
+                                    mean_c = model.running_density_mean[pseudo_labels]
+                                    std_c = model.running_density_std[pseudo_labels] + 1e-8
+                                else:
+                                    model.source_density_mean = model.source_density_mean.to(device)
+                                    model.source_density_std = model.source_density_std.to(device)
+                                    mean_c = model.source_density_mean[pseudo_labels]
+                                    std_c = model.source_density_std[pseudo_labels] + 1e-8
+                                    
+                                z_score = (dist - mean_c) / std_c
+                                geom_decay = torch.exp(-2.0 * torch.relu(z_score - 0.5))
                             else:
-                                model.source_density_std = model.source_density_std.to(device)
-                                variance = 2.0 * (model.source_density_std[pseudo_labels] ** 2) + 1e-8
-                            geom_decay = torch.exp(-dist_sq / variance)
+                                raise ValueError("Geometric gating requires model.class_latent_means and source_density_std from source pretraining.")
                         else:
-                            if gate_mode in ['geometric', 'and_gate', 'or_gate']:
-                                raise ValueError("Geometric gating requires model.class_latent_means from source pretraining.")
                             geom_decay = torch.ones_like(epistemic_decay)
+                            z_score = torch.zeros_like(epistemic_decay)
+                            dist = torch.zeros_like(epistemic_decay)
                         
-                        # Track decay statistics and GT-labelled contingency table
-                        if not hasattr(model, '_decay_logs'):
-                            model._decay_logs = {'geom': [], 'epi': []}
-                        model._decay_logs['geom'].append(geom_decay.detach().cpu())
-                        model._decay_logs['epi'].append(epistemic_decay.detach().cpu())
-                        
-                        if not hasattr(model, '_contingency_table'):
-                            model._contingency_table = {
-                                'geom_adm_epi_adm': {'n': 0, 'correct': 0},
-                                'geom_adm_epi_rej': {'n': 0, 'correct': 0},
-                                'geom_rej_epi_adm': {'n': 0, 'correct': 0},
-                                'geom_rej_epi_rej': {'n': 0, 'correct': 0},
-                            }
                         valid_gt_mask = (selected_labels >= 0) & (selected_labels < num_classes)
-                        if valid_gt_mask.any():
-                            ga = (geom_decay >= 0.5)[valid_gt_mask]
-                            ea = (epistemic_decay >= 0.5)[valid_gt_mask]
-                            corr = (pseudo_labels[valid_gt_mask] == selected_labels[valid_gt_mask])
+                        gt_corr = (pseudo_labels == selected_labels)
+                        
+                        if diagnostics:
+                            # Track decay statistics, cosines, and GT-labelled contingency table (subsample by ::256 to prevent RAM bloat and quantile indexing limits)
+                            if not hasattr(model, '_decay_logs'):
+                                model._decay_logs = {'geom': [], 'epi': [], 'geom_score': [], 'epi_score': [], 'gt_valid': [], 'gt_corr': [], 'cos128': [], 'cos10k': [], 'view_dis': [], 'margin': []}
+                            model._decay_logs['geom'].append(geom_decay.detach()[::256].cpu())
+                            model._decay_logs['epi'].append(epistemic_decay.detach()[::256].cpu())
+                            model._decay_logs['geom_score'].append((-z_score).detach()[::256].cpu())
+                            model._decay_logs['epi_score'].append((-uncertainty).detach()[::256].cpu())
+                            model._decay_logs['gt_valid'].append(valid_gt_mask.detach()[::256].cpu())
+                            model._decay_logs['gt_corr'].append(gt_corr.detach()[::256].cpu())
                             
-                            m_aa = ga & ea
-                            model._contingency_table['geom_adm_epi_adm']['n'] += m_aa.sum().item()
-                            model._contingency_table['geom_adm_epi_adm']['correct'] += (m_aa & corr).sum().item()
+                            # Margin between top-1 and top-2 cosine similarities
+                            top2_cos = torch.topk(cos_sims, k=min(2, cos_sims.size(1)), dim=1)[0]
+                            margin = (top2_cos[:, 0] - top2_cos[:, 1]) if top2_cos.size(1) > 1 else top2_cos[:, 0]
+                            model._decay_logs['margin'].append(margin.detach()[::256].cpu())
                             
-                            m_ar = ga & (~ea) # The rescue cell
-                            model._contingency_table['geom_adm_epi_rej']['n'] += m_ar.sum().item()
-                            model._contingency_table['geom_adm_epi_rej']['correct'] += (m_ar & corr).sum().item()
+                            # Test D0: Random point pairs for reference-free isometry check
+                            if len(latent_x_valid) > 1:
+                                perm = torch.randperm(len(latent_x_valid), device=device)
+                                n_pairs = min(len(latent_x_valid) // 2, 512)
+                                idx1, idx2 = perm[:n_pairs], perm[n_pairs:2*n_pairs]
+                                l_norm_128 = F.normalize(latent_x_valid.float(), dim=1)
+                                c128_vals = (l_norm_128[idx1] * l_norm_128[idx2]).sum(dim=1)
+                                c10k_vals = (norm_enc[idx1].float() * norm_enc[idx2].float()).sum(dim=1)
+                                model._decay_logs['cos128'].append(c128_vals.detach().cpu())
+                                model._decay_logs['cos10k'].append(c10k_vals.detach().cpu())
+                                
+                            if 'view_disagreement' in locals():
+                                model._decay_logs['view_dis'].append(view_disagreement.detach()[::256].cpu())
                             
-                            m_ra = (~ga) & ea
-                            model._contingency_table['geom_rej_epi_adm']['n'] += m_ra.sum().item()
-                            model._contingency_table['geom_rej_epi_adm']['correct'] += (m_ra & corr).sum().item()
-                            
-                            m_rr = (~ga) & (~ea)
-                            model._contingency_table['geom_rej_epi_rej']['n'] += m_rr.sum().item()
-                            model._contingency_table['geom_rej_epi_rej']['correct'] += (m_rr & corr).sum().item()
+                            if not hasattr(model, '_contingency_table'):
+                                model._contingency_table = {
+                                    'geom_adm_epi_adm': {'n': torch.tensor(0, dtype=torch.long, device=device), 'correct': torch.tensor(0, dtype=torch.long, device=device)},
+                                    'geom_adm_epi_rej': {'n': torch.tensor(0, dtype=torch.long, device=device), 'correct': torch.tensor(0, dtype=torch.long, device=device)},
+                                    'geom_rej_epi_adm': {'n': torch.tensor(0, dtype=torch.long, device=device), 'correct': torch.tensor(0, dtype=torch.long, device=device)},
+                                    'geom_rej_epi_rej': {'n': torch.tensor(0, dtype=torch.long, device=device), 'correct': torch.tensor(0, dtype=torch.long, device=device)},
+                                }
+                            if not hasattr(model, '_mv_contingency_table'):
+                                model._mv_contingency_table = {
+                                    'view_agree_epi_adm': {'n': torch.tensor(0, dtype=torch.long, device=device), 'correct': torch.tensor(0, dtype=torch.long, device=device)},
+                                    'view_agree_epi_rej': {'n': torch.tensor(0, dtype=torch.long, device=device), 'correct': torch.tensor(0, dtype=torch.long, device=device)},
+                                    'view_disagree_epi_adm': {'n': torch.tensor(0, dtype=torch.long, device=device), 'correct': torch.tensor(0, dtype=torch.long, device=device)},
+                                    'view_disagree_epi_rej': {'n': torch.tensor(0, dtype=torch.long, device=device), 'correct': torch.tensor(0, dtype=torch.long, device=device)},
+                                }
+                            if valid_gt_mask.any():
+                                ga = (geom_decay >= 0.5)[valid_gt_mask]
+                                ea = (epistemic_decay >= 0.5)[valid_gt_mask]
+                                corr = gt_corr[valid_gt_mask]
+                                
+                                m_aa = ga & ea
+                                model._contingency_table['geom_adm_epi_adm']['n'] += m_aa.sum()
+                                model._contingency_table['geom_adm_epi_adm']['correct'] += (m_aa & corr).sum()
+                                
+                                m_ar = ga & (~ea) # The rescue cell
+                                model._contingency_table['geom_adm_epi_rej']['n'] += m_ar.sum()
+                                model._contingency_table['geom_adm_epi_rej']['correct'] += (m_ar & corr).sum()
+                                
+                                m_ra = (~ga) & ea
+                                model._contingency_table['geom_rej_epi_adm']['n'] += m_ra.sum()
+                                model._contingency_table['geom_rej_epi_adm']['correct'] += (m_ra & corr).sum()
+                                
+                                m_rr = (~ga) & (~ea)
+                                model._contingency_table['geom_rej_epi_rej']['n'] += m_rr.sum()
+                                model._contingency_table['geom_rej_epi_rej']['correct'] += (m_rr & corr).sum()
+
+                                if 'view_disagreement' in locals():
+                                    va = (~view_disagreement)[valid_gt_mask]
+                                    vd = view_disagreement[valid_gt_mask]
+                                    
+                                    va_ea = va & ea
+                                    model._mv_contingency_table['view_agree_epi_adm']['n'] += va_ea.sum()
+                                    model._mv_contingency_table['view_agree_epi_adm']['correct'] += (va_ea & corr).sum()
+                                    
+                                    va_er = va & (~ea) # Test D4 Rescue cell!
+                                    model._mv_contingency_table['view_agree_epi_rej']['n'] += va_er.sum()
+                                    model._mv_contingency_table['view_agree_epi_rej']['correct'] += (va_er & corr).sum()
+                                    
+                                    vd_ea = vd & ea
+                                    model._mv_contingency_table['view_disagree_epi_adm']['n'] += vd_ea.sum()
+                                    model._mv_contingency_table['view_disagree_epi_adm']['correct'] += (vd_ea & corr).sum()
+                                    
+                                    vd_er = vd & (~ea)
+                                    model._mv_contingency_table['view_disagree_epi_rej']['n'] += vd_er.sum()
+                                    model._mv_contingency_table['view_disagree_epi_rej']['correct'] += (vd_er & corr).sum()
+                                    
+                        if dump_features:
+                            dump_mask = valid_gt_mask & (epistemic_decay < 0.5)
+                            if dump_mask.any():
+                                indices_dump = torch.nonzero(dump_mask, as_tuple=True)[0]
+                                if len(indices_dump) > 1000:
+                                    indices_dump = indices_dump[::len(indices_dump)//1000]
+                                if not hasattr(model, '_feature_dump_list'):
+                                    model._feature_dump_list = []
+                                    
+                                top2_c = torch.topk(cos_sims[indices_dump], k=min(2, cos_sims.size(1)), dim=1)[0]
+                                m_val = (top2_c[:, 0] - top2_c[:, 1]) if top2_c.size(1) > 1 else top2_c[:, 0]
+                                probs_dump = F.softmax(cos_sims[indices_dump] * 100.0, dim=1)
+                                ent_val = -(probs_dump * torch.log(probs_dump + 1e-8)).sum(dim=1)
+                                vd_val = view_disagreement[indices_dump].float() if 'view_disagreement' in locals() else torch.zeros(len(indices_dump), device=device)
+                                
+                                pin_flat = proj_in.permute(0, 2, 3, 1).reshape(-1, proj_in.shape[1])
+                                r_val = pin_flat[indices_dump, 0] if pin_flat.shape[1] > 0 else torch.zeros(len(indices_dump), device=device)
+                                i_val = pin_flat[indices_dump, 1] if pin_flat.shape[1] > 1 else torch.zeros(len(indices_dump), device=device)
+                                p_norm_val = model.classify.weight[pseudo_labels[indices_dump]].norm(p=2, dim=1)
+                                
+                                model._feature_dump_list.append({
+                                    'gt_corr': gt_corr[indices_dump].float().cpu(),
+                                    'epi_score': (-uncertainty[indices_dump]).float().cpu(),
+                                    'z_score': z_score[indices_dump].float().cpu(),
+                                    'dist': dist[indices_dump].float().cpu(),
+                                    'latent_norm': latent_x_valid[indices_dump].norm(p=2, dim=1).float().cpu(),
+                                    'latent_raw': latent_x_valid[indices_dump][:, :32].float().cpu(),
+                                    'margin': m_val.float().cpu(),
+                                    'entropy': ent_val.float().cpu(),
+                                    'view_dis': vd_val.cpu(),
+                                    'range': r_val.float().cpu(),
+                                    'intensity': i_val.float().cpu(),
+                                    'pseudo_c': pseudo_labels[indices_dump].float().cpu(),
+                                    'proto_norm_c': p_norm_val.float().cpu()
+                                })
 
                         # 3. Apply Dual-Uncertainty Gating Strategy
                         if gate_mode == 'epistemic':
@@ -335,6 +485,9 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             update_weights = update_weights * torch.min(geom_decay, epistemic_decay)
                         elif gate_mode == 'or_gate':
                             update_weights = update_weights * torch.max(geom_decay, epistemic_decay)
+                        elif gate_mode == 'oracle':
+                            gt_mask_full = (pseudo_labels == selected_labels) & (selected_labels >= 0) & (selected_labels < num_classes)
+                            update_weights = update_weights * gt_mask_full.float()
                         else:
                             raise ValueError(f"Unknown gate_mode: {gate_mode}")
                         
@@ -349,8 +502,9 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     
                     if not hasattr(model, '_firing_log'):
                         model._firing_log = []
-                    if not hasattr(model, '_class_firing_log'):
-                        model._class_firing_log = {c: [] for c in range(num_classes)}
+                    if not hasattr(model, '_class_n_points'):
+                        model._class_n_points = torch.zeros(num_classes, dtype=torch.long, device=device)
+                        model._class_n_fired = torch.zeros(num_classes, dtype=torch.long, device=device)
                         
                     if not eval_only and not hasattr(model, 'initial_classify_weights'):
                         model.initial_classify_weights = model.classify.weight.clone().detach()
@@ -358,211 +512,320 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     # Guard against empty tensors causing NaN
                     if len(update_weights) > 0:
                         model._firing_log.append(fired_mask.float().mean().item())
-                        for c in range(num_classes):
-                            c_mask = (pseudo_labels == c)
-                            if c_mask.any():
-                                n_pts = c_mask.sum().item()
-                                n_fired = (c_mask & fired_mask).sum().item()
-                                sum_w = update_weights[c_mask].sum().item()
-                                model._class_firing_log[c].append({'n_points': n_pts, 'n_fired': n_fired, 'sum_w': sum_w})
+                        model._class_n_points += torch.bincount(pseudo_labels, minlength=num_classes)
+                        if fired_mask.any():
+                            model._class_n_fired += torch.bincount(pseudo_labels[fired_mask], minlength=num_classes)
                     else:
                         model._firing_log.append(0.0)
                     
                     valid_gt_mask = (selected_labels >= 0) & (selected_labels < num_classes)
-                    true_errors_rejected = (effective_veto & valid_gt_mask & (pseudo_labels != selected_labels)).sum().item()
-                    correct_labels_rejected = (effective_veto & valid_gt_mask & (pseudo_labels == selected_labels)).sum().item()
+                    err_mask = effective_veto & valid_gt_mask & (pseudo_labels != selected_labels)
+                    corr_mask = effective_veto & valid_gt_mask & (pseudo_labels == selected_labels)
+                    
                     if not hasattr(model, '_veto_stats'):
                         model._veto_stats = {'true_errors_rejected': 0, 'correct_labels_rejected': 0}
-                    if not hasattr(model, '_class_veto_stats'):
-                        model._class_veto_stats = {c: {'true_errors_rejected': 0, 'correct_labels_rejected': 0} for c in range(num_classes)}
+                    if not hasattr(model, '_class_true_errors_rejected'):
+                        model._class_true_errors_rejected = torch.zeros(num_classes, dtype=torch.long, device=device)
+                        model._class_correct_rejected = torch.zeros(num_classes, dtype=torch.long, device=device)
                         
-                    model._veto_stats['true_errors_rejected'] += true_errors_rejected
-                    model._veto_stats['correct_labels_rejected'] += correct_labels_rejected
+                    model._veto_stats['true_errors_rejected'] += err_mask.sum().item()
+                    model._veto_stats['correct_labels_rejected'] += corr_mask.sum().item()
                     
-                    for c in range(num_classes):
-                        c_mask = (pseudo_labels == c)
-                        if c_mask.any():
-                            true_errs = (effective_veto & valid_gt_mask & c_mask & (pseudo_labels != selected_labels)).sum().item()
-                            corr_labels = (effective_veto & valid_gt_mask & c_mask & (pseudo_labels == selected_labels)).sum().item()
-                            model._class_veto_stats[c]['true_errors_rejected'] += true_errs
-                            model._class_veto_stats[c]['correct_labels_rejected'] += corr_labels
+                    if err_mask.any():
+                        model._class_true_errors_rejected += torch.bincount(pseudo_labels[err_mask], minlength=num_classes)
+                    if corr_mask.any():
+                        model._class_correct_rejected += torch.bincount(pseudo_labels[corr_mask], minlength=num_classes)
                     
                     if fired_mask.any():
-                        valid_enc = norm_enc[indices]
-                        for c in range(num_classes):
-                            fired_c_mask = (pseudo_labels == c) & fired_mask
-                            if fired_c_mask.any():
-                                c_weights = update_weights[fired_c_mask].unsqueeze(1)
-                                c_update = (valid_enc[fired_c_mask] * c_weights).mean(dim=0)
+                        valid_enc = norm_enc
+                        fired_indices = torch.nonzero(fired_mask, as_tuple=True)[0]
+                        labels_fired = pseudo_labels[fired_indices]
+                        weights_fired = update_weights[fired_indices]
+                        
+                        if ic_method == 'ic4' and 'uncertainty' in locals():
+                            weights_fired = weights_fired * uncertainty[fired_indices]
+                            
+                        sums_c = torch.zeros((num_classes, valid_enc.shape[1]), dtype=valid_enc.dtype, device=device)
+                        weighted_enc = (valid_enc[fired_indices] * weights_fired.unsqueeze(1)).to(valid_enc.dtype)
+                        sums_c.index_add_(0, labels_fired, weighted_enc)
+                        
+                        counts_c = torch.bincount(labels_fired, minlength=num_classes).float()
+                        weights_sum_c = torch.bincount(labels_fired, weights=weights_fired.float(), minlength=num_classes)
+                        
+                        valid_c = (counts_c > 0)
+                        if valid_c.any():
+                            c_update_norm = F.normalize(sums_c, p=2, dim=1)
+                            step_mags = update_lr * (weights_sum_c / torch.clamp(counts_c, min=1.0))
+                            
+                            update_delta = torch.where(valid_c.unsqueeze(1), step_mags.unsqueeze(1) * c_update_norm.to(model.classify.weight.dtype), torch.zeros_like(model.classify.weight))
+                            model.classify.weight.data += update_delta
+                            if normalize_weights:
+                                model.classify.weight.data = F.normalize(model.classify.weight.data, p=2, dim=1)
                                 
-                                if c_update.norm(p=2) > 1e-6:
-                                    c_update = F.normalize(c_update, p=2, dim=0)
-                                        
-                                    step_mag = update_lr * update_weights[fired_c_mask].mean().item()
-                                    
-                                    if ic_method == 'ic4':
-                                        # Epistemic weighting: faster updates for high uncertainty
-                                        if 'uncertainty' in locals():
-                                            step_mag *= uncertainty[fired_c_mask].mean().item()
-                                            
-                                    model.class_update_counts[c] += 1
-                                    
-                                    # Bayesian Momentum Prototypes
-                                    # The unnormalized weight vector accumulates norms proportional to frequency.
-                                    # This creates both an emergent 1/t LR schedule AND a Bayesian Prior for the final logits.
-                                    model.classify.weight[c].data += step_mag * c_update.to(model.classify.weight.dtype)
-                                    if normalize_weights:
-                                        model.classify.weight[c].data = F.normalize(model.classify.weight[c].data, p=2, dim=0)
-                                    
-                                    if not hasattr(model, '_update_magnitude_log'):
-                                        model._update_magnitude_log = []
-                                    model._update_magnitude_log.append(step_mag)
+                            model.class_update_counts += valid_c.long()
+                            if not hasattr(model, '_update_magnitude_log'):
+                                model._update_magnitude_log = []
+                            model._update_magnitude_log.extend(step_mags[valid_c].detach().cpu().tolist())
     
-    if hasattr(model, '_veto_stats') and model._veto_stats['correct_labels_rejected'] > 0:
-        purity_ratio = model._veto_stats['true_errors_rejected'] / model._veto_stats['correct_labels_rejected']
-        logger = logging.getLogger("EvalAdapt")
-        logger.info(f"[Stats] Global Veto Purity Ratio (True Errors / Correct Rejected): {purity_ratio:.4f} (True Errors Rejected: {model._veto_stats['true_errors_rejected']}, Correct Rejected: {model._veto_stats['correct_labels_rejected']})")
-        model._veto_stats = {'true_errors_rejected': 0, 'correct_labels_rejected': 0}
+    try:
+        if hasattr(model, '_veto_stats') and model._veto_stats['correct_labels_rejected'] > 0:
+            purity_ratio = model._veto_stats['true_errors_rejected'] / model._veto_stats['correct_labels_rejected']
+            logger = logging.getLogger("EvalAdapt")
+            logger.info(f"[Stats] Global Veto Purity Ratio (True Errors / Correct Rejected): {purity_ratio:.4f} (True Errors Rejected: {model._veto_stats['true_errors_rejected']}, Correct Rejected: {model._veto_stats['correct_labels_rejected']})")
+            model._veto_stats = {'true_errors_rejected': 0, 'correct_labels_rejected': 0}
+    except Exception as e:
+        logger.warning(f"Diagnostic logging (Global Veto Purity) failed non-fatally: {e}")
         
-    if hasattr(model, 'initial_classify_weights'):
-        logger = logging.getLogger("EvalAdapt")
-        class_rotations = {}
-        for c in range(num_classes):
-            w_0 = F.normalize(model.initial_classify_weights[c], dim=0)
-            w_t = F.normalize(model.classify.weight[c], dim=0)
-            cos_sim = F.linear(w_t.unsqueeze(0), w_0.unsqueeze(0)).item()
-            cos_sim = max(-1.0, min(1.0, cos_sim))
-            angle = torch.acos(torch.tensor(cos_sim)).item() * (180.0 / torch.pi)
-            class_rotations[c] = angle
+    try:
+        if hasattr(model, 'initial_classify_weights'):
+            logger = logging.getLogger("EvalAdapt")
+            class_rotations = {}
+            for c in range(num_classes):
+                w_0 = F.normalize(model.initial_classify_weights[c], dim=0)
+                w_t = F.normalize(model.classify.weight[c], dim=0)
+                cos_sim = F.linear(w_t.unsqueeze(0), w_0.unsqueeze(0)).item()
+                cos_sim = max(-1.0, min(1.0, cos_sim))
+                angle = torch.acos(torch.tensor(cos_sim)).item() * (180.0 / torch.pi)
+                class_rotations[c] = angle
+                
+            logger.info(f"\n[Stats] Prototype Rotation (Degrees):")
+            head_rot = {c: round(class_rotations[c], 2) for c in [11, 13, 14, 15, 16]}
+            tail_rot = {c: round(class_rotations[c], 2) for c in [2, 3, 6, 7, 10]}
+            logger.info(f"  Head Rotation: {head_rot}")
+            logger.info(f"  Tail Rotation: {tail_rot}")
             
-        logger.info(f"\n[Stats] Prototype Rotation (Degrees):")
-        head_rot = {c: round(class_rotations[c], 2) for c in [11, 13, 14, 15, 16]}
-        tail_rot = {c: round(class_rotations[c], 2) for c in [2, 3, 6, 7, 10]}
-        logger.info(f"  Head Rotation: {head_rot}")
-        logger.info(f"  Tail Rotation: {tail_rot}")
+            final_norms = {c: round(model.classify.weight[c].norm().item(), 4) for c in range(17)}
+            logger.info(f"[Stats] Final Prototype Norms: {final_norms}")
+    except Exception as e:
+        logger.warning(f"Diagnostic logging (Prototype Rotation/Norms) failed non-fatally: {e}")
+
+    try:
+        if hasattr(model, '_class_true_errors_rejected') and not eval_only:
+            logger = logging.getLogger("EvalAdapt")
+            logger.info(f"\n[Stats] Per-Class Veto Purity (True Errors / Correct Labels Rejected):")
+            err_np = model._class_true_errors_rejected.cpu().numpy()
+            corr_np = model._class_correct_rejected.cpu().numpy()
+            head_purity, tail_purity = {}, {}
+            for c in range(num_classes):
+                p = err_np[c] / corr_np[c] if corr_np[c] > 0 else -1.0
+                if c in [11, 13, 14, 15, 16]: head_purity[c] = round(float(p), 2)
+                elif c in [2, 3, 6, 7, 10]: tail_purity[c] = round(float(p), 2)
+            logger.info(f"  Head Purity: {head_purity}")
+            logger.info(f"  Tail Purity: {tail_purity}")
+            model._class_true_errors_rejected = torch.zeros(num_classes, dtype=torch.long, device=device)
+            model._class_correct_rejected = torch.zeros(num_classes, dtype=torch.long, device=device)
+    except Exception as e:
+        logger.warning(f"Diagnostic logging (Per-Class Veto Purity) failed non-fatally: {e}")
         
-        final_norms = {c: round(model.classify.weight[c].norm().item(), 4) for c in range(17)}
-        logger.info(f"[Stats] Final Prototype Norms: {final_norms}")
+    try:
+        if hasattr(model, '_class_n_points') and not eval_only:
+            logger = logging.getLogger("EvalAdapt")
+            pts_np = model._class_n_points.cpu().numpy()
+            fir_np = model._class_n_fired.cpu().numpy()
+            head_firing, tail_firing = {}, {}
+            for c in range(num_classes):
+                if pts_np[c] > 0:
+                    val_str = f"{fir_np[c]}/{pts_np[c]} ({fir_np[c]/pts_np[c]*100:.2f}%)"
+                    if c in [11, 13, 14, 15, 16]: head_firing[c] = val_str
+                    elif c in [2, 3, 6, 7, 10]: tail_firing[c] = val_str
+            logger.info(f"\n[Stats] Per-Class Firing Rates (True Fired/Total):")
+            logger.info(f"  Head Firing: {head_firing}")
+            logger.info(f"  Tail Firing: {tail_firing}")
+            model._class_n_points = torch.zeros(num_classes, dtype=torch.long, device=device)
+            model._class_n_fired = torch.zeros(num_classes, dtype=torch.long, device=device)
+    except Exception as e:
+        logger.warning(f"Diagnostic logging (Per-Class Firing Rates) failed non-fatally: {e}")
 
-    if hasattr(model, '_class_veto_stats') and not eval_only:
+    try:
+        if hasattr(model, '_contingency_table') and not eval_only:
+            ct = model._contingency_table
+            def get_prec(cell):
+                return cell['correct'].item() / cell['n'].item() if cell['n'].item() > 0 else 0.0
+            logger.info(f"\n[Section 3.2] GT-Labelled Contingency Table (geom vs epi admission):")
+            logger.info(f"  Geom Admits / Epi Admits:  N={ct['geom_adm_epi_adm']['n'].item():,}, Prec={get_prec(ct['geom_adm_epi_adm']):.4f}")
+            logger.info(f"  Geom Admits / Epi Rejects (RESCUE CELL): N={ct['geom_adm_epi_rej']['n'].item():,}, Prec={get_prec(ct['geom_adm_epi_rej']):.4f}")
+            logger.info(f"  Geom Rejects / Epi Admits: N={ct['geom_rej_epi_adm']['n'].item():,}, Prec={get_prec(ct['geom_rej_epi_adm']):.4f}")
+            logger.info(f"  Geom Rejects / Epi Rejects: N={ct['geom_rej_epi_rej']['n'].item():,}, Prec={get_prec(ct['geom_rej_epi_rej']):.4f}")
+            model._contingency_table = {k: {'n': torch.tensor(0, dtype=torch.long, device=device), 'correct': torch.tensor(0, dtype=torch.long, device=device)} for k in ct}
 
-        logger = logging.getLogger("EvalAdapt")
-        logger.info(f"\n[Stats] Per-Class Veto Purity (True Errors / Correct Labels Rejected):")
-        head_purity = {}
-        tail_purity = {}
-        for c in range(num_classes):
-            stats = model._class_veto_stats[c]
-            if stats['correct_labels_rejected'] > 0:
-                purity = stats['true_errors_rejected'] / stats['correct_labels_rejected']
+        if hasattr(model, '_mv_contingency_table') and not eval_only and mv_tta != 'none':
+            mct = model._mv_contingency_table
+            def get_prec(cell):
+                return cell['correct'].item() / cell['n'].item() if cell['n'].item() > 0 else 0.0
+            logger.info(f"\n[Test D4] MV-2 Disagreement vs Epistemic Gating Contingency Table:")
+            logger.info(f"  View Agree / Epi Admits:    N={mct['view_agree_epi_adm']['n'].item():,}, Prec={get_prec(mct['view_agree_epi_adm']):.4f}")
+            logger.info(f"  View Agree / Epi Rejects (RESCUE CELL): N={mct['view_agree_epi_rej']['n'].item():,}, Prec={get_prec(mct['view_agree_epi_rej']):.4f}")
+            logger.info(f"  View Disagree / Epi Admits: N={mct['view_disagree_epi_adm']['n'].item():,}, Prec={get_prec(mct['view_disagree_epi_adm']):.4f}")
+            logger.info(f"  View Disagree / Epi Rejects:N={mct['view_disagree_epi_rej']['n'].item():,}, Prec={get_prec(mct['view_disagree_epi_rej']):.4f}")
+            model._mv_contingency_table = {k: {'n': torch.tensor(0, dtype=torch.long, device=device), 'correct': torch.tensor(0, dtype=torch.long, device=device)} for k in mct}
+    except Exception as e:
+        logger.warning(f"Diagnostic logging (Contingency Table) failed non-fatally: {e}")
+        
+    try:
+        if hasattr(model, '_decay_logs') and len(model._decay_logs['geom']) > 0 and not eval_only:
+            g_all = torch.cat(model._decay_logs['geom']).float()
+            e_all = torch.cat(model._decay_logs['epi']).float()
+            gt_valid_all = torch.cat(model._decay_logs['gt_valid']).bool() if len(model._decay_logs['gt_valid']) > 0 else torch.zeros_like(g_all, dtype=torch.bool)
+            gt_corr_all = torch.cat(model._decay_logs['gt_corr']).bool() if len(model._decay_logs['gt_corr']) > 0 else torch.zeros_like(g_all, dtype=torch.bool)
+            cos10k_all = torch.cat(model._decay_logs['cos10k']).float() if len(model._decay_logs['cos10k']) > 0 else None
+            cos128_all = torch.cat(model._decay_logs['cos128']).float() if len(model._decay_logs['cos128']) > 0 else None
+            view_dis_all = torch.cat(model._decay_logs['view_dis']).bool() if len(model._decay_logs['view_dis']) > 0 else None
+            
+            def quantiles(t):
+                if len(t) == 0: return "N/A"
+                q = torch.quantile(t, torch.tensor([0.1, 0.5, 0.9]))
+                return f"mean={t.mean().item():.4f}, median={q[1].item():.4f}, p10={q[0].item():.4f}, p90={q[2].item():.4f}"
+                
+            g_stats = quantiles(g_all)
+            e_stats = quantiles(e_all)
+            frac_zero = (g_all < 0.01).float().mean().item() * 100.0 if len(g_all) > 0 else 0.0
+            
+            # Pearson correlation
+            if len(g_all) > 1:
+                g_c = g_all - g_all.mean()
+                e_c = e_all - e_all.mean()
+                denom = torch.sqrt((g_c**2).sum() * (e_c**2).sum()) + 1e-8
+                corr = (g_c * e_c).sum() / denom
+                corr_val = corr.item()
             else:
-                purity = -1.0
-            if c in [11, 13, 14, 15, 16]:
-                head_purity[c] = round(purity, 2)
-            elif c in [2, 3, 6, 7, 10]:
-                tail_purity[c] = round(purity, 2)
-        logger.info(f"  Head Purity: {head_purity}")
-        logger.info(f"  Tail Purity: {tail_purity}")
-        model._class_veto_stats = {c: {'true_errors_rejected': 0, 'correct_labels_rejected': 0} for c in range(num_classes)}
-        
-    if hasattr(model, '_class_firing_log') and not eval_only:
-
-        logger = logging.getLogger("EvalAdapt")
-        head_firing = {}
-        tail_firing = {}
-        for c in range(num_classes):
-            logs = model._class_firing_log[c]
-            if len(logs) > 0:
-                n_points = sum(l['n_points'] for l in logs)
-                n_fired = sum(l['n_fired'] for l in logs)
+                corr_val = 0.0
+            
+            logger.info(f"\n[Section 3.3] Decay Distribution Stats:")
+            logger.info(f"  Geom Decay: {g_stats} | Fraction < 0.01: {frac_zero:.2f}%")
+            logger.info(f"  Epi Decay:  {e_stats}")
+            logger.info(f"  Pearson Correlation (geom vs epi): {corr_val:.4f}")
+            
+            # Test D0: Cosine similarity correlation (128D vs 10k) on random point pairs
+            if cos10k_all is not None and cos128_all is not None and len(cos10k_all) > 1:
+                logger.info(f"\n[Test D0] Cosine Similarity Correlation (128D Latent vs 10,000D HDC Space on Random Point Pairs):")
+                logger.info(f"  {compute_correlations_torch(cos128_all, cos10k_all)}")
                 
-                # Firing rate is now true fired points / total points
-                head_firing[c] = f"{n_fired}/{n_points} ({n_fired/n_points*100:.2f}%)" if c in [11, 13, 14, 15, 16] else head_firing.get(c, "")
-                tail_firing[c] = f"{n_fired}/{n_points} ({n_fired/n_points*100:.2f}%)" if c in [2, 3, 6, 7, 10] else tail_firing.get(c, "")
-                
-        logger.info(f"\n[Stats] Per-Class Firing Rates (True Fired/Total):")
-        logger.info(f"  Head Firing: {head_firing}")
-        logger.info(f"  Tail Firing: {tail_firing}")
-        model._class_firing_log = {c: [] for c in range(num_classes)}
+            # Test D1: Complementarity AUROC on Epistemic-Rejected subset (using raw un-saturated scores if available, else decays)
+            if gt_valid_all.any():
+                epi_rej_mask = gt_valid_all & (e_all < 0.5)
+                if epi_rej_mask.any() and gt_corr_all[epi_rej_mask].unique().numel() > 1:
+                    score_to_eval = torch.cat(model._decay_logs['geom_score']).float()[epi_rej_mask] if len(model._decay_logs.get('geom_score', [])) > 0 else g_all[epi_rej_mask]
+                    auroc_val = compute_auroc_torch(score_to_eval, gt_corr_all[epi_rej_mask])
+                    logger.info(f"\n[Test D1] Complementarity AUROC (geom score vs GT correctness on Epistemic-Rejected subset):")
+                    logger.info(f"  AUROC = {auroc_val:.4f} (over {epi_rej_mask.sum().item():,} epistemic-rejected valid GT points)")
+                else:
+                    logger.info(f"\n[Test D1] Complementarity AUROC: N/A (no valid epistemic-rejected points or single class)")
 
-    if hasattr(model, '_contingency_table') and not eval_only:
-        logger = logging.getLogger("EvalAdapt")
-        ct = model._contingency_table
-        def get_prec(cell):
-            return cell['correct'] / cell['n'] if cell['n'] > 0 else 0.0
-        logger.info(f"\n[Section 3.2] GT-Labelled Contingency Table (geom vs epi admission):")
-        logger.info(f"  Geom Admits / Epi Admits:  N={ct['geom_adm_epi_adm']['n']}, Prec={get_prec(ct['geom_adm_epi_adm']):.4f}")
-        logger.info(f"  Geom Admits / Epi Rejects (RESCUE CELL): N={ct['geom_adm_epi_rej']['n']}, Prec={get_prec(ct['geom_adm_epi_rej']):.4f}")
-        logger.info(f"  Geom Rejects / Epi Admits: N={ct['geom_rej_epi_adm']['n']}, Prec={get_prec(ct['geom_rej_epi_adm']):.4f}")
-        logger.info(f"  Geom Rejects / Epi Rejects: N={ct['geom_rej_epi_rej']['n']}, Prec={get_prec(ct['geom_rej_epi_rej']):.4f}")
-        model._contingency_table = {k: {'n': 0, 'correct': 0} for k in ct}
+                # Test D2: Matched-Rate Contingency Table
+                epi_adm_rate = (e_all[gt_valid_all] >= 0.5).float().mean().item()
+                th_geom = torch.quantile(g_all[gt_valid_all], max(0.0, min(1.0, 1.0 - epi_adm_rate))).item()
+                ga_matched = (g_all[gt_valid_all] >= th_geom)
+                ea_valid = (e_all[gt_valid_all] >= 0.5)
+                corr_valid = gt_corr_all[gt_valid_all]
+                
+                def calc_cell(m_adm, m_epi):
+                    mask = (m_adm & m_epi)
+                    n = mask.sum().item()
+                    prec = corr_valid[mask].float().mean().item() if n > 0 else 0.0
+                    return n, prec
+
+                n_aa, p_aa = calc_cell(ga_matched, ea_valid)
+                n_ar, p_ar = calc_cell(ga_matched, ~ea_valid)
+                n_ra, p_ra = calc_cell(~ga_matched, ea_valid)
+                n_rr, p_rr = calc_cell(~ga_matched, ~ea_valid)
+                
+                logger.info(f"\n[Test D2] Matched-Rate Contingency Table (Geom th={th_geom:.4f} matching Epi adm_rate={epi_adm_rate*100:.1f}%):")
+                logger.info(f"  Geom Admits / Epi Admits:  N={n_aa:,}, Prec={p_aa:.4f}")
+                logger.info(f"  Geom Admits / Epi Rejects (RESCUE CELL): N={n_ar:,}, Prec={p_ar:.4f}")
+                logger.info(f"  Geom Rejects / Epi Admits: N={n_ra:,}, Prec={p_ra:.4f}")
+                logger.info(f"  Geom Rejects / Epi Rejects: N={n_rr:,}, Prec={p_rr:.4f}")
+
+                # Test D7: Conditional Redundancy / Complementarity of MV-2 vs Geom on Epistemic-Rejected subset
+                if view_dis_all is not None and epi_rej_mask.any():
+                    vd_sub = view_dis_all[epi_rej_mask]
+                    corr_sub = gt_corr_all[epi_rej_mask]
+                    g_sub = g_all[epi_rej_mask]
+                    
+                    if corr_sub.unique().numel() > 1:
+                        auroc_va = compute_auroc_torch((~vd_sub).float(), corr_sub)
+                    else:
+                        auroc_va = float('nan')
+                        
+                    vd_rej_mask = epi_rej_mask & view_dis_all
+                    if vd_rej_mask.any() and gt_corr_all[vd_rej_mask].unique().numel() > 1:
+                        score_cond = torch.cat(model._decay_logs['geom_score']).float()[vd_rej_mask] if len(model._decay_logs.get('geom_score', [])) > 0 else g_all[vd_rej_mask]
+                        auroc_g_cond = compute_auroc_torch(score_cond, gt_corr_all[vd_rej_mask])
+                    else:
+                        auroc_g_cond = float('nan')
+                        
+                    logger.info(f"\n[Test D7] Conditional Redundancy (MV-2 View Agreement vs Geom on Epistemic-Rejected subset):")
+                    logger.info(f"  AUROC (View Agreement on Epi-Rej): {auroc_va:.4f} (over {len(vd_sub):,} points)")
+                    logger.info(f"  AUROC (Geom Score on Epi-Rej AND View-Disagree): {auroc_g_cond:.4f} (over {vd_rej_mask.sum().item():,} points)")
+                    
+                    va_mask = ~vd_sub
+                    ga_mask = (g_sub >= 0.5)
+                    def cell_stats(cond):
+                        n = cond.sum().item()
+                        p = corr_sub[cond].float().mean().item() if n > 0 else 0.0
+                        return n, p
+                    n_vaga, p_vaga = cell_stats(va_mask & ga_mask)
+                    n_vagr, p_vagr = cell_stats(va_mask & ~ga_mask)
+                    n_vdga, p_vdga = cell_stats(~va_mask & ga_mask)
+                    n_vdgr, p_vdgr = cell_stats(~va_mask & ~ga_mask)
+                    logger.info(f"  Contingency Table on Epistemic-Rejected subset (View Agree vs Geom Adm):")
+                    logger.info(f"    View Agree / Geom Admits:  N={n_vaga:,}, Prec={p_vaga:.4f}")
+                    logger.info(f"    View Agree / Geom Rejects: N={n_vagr:,}, Prec={p_vagr:.4f}")
+                    logger.info(f"    View Disagree / Geom Admits (DOUBLE RESCUE): N={n_vdga:,}, Prec={p_vdga:.4f}")
+                    logger.info(f"    View Disagree / Geom Rejects: N={n_vdgr:,}, Prec={p_vdgr:.4f}")
+
+            model._decay_logs = {'geom': [], 'epi': [], 'geom_score': [], 'epi_score': [], 'gt_valid': [], 'gt_corr': [], 'cos128': [], 'cos10k': [], 'view_dis': [], 'margin': []}
+    except Exception as e:
+        logger.warning(f"Diagnostic logging (Decay Stats / Test D0-D2/D7) failed non-fatally: {e}")
         
-    if hasattr(model, '_decay_logs') and len(model._decay_logs['geom']) > 0 and not eval_only:
-        logger = logging.getLogger("EvalAdapt")
-        g_all = torch.cat(model._decay_logs['geom']).float()
-        e_all = torch.cat(model._decay_logs['epi']).float()
+    try:
+        if dynamic_geom and hasattr(model, 'running_density_std') and hasattr(model, 'source_density_std') and not eval_only:
+            ratio = (model.running_density_std / (model.source_density_std + 1e-8)).cpu().numpy()
+            head_r = {c: round(float(ratio[c]), 2) for c in [11, 13, 14, 15, 16]}
+            tail_r = {c: round(float(ratio[c]), 2) for c in [2, 3, 6, 7, 10]}
+            logger.info(f"\n[Section 3.3 / Dynamic Geom] Final Variance Inflation Ratio (running_std / source_std):")
+            logger.info(f"  Head Classes Ratio: {head_r}")
+            logger.info(f"  Tail Classes Ratio: {tail_r}")
+            if hasattr(model, 'running_density_mean') and hasattr(model, 'source_density_mean'):
+                ratio_mean = (model.running_density_mean / (model.source_density_mean + 1e-8)).cpu().numpy()
+                head_r_m = {c: round(float(ratio_mean[c]), 2) for c in [11, 13, 14, 15, 16]}
+                tail_r_m = {c: round(float(ratio_mean[c]), 2) for c in [2, 3, 6, 7, 10]}
+                logger.info(f"[Section 3.3 / Dynamic Geom] Final Mean Shift Ratio (running_mean / source_mean):")
+                logger.info(f"  Head Classes Mean Ratio: {head_r_m}")
+                logger.info(f"  Tail Classes Mean Ratio: {tail_r_m}")
+    except Exception as e:
+        logger.warning(f"Diagnostic logging (Dynamic Geom Ratio) failed non-fatally: {e}")
         
-        def quantiles(t):
-            if len(t) == 0: return "N/A"
-            q = torch.quantile(t, torch.tensor([0.1, 0.5, 0.9]))
-            return f"mean={t.mean().item():.4f}, median={q[1].item():.4f}, p10={q[0].item():.4f}, p90={q[2].item():.4f}"
+    try:
+        if mv_tta != 'none':
+            logger = logging.getLogger("EvalAdapt")
+            logger.info(f"\n[MV-2] View Disagreement Precision Tracking")
             
-        g_stats = quantiles(g_all)
-        e_stats = quantiles(e_all)
-        frac_zero = (g_all < 0.01).float().mean().item() * 100.0 if len(g_all) > 0 else 0.0
-        
-        # Pearson correlation
-        if len(g_all) > 1:
-            g_c = g_all - g_all.mean()
-            e_c = e_all - e_all.mean()
-            denom = torch.sqrt((g_c**2).sum() * (e_c**2).sum()) + 1e-8
-            corr = (g_c * e_c).sum() / denom
-            corr_val = corr.item()
-        else:
-            corr_val = 0.0
-        
-        logger.info(f"\n[Section 3.3] Decay Distribution Stats:")
-        logger.info(f"  Geom Decay: {g_stats} | Fraction < 0.01: {frac_zero:.2f}%")
-        logger.info(f"  Epi Decay:  {e_stats}")
-        logger.info(f"  Pearson Correlation (geom vs epi): {corr_val:.4f}")
-        model._decay_logs = {'geom': [], 'epi': []}
-        
-    if dynamic_geom and hasattr(model, 'running_density_std') and hasattr(model, 'source_density_std') and not eval_only:
-        logger = logging.getLogger("EvalAdapt")
-        ratio = (model.running_density_std / (model.source_density_std + 1e-8)).cpu().numpy()
-        head_r = {c: round(float(ratio[c]), 2) for c in [11, 13, 14, 15, 16]}
-        tail_r = {c: round(float(ratio[c]), 2) for c in [2, 3, 6, 7, 10]}
-        logger.info(f"\n[Section 3.3 / Dynamic Geom] Final Variance Inflation Ratio (running_std / source_std):")
-        logger.info(f"  Head Classes Ratio: {head_r}")
-        logger.info(f"  Tail Classes Ratio: {tail_r}")
-        
-    if mv_tta != 'none':
-        logger = logging.getLogger("EvalAdapt")
-        logger.info(f"\n[MV-2] View Disagreement Precision Tracking")
-        
-        # Calculate overall precision for agreeing points
-        agree_diag = torch.diag(agree_conf_matrix).sum().item()
-        agree_total = agree_conf_matrix.sum().item()
-        agree_precision = agree_diag / max(1, agree_total)
-        
-        # Calculate overall precision for disagreeing points
-        disagree_diag = torch.diag(disagree_conf_matrix).sum().item()
-        disagree_total = disagree_conf_matrix.sum().item()
-        disagree_precision = disagree_diag / max(1, disagree_total)
-        
-        logger.info(f"  Agreeing Points Precision: {agree_precision:.4f} (Total: {agree_total})")
-        logger.info(f"  Disagreeing Points Precision: {disagree_precision:.4f} (Total: {disagree_total})")
-        
-        # Tail classes Person (7), Bus (3), Truck (10)
-        for t_class in [3, 7, 10]:
-            tp_agree = agree_conf_matrix[t_class, t_class].item()
-            fp_agree = agree_conf_matrix[:, t_class].sum().item() - tp_agree
-            tp_disagree = disagree_conf_matrix[t_class, t_class].item()
-            fp_disagree = disagree_conf_matrix[:, t_class].sum().item() - tp_disagree
+            # Calculate overall precision for agreeing points
+            agree_diag = torch.diag(agree_conf_matrix).sum().item()
+            agree_total = agree_conf_matrix.sum().item()
+            agree_precision = agree_diag / max(1, agree_total)
             
-            p_agree = tp_agree / max(1, tp_agree + fp_agree)
-            p_disagree = tp_disagree / max(1, tp_disagree + fp_disagree)
+            # Calculate overall precision for disagreeing points
+            disagree_diag = torch.diag(disagree_conf_matrix).sum().item()
+            disagree_total = disagree_conf_matrix.sum().item()
+            disagree_precision = disagree_diag / max(1, disagree_total)
             
-            logger.info(f"  Class {t_class} Precision: Agreeing={p_agree:.4f} ({tp_agree} TP, {fp_agree} FP), Disagreeing={p_disagree:.4f} ({tp_disagree} TP, {fp_disagree} FP)")
+            logger.info(f"  Agreeing Points Precision: {agree_precision:.4f} (Total: {agree_total})")
+            logger.info(f"  Disagreeing Points Precision: {disagree_precision:.4f} (Total: {disagree_total})")
+            
+            # Tail classes Person (7), Bus (3), Truck (10)
+            for t_class in [3, 7, 10]:
+                tp_agree = agree_conf_matrix[t_class, t_class].item()
+                fp_agree = agree_conf_matrix[:, t_class].sum().item() - tp_agree
+                tp_disagree = disagree_conf_matrix[t_class, t_class].item()
+                fp_disagree = disagree_conf_matrix[:, t_class].sum().item() - tp_disagree
+                
+                p_agree = tp_agree / max(1, tp_agree + fp_agree)
+                p_disagree = tp_disagree / max(1, tp_disagree + fp_disagree)
+                
+                logger.info(f"  Class {t_class} Precision: Agreeing={p_agree:.4f} ({tp_agree} TP, {fp_agree} FP), Disagreeing={p_disagree:.4f} ({tp_disagree} TP, {fp_disagree} FP)")
+    except Exception as e:
+        logger.warning(f"Diagnostic logging (MV-2 Precision Tracking) failed non-fatally: {e}")
             
     avg_firing_rate = 0.0
     if hasattr(model, '_firing_log') and len(model._firing_log) > 0:
@@ -769,6 +1032,7 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device, dry_
                         all_dists_per_class[c].append(dists[c_mask].cpu())
                         all_cos_per_class[c].append(true_cos[c_mask].cpu())
     
+    model.source_density_mean = torch.zeros(num_classes, device=device)
     model.source_density_std = torch.zeros(num_classes, device=device)
     model.source_mu_cos = torch.zeros(num_classes, device=device)
     model.source_sigma_cos = torch.zeros(num_classes, device=device)
@@ -787,6 +1051,7 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device, dry_
     if len(global_dists) == 0:
         raise ValueError("Source statistics population failed: No valid latent features found in the first 50 frames.")
         
+    global_dist_mean = torch.cat(global_dists, dim=0).mean().item()
     global_dist_std = torch.cat(global_dists, dim=0).std().item()
     global_cos_tensor = torch.cat(global_cos, dim=0)
     global_cos_mean = global_cos_tensor.mean().item()
@@ -794,18 +1059,22 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device, dry_
     
     for c in range(num_classes):
         if len(all_dists_per_class[c]) > 0:
-            model.source_density_std[c] = torch.cat(all_dists_per_class[c], dim=0).std().item()
+            c_dists = torch.cat(all_dists_per_class[c], dim=0)
+            model.source_density_mean[c] = c_dists.mean().item()
+            model.source_density_std[c] = c_dists.std().item()
             c_cos = torch.cat(all_cos_per_class[c], dim=0)
             model.source_mu_cos[c] = c_cos.mean().item()
             model.source_sigma_cos[c] = c_cos.std().item()
         else:
             # Fallback to global statistics if class is completely missing from the first 50 frames
+            model.source_density_mean[c] = global_dist_mean
             model.source_density_std[c] = global_dist_std
             model.source_mu_cos[c] = global_cos_mean
             model.source_sigma_cos[c] = global_cos_std
     
     model.source_class_freq = (class_latent_counts / class_latent_counts.sum()).cpu()
     return {
+        'source_density_mean': model.source_density_mean,
         'source_density_std': model.source_density_std,
         'source_mu_cos': model.source_mu_cos,
         'source_sigma_cos': model.source_sigma_cos,
@@ -819,6 +1088,7 @@ def main():
     parser.add_argument('--pretrain', action='store_true', help='Run pretraining on SemanticKITTI before evaluating')
     parser.add_argument('--chunked', action='store_true', help='Use chunked protocol: continuous adaptation across disjoint 1/7th splits instead of full independent sequences.')
     parser.add_argument('--reset_per_corruption', action='store_true', help='Reset the model to the clean pretrained weights before adapting on each corruption (requires --chunked).')
+    parser.add_argument('--continual', action='store_true', help='Continual learning mode: continuous adaptation across sequences without resetting.')
     parser.add_argument('--pretrained_path', type=str, default='logs/kitti_pretrain/hdc_sub.pth', help='Path to load pretrained model')
     parser.add_argument('--log_dir', type=str, default='logs/kitti_c_test', help='Directory to save logs and graphics')
     parser.add_argument('--method', type=str, default='frozen', help='Method to test.')
@@ -841,6 +1111,9 @@ def main():
     parser.add_argument('--mv_tta', type=str, default='none', help='Multi-View TTA method. Options: none, conf_pred, veto_disagree')
     parser.add_argument('--gate_mode', type=str, default='epistemic', help='Uncertainty gating strategy: epistemic, geometric, and_gate, or_gate')
     parser.add_argument('--dynamic_geom', action='store_true', help='Use running batch EMA variance for geometric HDC density thresholding.')
+    parser.add_argument('--no_diagnostics', action='store_false', dest='diagnostics', help='Disable heavy diagnostic tracking.')
+    parser.add_argument('--dump_features', action='store_true', default=False, help='Dump per-point feature tensors for Test D5/D6 offline probe.')
+    parser.set_defaults(diagnostics=True)
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -963,6 +1236,7 @@ def main():
     
     source_stats_cache = {
         'class_latent_means': base_model.class_latent_means,
+        'source_density_mean': getattr(base_model, 'source_density_mean', None),
         'source_density_std': getattr(base_model, 'source_density_std', None),
         'source_mu_cos': getattr(base_model, 'source_mu_cos', None),
         'source_sigma_cos': getattr(base_model, 'source_sigma_cos', None),
@@ -1005,6 +1279,7 @@ def main():
     model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES)
     if source_stats_cache is not None:
         model.class_latent_means = source_stats_cache['class_latent_means'].to(device) if source_stats_cache['class_latent_means'] is not None else None
+        model.source_density_mean = source_stats_cache['source_density_mean'].to(device) if source_stats_cache.get('source_density_mean') is not None else None
         model.source_density_std = source_stats_cache['source_density_std'].to(device) if source_stats_cache['source_density_std'] is not None else None
         model.source_mu_cos = source_stats_cache['source_mu_cos'].to(device) if source_stats_cache['source_mu_cos'] is not None else None
         model.source_sigma_cos = source_stats_cache['source_sigma_cos'].to(device) if source_stats_cache['source_sigma_cos'] is not None else None
@@ -1025,45 +1300,21 @@ def main():
 
         # Reset model at the start of each new method loop
         model.load_state_dict(clean_state_dict, strict=False)
-        if hasattr(model, 'initial_classify_weights'):
-            del model.initial_classify_weights
-        if hasattr(model, 'drift_mu_c'):
-            del model.drift_mu_c
-        if hasattr(model, 'class_freq_ema'):
-            del model.class_freq_ema
-        if hasattr(model, 'class_update_counts'):
-            del model.class_update_counts
-        if hasattr(model, 'class_M'):
-            del model.class_M
-        if hasattr(model, 'running_density_std'):
-            del model.running_density_std
-        if hasattr(model, '_contingency_table'):
-            del model._contingency_table
-        if hasattr(model, '_decay_logs'):
-            del model._decay_logs
+        attrs_to_del = ['drift_mu_c', 'class_freq_ema', 'class_update_counts', 'class_M', 'running_density_std', 'running_density_mean', '_contingency_table', '_mv_contingency_table', '_decay_logs', '_class_n_points', '_class_n_fired', '_class_true_errors_rejected', '_class_correct_rejected', '_firing_log', '_veto_stats', '_update_magnitude_log', 'initial_classify_weights', '_feature_dump_list']
+        for attr in attrs_to_del:
+            if hasattr(model, attr):
+                delattr(model, attr)
             
         eval_model = model
 
         for i, ctype in enumerate(active_corruptions):
-            if args.reset_per_corruption and args.chunked:
+            if args.reset_per_corruption and args.chunked and not args.continual:
                 logger.info("Resetting model to clean pretrained weights for this corruption.")
                 model.load_state_dict(clean_state_dict, strict=False)
-                if hasattr(model, 'initial_classify_weights'):
-                    del model.initial_classify_weights
-                if hasattr(model, 'drift_mu_c'):
-                    del model.drift_mu_c
-                if hasattr(model, 'class_freq_ema'):
-                    del model.class_freq_ema
-                if hasattr(model, 'class_update_counts'):
-                    del model.class_update_counts
-                if hasattr(model, 'class_M'):
-                    del model.class_M
-                if hasattr(model, 'running_density_std'):
-                    del model.running_density_std
-                if hasattr(model, '_contingency_table'):
-                    del model._contingency_table
-                if hasattr(model, '_decay_logs'):
-                    del model._decay_logs
+                attrs_to_del = ['drift_mu_c', 'class_freq_ema', 'class_update_counts', 'class_M', 'running_density_std', 'running_density_mean', '_contingency_table', '_mv_contingency_table', '_decay_logs', '_class_n_points', '_class_n_fired', '_class_true_errors_rejected', '_class_correct_rejected', '_firing_log', '_veto_stats', '_update_magnitude_log', 'initial_classify_weights', '_feature_dump_list']
+                for attr in attrs_to_del:
+                    if hasattr(model, attr):
+                        delattr(model, attr)
                 
             logger.info(f"Testing {ctype} severity {sev} (Chunk {i+1}/{len(active_corruptions)})")
             
@@ -1083,24 +1334,13 @@ def main():
             if not args.chunked:
                 # Standard protocol: full sequence, independent adaptation
                 chunk_dataset = full_corruption_dataset
-                # Reset model before each corruption
-                model.load_state_dict(clean_state_dict, strict=False)
-                if hasattr(model, 'initial_classify_weights'):
-                    del model.initial_classify_weights
-                if hasattr(model, 'drift_mu_c'):
-                    del model.drift_mu_c
-                if hasattr(model, 'class_freq_ema'):
-                    del model.class_freq_ema
-                if hasattr(model, 'class_update_counts'):
-                    del model.class_update_counts
-                if hasattr(model, 'class_M'):
-                    del model.class_M
-                if hasattr(model, 'running_density_std'):
-                    del model.running_density_std
-                if hasattr(model, '_contingency_table'):
-                    del model._contingency_table
-                if hasattr(model, '_decay_logs'):
-                    del model._decay_logs
+                if not args.continual:
+                    # Reset model before each corruption
+                    model.load_state_dict(clean_state_dict, strict=False)
+                    attrs_to_del = ['drift_mu_c', 'class_freq_ema', 'class_update_counts', 'class_M', 'running_density_std', 'running_density_mean', '_contingency_table', '_mv_contingency_table', '_decay_logs', '_class_n_points', '_class_n_fired', '_class_true_errors_rejected', '_class_correct_rejected', '_firing_log', '_veto_stats', '_update_magnitude_log', 'initial_classify_weights', '_feature_dump_list']
+                    for attr in attrs_to_del:
+                        if hasattr(model, attr):
+                            delattr(model, attr)
             else:
                 # Chunked protocol: continuous adaptation across disjoint splits
                 chunk_dataset = torch.utils.data.Subset(full_corruption_dataset, chunks[i])
@@ -1109,12 +1349,12 @@ def main():
             target_dataloader = DataLoader(chunk_dataset, batch_size=1, shuffle=False, num_workers=ARCH["train"]["workers"])
             
             try:
-                if not args.chunked or args.reset_per_corruption:
+                if not args.continual and (not args.chunked or args.reset_per_corruption):
                     # Pass 1: True Initial (Frozen on chunk)
                     init_key = (ctype, sev, args.tau, args.ic_method, args.mv_tta, args.gate_mode, args.chunked)
                     if init_key not in shared_init_metrics:
                         logger.debug("  -> Pass 1: Computing True Initial metrics (Frozen)")
-                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom)
+                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom, dump_features=args.dump_features, diagnostics=args.diagnostics)
                         shared_init_metrics[init_key] = init_metrics
                     else:
                         logger.debug("  -> Pass 1: Reusing cached True Initial metrics (Frozen)")
@@ -1124,14 +1364,14 @@ def main():
                     if current_method != 'frozen':
                         logger.debug("  -> Pass 2: Adapting model weights")
                         eval_model.train()
-                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom)
+                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom, dump_features=args.dump_features, diagnostics=args.diagnostics)
                     else:
                         adapt_metrics = init_metrics
                         
                     # Pass 3: True Final (Frozen on chunk using adapted weights)
                     logger.debug("  -> Pass 3: Computing True Final metrics (Frozen)")
                     eval_model.eval()
-                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom)
+                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom, dump_features=args.dump_features, diagnostics=args.diagnostics)
                     
                     # We only care about the absolute end of the frozen evaluations for the sequence
                     metrics = adapt_metrics  # Just for the trajectory json
@@ -1170,7 +1410,7 @@ def main():
                             firing_rate_str += f", UpdateMag={adapt_metrics['UpdateMagnitude']:.4f}"
                 else:
                     # Original single-pass continuous evaluation
-                    metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=(current_method == 'frozen'), update_method=current_method, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom)
+                    metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=(current_method == 'frozen'), update_method=current_method, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom, dump_features=args.dump_features, diagnostics=args.diagnostics)
                     if len(metrics["mIoU"]) > 0:
                         initial_miou = metrics["mIoU"][0]
                         final_miou = metrics["mIoU"][-1]
@@ -1199,7 +1439,7 @@ def main():
                 global_results['mIoU'][full_method_name][ctype][sev] = (initial_miou, final_miou)
                 global_results['Accuracy'][full_method_name][ctype][sev] = (initial_acc, final_acc)
                 
-                if not args.chunked or args.reset_per_corruption:
+                if not args.continual and (not args.chunked or args.reset_per_corruption):
                     initial_head = init_metrics["Head_mIoU"][-1] if current_method != 'frozen' else metrics["Head_mIoU"][0]
                     final_head = final_metrics["Head_mIoU"][-1] if current_method != 'frozen' else metrics["Head_mIoU"][-1]
                     initial_mid = init_metrics["Mid_mIoU"][-1] if current_method != 'frozen' else metrics["Mid_mIoU"][0]
@@ -1214,7 +1454,7 @@ def main():
                     initial_tail = metrics["Tail_mIoU"][0]
                     final_tail = metrics["Tail_mIoU"][-1]
                 
-                protocol_str = "chunked" if args.chunked else "full"
+                protocol_str = "continual" if args.continual else ("chunked" if args.chunked else "full")
                 n_frames_str = len(target_dataloader)
                 logger.info(f"Result for {ctype}-{sev} [protocol={protocol_str}, n_frames={n_frames_str}]: Initial mIoU={initial_miou:.4f} -> Final (Online)={online_miou:.4f} -> Final (Frozen)={final_miou:.4f} (Head: {initial_head:.4f} -> {final_head:.4f}, Mid: {initial_mid:.4f} -> {final_mid:.4f}, Tail: {initial_tail:.4f} -> {final_tail:.4f}), Acc={initial_acc:.4f} -> {final_acc:.4f}{firing_rate_str}")
                 suffix = f"_{full_method_name}"
@@ -1230,8 +1470,19 @@ def main():
                     
                 with open(os.path.join(args.log_dir, 'global_results.json'), 'w') as f:
                     json.dump(global_results, f, indent=4)
+                    
+                if args.dump_features and hasattr(model, '_feature_dump_list') and len(model._feature_dump_list) > 0:
+                    dump_path = os.path.join(args.log_dir, f'features_dump_{ctype}_{sev}{suffix}.pt')
+                    logger.info(f"Saving feature dump ({len(model._feature_dump_list)} frames) to {dump_path}...")
+                    torch.save(model._feature_dump_list, dump_path)
+                    model._feature_dump_list = []
             else:
                 logger.info(f"No valid frames evaluated for {ctype}-{sev}")
+
+        total_evals = sum(len(sev_dict) for sev_dict in results_miou.values())
+        if total_evals == 0 and not args.dry_run:
+            logger.error(f"CRITICAL ERROR: No evaluation outcomes recorded in results_miou for {full_method_name}. Check for silent exceptions during evaluation.")
+            raise RuntimeError(f"Evaluation failed to record any metrics for {full_method_name}.")
 
         suffix = f"_{full_method_name}"
         save_degradation_plot(os.path.join(args.log_dir, f'degradation_miou{suffix}.png'), 'KITTI-C', results_miou, metric='mIoU', baseline_val=None)
