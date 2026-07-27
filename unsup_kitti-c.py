@@ -127,7 +127,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                 latent_x = latent_x.permute(0, 2, 3, 1).reshape(-1, 128)
                 
                 # === MULTI-VIEW TTA AUGMENTATIONS (BATCHED) ===
-                if mv_tta != 'none':
+                if mv_tta != 'none' or gate_mode == 'view_var_gate':
                     B_val, _, H_val, W_val = proj_in.shape
                     shift_amount = W_val // 4
                     proj_m1 = torch.roll(proj_in, shifts=shift_amount, dims=3)
@@ -198,7 +198,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     predictions = torch.argmax(logits, dim=1)
                     
                 # MV-2: View Disagreement Precision Tracking & V2 Soft View Variance
-                if mv_tta != 'none' and 'norm_enc_m1' in locals():
+                if (mv_tta != 'none' or gate_mode == 'view_var_gate') and 'norm_enc_m1' in locals():
                     l_base_mv2 = get_logits(norm_enc_base)
                     l_m1_mv2 = get_logits(norm_enc_m1)
                     l_m2_mv2 = get_logits(norm_enc_m2)
@@ -316,7 +316,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         epistemic_decay = torch.exp(-2.0 * torch.relu(uncertainty - u_threshold))
                         
                         # 2. Geometric HDC Latent Density (Isotropic Euclidean Z-Score Density)
-                        if diagnostics or gate_mode in ['geometric', 'and_gate', 'or_gate']:
+                        if diagnostics or gate_mode in ['geometric', 'and_gate', 'or_gate', 'rescue_gate', 'ellipsoid_gate', 'soft_dual_weight', 'view_var_gate']:
                             if hasattr(model, 'class_latent_means') and model.class_latent_means is not None and hasattr(model, 'source_density_std') and model.source_density_std is not None:
                                 if not hasattr(model, 'source_density_mean') or model.source_density_mean is None:
                                     raise ValueError("CRITICAL ERROR: model.source_density_mean is missing or None! Stale checkpoint or cache would cause uncentred 128D geometric distance saturation (exp(-128)).")
@@ -532,6 +532,28 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             update_weights = update_weights * torch.min(geom_decay, epistemic_decay)
                         elif gate_mode == 'or_gate':
                             update_weights = update_weights * torch.max(geom_decay, epistemic_decay)
+                        elif gate_mode == 'rescue_gate':
+                            # Hypothesis A: Conditional High-Precision Geometric Rescue (Cascade)
+                            # Primary epistemic filter; if rejected (< 0.5), rescue if geometric confidence is high (geom_decay >= 0.8)
+                            rescue_mask = (epistemic_decay < 0.5) & (geom_decay >= 0.8)
+                            update_weights = update_weights * torch.where(rescue_mask, geom_decay, epistemic_decay)
+                        elif gate_mode == 'ellipsoid_gate':
+                            # Hypothesis B: Adaptive 2D Ellipsoidal Decision Boundary (Quadratic)
+                            u_excess = torch.relu(uncertainty - 0.5)
+                            z_excess = torch.relu(z_score - 0.5)
+                            update_weights = update_weights * torch.exp(-2.0 * (u_excess**2 + 0.5 * (z_excess**2)))
+                        elif gate_mode == 'soft_dual_weight':
+                            # Hypothesis C: Dynamic Multi-Metric Momentum Modulation (Linear Ramp)
+                            u_excess = torch.relu(uncertainty - 0.5)
+                            z_excess = torch.relu(z_score - 0.5)
+                            update_weights = update_weights * torch.exp(-1.5 * u_excess - 1.0 * z_excess)
+                        elif gate_mode == 'view_var_gate':
+                            # Cross-View Softmax Probability Variance Gating (V2 Goldmine)
+                            if 'soft_view_var_all' in locals():
+                                view_var_decay = torch.exp(-2.0 * torch.relu(soft_view_var_all - 0.05))
+                                update_weights = update_weights * torch.min(epistemic_decay, view_var_decay)
+                            else:
+                                update_weights = update_weights * epistemic_decay
                         elif gate_mode == 'oracle':
                             gt_mask_full = (pseudo_labels == selected_labels) & (selected_labels >= 0) & (selected_labels < num_classes)
                             update_weights = update_weights * gt_mask_full.float()
@@ -1169,7 +1191,7 @@ def main():
     parser.add_argument('--kappa', type=float, default=15.0, help='Logit scale kappa used with tau. Controls evidence weighting vs prior.')
     parser.add_argument('--normalize_weights', action='store_true', help='Force weights to be normalized after every update (disables Bayesian Momentum accumulator).')
     parser.add_argument('--mv_tta', type=str, default='none', help='Multi-View TTA method. Options: none, conf_pred, veto_disagree')
-    parser.add_argument('--gate_mode', type=str, default='epistemic', help='Uncertainty gating strategy: epistemic, geometric, and_gate, or_gate, oracle')
+    parser.add_argument('--gate_mode', type=str, default='epistemic', help='Uncertainty gating strategy: epistemic, geometric, and_gate, or_gate, oracle, rescue_gate, ellipsoid_gate, soft_dual_weight, view_var_gate')
     parser.add_argument('--dynamic_geom', action='store_true', help='Use running batch EMA variance for geometric HDC density thresholding.')
     parser.add_argument('--no_diagnostics', action='store_false', dest='diagnostics', help='Disable heavy diagnostic tracking.')
     parser.add_argument('--dump_features', action='store_true', default=False, help='Dump per-point feature tensors for Test D5/D6 offline probe.')
