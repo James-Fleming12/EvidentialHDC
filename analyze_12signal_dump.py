@@ -45,15 +45,39 @@ def load_dump_files(log_dir):
     if not all_dicts:
         raise ValueError("Loaded files contained no data.")
         
-    # Concatenate keys across frames
-    keys = all_dicts[0].keys()
+    # Ensure we only process frames that contain all expected keys and matching lengths
+    required_keys = [
+        'gt_corr', 'epi_score', 'msp', 'margin', 'entropy', 'energy', 'dirichlet_mi',
+        'z_score', 'rel_mahal', 'knn_dist', 'latent_norm', 'view_dis', 'soft_view_var',
+        'range', 'intensity'
+    ]
+    
+    valid_dicts = []
+    for d in all_dicts:
+        if all(k in d and d[k] is not None for k in required_keys):
+            n_pts = len(d['gt_corr'])
+            if all(len(d[k]) == n_pts for k in required_keys):
+                valid_dicts.append(d)
+                
+    if not valid_dicts:
+        fallback_keys = [k for k in all_dicts[0].keys() if all_dicts[0][k] is not None]
+        print(f"Warning: No frame contained all 15 required 12-signal keys. Falling back to {len(fallback_keys)} keys from first frame.")
+        for d in all_dicts:
+            if all(k in d and d[k] is not None for k in fallback_keys):
+                n_pts = len(d['gt_corr'])
+                if all(len(d[k]) == n_pts for k in fallback_keys):
+                    valid_dicts.append(d)
+        required_keys = fallback_keys
+        
+    if len(valid_dicts) < len(all_dicts):
+        print(f"Filtered out {len(all_dicts) - len(valid_dicts)} incompatible/older frames. Using {len(valid_dicts)} complete frames.")
+        
     merged = {}
-    for k in keys:
-        tensors = [d[k] for d in all_dicts if k in d and d[k] is not None]
-        if tensors:
-            merged[k] = torch.cat(tensors, dim=0).numpy()
-            
-    print(f"Loaded total of {len(merged['gt_corr']):,} points across {len(all_dicts)} frames.")
+    for k in required_keys:
+        tensors = [d[k] for d in valid_dicts]
+        merged[k] = torch.cat(tensors, dim=0).numpy()
+        
+    print(f"Loaded total of {len(merged['gt_corr']):,} points across {len(valid_dicts)} frames.")
     return merged
 
 def prepare_signals(data):
@@ -101,12 +125,8 @@ def prepare_signals(data):
         
     return signals
 
-def analyze_complementarity_and_yield(data, signals):
+def analyze_complementarity_and_yield(data, signals, admitted_mask):
     gt_corr = data['gt_corr'].astype(bool)
-    epi_score = data['epi_score']
-    
-    # In unsup_kitti-c.py, epistemic threshold is uncertainty <= 0, which means epi_score >= 0
-    admitted_mask = epi_score >= 0.0
     rejected_mask = ~admitted_mask
     
     n_total = len(gt_corr)
@@ -114,7 +134,7 @@ def analyze_complementarity_and_yield(data, signals):
     n_rejected = rejected_mask.sum()
     
     if n_admitted == 0 or n_rejected == 0:
-        print("Error: All points are either admitted or rejected. Check thresholding.")
+        print("Error: All points are either admitted or rejected after thresholding.")
         return
         
     p_epi_admitted = gt_corr[admitted_mask].mean()
@@ -209,7 +229,7 @@ def print_correlation_matrix(signals):
         print(row_str)
     print("="*70)
 
-def fit_2d_decision_boundaries(data, signals):
+def fit_2d_decision_boundaries(data, signals, base_admitted):
     """
     Fits 2D decision boundaries on (N1_epi_score, G1_z_score) or best orthogonal pair.
     Compares 3 architectures:
@@ -228,7 +248,10 @@ def fit_2d_decision_boundaries(data, signals):
     x = signals['N1_epi_score'] # epi_score
     y = signals['G1_z_score']   # z_score
     
-    base_admitted = x >= 0.0
+    if base_admitted.sum() == 0 or (~base_admitted).sum() == 0:
+        print("Skipping 2D boundary fitting due to empty admitted or rejected set.")
+        return
+        
     base_correct = gt_corr[base_admitted].sum()
     base_total = base_admitted.sum()
     p_target = gt_corr[base_admitted].mean()
@@ -314,9 +337,21 @@ def main():
         return
         
     signals = prepare_signals(data)
-    analyze_complementarity_and_yield(data, signals)
+    
+    # In unsup_kitti-c.py, epistemic_decay = exp(-2.0 * relu(uncertainty - 0.5)).
+    # Points are admitted when epistemic_decay >= 0.5.
+    u_vals = -signals.get('N1_epi_score', -data.get('epi_score', np.zeros(len(data['gt_corr']))))
+    epi_decay = np.exp(-2.0 * np.maximum(0.0, u_vals - 0.5))
+    admitted_mask = epi_decay >= 0.5
+    
+    if admitted_mask.sum() == 0 or (~admitted_mask).sum() == 0:
+        med_val = np.median(epi_decay)
+        print(f"Warning: Standard threshold (epi_decay >= 0.5) resulted in admitted={admitted_mask.sum():,}, rejected={(~admitted_mask).sum():,}. Using median split (>= {med_val:.4f}).")
+        admitted_mask = epi_decay >= med_val
+        
+    analyze_complementarity_and_yield(data, signals, admitted_mask)
     print_correlation_matrix(signals)
-    fit_2d_decision_boundaries(data, signals)
+    fit_2d_decision_boundaries(data, signals, admitted_mask)
 
 if __name__ == "__main__":
     main()
