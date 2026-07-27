@@ -291,7 +291,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     min_freq = torch.clamp(model.class_freq_ema.min(), min=0.01)
                     f_y = torch.clamp(model.class_freq_ema[pseudo_labels], min=0.01)
                     
-                    if update_method == 'evidential_hdc_tta':
+                    if update_method in ['evidential_hdc_tta', 'bm_ic4', 'bm'] or 'evidential' in update_method or 'bm' in update_method:
                         # 1. Network Epistemic Uncertainty (Dirichlet Evidence Decay)
                         def get_uncert(enc, c_sims=None):
                             if c_sims is None:
