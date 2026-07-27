@@ -244,9 +244,9 @@ class Model(nn.Module):
 def set_model(ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device):
     return Model(ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device)
 
-class UQModel(nn.Module):
+class DualGateModel(nn.Module):
     def __init__(self, ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device, gauss_rp=True, use_adaptor=True):
-        super(UQModel, self).__init__()
+        super(DualGateModel, self).__init__()
 
         self.device = device
         self.use_adaptor = use_adaptor
@@ -470,192 +470,228 @@ class UQModel(nn.Module):
         return pair_simil.detach().cpu().numpy(), class_hv.detach().cpu().numpy()
     
     @torch.no_grad()
-    def get_confidence(self, enc, preds=None, method='hybrid'):
+    def get_confidence(self, enc, preds=None, method='soft_dual_weight', uncertainty=None, z_score=None, logits=None, active_mu_cos=None, active_sigma_cos=None, dynamic_geom=True, view_preds=None, view_var=None, **kwargs):
         """
         Master method to compute the confidence score for gating.
-        Routes to the appropriate underlying uncertainty methods based on the requested string.
+        Returns (base_weights, uncertainty, z_score).
         """
-        pass
+        if uncertainty is None:
+            uncertainty = self._get_epistemic_uncertainty(enc, logits=logits, active_mu_cos=active_mu_cos, active_sigma_cos=active_sigma_cos)
+        if z_score is None and preds is not None:
+            z_score = self._get_geometric_confidence(enc, preds, dynamic_geom=dynamic_geom)
+        elif z_score is None:
+            z_score = torch.zeros_like(uncertainty)
+            
+        base_weights = self._fuse_uncertainties(uncertainty, None, z_score, method=method)
+        return base_weights, uncertainty, z_score
 
     @torch.no_grad()
-    def online_update(self, x, proj_xyz=None, update_method='hybrid_balanced'):
+    def online_update(self, enc, preds, update_weights, update_method='bm_ic4', ic_method='ic4', uncertainty=None, update_lr=0.005, normalize_weights=False, view_preds=None, **kwargs):
         """
         The primary entrypoint for test-time adaptation. 
-        Calls `get_confidence`, applies thresholds, consults the subcluster ledger (if balanced), 
-        and updates the prototype weights `self.classify.weight`.
+        Applies active learning multipliers (IC4), filters candidate points,
+        and updates prototype weights using Bayesian Momentum.
         """
-        pass
-
-    @torch.no_grad()
-    def _get_epistemic_uncertainty(self, x, enc):
-        """
-        Pillar 1(b): Network Uncertainty.
-        Estimates uncertainty before the softmax.
-        Candidates to implement here:
-        - Multi-RP ensemble (multiple random projections)
-        - Feature-space density
-        - Evidential deep learning mass
+        if ic_method == 'ic4' and uncertainty is not None:
+            update_weights = update_weights * uncertainty
+            
+        fired_mask = update_weights > 0
+        if not fired_mask.any():
+            return fired_mask
+            
+        valid_enc = enc[fired_mask]
+        labels_fired = preds[fired_mask]
+        weights_fired = update_weights[fired_mask]
         
-        Returns a score in [0, 1] where 1 is highly reliable.
-        """
-        pass
+        sums_c = torch.zeros((self.num_classes, valid_enc.shape[1]), dtype=valid_enc.dtype, device=self.device)
+        weighted_enc = (valid_enc * weights_fired.unsqueeze(1)).to(valid_enc.dtype)
+        sums_c.index_add_(0, labels_fired, weighted_enc)
+        
+        counts_c = torch.bincount(labels_fired, minlength=self.num_classes).float()
+        weights_sum_c = torch.bincount(labels_fired, weights=weights_fired.float(), minlength=self.num_classes)
+        
+        valid_c = (counts_c > 0)
+        if valid_c.any():
+            c_update_norm = torch.nn.functional.normalize(sums_c, p=2, dim=1)
+            step_mags = update_lr * (weights_sum_c / torch.clamp(counts_c, min=1.0))
+            
+            update_delta = torch.where(valid_c.unsqueeze(1), step_mags.unsqueeze(1) * c_update_norm.to(self.classify.weight.dtype), torch.zeros_like(self.classify.weight))
+            self.classify.weight.data += update_delta
+            if normalize_weights:
+                self.classify.weight.data = torch.nn.functional.normalize(self.classify.weight.data, p=2, dim=1)
+                
+            if not hasattr(self, 'class_update_counts'):
+                self.class_update_counts = torch.zeros(self.num_classes, device=self.device)
+            self.class_update_counts += valid_c.long()
+            if not hasattr(self, '_update_magnitude_log'):
+                self._update_magnitude_log = []
+            self._update_magnitude_log.extend(step_mags[valid_c].detach().cpu().tolist())
+            
+        return fired_mask
 
     @torch.no_grad()
-    def _get_spatial_consistency(self, enc, preds, proj_xyz):
+    def _get_epistemic_uncertainty(self, enc, logits=None, active_mu_cos=None, active_sigma_cos=None):
+        """
+        Pillar 1(b): Network Uncertainty (Dirichlet Evidence Decay).
+        Computes epistemic certainty in [0, 1] derived from Dirichlet evidential density.
+        """
+        if active_mu_cos is None:
+            active_mu_cos = getattr(self, 'source_mu_cos', None)
+        if active_sigma_cos is None:
+            active_sigma_cos = getattr(self, 'source_sigma_cos', None)
+            
+        if active_mu_cos is not None and active_sigma_cos is not None:
+            if logits is None:
+                norm_enc = torch.nn.functional.normalize(enc.float(), dim=1)
+                norm_weights = torch.nn.functional.normalize(self.classify.weight.float(), dim=1)
+                logits = torch.nn.functional.linear(norm_enc, norm_weights)
+            z = (logits - active_mu_cos) / (active_sigma_cos + 1e-8)
+            ev = torch.nn.functional.softplus(5.0 * z)
+            S_val = torch.sum(ev + 1.0, dim=1)
+            return self.num_classes / S_val
+        elif logits is not None:
+            probs = torch.softmax(logits, dim=1)
+            conf, _ = torch.max(probs, dim=1)
+            return conf
+        return torch.ones(enc.shape[0], dtype=torch.float32, device=self.device)
+
+    @torch.no_grad()
+    def _get_spatial_consistency(self, enc, preds, proj_xyz=None, **kwargs):
         """
         Pillar 1(c): Spatial/Temporal Consistency.
-        Uses `proj_xyz` (3D coordinates) to check if a point's predicted label 
-        agrees with its physical neighbors. Acts as a hard veto against fog/noise artifacts.
-        
         Returns a binary mask or soft score in [0, 1].
         """
-        pass
+        return torch.ones_like(preds, dtype=torch.bool)
 
     @torch.no_grad()
-    def _get_geometric_confidence(self, enc, preds):
+    def _get_geometric_confidence(self, enc, preds, dynamic_geom=True):
         """
-        Pillar 1(a): HD Space Geometry.
-        The baseline standard prototype cosine similarity.
-        
-        Returns similarity score in [-1, 1].
+        Pillar 1(a): HD Space Geometry (Mahalanobis Z-Score Density).
+        Measures physical dispersion on the 128D hypersphere using uncentred Euclidean distance Z-score.
         """
-        pass
+        if hasattr(self, 'class_latent_means') and self.class_latent_means is not None and hasattr(self, 'source_density_std') and self.source_density_std is not None:
+            if not hasattr(self, 'source_density_mean') or self.source_density_mean is None:
+                raise ValueError("CRITICAL ERROR: self.source_density_mean is missing or None! Stale checkpoint or cache would cause uncentred 128D geometric distance saturation.")
+            pred_means = self.class_latent_means[preds]
+            dist = torch.norm(enc.float() - pred_means.float(), p=2, dim=1)
+            
+            if dynamic_geom:
+                if not hasattr(self, 'running_density_mean') or self.running_density_mean is None:
+                    self.running_density_mean = self.source_density_mean.clone().to(self.device)
+                if not hasattr(self, 'running_density_std') or self.running_density_std is None:
+                    self.running_density_std = self.source_density_std.clone().to(self.device)
+                self.running_density_mean = self.running_density_mean.to(self.device)
+                self.running_density_std = self.running_density_std.to(self.device)
+                
+                counts = torch.bincount(preds, minlength=self.num_classes).float()
+                sum_dist = torch.bincount(preds, weights=dist, minlength=self.num_classes)
+                sum_sq_dist = torch.bincount(preds, weights=dist**2, minlength=self.num_classes)
+                
+                valid_c = (counts > 1)
+                batch_means = torch.where(valid_c, sum_dist / torch.clamp(counts, min=1.0), torch.zeros_like(sum_dist))
+                batch_vars = torch.where(valid_c, (sum_sq_dist - sum_dist**2 / torch.clamp(counts, min=1.0)) / torch.clamp(counts - 1.0, min=1.0), torch.zeros_like(sum_sq_dist))
+                batch_stds = torch.sqrt(torch.clamp(batch_vars, min=0.0))
+                
+                self.running_density_mean = torch.where(valid_c, 0.95 * self.running_density_mean + 0.05 * batch_means, self.running_density_mean)
+                valid_std = valid_c & (batch_stds > 0)
+                self.running_density_std = torch.where(valid_std, 0.95 * self.running_density_std + 0.05 * batch_stds, self.running_density_std)
+                
+                mean_c = self.running_density_mean[preds]
+                std_c = self.running_density_std[preds] + 1e-8
+            else:
+                self.source_density_mean = self.source_density_mean.to(self.device)
+                self.source_density_std = self.source_density_std.to(self.device)
+                mean_c = self.source_density_mean[preds]
+                std_c = self.source_density_std[preds] + 1e-8
+                
+            return (dist - mean_c) / std_c
+        else:
+            raise ValueError("CRITICAL ERROR: Geometric confidence (Mahalanobis Z-Score) requires self.class_latent_means and self.source_density_std to be populated from source pretraining statistics! Cannot compute Z-score.")
 
     @torch.no_grad()
-    def _fuse_uncertainties(self, epistemic, consistency, geometric):
+    def _fuse_uncertainties(self, epistemic, consistency, geometric, method='soft_dual_weight'):
         """
         Combines the independent uncertainty scores into a single gating metric.
-        Must be calibrated so that a failure in one source (e.g. geometric drift) 
-        can be overridden by another (e.g. epistemic rejection).
         """
-        pass
-
-    @torch.no_grad()
-    def _initialize_subcluster_ledger(self, num_clusters=10):
-        """
-        Initializes K subclusters per class using KMeans on source-domain density.
-        Initializes a counter array `self.subcluster_update_counts = zeros(NUM_CLASSES, K)`.
-        """
-        from sklearn.cluster import KMeans
-        import numpy as np
-        
-        self.num_clusters = num_clusters
-        self.subcluster_centroids = torch.zeros(self.num_classes, num_clusters, 128, device=self.device)
-        self.subcluster_update_counts = torch.zeros(self.num_classes, num_clusters, device=self.device)
-        self.actual_k_per_class = torch.zeros(self.num_classes, dtype=torch.long, device=self.device)
-        
-        # Check if latents were collected
-        if not hasattr(self, 'class_latents_for_clustering'):
-            raise RuntimeError("_initialize_subcluster_ledger requires self.class_latents_for_clustering to be populated")
-            
-        # Find the minimum number of samples across all valid classes
-        class_sizes = []
-        for c in range(self.num_classes):
-            if len(self.class_latents_for_clustering[c]) > 0:
-                size = sum(x.shape[0] for x in self.class_latents_for_clustering[c])
-                class_sizes.append(size)
-                
-        if len(class_sizes) == 0:
-            return
-            
-        # Target samples per class is the minimum size across all classes
-        target_samples = min(class_sizes)
-        print(f"Downsampling all classes to exactly {target_samples} samples for KMeans...")
-            
-        for c in range(self.num_classes):
-            if len(self.class_latents_for_clustering[c]) == 0:
-                continue
-                
-            data = torch.cat(self.class_latents_for_clustering[c], dim=0).numpy()
-            
-            # Uniformly downsample to target_samples
-            if data.shape[0] > target_samples:
-                indices = np.random.choice(data.shape[0], target_samples, replace=False)
-                data = data[indices]
-            
-            # If a class has fewer points than K, reduce K for that class
-            K = min(num_clusters, data.shape[0])
-            if K == 0: continue
-            self.actual_k_per_class[c] = K
-            
-            kmeans = KMeans(n_clusters=K, n_init='auto', random_state=42)
-            kmeans.fit(data)
-            
-            centroids = torch.tensor(kmeans.cluster_centers_, dtype=torch.float32, device=self.device)
-            # Normalize centroids back to hypersphere
-            centroids = torch.nn.functional.normalize(centroids, dim=1)
-            
-            self.subcluster_centroids[c, :K] = centroids
-    @torch.no_grad()
-    def _consult_budget_ledger(self, latent_x_valid, preds, update_weights, budget_margin=50, margin_type='absolute'):
-        """
-        Takes the continuous soft weights (`update_weights`) of candidate points.
-        1. Maps each candidate point (latent_x_valid) to its nearest subcluster centroid for its predicted class.
-        2. Checks `self.subcluster_update_counts`. If a subcluster has exceeded its 
-           relative budget (e.g., it has N more updates than the minimum sibling), 
-           its update weight is zeroed out.
-        3. Returns refined weights where saturated points are dropped.
-        4. Increments the ledger counts for the points that are ultimately admitted.
-        """
-        if latent_x_valid.shape[0] == 0:
-            return update_weights
-            
-        latent_x_norm = torch.nn.functional.normalize(latent_x_valid.float(), dim=1)
-        
-        # We need to find the closest subcluster centroid for each point based on its predicted class
-        # preds is shape (N,)
-        refined_weights = update_weights.clone()
-        
-        # We process class by class to avoid massive broadcasting
-        unique_classes = torch.unique(preds)
-        for c in unique_classes:
-            c_mask = (preds == c)
-            if not c_mask.any(): continue
-            
-            K = self.actual_k_per_class[c].item()
-            if K == 0:
-                # No subclusters were initialized for this class (very rare), just allow all updates
-                continue
-                
-            # shape: (N_c, 128)
-            pts = latent_x_norm[c_mask]
-            
-            # shape: (K, 128)
-            centroids = self.subcluster_centroids[c, :K]
-            
-            # cosine similarity: (N_c, K)
-            sims = torch.matmul(pts, centroids.T)
-            
-            # nearest subcluster indices: (N_c,)
-            nearest_subclusters = torch.argmax(sims, dim=1)
-            
-            # Check budgets
-            # We want to freeze subclusters that have significantly more updates than the least-updated subcluster
-            current_counts = self.subcluster_update_counts[c, :K]
-            min_count = current_counts.min()
-            
-            # For each point, check if its subcluster is saturated
-            subcluster_counts_for_pts = current_counts[nearest_subclusters]
-            
-            # Saturated if it exceeds the minimum count by more than the budget_margin
-            if margin_type == 'proportional':
-                saturated_mask = subcluster_counts_for_pts > (min_count * 2.0 + 500)
-            else:
-                saturated_mask = (subcluster_counts_for_pts - min_count) > budget_margin
-            
-            # Zero out the weights for saturated points
-            refined_weights[c_mask] = refined_weights[c_mask] * (~saturated_mask).float()
-            
-            # Update the ledger for points that were NOT dropped (i.e., non-zero weights)
-            # We count an update if the refined weight > 0
-            admitted_pts_mask = (refined_weights[c_mask] > 0)
-            if admitted_pts_mask.any():
-                admitted_subclusters = nearest_subclusters[admitted_pts_mask]
-                # Increment counts using bincount
-                updates = torch.bincount(admitted_subclusters, minlength=K)
-                self.subcluster_update_counts[c, :K] += updates
-
-        return refined_weights
+        if method == 'soft_dual_weight':
+            u_excess = torch.relu(epistemic - 0.5)
+            z_excess = torch.relu(geometric - 0.5)
+            return torch.exp(-1.5 * u_excess - 1.0 * z_excess)
+        elif method == 'ellipsoid_gate':
+            u_excess = torch.relu(epistemic - 0.5)
+            z_excess = torch.relu(geometric - 0.5)
+            return torch.exp(-2.0 * (u_excess**2 + 0.5 * (z_excess**2)))
+        elif method == 'rescue_gate':
+            return torch.where((epistemic < 0.5) & (geometric >= 0.8), geometric, epistemic)
+        elif method == 'epistemic':
+            return torch.exp(-2.0 * torch.relu(epistemic - 0.1))
+        elif method == 'geometric':
+            return torch.exp(-2.0 * torch.relu(geometric - 0.5))
+        elif method in ['and_gate', 'or_gate']:
+            e_dec = torch.exp(-2.0 * torch.relu(epistemic - 0.1))
+            g_dec = torch.exp(-2.0 * torch.relu(geometric - 0.5))
+            return torch.min(e_dec, g_dec) if method == 'and_gate' else torch.max(e_dec, g_dec)
+        return torch.ones_like(epistemic)
 
 def set_uq_model(ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device, subcluster_type='bipolar'):
-    return UQModel(ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device)
+    return DualGateModel(ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device)
+
+UQModel = DualGateModel
+
+class MV_TTAModel(DualGateModel):
+    """
+    Multi-View TTA variant of DualGateModel.
+    Incorporates multi-view 3D spatial augmentation consensus (veto_disagree) and cross-view
+    softmax probability variance gating (view_var_gate) into the confidence gating and online adaptation loop.
+    """
+    def __init__(self, ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device, gauss_rp=True, use_adaptor=True, mv_tta='veto_disagree'):
+        super(MV_TTAModel, self).__init__(ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device, gauss_rp=gauss_rp, use_adaptor=use_adaptor)
+        self.mv_tta = mv_tta
+
+    @torch.no_grad()
+    def _get_spatial_consistency(self, enc, preds, proj_xyz=None, view_preds=None, view_var=None, **kwargs):
+        """
+        Pillar 1(c): Multi-View Spatial Consistency & Disagreement Veto.
+        Checks if the predicted label agrees across 3D spatial augmentations (view_preds).
+        """
+        if view_preds is not None and len(view_preds) >= 2:
+            pred_m1, pred_m2 = view_preds[0], view_preds[1]
+            view_disagreement = (preds != pred_m1) | (preds != pred_m2)
+            return ~view_disagreement
+        return super()._get_spatial_consistency(enc, preds, proj_xyz=proj_xyz, **kwargs)
+
+    @torch.no_grad()
+    def get_confidence(self, enc, preds=None, method='soft_dual_weight', uncertainty=None, z_score=None, view_preds=None, view_var=None, **kwargs):
+        """
+        Extends DualGateModel.get_confidence with multi-view disagreement veto and cross-view variance gating.
+        """
+        base_weights, uncertainty, z_score = super().get_confidence(enc, preds=preds, method=method, uncertainty=uncertainty, z_score=z_score, view_preds=view_preds, view_var=view_var, **kwargs)
+        
+        if method == 'view_var_gate' and view_var is not None:
+            view_var_decay = torch.exp(-2.0 * torch.relu(view_var - 0.05))
+            base_weights = base_weights * torch.min(torch.exp(-2.0 * torch.relu(uncertainty - 0.5)), view_var_decay)
+            
+        if self.mv_tta == 'veto_disagree' and view_preds is not None:
+            agree_mask = self._get_spatial_consistency(enc, preds, view_preds=view_preds)
+            base_weights = base_weights * agree_mask.float()
+            
+        return base_weights, uncertainty, z_score
+
+    @torch.no_grad()
+    def online_update(self, enc, preds, update_weights, update_method='bm_ic4', ic_method='ic4', uncertainty=None, update_lr=0.005, normalize_weights=False, view_preds=None, **kwargs):
+        """
+        Applies multi-view disagreement veto to filter candidate points before invoking prototype momentum updates.
+        """
+        if self.mv_tta == 'veto_disagree' and view_preds is not None:
+            agree_mask = self._get_spatial_consistency(enc, preds, view_preds=view_preds)
+            update_weights = update_weights * agree_mask.float()
+            
+        return super().online_update(enc, preds, update_weights, update_method=update_method, ic_method=ic_method, uncertainty=uncertainty, update_lr=update_lr, normalize_weights=normalize_weights, view_preds=view_preds, **kwargs)
+
+MVTTAModel = MV_TTAModel
+
+def set_dual_gate_model(ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device, subcluster_type='bipolar'):
+    return DualGateModel(ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device)
+
+def set_mv_tta_model(ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device, mv_tta='veto_disagree'):
+    return MV_TTAModel(ARCH, modeldir, hd_encoder, num_levels, randomness, num_classes, device, mv_tta=mv_tta)

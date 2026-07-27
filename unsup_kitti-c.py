@@ -205,6 +205,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     pred_base_mv2 = torch.argmax(l_base_mv2, dim=1)
                     pred_m1_mv2 = torch.argmax(l_m1_mv2, dim=1)
                     pred_m2_mv2 = torch.argmax(l_m2_mv2, dim=1)
+                    view_preds = [pred_m1_mv2, pred_m2_mv2]
                     view_disagreement = (pred_base_mv2 != pred_m1_mv2) | (pred_base_mv2 != pred_m2_mv2)
                     
                     pb_mv2 = F.softmax(l_base_mv2, dim=1)
@@ -213,6 +214,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     pm_mv2 = (pb_mv2 + p1_mv2 + p2_mv2) / 3.0
                     soft_view_var_all = ((pb_mv2 - pm_mv2)**2 + (p1_mv2 - pm_mv2)**2 + (p2_mv2 - pm_mv2)**2).sum(dim=1) / 3.0
                 else:
+                    view_preds = None
                     view_disagreement = torch.zeros_like(predictions, dtype=torch.bool)
                     soft_view_var_all = torch.zeros(len(predictions), device=device)
 
@@ -279,87 +281,21 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     # Avoid multi-GB copies since indices is always arange
                     latent_x_valid = latent_x
 
-                    if not hasattr(model, 'class_freq_ema'):
-                        if hasattr(model, 'source_class_freq'):
-                            model.class_freq_ema = model.source_class_freq.clone().to(device)
-                        else:
-                            model.class_freq_ema = torch.ones(num_classes, device=device) / num_classes
-                    if not hasattr(model, 'class_update_counts'):
-                        model.class_update_counts = torch.zeros(num_classes, device=device)
-                    
-                    beta = 0.99
-                    # IC-b: Accumulate Σ update_weights instead of pseudo-label counts
-                    batch_freq = torch.zeros(num_classes, device=device)
-                    batch_freq.scatter_add_(0, pseudo_labels, update_weights)
-                    batch_sum = max(1.0, update_weights.sum().item())
-                    batch_freq = batch_freq / batch_sum
-                    
-                    model.class_freq_ema = beta * model.class_freq_ema + (1 - beta) * batch_freq
-                    
-                    # Hard lower bound to prevent network freeze when rare classes drop to 0 in a batch size of 1
-                    min_freq = torch.clamp(model.class_freq_ema.min(), min=0.01)
-                    f_y = torch.clamp(model.class_freq_ema[pseudo_labels], min=0.01)
-                    
                     if update_method in ['evidential_hdc_tta', 'bm_ic4', 'bm'] or 'evidential' in update_method or 'bm' in update_method:
-                        # 1. Network Epistemic Uncertainty (Dirichlet Evidence Decay)
-                        def get_uncert(enc, c_sims=None):
-                            if c_sims is None:
-                                c_sims = F.linear(enc, proto_norm)
-                            z = (c_sims - active_mu_cos) / (active_sigma_cos + 1e-8)
-                            gamma_s = 5.0
-                            ev = F.softplus(gamma_s * z)
-                            S_val = torch.sum(ev + 1.0, dim=1)
-                            return num_classes / S_val
-                            
-                        uncertainty = get_uncert(norm_enc, cos_sims)
-                        u_threshold = 0.5 
-                        epistemic_decay = torch.exp(-2.0 * torch.relu(uncertainty - u_threshold))
-                        
-                        # 2. Geometric HDC Latent Density (Isotropic Euclidean Z-Score Density)
-                        if diagnostics or gate_mode in ['geometric', 'and_gate', 'or_gate', 'rescue_gate', 'ellipsoid_gate', 'soft_dual_weight', 'view_var_gate']:
-                            if hasattr(model, 'class_latent_means') and model.class_latent_means is not None and hasattr(model, 'source_density_std') and model.source_density_std is not None:
-                                if not hasattr(model, 'source_density_mean') or model.source_density_mean is None:
-                                    raise ValueError("CRITICAL ERROR: model.source_density_mean is missing or None! Stale checkpoint or cache would cause uncentred 128D geometric distance saturation (exp(-128)).")
-                                pred_means = model.class_latent_means[pseudo_labels]
-                                dist = torch.norm(latent_x_valid.float() - pred_means.float(), p=2, dim=1)
-                                
-                                if dynamic_geom:
-                                    if not hasattr(model, 'running_density_mean') or model.running_density_mean is None:
-                                        model.running_density_mean = model.source_density_mean.clone().to(device)
-                                    if not hasattr(model, 'running_density_std') or model.running_density_std is None:
-                                        model.running_density_std = model.source_density_std.clone().to(device)
-                                    model.running_density_mean = model.running_density_mean.to(device)
-                                    model.running_density_std = model.running_density_std.to(device)
-                                    
-                                    counts = torch.bincount(pseudo_labels, minlength=num_classes).float()
-                                    sum_dist = torch.bincount(pseudo_labels, weights=dist, minlength=num_classes)
-                                    sum_sq_dist = torch.bincount(pseudo_labels, weights=dist**2, minlength=num_classes)
-                                    
-                                    valid_c = (counts > 1)
-                                    batch_means = torch.where(valid_c, sum_dist / torch.clamp(counts, min=1.0), torch.zeros_like(sum_dist))
-                                    batch_vars = torch.where(valid_c, (sum_sq_dist - sum_dist**2 / torch.clamp(counts, min=1.0)) / torch.clamp(counts - 1.0, min=1.0), torch.zeros_like(sum_sq_dist))
-                                    batch_stds = torch.sqrt(torch.clamp(batch_vars, min=0.0))
-                                    
-                                    model.running_density_mean = torch.where(valid_c, 0.95 * model.running_density_mean + 0.05 * batch_means, model.running_density_mean)
-                                    valid_std = valid_c & (batch_stds > 0)
-                                    model.running_density_std = torch.where(valid_std, 0.95 * model.running_density_std + 0.05 * batch_stds, model.running_density_std)
-                                    
-                                    mean_c = model.running_density_mean[pseudo_labels]
-                                    std_c = model.running_density_std[pseudo_labels] + 1e-8
-                                else:
-                                    model.source_density_mean = model.source_density_mean.to(device)
-                                    model.source_density_std = model.source_density_std.to(device)
-                                    mean_c = model.source_density_mean[pseudo_labels]
-                                    std_c = model.source_density_std[pseudo_labels] + 1e-8
-                                    
-                                z_score = (dist - mean_c) / std_c
-                                geom_decay = torch.exp(-2.0 * torch.relu(z_score - 0.5))
-                            else:
-                                raise ValueError("Geometric gating requires model.class_latent_means and source_density_std from source pretraining.")
-                        else:
-                            geom_decay = torch.ones_like(epistemic_decay)
-                            z_score = torch.zeros_like(epistemic_decay)
-                            dist = torch.zeros_like(epistemic_decay)
+                        # 1. & 2. Compute Confidence & Gating via DualGateModel / MV_TTAModel
+                        update_weights, uncertainty, z_score = model.get_confidence(
+                            norm_enc,
+                            preds=pseudo_labels,
+                            method=gate_mode,
+                            logits=cos_sims,
+                            active_mu_cos=active_mu_cos,
+                            active_sigma_cos=active_sigma_cos,
+                            dynamic_geom=dynamic_geom,
+                            view_preds=view_preds,
+                            view_var=soft_view_var_all
+                        )
+                        epistemic_decay = torch.exp(-2.0 * torch.relu(uncertainty - 0.5))
+                        geom_decay = torch.exp(-2.0 * torch.relu(z_score - 0.5))
                         
                         valid_gt_mask = (selected_labels >= 0) & (selected_labels < num_classes)
                         gt_corr = (pseudo_labels == selected_labels)
@@ -391,8 +327,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                 model._decay_logs['cos128'].append(c128_vals.detach().cpu())
                                 model._decay_logs['cos10k'].append(c10k_vals.detach().cpu())
                                 
-                            if 'view_disagreement' in locals():
-                                model._decay_logs['view_dis'].append(view_disagreement.detach()[::256].cpu())
+                            model._decay_logs['view_dis'].append(view_disagreement.detach()[::256].cpu())
                             
                             if not hasattr(model, '_contingency_table'):
                                 model._contingency_table = {
@@ -429,25 +364,24 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                 model._contingency_table['geom_rej_epi_rej']['n'] += m_rr.sum()
                                 model._contingency_table['geom_rej_epi_rej']['correct'] += (m_rr & corr).sum()
 
-                                if 'view_disagreement' in locals():
-                                    va = (~view_disagreement)[valid_gt_mask]
-                                    vd = view_disagreement[valid_gt_mask]
-                                    
-                                    va_ea = va & ea
-                                    model._mv_contingency_table['view_agree_epi_adm']['n'] += va_ea.sum()
-                                    model._mv_contingency_table['view_agree_epi_adm']['correct'] += (va_ea & corr).sum()
-                                    
-                                    va_er = va & (~ea) # Test D4 Rescue cell!
-                                    model._mv_contingency_table['view_agree_epi_rej']['n'] += va_er.sum()
-                                    model._mv_contingency_table['view_agree_epi_rej']['correct'] += (va_er & corr).sum()
-                                    
-                                    vd_ea = vd & ea
-                                    model._mv_contingency_table['view_disagree_epi_adm']['n'] += vd_ea.sum()
-                                    model._mv_contingency_table['view_disagree_epi_adm']['correct'] += (vd_ea & corr).sum()
-                                    
-                                    vd_er = vd & (~ea)
-                                    model._mv_contingency_table['view_disagree_epi_rej']['n'] += vd_er.sum()
-                                    model._mv_contingency_table['view_disagree_epi_rej']['correct'] += (vd_er & corr).sum()
+                                va = (~view_disagreement)[valid_gt_mask]
+                                vd = view_disagreement[valid_gt_mask]
+                                
+                                va_ea = va & ea
+                                model._mv_contingency_table['view_agree_epi_adm']['n'] += va_ea.sum()
+                                model._mv_contingency_table['view_agree_epi_adm']['correct'] += (va_ea & corr).sum()
+                                
+                                va_er = va & (~ea) # Test D4 Rescue cell!
+                                model._mv_contingency_table['view_agree_epi_rej']['n'] += va_er.sum()
+                                model._mv_contingency_table['view_agree_epi_rej']['correct'] += (va_er & corr).sum()
+                                
+                                vd_ea = vd & ea
+                                model._mv_contingency_table['view_disagree_epi_adm']['n'] += vd_ea.sum()
+                                model._mv_contingency_table['view_disagree_epi_adm']['correct'] += (vd_ea & corr).sum()
+                                
+                                vd_er = vd & (~ea)
+                                model._mv_contingency_table['view_disagree_epi_rej']['n'] += vd_er.sum()
+                                model._mv_contingency_table['view_disagree_epi_rej']['correct'] += (vd_er & corr).sum()
                                     
                         if dump_features:
                             dump_mask = valid_gt_mask
@@ -486,16 +420,18 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                     d_other = all_d_other.min(dim=1)[0]
                                     rel_mahal_val = d_own - d_other
                                 else:
-                                    rel_mahal_val = dist[indices_dump]
+                                    logger.warning("CRITICAL WARNING: model.class_latent_means is missing or None during diagnostic feature dump! Defaulting rel_mahal_val to 0.0.")
+                                    rel_mahal_val = torch.zeros(len(indices_dump), device=device)
                                     
                                 if hasattr(model, 'source_bank') and model.source_bank is not None:
                                     d_bank = torch.cdist(latent_x_valid[indices_dump].float(), model.source_bank.float())
                                     knn_val = torch.topk(d_bank, k=min(5, d_bank.size(1)), dim=1, largest=False)[0].mean(dim=1)
                                 else:
+                                    logger.warning("CRITICAL WARNING: model.source_bank is missing or None during diagnostic feature dump! Defaulting knn_val to 0.0.")
                                     knn_val = torch.zeros(len(indices_dump), device=device)
                                     
-                                vd_val = view_disagreement[indices_dump].float() if 'view_disagreement' in locals() else torch.zeros(len(indices_dump), device=device)
-                                svv_val = soft_view_var_all[indices_dump].float() if 'soft_view_var_all' in locals() else torch.zeros(len(indices_dump), device=device)
+                                vd_val = view_disagreement[indices_dump].float()
+                                svv_val = soft_view_var_all[indices_dump].float()
                                 
                                 pin_flat = proj_in.permute(0, 2, 3, 1).reshape(-1, proj_in.shape[1])
                                 r_val = pin_flat[indices_dump, 0] if pin_flat.shape[1] > 0 else torch.zeros(len(indices_dump), device=device)
@@ -523,49 +459,16 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                     'proto_norm_c': p_norm_val.float().cpu()
                                 })
 
-                        # 3. Apply Dual-Uncertainty Gating Strategy
-                        if gate_mode == 'epistemic':
-                            update_weights = update_weights * epistemic_decay
-                        elif gate_mode == 'geometric':
-                            update_weights = update_weights * geom_decay
-                        elif gate_mode == 'and_gate':
-                            update_weights = update_weights * torch.min(geom_decay, epistemic_decay)
-                        elif gate_mode == 'or_gate':
-                            update_weights = update_weights * torch.max(geom_decay, epistemic_decay)
-                        elif gate_mode == 'rescue_gate':
-                            # Hypothesis A: Conditional High-Precision Geometric Rescue (Cascade)
-                            # Primary epistemic filter; if rejected (< 0.5), rescue if geometric confidence is high (geom_decay >= 0.8)
-                            rescue_mask = (epistemic_decay < 0.5) & (geom_decay >= 0.8)
-                            update_weights = update_weights * torch.where(rescue_mask, geom_decay, epistemic_decay)
-                        elif gate_mode == 'ellipsoid_gate':
-                            # Hypothesis B: Adaptive 2D Ellipsoidal Decision Boundary (Quadratic)
-                            u_excess = torch.relu(uncertainty - 0.5)
-                            z_excess = torch.relu(z_score - 0.5)
-                            update_weights = update_weights * torch.exp(-2.0 * (u_excess**2 + 0.5 * (z_excess**2)))
-                        elif gate_mode == 'soft_dual_weight':
-                            # Hypothesis C: Dynamic Multi-Metric Momentum Modulation (Linear Ramp)
-                            u_excess = torch.relu(uncertainty - 0.5)
-                            z_excess = torch.relu(z_score - 0.5)
-                            update_weights = update_weights * torch.exp(-1.5 * u_excess - 1.0 * z_excess)
-                        elif gate_mode == 'view_var_gate':
-                            # Cross-View Softmax Probability Variance Gating (V2 Goldmine)
-                            if 'soft_view_var_all' in locals():
-                                view_var_decay = torch.exp(-2.0 * torch.relu(soft_view_var_all - 0.05))
-                                update_weights = update_weights * torch.min(epistemic_decay, view_var_decay)
-                            else:
-                                update_weights = update_weights * epistemic_decay
-                        elif gate_mode == 'oracle':
+                        if gate_mode == 'oracle':
                             gt_mask_full = (pseudo_labels == selected_labels) & (selected_labels >= 0) & (selected_labels < num_classes)
                             update_weights = update_weights * gt_mask_full.float()
-                        else:
-                            raise ValueError(f"Unknown gate_mode: {gate_mode}")
                         
                     # Calculate tracking metrics
                     # We define a "veto" as any point where the uncertainty method cut the base confidence by >50%
                     veto_mask = update_weights < (0.5 * base_weights)
                     # We define a point as "fired" if it passed the Epistemic Veto
                     fired_mask = ~veto_mask
-                    if mv_tta == 'veto_disagree' and 'view_disagreement' in locals():
+                    if mv_tta == 'veto_disagree':
                         fired_mask = fired_mask & (~view_disagreement)
                     effective_veto = ~fired_mask
                     
@@ -606,35 +509,17 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         model._class_correct_rejected += torch.bincount(pseudo_labels[corr_mask], minlength=num_classes)
                     
                     if fired_mask.any():
-                        valid_enc = norm_enc
-                        fired_indices = torch.nonzero(fired_mask, as_tuple=True)[0]
-                        labels_fired = pseudo_labels[fired_indices]
-                        weights_fired = update_weights[fired_indices]
-                        
-                        if ic_method == 'ic4' and 'uncertainty' in locals():
-                            weights_fired = weights_fired * uncertainty[fired_indices]
-                            
-                        sums_c = torch.zeros((num_classes, valid_enc.shape[1]), dtype=valid_enc.dtype, device=device)
-                        weighted_enc = (valid_enc[fired_indices] * weights_fired.unsqueeze(1)).to(valid_enc.dtype)
-                        sums_c.index_add_(0, labels_fired, weighted_enc)
-                        
-                        counts_c = torch.bincount(labels_fired, minlength=num_classes).float()
-                        weights_sum_c = torch.bincount(labels_fired, weights=weights_fired.float(), minlength=num_classes)
-                        
-                        valid_c = (counts_c > 0)
-                        if valid_c.any():
-                            c_update_norm = F.normalize(sums_c, p=2, dim=1)
-                            step_mags = update_lr * (weights_sum_c / torch.clamp(counts_c, min=1.0))
-                            
-                            update_delta = torch.where(valid_c.unsqueeze(1), step_mags.unsqueeze(1) * c_update_norm.to(model.classify.weight.dtype), torch.zeros_like(model.classify.weight))
-                            model.classify.weight.data += update_delta
-                            if normalize_weights:
-                                model.classify.weight.data = F.normalize(model.classify.weight.data, p=2, dim=1)
-                                
-                            model.class_update_counts += valid_c.long()
-                            if not hasattr(model, '_update_magnitude_log'):
-                                model._update_magnitude_log = []
-                            model._update_magnitude_log.extend(step_mags[valid_c].detach().cpu().tolist())
+                        model.online_update(
+                            norm_enc,
+                            pseudo_labels,
+                            update_weights,
+                            update_method=update_method,
+                            ic_method=ic_method,
+                            uncertainty=uncertainty,
+                            update_lr=update_lr,
+                            normalize_weights=normalize_weights,
+                            view_preds=view_preds
+                        )
                     elif update_method in ['conformalhdc', 'hyperdum', 'd3ctta']:
                         if not hasattr(model, '_baseline_adapter') or getattr(model, '_baseline_adapter_name', None) != update_method:
                             if update_method == 'conformalhdc':
@@ -1013,13 +898,17 @@ def save_degradation_plot(save_path, title, data_dict, metric="mIoU", baseline_v
     plt.close()
 
 
-def load_hdc_model(path, num_classes=NUM_CLASSES):
+def load_hdc_model(path, num_classes=NUM_CLASSES, mv_tta='none'):
     # print(f"Loading pretrained HDC model from {path}...")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     ARCH = yaml.safe_load(open(CONFIG_ARCH, 'r'))
     modeldir = os.path.dirname(path)
 
-    model = set_uq_model(ARCH, modeldir, 'rp', 0, 0, num_classes, device)
+    if mv_tta != 'none':
+        from modules.HDC_utils import set_mv_tta_model
+        model = set_mv_tta_model(ARCH, modeldir, 'rp', 0, 0, num_classes, device, mv_tta=mv_tta)
+    else:
+        model = set_uq_model(ARCH, modeldir, 'rp', 0, 0, num_classes, device)
     
     model.load_state_dict(torch.load(path, map_location=device), strict=False)
     model.to(device)
@@ -1351,7 +1240,7 @@ def main():
         end_idx = (i + 1) * chunk_size if i < len(CORRUPTIONS) - 1 else total_len
         chunks.append(indices[start_idx:end_idx])
 
-    base_model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES)
+    base_model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES, mv_tta=args.mv_tta)
     populate_source_statistics(base_model, args.kitti_dir, ARCH, DATA, device, dry_run=args.dry_run)
     
     source_stats_cache = {
@@ -1397,7 +1286,7 @@ def main():
             logger.error(f"Failed to load KITTI-C corruption dataset at {corruption_root}: {e}")
 
     # Initialize the model exactly ONCE to be shared
-    model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES)
+    model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES, mv_tta=args.mv_tta)
     if source_stats_cache is not None:
         model.class_latent_means = source_stats_cache['class_latent_means'].to(device) if source_stats_cache['class_latent_means'] is not None else None
         model.source_density_mean = source_stats_cache['source_density_mean'].to(device) if source_stats_cache.get('source_density_mean') is not None else None

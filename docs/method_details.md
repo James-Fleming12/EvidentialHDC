@@ -13,10 +13,12 @@ While the subsequent sections detail the mathematical derivations and ablations 
 1. **Latent Projection**: A point $x$ is embedded into the $D$-dimensional HDC hypersphere: $z = \frac{f_\theta(x)}{||f_\theta(x)||_2}$.
 2. **Inter-Class Calibration (The Boundary Shift)**: The raw cosine similarities against the prototype matrix are adjusted using the source frequency prior $\pi$ ($\tau$-shift) to instantaneously suppress false-positive hallucinations caused by severe semantic corruption.
 3. **Asymmetric Dual Gating (Linear Ramp Joint Modulation - `soft_dual_weight`)**: Rather than enforcing binary hard thresholds or logical AND-gates that cause representation shrinkage, we continuously modulate prototype momentum updates via joint exponential decay in log-space:
-$$ w_i = \exp\left(-\lambda_1 \cdot \text{relu}(u_{\text{epi}} - 0.55) - \lambda_2 \cdot \text{relu}(z_{\text{geom}} - 0.5)\right) $$
+$$ w_i = \exp\left(-\lambda_1 \cdot \text{relu}(u_{\text{epi}} - 0.5) - \lambda_2 \cdot \text{relu}(z_{\text{geom}} - 0.5)\right) $$
 where $u_{\text{epi}}$ is the Dirichlet epistemic uncertainty and $z_{\text{geom}}$ is the dynamic geometric Mahalanobis z-score. This allows high-precision geometric true positives residing in the epistemic rejection pool (the "Rescue Cell") to safely contribute to prototype momentum without destabilizing tail class centroids.
 4. **Intra-Class Epistemic Scaling (IC4)**: For points admitted under the continuous dual-gating weight $w_i$, their epistemic certainty is used as an active-learning multiplier ($w_i \cdot u_i$), explicitly performing Hard-Example Mining to rapidly stretch prototype geometry toward the target domain.
 5. **Temporal Consistency (Bayesian Momentum)**: The computed gradient step is applied to the *unnormalized* class prototypes. The growing magnitude of the prototypes provides intrinsic geometric inertia, naturally decaying the angular learning rate to protect majority classes from confirmation bias while allowing rare classes to remain agile.
+
+In software implementation (`modules/HDC_utils.py`), this single-view adaptation architecture is encapsulated within the **`DualGateModel`** class.
 
 ---
 
@@ -32,7 +34,7 @@ where $\mu_c, \sigma_c$ are the geometric statistics of class $c$ on the clean s
 **Why Dual Gating is Mandatory (The Orthogonality Mandate):** Under severe semantic corruption (e.g., specular reflections on wet ground), Dirichlet evidential density degrades, rejecting thousands of valid boundary points. However, because HDC encodes semantic relationships by angular distances on a fixed 128D hypersphere, geometric class centroids remain highly stable ($z_{\text{geom}}$ remains small). Conversely, under atmospheric scattering (snow/fog), epistemic certainty is clean while geometric scatter increases. 
 
 We fuse these orthogonal signals into a continuous multiplicative momentum gate via joint linear ramps in log-space:
-$$ w_i = \exp\left(-1.5 \cdot \text{relu}(u_{\text{epi}} - 0.55) - 1.0 \cdot \text{relu}(z_{\text{geom}} - 0.5)\right) $$
+$$ w_i = \exp\left(-1.5 \cdot \text{relu}(u_{\text{epi}} - 0.5) - 1.0 \cdot \text{relu}(z_{\text{geom}} - 0.5)\right) $$
 
 **Empirical Validation Across Benchmark Sweeps:**
 * **The Wet Ground Breakthrough (+0.0468 mIoU):** Under severe surface reflectivity distortion (`wet_ground-3`), pure Epistemic Gating degraded from `0.5182` to `0.5158` ($-0.0024$), and naive OR-Gating collapsed to `0.4711`. In contrast, `soft_dual_weight` catapulted mIoU to **`0.5626`**—a massive **+0.0468 mIoU gain over baseline** that captures **81.7% of the total theoretical Oracle headroom (`0.5725`)**. It successfully rescued high-precision geometric true positives from the epistemic rejection pool (the "Rescue Cell") without destabilizing tail class centroids.
@@ -138,6 +140,8 @@ Incorporating view disagreement as an active gating filter (`--mv_tta veto_disag
 2. **Precision Purity:** In structured sensor degradations like `beam_missing`, `veto_disagree` maintained an outstanding **91.6% to 92.8% precision on admitted points** versus only **40.8% to 44.6% on rejected points**, proving its ability to cleanly segregate true geometry from corruption artifacts.
 3. **Tail & Mid Stabilization:** By filtering out noisy majority-class bleed into minority prototypes, `veto_disagree` consistently stabilizes Mid ($0.4539 \rightarrow 0.4673$) and Tail ($0.4045 \rightarrow 0.4098$) mIoU under $\tau=-1.0$ calibration.
 
+In software implementation (`modules/HDC_utils.py`), this multi-view spatial consensus architecture is encapsulated within the **`MV_TTAModel`** class (a subclass of `DualGateModel`).
+
 ### 6.3 Rejected Methods
 * **Uncertainty Scaling Veto (`min_uncert`, `mean_uncert`):** Scaling adaptation step sizes by taking the minimum or mean Dirichlet uncertainty across views successfully reduced update firing rates (from 47.1% to 43.6%), proving the consensus veto worked mechanically. However, it provided zero structural improvement to final mIoU because the samples it vetoed were already low-impact, leaving centroid adjustments identical to baseline.
 * **Discrete Majority Voting (`vote_pred`):** Taking a discrete majority vote per point across views performed worse than probability confidence averaging (`conf_pred`) because argmax voting discards relative confidence distributions and struggles with 3-way tie resolution in ambiguous boundary regions.
@@ -165,8 +169,8 @@ The following table records the initial (frozen) and final adapted performance a
 | **D3CTTA** (Distance-Aware Decoupled TTA) | — | — | — | — | — | — |
 | **ConformalHDC** (Conformal Prediction Sets) | — | — | — | — | — | — |
 | **HyperDUM** (Channel-Wise Bundling & $\Omega$) | — | — | — | — | — | — |
-| **This Method** (Soft Dual-Weighting + BM-IC4, No MV) | — | — | — | — | — | — |
-| **This Method + MV-TTA** (Soft Dual-Weighting + `veto_disagree`) | — | — | — | — | — | — |
+| **This Method (`DualGateModel`: Soft Dual-Weighting + BM-IC4, No MV)** | — | — | — | — | — | — |
+| **This Method + MV-TTA (`MV-TTAModel`: Soft Dual-Weighting + `veto_disagree`)** | — | — | — | — | — | — |
 
 ### Per-Corruption Final mIoU (%) Breakdown
 | Method | Fog | Wet Ground | Snow | Motion Blur | Beam Missing | Crosstalk | Incomplete Echo | Cross Sensor | Mean mIoU |
@@ -175,8 +179,8 @@ The following table records the initial (frozen) and final adapted performance a
 | **D3CTTA** | — | — | — | — | — | — | — | — | — |
 | **ConformalHDC** | — | — | — | — | — | — | — | — | — |
 | **HyperDUM** | — | — | — | — | — | — | — | — | — |
-| **This Method** (No MV) | — | — | — | — | — | — | — | — | — |
-| **This Method + MV-TTA** | — | — | — | — | — | — | — | — | — |
+| **This Method (`DualGateModel`, No MV)** | — | — | — | — | — | — | — | — | — |
+| **This Method + MV-TTA (`MV-TTAModel`)** | — | — | — | — | — | — | — | — | — |
 
 ### Per-Corruption Final Accuracy (%) Breakdown
 | Method | Fog | Wet Ground | Snow | Motion Blur | Beam Missing | Crosstalk | Incomplete Echo | Cross Sensor | Mean Acc |
@@ -185,8 +189,8 @@ The following table records the initial (frozen) and final adapted performance a
 | **D3CTTA** | — | — | — | — | — | — | — | — | — |
 | **ConformalHDC** | — | — | — | — | — | — | — | — | — |
 | **HyperDUM** | — | — | — | — | — | — | — | — | — |
-| **This Method** (No MV) | — | — | — | — | — | — | — | — | — |
-| **This Method + MV-TTA** | — | — | — | — | — | — | — | — | — |
+| **This Method (`DualGateModel`, No MV)** | — | — | — | — | — | — | — | — | — |
+| **This Method + MV-TTA (`MV-TTAModel`)** | — | — | — | — | — | — | — | — | — |
 
 ---
 
