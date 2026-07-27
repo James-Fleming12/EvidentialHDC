@@ -197,15 +197,24 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                 else:
                     predictions = torch.argmax(logits, dim=1)
                     
-                # MV-2: View Disagreement Precision Tracking
+                # MV-2: View Disagreement Precision Tracking & V2 Soft View Variance
                 if mv_tta != 'none' and 'norm_enc_m1' in locals():
-                    pred_base_mv2 = torch.argmax(get_logits(norm_enc_base), dim=1)
-                    pred_m1_mv2 = torch.argmax(get_logits(norm_enc_m1), dim=1)
-                    pred_m2_mv2 = torch.argmax(get_logits(norm_enc_m2), dim=1)
+                    l_base_mv2 = get_logits(norm_enc_base)
+                    l_m1_mv2 = get_logits(norm_enc_m1)
+                    l_m2_mv2 = get_logits(norm_enc_m2)
+                    pred_base_mv2 = torch.argmax(l_base_mv2, dim=1)
+                    pred_m1_mv2 = torch.argmax(l_m1_mv2, dim=1)
+                    pred_m2_mv2 = torch.argmax(l_m2_mv2, dim=1)
                     view_disagreement = (pred_base_mv2 != pred_m1_mv2) | (pred_base_mv2 != pred_m2_mv2)
-                    # We will log precision of agreeing vs disagreeing points below
+                    
+                    pb_mv2 = F.softmax(l_base_mv2, dim=1)
+                    p1_mv2 = F.softmax(l_m1_mv2, dim=1)
+                    p2_mv2 = F.softmax(l_m2_mv2, dim=1)
+                    pm_mv2 = (pb_mv2 + p1_mv2 + p2_mv2) / 3.0
+                    soft_view_var_all = ((pb_mv2 - pm_mv2)**2 + (p1_mv2 - pm_mv2)**2 + (p2_mv2 - pm_mv2)**2).sum(dim=1) / 3.0
                 else:
                     view_disagreement = torch.zeros_like(predictions, dtype=torch.bool)
+                    soft_view_var_all = torch.zeros(len(predictions), device=device)
 
                 
                 selected_labels = proj_labels[indices]
@@ -441,19 +450,52 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                     model._mv_contingency_table['view_disagree_epi_rej']['correct'] += (vd_er & corr).sum()
                                     
                         if dump_features:
-                            dump_mask = valid_gt_mask & (epistemic_decay < 0.5)
+                            dump_mask = valid_gt_mask
                             if dump_mask.any():
                                 indices_dump = torch.nonzero(dump_mask, as_tuple=True)[0]
                                 if len(indices_dump) > 1000:
                                     indices_dump = indices_dump[::len(indices_dump)//1000]
                                 if not hasattr(model, '_feature_dump_list'):
                                     model._feature_dump_list = []
+                                if not hasattr(model, '_proj_32'):
+                                    torch.manual_seed(42)
+                                    proj_mat = torch.randn(128, 32, device=device)
+                                    q_mat, _ = torch.linalg.qr(proj_mat)
+                                    model._proj_32 = q_mat
                                     
                                 top2_c = torch.topk(cos_sims[indices_dump], k=min(2, cos_sims.size(1)), dim=1)[0]
                                 m_val = (top2_c[:, 0] - top2_c[:, 1]) if top2_c.size(1) > 1 else top2_c[:, 0]
                                 probs_dump = F.softmax(cos_sims[indices_dump] * 100.0, dim=1)
+                                msp_val = probs_dump.max(dim=1)[0]
                                 ent_val = -(probs_dump * torch.log(probs_dump + 1e-8)).sum(dim=1)
+                                energy_val = -torch.logsumexp(cos_sims[indices_dump] * 15.0, dim=1)
+                                
+                                z_dump = (cos_sims[indices_dump] - active_mu_cos) / (active_sigma_cos + 1e-8)
+                                alpha_dump = F.softplus(5.0 * z_dump) + 1.0
+                                S_dump = alpha_dump.sum(dim=1, keepdim=True)
+                                p_dump = alpha_dump / S_dump
+                                h_tot = -(p_dump * torch.log(p_dump + 1e-8)).sum(dim=1)
+                                aleatoric = (p_dump * (torch.special.digamma(S_dump + 1.0) - torch.special.digamma(alpha_dump + 1.0))).sum(dim=1)
+                                mi_val = h_tot - aleatoric
+                                
+                                if hasattr(model, 'class_latent_means') and model.class_latent_means is not None:
+                                    all_d = torch.cdist(latent_x_valid[indices_dump].float(), model.class_latent_means.float())
+                                    d_own = all_d[torch.arange(len(indices_dump)), pseudo_labels[indices_dump]]
+                                    all_d_other = all_d.clone()
+                                    all_d_other[torch.arange(len(indices_dump)), pseudo_labels[indices_dump]] = float('inf')
+                                    d_other = all_d_other.min(dim=1)[0]
+                                    rel_mahal_val = d_own - d_other
+                                else:
+                                    rel_mahal_val = dist[indices_dump]
+                                    
+                                if hasattr(model, 'source_bank') and model.source_bank is not None:
+                                    d_bank = torch.cdist(latent_x_valid[indices_dump].float(), model.source_bank.float())
+                                    knn_val = torch.topk(d_bank, k=min(5, d_bank.size(1)), dim=1, largest=False)[0].mean(dim=1)
+                                else:
+                                    knn_val = torch.zeros(len(indices_dump), device=device)
+                                    
                                 vd_val = view_disagreement[indices_dump].float() if 'view_disagreement' in locals() else torch.zeros(len(indices_dump), device=device)
+                                svv_val = soft_view_var_all[indices_dump].float() if 'soft_view_var_all' in locals() else torch.zeros(len(indices_dump), device=device)
                                 
                                 pin_flat = proj_in.permute(0, 2, 3, 1).reshape(-1, proj_in.shape[1])
                                 r_val = pin_flat[indices_dump, 0] if pin_flat.shape[1] > 0 else torch.zeros(len(indices_dump), device=device)
@@ -463,13 +505,18 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                 model._feature_dump_list.append({
                                     'gt_corr': gt_corr[indices_dump].float().cpu(),
                                     'epi_score': (-uncertainty[indices_dump]).float().cpu(),
-                                    'z_score': z_score[indices_dump].float().cpu(),
-                                    'dist': dist[indices_dump].float().cpu(),
-                                    'latent_norm': latent_x_valid[indices_dump].norm(p=2, dim=1).float().cpu(),
-                                    'latent_raw': latent_x_valid[indices_dump][:, :32].float().cpu(),
+                                    'msp': msp_val.float().cpu(),
                                     'margin': m_val.float().cpu(),
                                     'entropy': ent_val.float().cpu(),
+                                    'energy': energy_val.float().cpu(),
+                                    'dirichlet_mi': mi_val.float().cpu(),
+                                    'z_score': z_score[indices_dump].float().cpu(),
+                                    'rel_mahal': rel_mahal_val.float().cpu(),
+                                    'knn_dist': knn_val.float().cpu(),
+                                    'latent_norm': latent_x_valid[indices_dump].norm(p=2, dim=1).float().cpu(),
+                                    'latent_proj': (latent_x_valid[indices_dump].float() @ model._proj_32).cpu(),
                                     'view_dis': vd_val.cpu(),
+                                    'soft_view_var': svv_val.float().cpu(),
                                     'range': r_val.float().cpu(),
                                     'intensity': i_val.float().cpu(),
                                     'pseudo_c': pseudo_labels[indices_dump].float().cpu(),
@@ -711,10 +758,11 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                 else:
                     logger.info(f"\n[Test D1] Complementarity AUROC: N/A (no valid epistemic-rejected points or single class)")
 
-                # Test D2: Matched-Rate Contingency Table
+                # Test D2: Matched-Rate Contingency Table (ranking on raw geom_score instead of saturated decay)
                 epi_adm_rate = (e_all[gt_valid_all] >= 0.5).float().mean().item()
-                th_geom = torch.quantile(g_all[gt_valid_all], max(0.0, min(1.0, 1.0 - epi_adm_rate))).item()
-                ga_matched = (g_all[gt_valid_all] >= th_geom)
+                g_score_to_eval = torch.cat(model._decay_logs['geom_score']).float() if len(model._decay_logs.get('geom_score', [])) > 0 else g_all
+                th_geom = torch.quantile(g_score_to_eval[gt_valid_all], max(0.0, min(1.0, 1.0 - epi_adm_rate))).item()
+                ga_matched = (g_score_to_eval[gt_valid_all] >= th_geom)
                 ea_valid = (e_all[gt_valid_all] >= 0.5)
                 corr_valid = gt_corr_all[gt_valid_all]
                 
@@ -995,6 +1043,7 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device, dry_
     # Pass 2: Calculate per-class density standard deviation and cos similarity statistics
     all_dists_per_class = {c: [] for c in range(num_classes)}
     all_cos_per_class = {c: [] for c in range(num_classes)}
+    all_latents_per_class = {c: [] for c in range(num_classes)}
     
     with torch.no_grad():
         for batch_idx, batch_data in enumerate(tqdm(dataloader, desc="Populating Source Stats")):
@@ -1031,6 +1080,7 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device, dry_
                     if c_mask.any():
                         all_dists_per_class[c].append(dists[c_mask].cpu())
                         all_cos_per_class[c].append(true_cos[c_mask].cpu())
+                        all_latents_per_class[c].append(latent_valid[c_mask].cpu())
     
     model.source_density_mean = torch.zeros(num_classes, device=device)
     model.source_density_std = torch.zeros(num_classes, device=device)
@@ -1057,6 +1107,7 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device, dry_
     global_cos_mean = global_cos_tensor.mean().item()
     global_cos_std = global_cos_tensor.std().item()
     
+    source_bank_list = []
     for c in range(num_classes):
         if len(all_dists_per_class[c]) > 0:
             c_dists = torch.cat(all_dists_per_class[c], dim=0)
@@ -1071,7 +1122,15 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device, dry_
             model.source_density_std[c] = global_dist_std
             model.source_mu_cos[c] = global_cos_mean
             model.source_sigma_cos[c] = global_cos_std
-    
+        if len(all_latents_per_class[c]) > 0:
+            c_latents = torch.cat(all_latents_per_class[c], dim=0)
+            if len(c_latents) > 50:
+                perm = torch.randperm(len(c_latents))[:50]
+                source_bank_list.append(c_latents[perm])
+            else:
+                source_bank_list.append(c_latents)
+                
+    model.source_bank = torch.cat(source_bank_list, dim=0).to(device) if len(source_bank_list) > 0 else None
     model.source_class_freq = (class_latent_counts / class_latent_counts.sum()).cpu()
     return {
         'source_density_mean': model.source_density_mean,
@@ -1079,7 +1138,8 @@ def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device, dry_
         'source_mu_cos': model.source_mu_cos,
         'source_sigma_cos': model.source_sigma_cos,
         'drift_mu_0': model.drift_mu_0.clone().cpu(),
-        'source_class_freq': model.source_class_freq
+        'source_class_freq': model.source_class_freq,
+        'source_bank': model.source_bank.cpu() if model.source_bank is not None else None
     }
 
 def main():
@@ -1109,7 +1169,7 @@ def main():
     parser.add_argument('--kappa', type=float, default=15.0, help='Logit scale kappa used with tau. Controls evidence weighting vs prior.')
     parser.add_argument('--normalize_weights', action='store_true', help='Force weights to be normalized after every update (disables Bayesian Momentum accumulator).')
     parser.add_argument('--mv_tta', type=str, default='none', help='Multi-View TTA method. Options: none, conf_pred, veto_disagree')
-    parser.add_argument('--gate_mode', type=str, default='epistemic', help='Uncertainty gating strategy: epistemic, geometric, and_gate, or_gate')
+    parser.add_argument('--gate_mode', type=str, default='epistemic', help='Uncertainty gating strategy: epistemic, geometric, and_gate, or_gate, oracle')
     parser.add_argument('--dynamic_geom', action='store_true', help='Use running batch EMA variance for geometric HDC density thresholding.')
     parser.add_argument('--no_diagnostics', action='store_false', dest='diagnostics', help='Disable heavy diagnostic tracking.')
     parser.add_argument('--dump_features', action='store_true', default=False, help='Dump per-point feature tensors for Test D5/D6 offline probe.')
@@ -1241,7 +1301,8 @@ def main():
         'source_mu_cos': getattr(base_model, 'source_mu_cos', None),
         'source_sigma_cos': getattr(base_model, 'source_sigma_cos', None),
         'drift_mu_0': getattr(base_model, 'drift_mu_0', None),
-        'source_class_freq': getattr(base_model, 'source_class_freq', None)
+        'source_class_freq': getattr(base_model, 'source_class_freq', None),
+        'source_bank': getattr(base_model, 'source_bank', None)
     }
 
     clean_state_dict = torch.load(args.pretrained_path, map_location=device)
@@ -1285,6 +1346,7 @@ def main():
         model.source_sigma_cos = source_stats_cache['source_sigma_cos'].to(device) if source_stats_cache['source_sigma_cos'] is not None else None
         model.drift_mu_0 = source_stats_cache['drift_mu_0'].to(device) if source_stats_cache['drift_mu_0'] is not None else None
         model.source_class_freq = source_stats_cache['source_class_freq'].to(device) if source_stats_cache['source_class_freq'] is not None else None
+        model.source_bank = source_stats_cache['source_bank'].to(device) if source_stats_cache.get('source_bank') is not None else None
 
     for current_method, full_method_name in zip(methods_to_run, full_method_names):
         logger.info(f"=========================================")
@@ -1351,7 +1413,7 @@ def main():
             try:
                 if not args.continual and (not args.chunked or args.reset_per_corruption):
                     # Pass 1: True Initial (Frozen on chunk)
-                    init_key = (ctype, sev, args.tau, args.ic_method, args.mv_tta, args.gate_mode, args.chunked)
+                    init_key = (ctype, sev, args.tau, args.ic_method, args.kappa, args.mv_tta, args.gate_mode, args.chunked)
                     if init_key not in shared_init_metrics:
                         logger.debug("  -> Pass 1: Computing True Initial metrics (Frozen)")
                         init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom, dump_features=args.dump_features, diagnostics=args.diagnostics)

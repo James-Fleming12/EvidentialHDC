@@ -9,7 +9,7 @@
 * **Core Contributions:**
   1. **Multi-View Epistemic Disagreement Veto (MV-2):** A lightweight Dirichlet uncertainty gating mechanism that actively rejects high-error pseudo-labels during online adaptation.
   2. **Synergistic Prior Calibration ($\tau=-1.0$):** Demonstrating that prior-calibrated evidential density stabilizes mid- and tail-class prototypes during TTA.
-  3. **Dual-Uncertainty Complementarity:** Re-evaluating the union of Geometric (HDC Latent Free Energy) and Network (Dirichlet) uncertainty without representation shrinkage.
+  3. **Multi-Signal Complementarity (Reference $\times$ Metric $\times$ Aggregation):** Demonstrating that geometric Mahalanobis distance and evidential Dirichlet density provide complementary filtering not because of distinct feature spaces (which are near-isomorphic, $r=0.9953$), but through orthogonal mathematical formulations of reference, metric, and aggregation.
   4. **Physics-Based Plasticity (The Global Spring):** A self-regulating momentum vector that automatically thaws frozen class prototypes upon detecting domain shifts, enabling continual learning without catastrophic forgetting.
 
 ---
@@ -47,17 +47,38 @@
 
 ---
 
-## 3. Re-Evaluating Dual-Uncertainty Gating (Geometric HDC + Network Epistemic Density)
+### 3. Re-Evaluating Multi-Signal Complementarity & Gating Mechanics (Calibrated Regime)
 * **The Core Scientific Question:** While Phase 1/2 sidelined purely geometric **HDC Latent Density (128D Isotropic Euclidean Z-Score Density)** due to representation shrinkage under strict logical `AND` gating, Phase 3 re-evaluates whether combining Geometric HDC and Network Epistemic uncertainty is fundamentally beneficial when decoupled via logical `OR` gating or adaptive thresholding.
-* **The 7-Test Factorial Evaluation Suite (`run_section3_tests.sh`):**
-  We implement a comprehensive $2 \times 2$ factorial plus adaptive thresholding suite across the diagnostic corruption panel (`beam_missing`, `wet_ground`, `motion_blur`) to isolate the individual and interactive contributions of dual-uncertainty gating and multi-view consensus:
-  1. **`[Test 1/7]` Multi-View Epistemic Baseline (`--gate_mode epistemic --mv_tta veto_disagree`)**: Standard Dirichlet evidence gating with multi-view consensus.
-  2. **`[Test 2/7]` Multi-View Geometric Baseline (`--gate_mode geometric --mv_tta veto_disagree`)**: Pure 128D Isotropic Euclidean Z-Score distance gating ($\exp(-2 \cdot \text{relu}(z - 0.5))$).
-  3. **`[Test 3/7]` Logical AND Intersection (`--gate_mode and_gate --mv_tta veto_disagree`)**: Admits points only if both gates agree ($\min(\text{geom}, \text{epi})$), testing the over-gating / representation shrinkage hypothesis.
-  4. **`[Test 4/7]` Logical OR Union (`--gate_mode or_gate --mv_tta veto_disagree`)**: Admits points if *either* gate is confident ($\max(\text{geom}, \text{epi})$), testing whether geometric density rescues hard true-positive examples.
-  5. **`[Test 5/7]` Single-View Epistemic Control (`--gate_mode epistemic --mv_tta none`)**: Isolates Dirichlet gating without multi-view consensus.
-  6. **`[Test 6/7]` Single-View OR Control (`--gate_mode or_gate --mv_tta none`)**: Enables a clean $2 \times 2$ factorial ANOVA (`[Epistemic vs OR-Gate] × [Single-View vs Multi-View]`) to prove whether cross-view consensus provides an orthogonal signal.
-  7. **`[Test 7/7]` Dynamic Geometric Normalization (`--gate_mode or_gate --dynamic_geom --mv_tta veto_disagree`)**: Replaces frozen source variance with running batch variance ($0.95 \sigma_{\text{running}} + 0.05 \sigma_{\text{batch}}$) to establish soft decision boundaries under feature scale drift.
+* **The Calibrated 6-Test Factorial Suite & Oracle Ceiling (`run_full_diagnostic_sweep.sh`):**
+  We implement a comprehensive factorial suite across the diagnostic corruption panel (`snow-3`, `beam_missing-3`, `wet_ground-3`) under our validated synergistic prior calibration ($\tau = -1.0$, `ic_method = ic4`, `--dynamic_geom` enforced across all runs to prevent confounders):
+  1. **`[Test 1/6]` Multi-View Epistemic Baseline (`--gate_mode epistemic --mv_tta none`)**: Standard Dirichlet evidence gating without multi-view consensus.
+  2. **`[Test 2/6]` Epistemic + MV-2 Veto Disagreement (`--gate_mode epistemic --mv_tta veto_disagree`)**: Isolates the additive benefit of cross-view disagreement filtering.
+  3. **`[Test 3/6]` Pure Geometric Z-Score Gating (`--gate_mode geometric --dynamic_geom --mv_tta none`)**: 128D Isotropic Euclidean Z-Score distance gating ($\exp(-2 \cdot \text{relu}(z - 0.5))$) with dynamic running variance.
+  4. **`[Test 4/6]` Logical OR Union (`--gate_mode or_gate --dynamic_geom --mv_tta none`)**: Admits points if *either* gate is confident ($\max(\text{geom}, \text{epi})$), testing whether geometric density rescues hard true-positive examples.
+  5. **`[Test 5/6]` Logical AND Intersection (`--gate_mode and_gate --dynamic_geom --mv_tta none`)**: Admits points only if both gates agree ($\min(\text{geom}, \text{epi})$), testing the over-gating / representation shrinkage hypothesis.
+  6. **`[Test 6/6]` Oracle Ceiling (`--gate_mode oracle --dynamic_geom --mv_tta none`)**: Sets the definitive upper performance ceiling by admitting pseudo-labels if and only if they match ground truth.
+
+* **Part 2: The 12-Signal Breadth Catalogue for Offline Probe (`--dump_features`):**
+  Instead of running dozens of separate online gating adaptations, we execute a single-pass feature dump logging **all 12 candidate signals** alongside ground truth correctness across valid points (subsampled to $\le 1,000$ points/frame for memory efficiency):
+  * **Family N (Evidential / Probabilistic):**
+    1. `N1_epi_score`: Dirichlet Epistemic Uncertainty / Evidence Decay ($-u$).
+    2. `N2_msp`: Maximum Softmax Probability.
+    3. `N3_margin`: Top-1 minus Top-2 Logit Difference.
+    4. `N4_neg_entropy`: Shannon Entropy of Softmax Distribution ($-H$).
+    5. `N5_pos_energy`: Free Energy / Log-Sum-Exp Logits ($-E$).
+    6. `N6_neg_mi`: Dirichlet Mutual Information / Aleatoric Decomposition.
+  * **Family G (Geometric / HDC):**
+    7. `G1_z_score`: 128D Isotropic Euclidean Z-Score Density.
+    8. `G2_neg_rel_mahal`: Relative Mahalanobis Distance to Own vs. Nearest Other Class Centroid.
+    9. `G3_neg_knn_dist`: 5-NN Distance in Saved 50-Point per-Class Source Bank.
+    10. `G5_latent_norm`: L2 Norm of 128D Latent Feature Vector.
+  * **Family V (Perturbation / Cross-View):**
+    11. `V1_neg_view_dis`: Multi-View Cross-Projection Disagreement Flag from MV-2.
+    12. `V2_neg_view_var`: Soft Inter-View Softmax Probability Variance across base, m1, m2 views.
+  * **Family I (Raw Input / Sensor):**
+    13. `I1_neg_range`: LiDAR Point Distance from Sensor.
+    14. `I2_intensity`: Return Reflection Intensity.
+  *(Note: `latent_proj` also stores a reproducible 32D random orthogonal projection to preserve isometric variance without channel truncation).*
 
 ### 3.1 Advanced Instrumentation & Statistical Diagnostic Tracking
 To definitively answer the Section 3 research questions without hidden confounders, `unsup_kitti-c.py` implements three specialized tracking layers:
@@ -65,65 +86,89 @@ To definitively answer the Section 3 research questions without hidden confounde
 * **Decay Distribution Statistics & Saturation Diagnostics:** Logs full distribution quantiles (`mean`, `median`, `p10`, `p90`), the **`Fraction < 0.01`** for geometric decay (to detect exponential distance saturation in 128D space), and the **Pearson Correlation** ($r$) between geometric and epistemic decay values across valid points.
 * **Tail-Class TP / FP / FN Decomposition:** Decomposes initial and final Confusion Matrices for vulnerable tail classes (`Bicycle [2]`, `Bus [3]`, `Motorcycle [6]`, `Person [7]`, `Truck [10]`), explicitly logging $\Delta\text{TP}$, $\Delta\text{FP}$, and $\Delta\text{FN}$ to reveal whether adaptation trades False Negatives for False Positives or genuinely eliminates errors.
 
-### 3.2 Empirical Findings & Critical Analysis from the Completed Factorial Sweep (`clean_sweep_summary.txt`)
-Parsing the completed 3×3 factorial evaluation suite across the diagnostic corruption panel (`snow-3`, `beam_missing-3`, `wet_ground-3`) reveals profound insights into high-dimensional distance kernels, gating complementarity, and the exact mathematical reason why naive dual-gating architectures fail.
+### 3.2 Empirical Findings & Critical Analysis (Calibrated Tau = -1.0 Regime)
+All diagnostic evaluations must be measured under our validated synergistic prior calibration ($\tau = -1.0$, `ic_method = ic4`), where initial baseline mIoU starts at **$0.4682$ on snow-3**, **$0.4469$ on beam_missing-3**, and **$0.4209$ on wet_ground-3**. Below is the experimental framework for the calibrated sweep against the Oracle ceiling:
 
-#### 1. Factorial Evaluation Results & The Main Takeaway
-The sweep decisively proves that **Epistemic Gating (Dirichlet Evidence Decay)** is the primary engine of online adaptation and tail-class recovery. Crucially, our main takeaway is that **naive logical dual-gating architectures (`AND-Gate` and `OR-Gate`) do not improve upon pure Epistemic Gating**:
-
-| Gating Architecture | Corruption Axis | Initial mIoU | Final Frozen mIoU | Gain ($\Delta$ mIoU) | Tail mIoU (Init $\rightarrow$ Final) | Overall Accuracy | Firing Rate |
+| Gating Architecture | Corruption Axis | Initial mIoU ($\tau=-1.0$) | Final Frozen mIoU | Gain ($\Delta$ mIoU) | Tail mIoU (Init $\rightarrow$ Final) | Overall Accuracy | Firing Rate |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Epistemic Baseline (`mv_tta=none`)** | `snow-3` | 0.3628 | **0.4520** | **+0.0892** | 0.0507 $\rightarrow$ **0.2490** | 87.12% | 44.53% |
-| | `beam_missing-3` | 0.3656 | **0.4279** | **+0.0623** | 0.0357 $\rightarrow$ **0.1368** | 86.77% | 49.77% |
-| | `wet_ground-3` | 0.4175 | **0.5458** | **+0.1283** | 0.1360 $\rightarrow$ **0.4185** | 92.75% | 64.80% |
-| **Epistemic + MV-2 (`veto_disagree`)** | `snow-3` | 0.3628 | **0.4520** | **+0.0892** | 0.0507 $\rightarrow$ **0.2491** | 87.13% | 44.49% |
-| | `beam_missing-3` | 0.3656 | **0.4279** | **+0.0623** | 0.0357 $\rightarrow$ **0.1367** | 86.76% | 49.75% |
-| | `wet_ground-3` | 0.4175 | **0.5453** | **+0.1278** | 0.1360 $\rightarrow$ **0.4187** | 92.74% | 64.79% |
-| **Geometric Z-Score (`dynamic_geom`)**| `snow-3` | 0.3628 | 0.3778 | +0.0150 | 0.0507 $\rightarrow$ 0.0444 | 81.97% | 82.41% |
-| | `beam_missing-3` | 0.3656 | 0.3703 | +0.0047 | 0.0357 $\rightarrow$ 0.0349 | 81.62% | 83.78% |
-| | `wet_ground-3` | 0.4175 | 0.4011 | −0.0164 | 0.1360 $\rightarrow$ 0.1261 | 83.33% | 83.52% |
-| **Logical OR-Gate ($\max(\text{geom}, \text{epi})$)** | `snow-3` | 0.3628 | 0.3766 | +0.0138 | 0.0507 $\rightarrow$ 0.0428 | 81.93% | 86.11% |
-| | `beam_missing-3` | 0.3656 | 0.3687 | +0.0031 | 0.0357 $\rightarrow$ 0.0342 | 81.58% | 88.61% |
-| | `wet_ground-3` | 0.4175 | 0.3986 | −0.0189 | 0.1360 $\rightarrow$ 0.1239 | 82.92% | 88.04% |
-| **Logical AND-Gate ($\min(\text{geom}, \text{epi})$)**| `snow-3` | 0.3628 | **0.4515** | **+0.0887** | 0.0507 $\rightarrow$ **0.2488** | 87.12% | 41.53% |
-| | `beam_missing-3` | 0.3656 | **0.4277** | **+0.0621** | 0.0357 $\rightarrow$ **0.1368** | 86.76% | 45.01% |
-| | `wet_ground-3` | 0.4175 | **0.5442** | **+0.1267** | 0.1360 $\rightarrow$ **0.4182** | 92.76% | 61.54% |
+| **Epistemic Baseline (`none`)** | `snow-3` / `beam_missing-3` / `wet_ground-3` | `[TODO]` | `[TODO]` | `[TODO]` | `[TODO]` | `[TODO]` | `[TODO]` |
+| **Epistemic + MV-2 (`veto_disagree`)**| `snow-3` / `beam_missing-3` / `wet_ground-3` | `[TODO]` | `[TODO]` | `[TODO]` | `[TODO]` | `[TODO]` | `[TODO]` |
+| **Geometric Z-Score (`dynamic_geom`)**| `snow-3` / `beam_missing-3` / `wet_ground-3` | `[TODO]` | `[TODO]` | `[TODO]` | `[TODO]` | `[TODO]` | `[TODO]` |
+| **Logical OR-Gate ($\max(\text{geom}, \text{epi})$)** | `snow-3` / `beam_missing-3` / `wet_ground-3` | `[TODO]` | `[TODO]` | `[TODO]` | `[TODO]` | `[TODO]` | `[TODO]` |
+| **Logical AND-Gate ($\min(\text{geom}, \text{epi})$)**| `snow-3` / `beam_missing-3` / `wet_ground-3` | `[TODO]` | `[TODO]` | `[TODO]` | `[TODO]` | `[TODO]` | `[TODO]` |
+| **Oracle Ceiling (`gt_corr`)** | `snow-3` / `beam_missing-3` / `wet_ground-3` | `[TODO]` | `[TODO]` | `[TODO]` | `[TODO]` | `[TODO]` | `[TODO]` |
 
-#### 2. Why Naive Dual Gating Fails (The Mathematical & Physical Insights)
-The empirical divergence between logical combinations explains why symmetric dual gating fails and points directly to the mechanics required for a winning architecture:
-* **Why `OR-Gate` Floods the Network with Noise ($\approx -8\%$ to $-14\%$ mIoU drop vs. Epistemic):**
-  Geometric Mahalanobis distance alone is permissive, firing at **82%–83%** across corruptions. In OOD LiDAR point clouds, boundary noise, multipath reflections, and scattering artifacts sit spatially near class centroids in 128D feature space, but exhibit degraded Dirichlet evidence (high softmax entropy). Epistemic Gating correctly recognizes this ambiguity and issues a veto. However, because `OR-Gate` evaluates $\max(\text{geom}, \text{epi})$, high geometric confidence overrides the epistemic veto, injecting massive amounts of false-positive noise into the pseudo-label momentum updates and collapsing Tail mIoU (e.g., from $0.4185$ down to $0.1239$ on wet ground).
-* **Why `AND-Gate` Starves Tail Classes ($\approx -0.05\%$ to $-0.16\%$ mIoU drop vs. Epistemic):**
+#### 1. Why Naive Dual Gating Fails (The Mathematical & Physical Insights)
+Previous uncalibrated diagnostics established why symmetric logical combinations ($\min()$ / $\max()$) fail and point directly to the mechanics required for a winning architecture:
+* **Why `OR-Gate` Floods the Network with Noise:**
+  Geometric Mahalanobis distance alone is permissive, firing at **82%–83%** across corruptions. In OOD LiDAR point clouds, boundary noise, multipath reflections, and scattering artifacts sit spatially near class centroids in 128D feature space, but exhibit degraded Dirichlet evidence (high softmax entropy). Epistemic Gating correctly recognizes this ambiguity and issues a veto. However, because `OR-Gate` evaluates $\max(\text{geom}, \text{epi})$, high geometric confidence overrides the epistemic veto, injecting false-positive noise into the pseudo-label momentum updates and collapsing Tail mIoU.
+* **Why `AND-Gate` Starves Tail Classes:**
   `AND-Gate` evaluates $\min(\text{geom}, \text{epi})$, requiring both gates to agree. Because it is strictly dominated by Epistemic rejection, if Epistemic Gating rejects a point, `AND-Gate` *always* rejects it as well. Therefore, `AND-Gate` can never rescue a single discarded true-positive! Instead, it only ends up discarding an extra $\sim 3,000$ to $15,000$ points where Epistemic admitted but Geometric rejected (`Geom Rejects / Epi Admits`), slightly starving rare tail classes of adaptation momentum.
 
-#### 3. The 92%-Pure Rescue Cell Goldmine (Mandate for Section 4)
-While naive symmetric combinations fail, our advanced diagnostic tracking (Tests D0–D7) proves that an exceptionally high-quality geometric signal exists inside the discarded epistemic subset, establishing the exact foundation for our next architectural phase:
-* **The Rescue Cell is 92.07% Pure (`[Section 3.2]` Contingency Table):** On `snow-3` alone, out of 203,605 evaluated points, Dirichlet Epistemic decay rejects **155,404 points** that Isotropic Euclidean Z-Score density admits (`Geom Admits / Epi Rejects`). Crucially, the precision of these rejected points in the Rescue Cell is an astounding **92.07%**! This proves empirically that Dirichlet evidence decay is slightly over-conservative on OOD LiDAR frames, discarding over 150,000 high-precision true positives per sequence.
-* **Test D1 Complementarity AUROC is 0.8296:** On the exact subset of points discarded by Epistemic Gating, the Geometric Mahalanobis score separates True Positives from False Positives with an **AUROC of 0.8296** ($0.8278$ on dry run). This confirms that geometric distance in 128D space is an orthogonal, highly reliable discriminator on epistemic rejects.
-* **Test D0 Cross-Space Isometry:** Distances in the 128D latent space preserve 10,000D HDC prototype geometry with near-perfect correlation (**Pearson $r = 0.9953$, Spearman $\rho = 0.9990$** over random point pairs), confirming that dimensional compression introduces zero geometric distortion.
+#### 2. The Rescue Cell & Complementarity Goldmine (Mandate for Section 4)
+While naive symmetric combinations fail, our advanced diagnostic tracking proves that an exceptionally high-quality true-positive signal exists inside the discarded epistemic subset:
+* **Test D2 Ranking on Raw Geom Score:** By thresholding and ranking on raw `geom_score` ($-z$) rather than saturated exponential decay (`g_all`), we avoid tie-collapse at $1.0$ and isolate high-precision true positives that Dirichlet evidence decay over-conservatively discards.
+* **Test D1 Complementarity AUROC:** On the exact subset of points discarded by Epistemic Gating (`epi_score < 0`), geometric Mahalanobis distance separates True Positives from False Positives with high AUROC ($> 0.82$), confirming it is an orthogonal, highly reliable discriminator on epistemic rejects.
+* **Isometry vs. Multi-Signal Complementarity:** Distances in the 128D latent space preserve 10,000D HDC prototype geometry with near-perfect correlation (**Pearson $r = 0.9953$**), confirming that dimensional compression introduces zero geometric distortion. Thus, complementarity arises from reference $\times$ metric $\times$ aggregation, not from distinct geometric feature spaces.
 
-**Architectural Conclusion & Transition to Section 4:** 
-Because symmetric $\min()$ / $\max()$ logic cannot exploit dual-uncertainty complementarity without either leaking noise (`OR`) or blocking recovery (`AND`), Section 4 must move beyond symmetric combination to design an **Asymmetric / Selective Rescue Gating Architecture**. By using Epistemic Gating as the primary filter and applying a strict, high-precision Geometric Rescue threshold (e.g., harvesting the top 15% of Test D1's ROC curve) exclusively to epistemic rejects, we can selectively assimilate those 92%-pure true positives without opening the floodgates to OOD noise.
+## 4. Designing an Asymmetric Dual-Gating Architecture (Selective Rescue & Complementary Fusion)
+Having proven in Section 3 that symmetric logical combinations ($\min()$ / $\max()$) fail, and having isolated high-precision true-positive signals inside the epistemic rejection subset, this section establishes the architectural blueprint and experimental roadmap for achieving true dual-uncertainty complementarity.
+
+### 4.1 Candidate Asymmetric Dual-Gating Architectures
+To selectively harvest high-precision points from the Rescue Cell without allowing in OOD boundary noise, we formulate three candidate asymmetric gating modules to be tested online:
+1. **Hypothesis A: Conditional High-Precision Geometric Rescue (`rescue_gate` / Cascade)**
+   * **Mechanism:** Use Dirichlet Epistemic Gating ($u_{\text{epi}}$) as the primary admission filter. When a pseudo-label fails epistemic admission ($u_{\text{epi}} > \text{th}_{\text{epi}}$), pass it to a secondary geometric rescue filter that requires strict Isotropic Euclidean Z-Score confidence: $z_{\text{geom}} \le \text{th}_{\text{rescue}}$.
+   * **Scientific Rationale:** By setting $\text{th}_{\text{rescue}}$ to harvest only the top 10%–15% most confident geometric points (the highest-precision tier of Test D1's ROC curve), we recover valid tail examples from the discarded pool while maintaining ~95%+ pseudo-label purity.
+2. **Hypothesis B: Adaptive 2D Ellipsoidal Decision Boundary (`ellipsoid_gate` / Quadratic)**
+   * **Mechanism:** Define a smooth 2D confidence profile over $(u_{\text{epi}}, z_{\text{geom}})$ where admission requires:
+     $$ \left(\frac{u_{\text{epi}}}{a}\right)^2 + \left(\frac{\text{relu}(z_{\text{geom}} - 0.5)}{b}\right)^2 \le 1.0 $$
+   * **Scientific Rationale:** Replaces orthogonal scalar cuts with a continuous decision boundary, allowing points with moderate epistemic uncertainty to be admitted if their geometric Mahalanobis distance to the prototype is exceptionally small, and vice versa.
+3. **Hypothesis C: Dynamic Multi-Metric Momentum Modulation (`soft_dual_weight` / Linear Ramp)**
+   * **Mechanism:** Instead of binary hard gating, modulate the pseudo-label momentum weight $w_i$ during prototype adaptation:
+     $$ w_i = \exp\left(-\lambda_1 u_{\text{epi}} - \lambda_2 \cdot \text{relu}(z_{\text{geom}} - 0.5)\right) $$
+   * **Scientific Rationale:** Enforces soft complementary plasticity—admitted points update class prototypes proportionally to their joint multi-metric confidence (reference $\times$ metric $\times$ aggregation), preventing slightly ambiguous points from destabilizing tail-class centroids.
+
+### 4.2 Benchmark Protocol & Synergistic Preservation
+All candidate architectures will be evaluated on our standard unsupervised **KITTI $\rightarrow$ KITTI-C** benchmark across the primary diagnostic corruption panel (`snow`, `beam_missing`, `wet_ground`, `motion_blur`, `fog` at severity 3). Crucially, to determine what works best in the complete integrated system, all experiments must preserve our validated Phase 2 and Section 3 synergistic mechanisms:
+* **Synergistic Prior Calibration ($\tau=-1.0$):** Maintains the calibrated initial geometric anchor to prevent early prototype collapse.
+* **Multi-View Disagreement Veto (`mv_tta=veto_disagree`):** Continues enforcing temporal/spatial projection consistency, filtering out cross-view boundary noise before dual gating is evaluated.
+* **Dynamic Geometric Normalization (`--dynamic_geom`):** Utilizes running batch variance ($0.95 \sigma_{\text{running}} + 0.05 \sigma_{\text{batch}}$) to track feature scale drift without static distance kernel collapse.
+
+### 4.3 Implementation & Experimental Roadmap
+* **Step 1. Offline 12-Signal Probe & 2D Boundary Fitting (`analyze_12signal_dump.py`):**
+  * Scan the feature dump tensors exported by `--dump_features` (`logs/d5_d6_features_dump/*.pt`) to evaluate all 12 candidate signals.
+  * Compute **Complementarity AUROC** (Test D1 Generalized) on the Epistemic-Rejected subset.
+  * Calculate **Harvestable Yield** (number of rescued points while maintaining $\text{Precision} \ge P_{\text{epi\_admitted}} \approx 98.8\%$).
+  * Construct the **Pairwise Pearson Correlation Matrix** to verify orthogonality between evidential, geometric, and cross-view perturbation signals.
+  * Fit and compare 2D decision boundary models (Cascade vs. Linear Ramp vs. Quadratic Ellipsoid) on `(epi_score, z_score)` or the top orthogonal pair to promote only the winning 1–2 architectures.
+* **Step 2. Implement Candidate Asymmetric Gates in `unsup_kitti-c.py`:**
+  * Implement CLI flag options `--gate_mode rescue_gate`, `--gate_mode ellipsoid_gate`, and `--gate_mode soft_dual_weight` inside `evaluate_and_adapt`.
+  * Wire the gates to expose running diagnostic counters: `Rescue Cell N`, `Rescue Cell Precision`, and `Veto Disagreement Purity`.
+* **Step 3. Execute Online KITTI $\rightarrow$ KITTI-C Comparative Adaptation Sweep:**
+  * Launch the promoted candidate architectures across `snow-3`, `beam_missing-3`, and `wet_ground-3` under $\tau=-1.0$.
+  * Document final frozen mIoU, overall accuracy, tail-class recovery deltas ($\Delta\text{TP} / \Delta\text{FP}$), and Firing Rates against the Epistemic baseline and Oracle ceiling.
+* **Step 4. Synergistic Ablation Study:**
+  * Conduct an ablation matrix on the winning dual gate by toggling `--mv_tta none` vs. `--mv_tta veto_disagree` and `--tau 0.0` vs. `--tau -1.0` to confirm additive and multiplicative gains across temporal consistency and class balance mechanisms.
 
 ---
 
-## 4. Physics-Based Plasticity & Continual Learning Dynamics
-### 4.1 The Starvation-Thawing Hypothesis
+## 5. Physics-Based Plasticity & Continual Learning Dynamics
+### 5.1 The Starvation-Thawing Hypothesis
 * Analysis of the S2 Norm-Driven Dynamic Learning Rate schedule and the vulnerability of permanently frozen momentum vectors ($M_c$) when encountering sudden domain transitions.
 
-### 4.2 Uncoupling the Spring from the Firing Loop
+### 5.2 Uncoupling the Spring from the Firing Loop
 * Mathematical formulation of the unconditional global anchor spring:
   $$ M_c \leftarrow (1-k)M_c + k \cdot 1.0 $$
 * **Mechanism:** Confident classes fire frequently, maintaining inflated $M_c$ (frozen stability). Upon encountering a domain shift, error-generating classes are vetoed by Dirichlet gates; as they starve, the global spring erodes $M_c$ back to $1.0$, automatically **"thawing"** the class for rapid adaptation.
 
-### 4.3 `[TODO]` Continual Pipeline Implementation & Empirical Validation
+### 5.3 `[TODO]` Continual Pipeline Implementation & Empirical Validation
 * **`[TODO]`** Modify the core adaptation loop in `unsup_kitti-c.py` with the `--continual` flag (disabling weight resets between sequences).
 * **`[TODO]`** Evaluate continuous trajectory execution across sequential domain shifts (e.g., Clean $\rightarrow$ Snow $\rightarrow$ Rain $\rightarrow$ Night).
 
 ---
 
-## 5. Comprehensive Multi-Corruption Evaluation & Generalization
-### 5.1 Benchmark Protocol Across the Diagnostic Panel
+## 6. Comprehensive Multi-Corruption Evaluation & Generalization
+### 6.1 Benchmark Protocol Across the Diagnostic Panel
 * Definition of the 5-corruption diagnostic panel covering the primary physical axes of LiDAR sensor degradation:
   1. *Sensor Sparsity / Beam Dropout* (`beam_missing`)
   2. *Specular Reflections / Multipath Ground Returns* (`wet_ground`)
@@ -131,7 +176,7 @@ Because symmetric $\min()$ / $\max()$ logic cannot exploit dual-uncertainty comp
   4. *Temporal Dynamics / Ego-Motion Artifacts* (`motion_blur`)
   5. *Adverse Weather / Precipitation* (`snow`)
 
-### 5.2 Comparative Analysis Across LiDAR Degradation Axes (Overnight Benchmark Results)
+### 6.2 Comparative Analysis Across LiDAR Degradation Axes (Overnight Benchmark Results)
 * **Empirical Results Table (Severity 3, Clean Pre-trained Anchor $w_0$):**
   The overnight suite (`run_phase3_overnight.sh`) evaluated all 6 method-prior combinations across the diagnostic panel, demonstrating the universal generalization of Synergistic Prior Calibration ($\tau=-1.0$):
 
@@ -146,5 +191,5 @@ Because symmetric $\min()$ / $\max()$ logic cannot exploit dual-uncertainty comp
   1. **Universality of Prior Calibration:** Across weather, sensor failure, multipath reflection, scattering, and motion artifacts, $\tau=-1.0$ prior calibration consistently provides massive geometric gains (+5.8 to +12.2 mIoU points), particularly rescuing vulnerable tail classes (Truck, Bicyclist, Traffic Sign).
   2. **Precision Tracking Purity:** In structured degradations like `beam_missing`, `veto_disagree` tracked an outstanding **91.6% to 92.8% precision on agreeing points** vs only **40.8% to 44.6% on disagreeing points**, confirming that our epistemic Dirichlet veto reliably isolates and rejects corrupted pseudo-labels across diverse LiDAR failure modes.
 
-### 5.3 `[TODO]` Forward Transfer vs Catastrophic Forgetting Metrics
+### 6.3 `[TODO]` Forward Transfer vs Catastrophic Forgetting Metrics
 * **`[TODO]`** Quantify forward transfer plasticity (adaptation speed in new domains) and catastrophic forgetting (performance degradation upon revisiting clean/earlier domains) in continual learning mode (`--continual`).
