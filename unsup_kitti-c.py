@@ -226,7 +226,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     ).reshape(num_classes, num_classes)
                     cumulative_confusion_matrix += hist
                     
-                    if mv_tta != 'none':
+                    if mv_tta != 'none' or gate_mode == 'view_var_gate':
                         agree_mask = mask & (~view_disagreement)
                         if agree_mask.any():
                             agree_hist = torch.bincount(
@@ -717,7 +717,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
             logger.info(f"  Geom Rejects / Epi Rejects: N={ct['geom_rej_epi_rej']['n'].item():,}, Prec={get_prec(ct['geom_rej_epi_rej']):.4f}")
             model._contingency_table = {k: {'n': torch.tensor(0, dtype=torch.long, device=device), 'correct': torch.tensor(0, dtype=torch.long, device=device)} for k in ct}
 
-        if hasattr(model, '_mv_contingency_table') and not eval_only and mv_tta != 'none':
+        if hasattr(model, '_mv_contingency_table') and not eval_only and (mv_tta != 'none' or gate_mode == 'view_var_gate'):
             mct = model._mv_contingency_table
             def get_prec(cell):
                 return cell['correct'].item() / cell['n'].item() if cell['n'].item() > 0 else 0.0
@@ -866,7 +866,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         logger.warning(f"Diagnostic logging (Dynamic Geom Ratio) failed non-fatally: {e}")
         
     try:
-        if mv_tta != 'none':
+        if mv_tta != 'none' or gate_mode == 'view_var_gate':
             logger = logging.getLogger("EvalAdapt")
             logger.info(f"\n[MV-2] View Disagreement Precision Tracking")
             

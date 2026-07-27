@@ -3,12 +3,13 @@
 # Dual Gating Architecture Comparative Adaptation Sweep
 # ==============================================================================
 # This script executes the online comparative adaptation sweep for Section 4.2
-# and Section 4.3 (Synergistic Ablation Study), evaluating the proposed
-# asymmetric dual-gating architectures against the epistemic baseline.
+# and Section 4.3, evaluating the proposed asymmetric dual-gating architectures.
 #
-# All tests are conducted in the calibrated regime (tau=-1.0, ic4) with
-# Multi-View Disagreement Veto (mv_tta=veto_disagree) active to preserve
-# our validated Phase 2 and Section 3 synergistic mechanisms.
+# All general candidate architectures (rescue_gate, ellipsoid_gate,
+# soft_dual_weight) are tested on the TYPICAL NON-MULTI-VIEW VARIANT
+# (mv_tta=none) to prove core gating capability.
+# Candidate D (view_var_gate) is specifically designed as a multi-view gating
+# mechanism and is therefore evaluated under multi-view (mv_tta=veto_disagree).
 # ==============================================================================
 
 export PYTORCH_ALLOC_CONF=expandable_segments:True
@@ -24,7 +25,7 @@ IC="ic4"
 
 {
     echo "=========================================================="
-    echo "Starting Dual Gating Architecture Sweep & Ablation Suite"
+    echo "Starting Dual Gating Architecture Sweep (Core Non-Multi-View Variant)"
     echo "Method: $METHOD | Panel: $PANEL | Severity: $SEV | IC: $IC | Tau: $TAU"
     echo "Started at: $(date)"
     echo "=========================================================="
@@ -39,7 +40,7 @@ IC="ic4"
       --ic_method $IC \
       --tau $TAU \
       --gate_mode soft_dual_weight \
-      --mv_tta veto_disagree \
+      --mv_tta none \
       --dynamic_geom \
       --corruptions snow \
       --severity $SEV \
@@ -50,125 +51,67 @@ IC="ic4"
 
     echo ""
     echo "=========================================================="
-    echo "Part 1: Comparative Gating Architecture Sweep (Section 4.2)"
+    echo "Comparative Gating Architecture Sweep (Section 4.2)"
     echo "=========================================================="
 
-    # --- 1. Epistemic Gating + MV-2 Veto (Baseline Reference) ---
+    # --- 1. Epistemic Gating (Baseline Reference - Non-Multi-View Variant) ---
     echo ""
     echo "----------------------------------------------------------"
-    echo "[Test 1/5] Baseline Reference: Epistemic Gating + MV-2 Veto..."
+    echo "[Test 1/6] Non-Multi-View Baseline: Epistemic Gating (mv_tta=none)..."
     echo "----------------------------------------------------------"
     uv run unsup_kitti-c.py \
       --method $METHOD \
       --ic_method $IC \
       --tau $TAU \
       --gate_mode epistemic \
-      --mv_tta veto_disagree \
+      --mv_tta none \
       --dynamic_geom \
       --corruptions $PANEL \
       --severity $SEV \
       --chunked \
       --reset_per_corruption \
-      --log_dir logs/dual_sweep_1_epi_mv2
+      --log_dir logs/dual_1_epi_nomv
 
-    # --- 2. Candidate A: Conditional High-Precision Geometric Rescue (Cascade) ---
+    # --- 2. Candidate A: Conditional High-Precision Geometric Rescue ---
     echo ""
     echo "----------------------------------------------------------"
-    echo "[Test 2/5] Candidate A: Conditional Geometric Rescue (rescue_gate)..."
+    echo "[Test 2/6] Candidate A: Conditional Rescue (rescue_gate, mv_tta=none)..."
     echo "----------------------------------------------------------"
     uv run unsup_kitti-c.py \
       --method $METHOD \
       --ic_method $IC \
       --tau $TAU \
       --gate_mode rescue_gate \
-      --mv_tta veto_disagree \
+      --mv_tta none \
       --dynamic_geom \
       --corruptions $PANEL \
       --severity $SEV \
       --chunked \
       --reset_per_corruption \
-      --log_dir logs/dual_sweep_2_rescue_gate
+      --log_dir logs/dual_2_rescue_nomv
 
-    # --- 3. Candidate B: Adaptive 2D Ellipsoidal Decision Boundary (Quadratic) ---
+    # --- 3. Candidate B: Adaptive 2D Ellipsoidal Decision Boundary ---
     echo ""
     echo "----------------------------------------------------------"
-    echo "[Test 3/5] Candidate B: Ellipsoidal Decision Boundary (ellipsoid_gate)..."
+    echo "[Test 3/6] Candidate B: Ellipsoidal Boundary (ellipsoid_gate, mv_tta=none)..."
     echo "----------------------------------------------------------"
     uv run unsup_kitti-c.py \
       --method $METHOD \
       --ic_method $IC \
       --tau $TAU \
       --gate_mode ellipsoid_gate \
-      --mv_tta veto_disagree \
+      --mv_tta none \
       --dynamic_geom \
       --corruptions $PANEL \
       --severity $SEV \
       --chunked \
       --reset_per_corruption \
-      --log_dir logs/dual_sweep_3_ellipsoid_gate
+      --log_dir logs/dual_3_ellipsoid_nomv
 
-    # --- 4. Candidate C: Dynamic Multi-Metric Momentum Modulation (Linear Ramp) ---
+    # --- 4. Candidate C: Dynamic Multi-Metric Momentum Modulation ---
     echo ""
     echo "----------------------------------------------------------"
-    echo "[Test 4/5] Candidate C: Dynamic Multi-Metric Modulation (soft_dual_weight)..."
-    echo "----------------------------------------------------------"
-    uv run unsup_kitti-c.py \
-      --method $METHOD \
-      --ic_method $IC \
-      --tau $TAU \
-      --gate_mode soft_dual_weight \
-      --mv_tta veto_disagree \
-      --dynamic_geom \
-      --corruptions $PANEL \
-      --severity $SEV \
-      --chunked \
-      --reset_per_corruption \
-      --log_dir logs/dual_sweep_4_soft_dual_weight
-
-    # --- 5. Candidate D: Cross-View Softmax Variance Gating (V2 Goldmine) ---
-    echo ""
-    echo "----------------------------------------------------------"
-    echo "[Test 5/5] Candidate D: Cross-View Softmax Variance Gating (view_var_gate)..."
-    echo "----------------------------------------------------------"
-    uv run unsup_kitti-c.py \
-      --method $METHOD \
-      --ic_method $IC \
-      --tau $TAU \
-      --gate_mode view_var_gate \
-      --mv_tta veto_disagree \
-      --dynamic_geom \
-      --corruptions $PANEL \
-      --severity $SEV \
-      --chunked \
-      --reset_per_corruption \
-      --log_dir logs/dual_sweep_5_view_var_gate
-
-    echo ""
-    echo "=========================================================="
-    echo "Part 2: Synergistic Ablation Study on soft_dual_weight (Section 4.3)"
-    echo "=========================================================="
-
-    # --- Ablation 1: Uncalibrated Regime (no tau, no IC) ---
-    echo ""
-    echo "----------------------------------------------------------"
-    echo "[Ablation 1/2] soft_dual_weight in Uncalibrated Regime (tau=None, ic_method=none)..."
-    echo "----------------------------------------------------------"
-    uv run unsup_kitti-c.py \
-      --method bm \
-      --ic_method none \
-      --gate_mode soft_dual_weight \
-      --mv_tta veto_disagree \
-      --dynamic_geom \
-      --corruptions $PANEL \
-      --severity $SEV \
-      --chunked \
-      --reset_per_corruption \
-      --log_dir logs/ablation_soft_dual_uncalibrated
-
-    # --- Ablation 2: Single-View Regime (mv_tta=none) ---
-    echo ""
-    echo "----------------------------------------------------------"
-    echo "[Ablation 2/2] soft_dual_weight without MV-2 Veto (mv_tta=none)..."
+    echo "[Test 4/6] Candidate C: Multi-Metric Modulation (soft_dual_weight, mv_tta=none)..."
     echo "----------------------------------------------------------"
     uv run unsup_kitti-c.py \
       --method $METHOD \
@@ -181,11 +124,46 @@ IC="ic4"
       --severity $SEV \
       --chunked \
       --reset_per_corruption \
-      --log_dir logs/ablation_soft_dual_nomv
+      --log_dir logs/dual_4_soft_dual_nomv
+
+    # --- 5. Candidate D: Cross-View Softmax Variance Gating (Multi-View Specific) ---
+    echo ""
+    echo "----------------------------------------------------------"
+    echo "[Test 5/6] Candidate D (Multi-View Specific): Cross-View Variance (view_var_gate, mv_tta=veto_disagree)..."
+    echo "----------------------------------------------------------"
+    uv run unsup_kitti-c.py \
+      --method $METHOD \
+      --ic_method $IC \
+      --tau $TAU \
+      --gate_mode view_var_gate \
+      --mv_tta veto_disagree \
+      --dynamic_geom \
+      --corruptions $PANEL \
+      --severity $SEV \
+      --chunked \
+      --reset_per_corruption \
+      --log_dir logs/dual_5_view_var_mv2
+
+    # --- 6. Calibration Ablation: soft_dual_weight in Uncalibrated Regime ---
+    echo ""
+    echo "----------------------------------------------------------"
+    echo "[Test 6/6] Calibration Ablation: Uncalibrated Regime (soft_dual_weight, tau=None, ic_method=none)..."
+    echo "----------------------------------------------------------"
+    uv run unsup_kitti-c.py \
+      --method bm \
+      --ic_method none \
+      --gate_mode soft_dual_weight \
+      --mv_tta none \
+      --dynamic_geom \
+      --corruptions $PANEL \
+      --severity $SEV \
+      --chunked \
+      --reset_per_corruption \
+      --log_dir logs/dual_6_uncalibrated_soft_dual
 
     echo ""
     echo "=========================================================="
-    echo "Dual Gating Sweep & Ablation Suite Completed at: $(date)"
+    echo "Dual Gating Sweep Completed Successfully at: $(date)"
     echo "=========================================================="
 
 } 2>&1 | tee $LOG_FILE

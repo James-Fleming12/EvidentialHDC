@@ -162,23 +162,25 @@ To selectively harvest high-precision points from the Rescue Cell without allowi
    * **Scientific Rationale:** Enforces soft complementary plasticity—admitted points update class prototypes proportionally to their joint multi-metric confidence (reference $\times$ metric $\times$ aggregation), preventing slightly ambiguous points from destabilizing tail-class centroids. As proven by offline probe results (Section 4.1), this linear soft weighting architecture rescues **28,744 points (+3.64% volume)** at 98.47% precision.
 
 ### 4.3 Benchmark Protocol & Synergistic Preservation
-All candidate architectures will be evaluated on our standard unsupervised **KITTI $\rightarrow$ KITTI-C** benchmark across the primary diagnostic corruption panel (`snow`, `beam_missing`, `wet_ground`, `motion_blur`, `fog` at severity 3). Crucially, to determine what works best in the complete integrated system, all experiments must preserve our validated Phase 2 and Section 3 synergistic mechanisms:
-* **Synergistic Prior Calibration ($\tau=-1.0$):** Maintains the calibrated initial geometric anchor to prevent early prototype collapse.
-* **Multi-View Disagreement Veto (`mv_tta=veto_disagree`):** Continues enforcing temporal/spatial projection consistency, filtering out cross-view boundary noise before dual gating is evaluated.
+All candidate architectures will be evaluated on our standard unsupervised **KITTI $\rightarrow$ KITTI-C** benchmark across the primary diagnostic corruption panel (`snow`, `beam_missing`, `wet_ground` at severity 3). Crucially, to isolate core gating capability and determine what works best in the integrated system, we establish a rigorous two-tier evaluation protocol:
+* **Core Non-Multi-View Evaluation (`mv_tta=none`):** All general candidate architectures (`rescue_gate`, `ellipsoid_gate`, `soft_dual_weight`) are evaluated on the typical single-view variant without multi-view augmentations. This proves that the dual-gating formulas fundamentally improve prototype adaptation on their own before any multi-view addons are attached.
+* **Multi-View Specific Evaluation (`view_var_gate` with `mv_tta=veto_disagree`):** Because Candidate D (`view_var_gate`) is explicitly designed around spatial cross-view softmax variance (`V2_neg_view_var`), it is evaluated with multi-view augmentations enabled.
+* **Synergistic Prior Calibration ($\tau=-1.0$, `ic4`):** All runs maintain calibrated initial geometric anchors to prevent early prototype collapse and tail hallucination during adaptation.
 * **Dynamic Geometric Normalization (`--dynamic_geom`):** Utilizes running batch variance ($0.95 \sigma_{\text{running}} + 0.05 \sigma_{\text{batch}}$) to track feature scale drift without static distance kernel collapse.
 
 ### 4.4 Implementation & Experimental Roadmap
 * **Step 1. Offline 12-Signal Probe & 2D Boundary Fitting (`analyze_12signal_dump.py`) [COMPLETED]:**
   * Evaluated all 12 candidate signals across 1,525,524 points (`offline_probe_results.txt`), discovering `V2_neg_view_var` (Cross-View Softmax Variance, AUROC 0.8041, +8.66% yield) and `G2_neg_rel_mahal` (AUROC 0.7929) as primary orthogonal rescue signals.
   * Proved that **Linear Ramp / Soft Weighting (`soft_dual_weight`)** rescues 28,744 points (+3.64% volume) at 98.47% precision, outperforming hard cascade and ellipsoid gating by 4.6$\times$.
-* **Step 2. Implement Candidate Asymmetric Gates in `unsup_kitti-c.py`:**
-  * Implement CLI flag options `--gate_mode rescue_gate`, `--gate_mode ellipsoid_gate`, and `--gate_mode soft_dual_weight` inside `evaluate_and_adapt`.
-  * Wire the gates to expose running diagnostic counters: `Rescue Cell N`, `Rescue Cell Precision`, and `Veto Disagreement Purity`.
-* **Step 3. Execute Online KITTI $\rightarrow$ KITTI-C Comparative Adaptation Sweep:**
-  * Launch the promoted candidate architectures across `snow-3`, `beam_missing-3`, and `wet_ground-3` under $\tau=-1.0$.
-  * Document final frozen mIoU, overall accuracy, tail-class recovery deltas ($\Delta\text{TP} / \Delta\text{FP}$), and Firing Rates against the Epistemic baseline and Oracle ceiling.
-* **Step 4. Synergistic Ablation Study:**
-  * Conduct an ablation matrix on the winning dual gate by toggling `--mv_tta none` vs. `--mv_tta veto_disagree` and `--tau 0.0` vs. `--tau -1.0` to confirm additive and multiplicative gains across temporal consistency and class balance mechanisms.
+* **Step 2. Implement Candidate Asymmetric Gates in `unsup_kitti-c.py` [COMPLETED]:**
+  * Implemented CLI flag options `--gate_mode rescue_gate`, `--gate_mode ellipsoid_gate`, `--gate_mode soft_dual_weight`, and `--gate_mode view_var_gate` inside `evaluate_and_adapt`.
+  * Wired the gates into running diagnostic tables: `Rescue Cell N`, `Rescue Cell Precision`, and MV-2 confusion tracking.
+* **Step 3. Execute Online KITTI $\rightarrow$ KITTI-C Comparative Adaptation Sweep (`run_dual_gating_sweep.sh`) [IN PROGRESS / READY FOR SERVER]:**
+  * Execute the automated sweep script on the remote server across `snow-3`, `beam_missing-3`, and `wet_ground-3` under $\tau=-1.0$.
+  * Document final frozen mIoU, overall accuracy, tail-class recovery deltas ($\Delta\text{TP} / \Delta\text{FP}$), and Firing Rates against the Epistemic baseline on the core non-multi-view variant.
+* **Step 4. Synergistic Multi-View Addon & Calibration Study:**
+  * Once core single-view superiority is proven, evaluate the winning general architecture (`soft_dual_weight`) with the multi-view addon (`--mv_tta veto_disagree`) to establish the ultimate combined SOTA ceiling.
+  * Compare against the uncalibrated regime (`--tau None --ic_method none`) to confirm the multiplicative synergy between prior calibration and dual gating.
 
 ---
 
