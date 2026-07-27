@@ -78,8 +78,8 @@ def clean_log(input_file="full_diagnostic_sweep.log", output_file="clean_sweep_s
             continue
             
         # Strip timestamp and logger prefix if present (e.g. "2026-07-26 20:19:23,260 - EvalAdapt - INFO -   ")
-        # While preserving leading spaces for indented table rows
-        cleaned_text = re.sub(r'^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2},\d{3}\s+-\s+\w+\s+-\s+(INFO|DEBUG|WARNING)\s+-\s*', '', line)
+        # While preserving leading spaces for indented table rows by matching at most one trailing space after hyphens
+        cleaned_text = re.sub(r'^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2},\d{3}\s+-\s+\w+\s+-\s+(INFO|DEBUG|WARNING)\s+-\s?', '', line)
         cleaned_text_strip = cleaned_text.strip()
         
         # Check if line matches a keep header
@@ -88,12 +88,17 @@ def clean_log(input_file="full_diagnostic_sweep.log", output_file="clean_sweep_s
             clean_lines.append(cleaned_text.rstrip())
             continue
             
-        # If we are in a capture block, keep indented continuation lines (table rows, AUROC values, precision lines)
+        # If we are in a capture block, keep continuation lines (table rows, AUROC values, precision lines, decay stats)
         if capture_block:
-            if cleaned_text.startswith("  ") or cleaned_text.startswith("\t"):
+            is_continuation = (
+                cleaned_text.startswith(" ") or 
+                cleaned_text.startswith("\t") or 
+                any(kw in cleaned_text for kw in ["N=", "AUROC", "Pearson", "Spearman", "Geom Decay:", "Epi Decay:", "Geom Admits", "Geom Rejects", "View Agree", "View Disagree", "Head Classes", "Tail Classes", "Contingency Table"])
+            )
+            if is_continuation:
                 clean_lines.append(cleaned_text.rstrip())
             else:
-                # Non-indented line ends the capture block unless it's a separator
+                # Non-continuation line ends the capture block unless it's a separator
                 if "=================" in cleaned_text or "-----------------" in cleaned_text:
                     clean_lines.append(cleaned_text.rstrip())
                 else:
