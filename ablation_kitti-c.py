@@ -211,7 +211,7 @@ def main():
     p.add_argument("--kitti_dir", default="/mnt/alpha/jmfleming/KITTI")
     p.add_argument("--kittic_dir", default="/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C")
     p.add_argument("--no_diagnostics", action="store_false", dest="diagnostics")
-    p.add_argument("--fire_th", type=float, default=0.0, help="minimum fused weight to contribute. The old code used >0, which never vetoes since exp() is strictly positive.")
+    p.add_argument("--fire_th", type=float, default=0.01, help="minimum fused weight to contribute. The old code used >0, which never vetoes since exp() is strictly positive.")
     p.add_argument("--gap_lo", type=float, default=0.35)
     p.add_argument("--gap_hi", type=float, default=0.75)
     p.add_argument("--calibrate_gap", action="store_true", help="measure mean epistemic uncertainty on CLEAN source and exit")
@@ -259,6 +259,13 @@ def main():
     nch = len(ukc.CORRUPTIONS)
     cs = total_len // nch
     chunks = [list(range(i * cs, (i + 1) * cs if i < nch - 1 else total_len)) for i in range(nch)]
+
+    # Seed before source stats (using the first seed from the list)
+    init_seed = seeds[0] if seeds else 42
+    torch.manual_seed(init_seed); torch.cuda.manual_seed_all(init_seed)
+    np.random.seed(init_seed); random.seed(init_seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
     # source stats (cached: each stage is a separate process and would otherwise
     # redo 550 frames of forward passes before any ablation starts)
@@ -381,7 +388,8 @@ def main():
                     if cfg["gain_control"] else None)
 
                 ds = dsets[ct]
-                chunk = torch.utils.data.Subset(ds, chunks[i]) if a.chunked else ds
+                chunk_idx = ukc.CORRUPTIONS.index(ct)
+                chunk = torch.utils.data.Subset(ds, chunks[chunk_idx]) if a.chunked else ds
                 dl = DataLoader(chunk, batch_size=1, shuffle=False, num_workers=ARCH["train"]["workers"])
 
                 common = dict(dry_run=a.dry_run, ic_method=cfg["ic_method"], tau=cfg["tau"],

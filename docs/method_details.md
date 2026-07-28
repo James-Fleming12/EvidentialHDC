@@ -201,35 +201,35 @@ The following tables show the independent contribution of each algorithm pillar 
 ### Ablation Table 1: Overall Benchmark Means
 | Ablation | Initial mIoU (%) | Final mIoU (%) | $\Delta$ mIoU | Initial Acc (%) | Final Acc (%) | $\Delta$ Acc |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Frozen** (No Adaptation) | 41.20 | 33.67 | -7.53 | 69.51 | 70.96 | +1.46 |
-| **No Gating** (Uniform Weighting) | 41.20 | 32.74 | -8.46 | 69.51 | 72.35 | +2.84 |
-| **No Dual Gating** (Epistemic Only) | 41.20 | 33.52 | -7.68 | 69.51 | 71.34 | +1.83 |
-| **No Temporal Cons.** (No BM Inertia) | 41.20 | 33.12 | -8.08 | 69.51 | 72.52 | +3.02 |
-| **No Inter-Class Bal.** (No Tau Shift) | 24.05 | 26.30 | +2.25 | 62.22 | 64.45 | +2.23 |
-| **No Intra-Class Bal.** (No IC4) | 41.20 | 33.42 | -7.79 | 69.51 | 72.94 | +3.43 |
-| **Full Unified Method** | 41.20 | 33.43 | -7.77 | 69.51 | 72.81 | +3.31 |
+| **Frozen** (No Adaptation) | 33.68 | 33.68 | +0.00 | 70.69 | 70.69 | +0.00 |
+| **No Gating** (Uniform Weighting) | 33.68 | 32.57 | -1.10 | 70.69 | 71.89 | +1.20 |
+| **No Dual Gating** (Epistemic Only) | 33.68 | 33.04 | -0.63 | 70.69 | 72.53 | +1.84 |
+| **No Temporal Cons.** (No BM Inertia) | 33.68 | 32.71 | -0.96 | 70.69 | 71.91 | +1.23 |
+| **No Inter-Class Bal.** (No Tau Shift) | 26.86 | 25.96 | -0.90 | 65.02 | 63.34 | -1.68 |
+| **No Intra-Class Bal.** (No IC4) | 33.68 | 33.13 | -0.54 | 70.69 | 72.44 | +1.75 |
+| **Full Unified Method** | 33.68 | 33.28 | -0.40 | 70.69 | 72.72 | +2.03 |
 
 ### Ablation Table 2: Per-Corruption Final mIoU (%) Breakdown
 | Ablation | Fog | Wet Ground | Snow | Motion Blur | Beam Missing | Crosstalk | Inc. Echo | Cross Sensor | Mean mIoU |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Frozen** (No Adaptation) | 5.95 | 42.09 | 50.20 | 50.48 | 39.29 | 10.88 | 43.94 | 26.52 | 33.67 |
-| **No Gating** (Uniform Weighting) | 5.41 | 34.96 | 48.19 | 49.93 | 39.44 | 15.01 | 42.38 | 26.57 | 32.74 |
-| **No Dual Gating** (Epistemic Only) | 5.85 | 40.37 | 49.90 | 50.52 | 39.59 | 11.38 | 43.72 | 26.87 | 33.52 |
-| **No Temporal Cons.** (No BM Inertia) | 5.68 | 36.08 | 49.66 | 50.23 | 39.62 | 14.42 | 42.45 | 26.80 | 33.12 |
-| **No Inter-Class Bal.** (No Tau Shift) | 4.19 | 32.15 | 38.62 | 37.55 | 32.04 | 9.40 | 33.52 | 22.89 | 26.30 |
-| **No Intra-Class Bal.** (No IC4) | 5.81 | 36.90 | 49.76 | 50.46 | 39.84 | 14.70 | 42.83 | 27.03 | 33.42 |
-| **Full Unified Method** | 5.80 | 36.98 | 49.78 | 50.47 | 39.79 | 14.65 | 42.93 | 27.04 | 33.43 |
+| **Frozen** (No Adaptation) | 6.04 | 42.02 | 50.22 | 50.52 | 39.44 | 10.71 | 43.90 | 26.56 | 33.68 |
+| **No Gating** (Uniform Weighting) | 5.81 | 32.98 | 48.08 | 49.86 | 39.26 | 15.96 | 41.75 | 26.89 | 32.57 |
+| **No Dual Gating** (Epistemic Only) | 5.87 | 34.49 | 48.81 | 50.23 | 39.56 | 15.95 | 42.23 | 27.20 | 33.04 |
+| **No Temporal Cons.** (No BM Inertia) | 5.66 | 33.34 | 49.34 | 50.21 | 39.33 | 14.79 | 41.71 | 27.34 | 32.71 |
+| **No Inter-Class Bal.** (No Tau Shift) | 5.80 | 29.42 | 38.47 | 36.97 | 31.30 | 11.15 | 32.12 | 22.46 | 25.96 |
+| **No Intra-Class Bal.** (No IC4) | 5.79 | 34.72 | 49.56 | 50.47 | 39.76 | 15.00 | 42.40 | 27.38 | 33.13 |
+| **Full Unified Method** | 6.02 | 34.83 | 49.55 | 50.47 | 39.72 | 15.73 | 42.53 | 27.37 | 33.28 |
 
 ### Ablation Table 3: Per-Corruption Final Accuracy (%) Breakdown
 | Ablation | Fog | Wet Ground | Snow | Motion Blur | Beam Missing | Crosstalk | Inc. Echo | Cross Sensor | Mean Acc |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Frozen** (No Adaptation) | 29.86 | 90.64 | 87.79 | 86.12 | 83.79 | 41.10 | 89.95 | 58.45 | 70.96 |
-| **No Gating** (Uniform Weighting) | 32.90 | 85.75 | 86.83 | 86.61 | 85.04 | 53.44 | 87.31 | 60.94 | 72.35 |
-| **No Dual Gating** (Epistemic Only) | 30.01 | 90.38 | 87.59 | 86.52 | 84.37 | 43.30 | 89.50 | 59.04 | 71.34 |
-| **No Temporal Cons.** (No BM Inertia) | 33.46 | 87.43 | 87.37 | 86.85 | 85.21 | 51.87 | 87.43 | 60.57 | 72.52 |
-| **No Inter-Class Bal.** (No Tau Shift) | 20.71 | 83.72 | 83.49 | 81.42 | 77.98 | 28.82 | 83.28 | 56.20 | 64.45 |
-| **No Intra-Class Bal.** (No IC4) | 33.90 | 88.36 | 87.40 | 86.78 | 85.18 | 53.54 | 87.97 | 60.39 | 72.94 |
-| **Full Unified Method** | 33.72 | 88.48 | 87.44 | 86.79 | 85.10 | 52.34 | 88.15 | 60.49 | 72.81 |
+| **Frozen** (No Adaptation) | 29.20 | 90.62 | 87.78 | 86.13 | 83.91 | 39.53 | 89.94 | 58.39 | 70.69 |
+| **No Gating** (Uniform Weighting) | 32.92 | 82.12 | 86.26 | 86.06 | 85.05 | 53.92 | 86.17 | 62.61 | 71.89 |
+| **No Dual Gating** (Epistemic Only) | 33.16 | 84.96 | 86.74 | 86.67 | 85.38 | 54.00 | 86.90 | 62.44 | 72.53 |
+| **No Temporal Cons.** (No BM Inertia) | 32.14 | 82.69 | 86.94 | 86.77 | 85.32 | 52.08 | 85.97 | 63.41 | 71.91 |
+| **No Inter-Class Bal.** (No Tau Shift) | 24.27 | 77.34 | 80.50 | 78.71 | 76.01 | 33.78 | 79.20 | 56.90 | 63.34 |
+| **No Intra-Class Bal.** (No IC4) | 32.16 | 85.50 | 87.09 | 86.78 | 85.57 | 53.02 | 87.11 | 62.30 | 72.44 |
+| **Full Unified Method** | 33.19 | 85.79 | 87.15 | 86.79 | 85.51 | 53.68 | 87.35 | 62.28 | 72.72 |
 
 ---
 
