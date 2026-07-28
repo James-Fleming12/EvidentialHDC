@@ -21,6 +21,22 @@ gating in HDC_utils is never actually invoked.
 """
 
 import os
+
+# ---------------------------------------------------------------------------
+# THREAD LIMITING -- must happen BEFORE torch/numpy are imported.
+#
+# Without this, PyTorch sets intra-op threads to the physical core count AND
+# every DataLoader worker process inherits the same default, so total runnable
+# threads is roughly (1 + num_workers) x cores. On a 64-core box with 12 workers
+# that is ~830 threads, i.e. 13x oversubscription -- enough to drive the load
+# average into the hundreds and make the machine unresponsive, which takes the
+# tmux SERVER down with it. Override with ABLATION_THREADS if you know better.
+# ---------------------------------------------------------------------------
+_T = os.environ.get("ABLATION_THREADS", "2")
+for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+           "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_v, _T)
+
 import json
 import inspect
 import logging
@@ -32,6 +48,12 @@ import torch
 import numpy as np
 import yaml
 from torch.utils.data import DataLoader
+
+torch.set_num_threads(int(_T))
+try:
+    torch.set_num_interop_threads(1)
+except RuntimeError:
+    pass  # already initialised; harmless
 
 ukc = importlib.import_module("unsup_kitti-c")
 from modules import HDC_utils
@@ -210,6 +232,17 @@ def main():
     p.add_argument("--gap_hi", type=float, default=0.75)
     p.add_argument("--calibrate_gap", action="store_true",
                    help="measure mean epistemic uncertainty on CLEAN source and exit")
+    p.add_argument("--num_workers", type=int, default=4,
+                   help="DataLoader workers. Overrides ARCH['train']['workers'], which is "
+                        "tuned for TRAINING and is far too high for batch_size=1 inference. "
+                        "Total CPU load ~ (1+num_workers) x ABLATION_THREADS.")
+    p.add_argument("--stats_cache", default="logs/source_stats_cache.pt",
+                   help="cache source statistics here; every stage otherwise recomputes "
+                        "populate_source_statistics (550 frames) from scratch")
+    p.add_argument("--force_stats", action="store_true", help="ignore the stats cache")
+    p.add_argument("--skip_done", action="store_true",
+                   help="resume: skip (seed, ablation, corruption) triples already present "
+                        "in log_dir/records.json")
     p.set_defaults(diagnostics=True)
     a = p.parse_args()
 
@@ -218,6 +251,11 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     ARCH, DATA = _load_configs()
+    # One mutation covers every Parser and DataLoader built below.
+    _orig_workers = ARCH["train"]["workers"]
+    ARCH["train"]["workers"] = a.num_workers
+    logger.info(f"threads/proc={_T}  dataloader workers={a.num_workers} "
+                f"(ARCH default was {_orig_workers})")
     corruptions = [c.strip() for c in a.corruptions.split(",")]
     seeds = [int(s) for s in a.seeds.split(",")]
     keys = SETS[a.ablations] if a.ablations in SETS else [k.strip() for k in a.ablations.split(",")]
@@ -247,14 +285,32 @@ def main():
     cs = total_len // nch
     chunks = [list(range(i * cs, (i + 1) * cs if i < nch - 1 else total_len)) for i in range(nch)]
 
-    # source stats
-    logger.info("populating source statistics ...")
-    base = _build_model(a.pretrained_path, ukc.NUM_CLASSES, "none")
-    ukc.populate_source_statistics(base, a.kitti_dir, ARCH, DATA, device, dry_run=a.dry_run)
-    stats = {k: getattr(base, k, None) for k in
-             ["class_latent_means", "source_density_mean", "source_density_std",
-              "source_mu_cos", "source_sigma_cos", "drift_mu_0", "source_class_freq",
-              "source_bank"]}
+    # source stats (cached: each stage is a separate process and would otherwise
+    # redo 550 frames of forward passes before any ablation starts)
+    STAT_KEYS = ["class_latent_means", "source_density_mean", "source_density_std",
+                 "source_mu_cos", "source_sigma_cos", "drift_mu_0", "source_class_freq",
+                 "source_bank"]
+    stats = None
+    if a.stats_cache and os.path.exists(a.stats_cache) and not a.force_stats and not a.dry_run:
+        try:
+            stats = torch.load(a.stats_cache, map_location="cpu")
+            logger.info(f"loaded source statistics from cache: {a.stats_cache}")
+        except Exception as e:
+            logger.warning(f"stats cache unreadable ({e}); recomputing")
+            stats = None
+    if stats is None:
+        logger.info("populating source statistics ...")
+        base = _build_model(a.pretrained_path, ukc.NUM_CLASSES, "none")
+        ukc.populate_source_statistics(base, a.kitti_dir, ARCH, DATA, device, dry_run=a.dry_run)
+        stats = {k: getattr(base, k, None) for k in STAT_KEYS}
+        stats = {k: (v.detach().cpu() if isinstance(v, torch.Tensor) else v)
+                 for k, v in stats.items()}
+        if a.stats_cache and not a.dry_run:
+            os.makedirs(os.path.dirname(a.stats_cache) or ".", exist_ok=True)
+            torch.save(stats, a.stats_cache)
+            logger.info(f"saved source statistics -> {a.stats_cache}")
+        del base
+        torch.cuda.empty_cache()
     missing = [k for k in ["source_density_mean", "source_density_std",
                            "source_mu_cos", "source_class_freq"] if stats.get(k) is None]
     if missing:
@@ -311,6 +367,19 @@ def main():
     records, frozen_cache = [], {}
     warned_path = False
 
+    # ---- resume ----
+    done = set()
+    rec_path = os.path.join(a.log_dir, "records.json")
+    if a.skip_done and os.path.exists(rec_path):
+        try:
+            records = json.load(open(rec_path))
+            done = {(r["seed"], r["ablation"], r["corruption"]) for r in records}
+            logger.info(f"resuming: {len(records)} records already present, "
+                        f"{len(done)} (seed, ablation, corruption) triples will be skipped")
+        except Exception as e:
+            logger.warning(f"could not read {rec_path} for resume ({e}); starting fresh")
+            records, done = [], set()
+
     for seed in seeds:
         torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
         np.random.seed(seed); random.seed(seed)
@@ -331,6 +400,9 @@ def main():
 
             for i, ct in enumerate(corruptions):
                 if ct not in dsets:
+                    continue
+                if (seed, key, ct) in done:
+                    logger.info(f"  skip (already done): seed={seed} {key} {ct}")
                     continue
                 if a.reset_per_corruption:
                     _reset_model(model, clean_sd); _restore_stats(model, stats, device)
@@ -421,7 +493,13 @@ def main():
                 except Exception as e:
                     logger.error(f"FAILED {key}/{ct}: {e}", exc_info=True)
 
-                with open(os.path.join(a.log_dir, "records.json"), "w") as f:
+                # Release worker processes promptly. Each of the 3 passes spawns
+                # a fresh pool; across a full night that is >10k process creations,
+                # and stragglers accumulate if the loader object lingers.
+                del dl
+                torch.cuda.empty_cache()
+
+                with open(rec_path, "w") as f:
                     json.dump(records, f, indent=2)
 
     if not records:
