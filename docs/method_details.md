@@ -194,7 +194,46 @@ The following table records the initial (frozen) and final adapted performance a
 
 ---
 
-## 7.3 Key Architectural Takeaways
+## 7.3 Method Ablation Benchmark Suite
+
+The following tables show the independent contribution of each algorithm pillar on overall performance by progressively disabling components. The baseline represents the frozen zero-shot transfer.
+
+### Ablation Table 1: Overall Benchmark Means
+| Ablation | Initial mIoU (%) | Final mIoU (%) | $\Delta$ mIoU | Initial Acc (%) | Final Acc (%) | $\Delta$ Acc |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Frozen** (No Adaptation) | 41.20 | 33.67 | -7.53 | 69.51 | 70.96 | +1.46 |
+| **No Gating** (Uniform Weighting) | 41.20 | 32.74 | -8.46 | 69.51 | 72.35 | +2.84 |
+| **No Dual Gating** (Epistemic Only) | 41.20 | 33.52 | -7.68 | 69.51 | 71.34 | +1.83 |
+| **No Temporal Cons.** (No BM Inertia) | 41.20 | 33.12 | -8.08 | 69.51 | 72.52 | +3.02 |
+| **No Inter-Class Bal.** (No Tau Shift) | 24.05 | 26.30 | +2.25 | 62.22 | 64.45 | +2.23 |
+| **No Intra-Class Bal.** (No IC4) | 41.20 | 33.42 | -7.79 | 69.51 | 72.94 | +3.43 |
+| **Full Unified Method** | 41.20 | 33.43 | -7.77 | 69.51 | 72.81 | +3.31 |
+
+### Ablation Table 2: Per-Corruption Final mIoU (%) Breakdown
+| Ablation | Fog | Wet Ground | Snow | Motion Blur | Beam Missing | Crosstalk | Inc. Echo | Cross Sensor | Mean mIoU |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Frozen** (No Adaptation) | 5.95 | 42.09 | 50.20 | 50.48 | 39.29 | 10.88 | 43.94 | 26.52 | 33.67 |
+| **No Gating** (Uniform Weighting) | 5.41 | 34.96 | 48.19 | 49.93 | 39.44 | 15.01 | 42.38 | 26.57 | 32.74 |
+| **No Dual Gating** (Epistemic Only) | 5.85 | 40.37 | 49.90 | 50.52 | 39.59 | 11.38 | 43.72 | 26.87 | 33.52 |
+| **No Temporal Cons.** (No BM Inertia) | 5.68 | 36.08 | 49.66 | 50.23 | 39.62 | 14.42 | 42.45 | 26.80 | 33.12 |
+| **No Inter-Class Bal.** (No Tau Shift) | 4.19 | 32.15 | 38.62 | 37.55 | 32.04 | 9.40 | 33.52 | 22.89 | 26.30 |
+| **No Intra-Class Bal.** (No IC4) | 5.81 | 36.90 | 49.76 | 50.46 | 39.84 | 14.70 | 42.83 | 27.03 | 33.42 |
+| **Full Unified Method** | 5.80 | 36.98 | 49.78 | 50.47 | 39.79 | 14.65 | 42.93 | 27.04 | 33.43 |
+
+### Ablation Table 3: Per-Corruption Final Accuracy (%) Breakdown
+| Ablation | Fog | Wet Ground | Snow | Motion Blur | Beam Missing | Crosstalk | Inc. Echo | Cross Sensor | Mean Acc |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Frozen** (No Adaptation) | 29.86 | 90.64 | 87.79 | 86.12 | 83.79 | 41.10 | 89.95 | 58.45 | 70.96 |
+| **No Gating** (Uniform Weighting) | 32.90 | 85.75 | 86.83 | 86.61 | 85.04 | 53.44 | 87.31 | 60.94 | 72.35 |
+| **No Dual Gating** (Epistemic Only) | 30.01 | 90.38 | 87.59 | 86.52 | 84.37 | 43.30 | 89.50 | 59.04 | 71.34 |
+| **No Temporal Cons.** (No BM Inertia) | 33.46 | 87.43 | 87.37 | 86.85 | 85.21 | 51.87 | 87.43 | 60.57 | 72.52 |
+| **No Inter-Class Bal.** (No Tau Shift) | 20.71 | 83.72 | 83.49 | 81.42 | 77.98 | 28.82 | 83.28 | 56.20 | 64.45 |
+| **No Intra-Class Bal.** (No IC4) | 33.90 | 88.36 | 87.40 | 86.78 | 85.18 | 53.54 | 87.97 | 60.39 | 72.94 |
+| **Full Unified Method** | 33.72 | 88.48 | 87.44 | 86.79 | 85.10 | 52.34 | 88.15 | 60.49 | 72.81 |
+
+---
+
+## 7.4 Key Architectural Takeaways
 
 1. **Why Soft Dual-Weighting Outperforms Hard Vetoes (ConformalHDC & D3CTTA):**
    Hard thresholding mechanisms—whether based on conformal prediction set cardinality ($|\hat{C}_\alpha| == 1$ in ConformalHDC) or top-percentage entropy ranking (D3CTTA)—introduce a severe trade-off between **precision** and **recall**. In severe corruptions like `snow` or `wet_ground`, hard boundaries discard up to 60% of valid minority-class points that sit in moderate-uncertainty boundary regions, leading to representation shrinkage. In contrast, our **Soft Dual-Weighting** ($\exp(-1.5u_{\text{exc}} - 1.0z_{\text{exc}})$) assigns continuous, non-zero gradient weights to boundary samples, preserving prototype diversity while mathematically discounting OOD outliers.
