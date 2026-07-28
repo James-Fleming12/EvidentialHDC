@@ -1,3 +1,4 @@
+import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -300,3 +301,106 @@ class HyperDUM(nn.Module):
     # Alias methods for interface uniformity
     update = inference_update
     adapt = inference_update
+
+logger = logging.getLogger("baselines")
+
+BASELINE_METHODS = ("d3ctta", "conformalhdc", "hyperdum")
+
+
+class _FeatOnly(nn.Module):
+    """Forces the backbone to return 128D features rather than logits."""
+
+    def __init__(self, net):
+        super().__init__()
+        self.net = net
+        # expose BN modules so D3CTTA's get_last_bn_stats() still works
+        self.modules_src = net
+
+    def forward(self, x, *a, **kw):
+        with torch.amp.autocast('cuda', enabled=True):
+            return self.net(x, only_feat=True).float()
+
+    def modules(self):
+        return self.net.modules()
+
+
+def get_adapter(model, name, num_classes, device, feature_dim=128):
+    """Lazily build (and cache on `model`) the baseline adapter."""
+    if getattr(model, "_baseline_adapter_name", None) == name and \
+            getattr(model, "_baseline_adapter", None) is not None:
+        return model._baseline_adapter
+
+    if getattr(model, "class_latent_means", None) is None:
+        raise ValueError(
+            "baselines need model.class_latent_means ([num_classes, 128]) as source "
+            "prototypes. The HDC classify weights are [num_classes, 10000] and are the "
+            "wrong space -- seeding with them is what made the old sync silently break.")
+    src_proto = model.class_latent_means.detach().clone().to(device).float()
+    assert src_proto.shape == (num_classes, feature_dim), \
+        f"source prototypes {tuple(src_proto.shape)} != ({num_classes}, {feature_dim})"
+
+    backbone = _FeatOnly(model.net)
+
+    if name == "d3ctta":
+        from modules.D3CTTA import D3CTTA
+        adapter = D3CTTA(backbone, num_classes=num_classes, feature_dim=feature_dim,
+                         source_prototypes=src_proto)
+    elif name == "conformalhdc":
+        adapter = ConformalHDC(backbone, num_classes=num_classes, feature_dim=feature_dim,
+                               source_prototypes=src_proto)
+    elif name == "hyperdum":
+        adapter = HyperDUM(backbone, num_classes=num_classes, feature_dim=feature_dim,
+                           source_prototypes=src_proto)
+    else:
+        raise ValueError(f"unknown baseline '{name}'; known: {BASELINE_METHODS}")
+
+    adapter = adapter.to(device)
+    model._baseline_adapter = adapter
+    model._baseline_adapter_name = name
+    logger.info(f"[baselines] built {name}: feature_dim={feature_dim}, "
+                f"source_prototypes={tuple(src_proto.shape)}")
+    return adapter
+
+
+@torch.no_grad()
+def baseline_forward(model, name, proj_in, proj_xyz, num_classes, device):
+    """Run the baseline's OWN forward. Returns (logits, state).
+
+    `state` carries whatever the update step needs (e.g. D3CTTA's projected h).
+    """
+    adapter = get_adapter(model, name, num_classes, device)
+
+    out = adapter(proj_in, xyz=proj_xyz)
+    if isinstance(out, (tuple, list)):
+        logits = out[0]
+        h = out[-1] if len(out) >= 4 else None
+    else:
+        logits, h = out, None
+
+    if logits.dim() == 4:                       # [B,C,H,W] -> [N,C]
+        logits = logits.permute(0, 2, 3, 1).reshape(-1, num_classes)
+    elif logits.dim() == 3:
+        logits = logits.reshape(-1, num_classes)
+
+    return logits, {"h": h, "adapter": adapter}
+
+
+@torch.no_grad()
+def baseline_update(state, predictions, proj_xyz):
+    """Run the baseline's own online adaptation."""
+    adapter = state["adapter"]
+    h = state["h"]
+    if h is None:
+        logger.warning("[baselines] adapter forward returned no projected features; "
+                       "skipping update this frame")
+        return
+    adapter.inference_update(h, predictions, proj_xyz)
+
+
+def reset(model):
+    for a in ("_baseline_adapter", "_baseline_adapter_name"):
+        if hasattr(model, a):
+            try:
+                delattr(model, a)
+            except AttributeError:
+                setattr(model, a, None)

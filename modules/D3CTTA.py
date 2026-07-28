@@ -283,7 +283,7 @@ class D3CTTA(nn.Module):
             pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=2.0, max_nn=30))
             normals = np.fabs(np.asarray(pcd.normals)[:, 2])
         except ImportError:
-            try:
+            try: # the one that actually runs (since open3d cant be installed in my env)
                 from scipy.spatial import cKDTree
                 tree = cKDTree(points_np)
                 dists, idxs = tree.query(points_np, k=min(30, len(points_np)), distance_upper_bound=2.0, workers=-1)

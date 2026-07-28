@@ -17,6 +17,7 @@ import unsup_main
 from unsup_main import train_extractor, train_hdc, extract_metrics_from_conf_matrix, setup_logger, save_graphic
 from modules.HDC_utils import UQModel
 from modules.HDC_utils import set_uq_model
+from modules import compare as _baselines
 from torchhd import functional
 
 NUM_CLASSES = 17
@@ -169,6 +170,18 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                 if 'norm_enc_base' in locals():
                     norm_enc_base = norm_enc_base.to(model.classify.weight.dtype)
                 
+                # --- BASELINE METHODS: use the baseline's OWN head for prediction ---
+                # Previously the HDC classifier produced predictions and only DAPL
+                # prototypes were synced back, so D3CTTA's Domain-Specific
+                # Decorrelation never influenced a single prediction.
+                _baseline_state = None
+                if update_method in _baselines.BASELINE_METHODS:
+                    _b_logits, _baseline_state = _baselines.baseline_forward(
+                        model, update_method, proj_in, proj_xyz, num_classes, device)
+                    predictions = torch.argmax(_b_logits, dim=1)
+                    indices = torch.arange(_b_logits.shape[0], device=device)
+                    logits = _b_logits
+
                 if tau is not None:
                     w_norm = F.normalize(model.classify.weight, p=2, dim=1)
                     
@@ -197,7 +210,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     prob_m2 = F.softmax(logits_m2, dim=1)
                     mean_probs = (prob_base + prob_m1 + prob_m2) / 3.0
                     predictions = torch.argmax(mean_probs, dim=1)
-                else:
+                elif _baseline_state is None:
                     predictions = torch.argmax(logits, dim=1)
                     
                 # MV-2: View Disagreement Precision Tracking & V2 Soft View Variance
@@ -280,6 +293,9 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     cos_sim_probs = F.softmax(cos_sims * 100.0, dim=1)
                     base_weights = cos_sim_probs.max(dim=1)[0]
                     update_weights = base_weights.clone()
+                    
+                    uncertainty = None
+                    z_score = None
                     
                     # Avoid multi-GB copies since indices is always arange
                     latent_x_valid = latent_x
@@ -511,7 +527,15 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     if corr_mask.any():
                         model._class_correct_rejected += torch.bincount(pseudo_labels[corr_mask], minlength=num_classes)
                     
-                    if fired_mask.any():
+                    # BUG FIX: this used to be `elif update_method in [...]` hanging off
+                    # `if fired_mask.any():`. For baseline methods the gating block is
+                    # skipped, so update_weights == base_weights exactly, veto_mask is
+                    # all-False and fired_mask is all-True -- the elif was unreachable.
+                    # All three "baselines" silently ran the generic HDC path, which is
+                    # why they report bit-identical numbers in every cell.
+                    if update_method in _baselines.BASELINE_METHODS:
+                        _baselines.baseline_update(_baseline_state, predictions, proj_xyz)
+                    elif fired_mask.any():
                         model.online_update(
                             norm_enc,
                             pseudo_labels,
@@ -523,45 +547,6 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             normalize_weights=normalize_weights,
                             view_preds=view_preds
                         )
-                    elif update_method in ['conformalhdc', 'hyperdum', 'd3ctta']:
-                        if not hasattr(model, '_baseline_adapter') or getattr(model, '_baseline_adapter_name', None) != update_method:
-                            if update_method == 'conformalhdc':
-                                from modules.compare import ConformalHDC
-                                model._baseline_adapter = ConformalHDC(model.net, num_classes=num_classes, feature_dim=128, source_prototypes=model.classify.weight.data.clone())
-                            elif update_method == 'hyperdum':
-                                from modules.compare import HyperDUM
-                                model._baseline_adapter = HyperDUM(model.net, num_classes=num_classes, feature_dim=128, source_prototypes=model.classify.weight.data.clone())
-                            elif update_method == 'd3ctta':
-                                from modules.D3CTTA import D3CTTA
-                                model._baseline_adapter = D3CTTA(model.net, num_classes=num_classes, feature_dim=128, source_prototypes=model.classify.weight.data.clone())
-                            model._baseline_adapter_name = update_method
-                            model._baseline_adapter.to(device)
-                        
-                        # Sync prototypes before update
-                        if hasattr(model._baseline_adapter, 'prototypes'):
-                            model._baseline_adapter.prototypes.data = model.classify.weight.data.clone()
-                        if hasattr(model._baseline_adapter, 'proto'):
-                            for i in range(len(model._baseline_adapter.proto)):
-                                model._baseline_adapter.proto[i].data = model.classify.weight.data.clone()
-                            model._baseline_adapter.feat_source = latent_x_valid
-                            model._baseline_adapter.pred_source = cos_sims
-                            
-                        # Execute baseline adaptation
-                        if update_method == 'd3ctta':
-                            model._baseline_adapter.inference_update(latent_x_valid, cos_sims, proj_xyz)
-                        else:
-                            model._baseline_adapter.inference_update(latent_x_valid, pseudo_labels, proj_xyz)
-                            
-                        # Sync updated prototypes back to model.classify.weight
-                        if hasattr(model._baseline_adapter, 'prototypes'):
-                            model.classify.weight.data = model._baseline_adapter.prototypes.data.clone().to(model.classify.weight.dtype)
-                        elif hasattr(model._baseline_adapter, 'proto'):
-                            mean_proto = torch.mean(torch.stack(model._baseline_adapter.proto), dim=0)
-                            model.classify.weight.data = mean_proto.to(model.classify.weight.dtype)
-                        if normalize_weights:
-                            model.classify.weight.data = F.normalize(model.classify.weight.data, p=2, dim=1)
-                        if hasattr(model, 'class_update_counts'):
-                            model.class_update_counts += 1
     
     try:
         if hasattr(model, '_veto_stats') and model._veto_stats['correct_labels_rejected'] > 0:
