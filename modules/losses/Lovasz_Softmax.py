@@ -5,7 +5,6 @@ MIT License
 Copyright (c) 2018 Maxim Berman
 Copyright (c) 2020 Tiago Cortinhal, George Tzelepis and Eren Erdal Aksoy
 
-
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights
@@ -21,16 +20,13 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 
-
 try:
     from itertools import ifilterfalse
 except ImportError:
     from itertools import filterfalse as ifilterfalse
 
-
 def isnan(x):
     return x != x
-
 
 def mean(l, ignore_nan=False, empty=0):
     """
@@ -52,7 +48,6 @@ def mean(l, ignore_nan=False, empty=0):
         return acc
     return acc / n
 
-
 def lovasz_grad(gt_sorted):
     """
     Computes gradient of the Lovasz extension w.r.t sorted errors
@@ -66,7 +61,6 @@ def lovasz_grad(gt_sorted):
     if p > 1:  # cover 1-pixel case
         jaccard[1:p] = jaccard[1:p] - jaccard[0:-1]
     return jaccard
-
 
 def lovasz_softmax(probas, labels, classes='present', per_image=False, ignore=None):
     """
@@ -84,7 +78,6 @@ def lovasz_softmax(probas, labels, classes='present', per_image=False, ignore=No
     else:
         loss = lovasz_softmax_flat(*flatten_probas(probas, labels, ignore), classes=classes)
     return loss
-
 
 def lovasz_softmax_flat(probas, labels, classes='present'):
     """
@@ -116,7 +109,6 @@ def lovasz_softmax_flat(probas, labels, classes='present'):
         losses.append(torch.dot(errors_sorted, Variable(lovasz_grad(fg_sorted))))
     return mean(losses)
 
-
 def flatten_probas(probas, labels, ignore=None):
     """
     Flattens predictions in the batch
@@ -134,7 +126,6 @@ def flatten_probas(probas, labels, ignore=None):
     vprobas = probas[valid.nonzero().squeeze()]
     vlabels = labels[valid]
     return vprobas, vlabels
-
 
 class Lovasz_softmax(nn.Module):
     def __init__(self, classes='present', per_image=False, ignore=None):

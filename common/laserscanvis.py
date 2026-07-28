@@ -6,7 +6,6 @@ from vispy.scene import visuals, SceneCanvas
 import numpy as np
 from matplotlib import pyplot as plt
 
-
 class LaserScanVis:
   """Class that creates and handles a visualizer for a pointcloud"""
 

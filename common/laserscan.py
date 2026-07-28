@@ -150,7 +150,6 @@ class LaserScan:
         if self.project:
             self.do_range_projection()
 
-
 #         fov_up = 3.0
 #         fov_down = -25.0
 #         self.fov_up = fov_up

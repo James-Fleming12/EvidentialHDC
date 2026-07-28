@@ -7,7 +7,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 def get_gaussian_kernel(kernel_size=3, sigma=2, channels=1):
     # Create a x, y coordinate grid of shape (kernel_size, kernel_size, 2)
     x_coord = torch.arange(kernel_size)
@@ -31,7 +30,6 @@ def get_gaussian_kernel(kernel_size=3, sigma=2, channels=1):
     gaussian_kernel = gaussian_kernel.view(kernel_size, kernel_size)
 
     return gaussian_kernel
-
 
 class KNN(nn.Module):
     def __init__(self, params, nclasses):
@@ -140,7 +138,6 @@ class KNN(nn.Module):
         knn_argmax_out = knn_argmax_out.view(P)
 
         return knn_argmax_out
-
 
 import torch.nn.functional as Func
 import numpy as np

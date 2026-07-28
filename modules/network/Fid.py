@@ -3,7 +3,6 @@ import torch
 from torch.nn import functional as F
 import numpy as np
 
-
 def conv3x3(in_planes, out_planes, stride=1, groups=1, dilation=1):
     """3x3 convolution with padding"""
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
@@ -44,7 +43,6 @@ class Final_Model(nn.Module):
         semantic_output = self.semantic_head(middle_feature_maps)
 
         return semantic_output
-
 
 class BasicBlock(nn.Module):
     expansion = 1
@@ -89,7 +87,6 @@ class BasicBlock(nn.Module):
 
         return out
 
-
 class ResNet_34(nn.Module):
 
     def __init__(self, nclasses, aux, block=BasicBlock, layers=[3, 4, 6, 3], if_BN=True, zero_init_residual=False,
@@ -105,7 +102,6 @@ class ResNet_34(nn.Module):
 
         self.groups = groups
         self.base_width = width_per_group
-
 
         self.conv1 = BasicConv2d(5, 64, kernel_size=1)
         self.conv2 = BasicConv2d(64, 128, kernel_size=1)
@@ -203,8 +199,6 @@ class ResNet_34(nn.Module):
             return [out, res_2, res_3, res_4]
         else:
             return out
-
-
 
 
 

@@ -19,19 +19,16 @@ from modules.scheduler.cosine import CosineAnnealingWarmUpRestarts
 from tqdm import tqdm
 
 
-
 def save_to_log(logdir, logfile, message):
     f = open(logdir + '/' + logfile, "a")
     f.write(message + '\n')
     f.close()
     return
 
-
 def save_checkpoint(to_save, logdir, suffix=""):
     # Save the weights
     torch.save(to_save, logdir +
                "/SENet" + suffix)
-
 
 class Trainer():
     def __init__(self, ARCH, DATA, datadir, logdir, path=None):
@@ -148,7 +145,6 @@ class Trainer():
             self.multi_gpu = True
             self.n_gpus = torch.cuda.device_count()
 
-
         self.criterion = nn.NLLLoss(weight=self.loss_w).to(self.device)
         self.ls = Lovasz_softmax(ignore=0).to(self.device)
         from modules.losses.boundary_loss import BoundaryLoss
@@ -200,7 +196,6 @@ class Trainer():
             print("dict epoch:", w_dict['epoch'])
 #             self.info = w_dict['info']
             print("info", w_dict['info'])
-
 
     def calculate_estimate(self, epoch, iter):
         estimate = int((self.data_time_t.avg + self.batch_time_t.avg) * \
@@ -292,7 +287,6 @@ class Trainer():
                                                            color_fn=self.parser.to_color,
                                                            report=self.ARCH["train"]["report_batch"],
                                                            show_scans=self.ARCH["train"]["show_scans"])
-
 
             # update info
             self.info["train_loss"] = loss
@@ -400,7 +394,6 @@ class Trainer():
 #                 proj_labels_2 = F.interpolate(proj_labels, size=(h//2, w//2), mode='nearest').squeeze(1).cuda().long()
 #                 proj_labels = proj_labels.squeeze(1).cuda().long()
 
-
             # compute output
             with torch.cuda.amp.autocast():
 
@@ -480,7 +473,6 @@ class Trainer():
                     name = os.path.join(directory, str(i) + ".png")
                     cv2.imwrite(name, out)
 
-
             if i % self.ARCH["train"]["report_batch"] == 0:
                 print('Lr: {lr:.3e} | '
                       'Epoch: [{0}][{1}/{2}] | '
@@ -552,9 +544,7 @@ class Trainer():
                 losses.update(loss.mean().item(), in_vol.size(0))
                 jaccs.update(jacc.mean().item(),in_vol.size(0))
 
-
                 wces.update(wce.mean().item(),in_vol.size(0))
-
 
 
                 if save_scans:
@@ -609,6 +599,5 @@ class Trainer():
                 save_to_log(self.log, 'log.txt', 'IoU class {i:} [{class_str:}] = {jacc:.3f}'.format(
                     i=i, class_str=class_func(i), jacc=jacc))
                 self.info["valid_classes/" + class_func(i)] = jacc
-
 
         return acc.avg, iou.avg, losses.avg, rand_imgs

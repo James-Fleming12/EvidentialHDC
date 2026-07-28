@@ -19,7 +19,6 @@ EXTENSIONS_SCAN = ['.bin']
 EXTENSIONS_TAG = ['.tag']
 EXTENSIONS_LABEL = ['.label']
 
-
 def is_scan(filename):
   return any(filename.endswith(ext) for ext in EXTENSIONS_SCAN)
 
@@ -28,7 +27,6 @@ def is_tag(filename):
 
 def is_label(filename):
   return any(filename.endswith(ext) for ext in EXTENSIONS_LABEL)
-
 
 def my_collate(batch):
     data = [item[0] for item in batch]
@@ -207,7 +205,6 @@ class SemanticKitti(Dataset):
     tags = torch.from_numpy(scan.tags)
 
 
-
 #     if self.transform:
 #         if random.random() > 0.5:
 #             scale = random.uniform(1, 1.5)
@@ -311,7 +308,6 @@ class SemanticKitti(Dataset):
         print("Wrong key ", key)
     # do the mapping
     return lut[label]
-
 
 class Parser():
   # standard conv, BN, relu

@@ -47,7 +47,6 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
     
     prev_preds_2d = None
 
-
     for batch_idx, batch_data in enumerate(tqdm(target_dataloader, desc="Adapting", leave=False)):
         if dry_run and batch_idx >= 2:
             break
@@ -342,7 +341,6 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         
     return {"mIoU": miou_history, "Accuracy": acc_history, "IoU_per_class": iou_per_class_history, "FiringRate": avg_firing_rate, "UpdateMagnitude": avg_update_magnitude}
 
-
 def pretrain_pipeline(ARCH, DATA, data_dir, pretrained_path, return_trainer=False, skip_extractor=False, resume_path=None, hdc_epochs=15, extractor_epochs=60):
     log_base = os.path.dirname(pretrained_path)
     os.makedirs(log_base, exist_ok=True)
@@ -369,7 +367,6 @@ def pretrain_pipeline(ARCH, DATA, data_dir, pretrained_path, return_trainer=Fals
     if return_trainer:
         return model, trainer
     return model
-
 
 def save_degradation_plot(save_path, title, data_dict, metric="mIoU", baseline_val=None):
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -398,7 +395,6 @@ def save_degradation_plot(save_path, title, data_dict, metric="mIoU", baseline_v
     plt.tight_layout()
     plt.savefig(save_path)
     plt.close()
-
 
 def load_hdc_model(path, num_classes=NUM_CLASSES):
     print(f"Loading pretrained HDC model from {path}...")

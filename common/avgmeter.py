@@ -1,6 +1,5 @@
 # This file is covered by the LICENSE file in the root of this project.
 
-
 class AverageMeter(object):
     """Computes and stores the average and current value"""
 

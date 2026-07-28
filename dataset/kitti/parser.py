@@ -48,10 +48,8 @@ def _make_loader(dataset, batch_size, shuffle, workers, drop_last=True, generato
 def is_scan(filename):
   return any(filename.endswith(ext) for ext in EXTENSIONS_SCAN)
 
-
 def is_label(filename):
   return any(filename.endswith(ext) for ext in EXTENSIONS_LABEL)
-
 
 def my_collate(batch):
     data = [item[0] for item in batch]

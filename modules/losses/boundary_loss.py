@@ -12,7 +12,6 @@ def one_hot(label, n_classes, requires_grad=True):
 
     return one_hot_label
 
-
 class BoundaryLoss(nn.Module):
     """Boundary Loss proposed in:
     Alexey Bokhovkin et al., Boundary Loss for Remote Sensing Imagery Semantic Segmentation
@@ -49,7 +48,6 @@ class BoundaryLoss(nn.Module):
             1 - one_hot_gt, kernel_size=self.theta0, stride=1, padding=(self.theta0 - 1) // 2)
         gt_b -= 1 - one_hot_gt
 
-
         pred_b = F.max_pool2d(
             1 - pred, kernel_size=self.theta0, stride=1, padding=(self.theta0 - 1) // 2)
         pred_b -= 1 - pred
@@ -84,6 +82,5 @@ class BoundaryLoss(nn.Module):
         loss = torch.mean(1 - BF1)
 
         return loss
-
 
 

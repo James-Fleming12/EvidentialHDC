@@ -2,7 +2,6 @@
 
 import torch.optim.lr_scheduler as toptim
 
-
 class warmupLR(toptim._LRScheduler):
     """ Warmup learning rate scheduler.
         Initially, increases the learning rate from 0 to the final value, in a

@@ -846,7 +846,6 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         "ConfusionMatrix": cumulative_confusion_matrix.cpu().numpy().tolist()
     }
 
-
 def pretrain_pipeline(ARCH, DATA, data_dir, pretrained_path, return_trainer=False, skip_extractor=False, resume_path=None, hdc_epochs=15, extractor_epochs=60):
     log_base = os.path.dirname(pretrained_path)
     os.makedirs(log_base, exist_ok=True)
@@ -873,7 +872,6 @@ def pretrain_pipeline(ARCH, DATA, data_dir, pretrained_path, return_trainer=Fals
     if return_trainer:
         return model, trainer
     return model
-
 
 def save_degradation_plot(save_path, title, data_dict, metric="mIoU", baseline_val=None):
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -902,7 +900,6 @@ def save_degradation_plot(save_path, title, data_dict, metric="mIoU", baseline_v
     plt.tight_layout()
     plt.savefig(save_path)
     plt.close()
-
 
 def load_hdc_model(path, num_classes=NUM_CLASSES, mv_tta='none'):
     # print(f"Loading pretrained HDC model from {path}...")
@@ -1134,7 +1131,6 @@ def main():
     random.seed(args.seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
 
     if args.continue_epochs > 0:
         args.pretrain = True

@@ -52,7 +52,6 @@ DGLSS_LABELS = {
     19: "traffic-sign",
 }
 
-
 class BaseLiDARDataset(ABC, Dataset):
     """Base class for all LiDAR datasets"""
     
@@ -123,7 +122,6 @@ class BaseLiDARDataset(ABC, Dataset):
     
     def __len__(self):
         return len(self.scan_files)
-
 
 class SemanticKittiDataset(BaseLiDARDataset):
     """SemanticKITTI dataset with DGLSS mapping"""
@@ -309,7 +307,6 @@ class SemanticKittiDataset(BaseLiDARDataset):
                 torch.from_numpy(proj_range), unproj_range, torch.from_numpy(proj_xyz),
                 unproj_xyz, torch.from_numpy(proj_remission), unproj_remissions, unproj_n_points)
 
-
 class WaymoDataset(BaseLiDARDataset):
     """Waymo Open Dataset with DGLSS mapping"""
     
@@ -389,7 +386,6 @@ class WaymoDataset(BaseLiDARDataset):
         # Same as SemanticKITTI but with Waymo-specific processing
         return SemanticKittiDataset.__getitem__(self, index)
 
-
 class NuScenesDataset(BaseLiDARDataset):
     """nuScenes dataset with DGLSS mapping"""
     
@@ -459,7 +455,6 @@ class NuScenesDataset(BaseLiDARDataset):
     def __getitem__(self, index):
         return SemanticKittiDataset.__getitem__(self, index)
 
-
 class SemanticPOSSDataset(BaseLiDARDataset):
     """SemanticPOSS dataset with DGLSS mapping"""
     POSS_TO_DGLSS = {
@@ -526,7 +521,6 @@ class SemanticPOSSDataset(BaseLiDARDataset):
     
     def __getitem__(self, index):
         return SemanticKittiDataset.__getitem__(self, index)
-
 
 class UniversalLiDARParser:
     """Universal parser for multiple LiDAR datasets with DGLSS mapping"""

@@ -6,7 +6,6 @@ from vispy.scene import visuals, SceneCanvas
 import numpy as np
 from matplotlib import pyplot as plt
 
-
 class LaserScanVis:
   """Class that creates and handles a visualizer for a pointcloud"""
 
@@ -86,7 +85,6 @@ class LaserScanVis:
       self.img_grid.add_widget(self.sem_img_view, 1, 0)
       self.sem_img_vis = visuals.Image(cmap='viridis')
       self.sem_img_view.add(self.sem_img_vis)
-
 
   def get_mpl_colormap(self, cmap_name):
     cmap = plt.get_cmap(cmap_name)

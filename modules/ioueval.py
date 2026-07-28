@@ -5,7 +5,6 @@
 import numpy as np
 import torch
 
-
 class iouEval:
     def __init__(self, n_classes, device, ignore=None):
         self.n_classes = n_classes

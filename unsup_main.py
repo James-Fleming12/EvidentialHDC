@@ -112,7 +112,6 @@ def load_hdc_model(path):
     model.to(device)
     return model
 
-
 def train_extractor(ARCH, DATA, epochs=FEATURE_EXTRACTOR_EPOCHS, data_dir=None, return_trainer=False, resume_path=None):
     trainer = Trainer(ARCH, DATA, data_dir if data_dir else DATA_DIR, LOG_DIR, path=resume_path) # saves in "/logs/SENet_..."
     trainer.train(epochs=epochs)

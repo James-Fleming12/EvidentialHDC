@@ -21,21 +21,17 @@ from .replicate import DataParallelWithCallback
 __all__ = ['SynchronizedBatchNorm1d', 'SynchronizedBatchNorm2d',
            'SynchronizedBatchNorm3d', 'convert_model']
 
-
 def _sum_ft(tensor):
     """sum over the first and last dimention"""
     return tensor.sum(dim=0).sum(dim=-1)
-
 
 def _unsqueeze_ft(tensor):
     """add new dementions at the front and the tail"""
     return tensor.unsqueeze(0).unsqueeze(-1)
 
-
 _ChildMessage = collections.namedtuple(
     '_ChildMessage', ['sum', 'ssum', 'sum_size'])
 _MasterMessage = collections.namedtuple('_MasterMessage', ['sum', 'inv_std'])
-
 
 class _SynchronizedBatchNorm(_BatchNorm):
     def __init__(self, num_features, eps=1e-5, momentum=0.1, affine=True):
@@ -132,7 +128,6 @@ class _SynchronizedBatchNorm(_BatchNorm):
 
         return mean, bias_var.clamp(self.eps) ** -0.5
 
-
 class SynchronizedBatchNorm1d(_SynchronizedBatchNorm):
     r"""Applies Synchronized Batch Normalization over a 2d or 3d input that is seen as a
     mini-batch.
@@ -194,7 +189,6 @@ class SynchronizedBatchNorm1d(_SynchronizedBatchNorm):
             raise ValueError('expected 2D or 3D input (got {}D input)'
                              .format(input.dim()))
         super(SynchronizedBatchNorm1d, self)._check_input_dim(input)
-
 
 class SynchronizedBatchNorm2d(_SynchronizedBatchNorm):
     r"""Applies Batch Normalization over a 4d input that is seen as a mini-batch
@@ -258,7 +252,6 @@ class SynchronizedBatchNorm2d(_SynchronizedBatchNorm):
                              .format(input.dim()))
         super(SynchronizedBatchNorm2d, self)._check_input_dim(input)
 
-
 class SynchronizedBatchNorm3d(_SynchronizedBatchNorm):
     r"""Applies Batch Normalization over a 5d input that is seen as a mini-batch
     of 4d inputs
@@ -321,7 +314,6 @@ class SynchronizedBatchNorm3d(_SynchronizedBatchNorm):
             raise ValueError('expected 5D input (got {}D input)'
                              .format(input.dim()))
         super(SynchronizedBatchNorm3d, self)._check_input_dim(input)
-
 
 def convert_model(module):
     """Traverse the input module and its child recursively

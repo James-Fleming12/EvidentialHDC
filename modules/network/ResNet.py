@@ -12,7 +12,6 @@ def conv1x1(in_planes, out_planes, stride=1):
     """1x1 convolution"""
     return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
 
-
 class BasicConv2d(nn.Module):
     def __init__(self, in_planes, out_planes, kernel_size, stride=1, padding=0, dilation=1, relu=True):
         super(BasicConv2d, self).__init__()
@@ -44,7 +43,6 @@ class Final_Model(nn.Module):
         semantic_output = self.semantic_head(middle_feature_maps)
 
         return semantic_output
-
 
 class BasicBlock(nn.Module):
     expansion = 1
@@ -290,7 +288,6 @@ if __name__ == "__main__":
         print ("Forward time per img: %.3f (Mean: %.3f)" % (
           fwt / 1, sum(time_train) / len(time_train) / 1))
         time.sleep(0.15)
-
 
 
 

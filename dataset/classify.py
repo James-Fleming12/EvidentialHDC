@@ -35,7 +35,6 @@ def v2xr_collate(batch):
     }
     return voxel_batch, torch.stack(labels), conditions
 
-
 def kradar_collate(batch):
     """Stack (radar_tensor, label, condition) tuples."""
     radars = torch.stack([b[0] for b in batch])

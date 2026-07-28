@@ -19,18 +19,14 @@ import types
 from collections.abc import Sequence, Iterable
 import warnings
 
-
 EXTENSIONS_SCAN = ['.bin']
 EXTENSIONS_LABEL = ['.label']
-
 
 def is_scan(filename):
   return any(filename.endswith(ext) for ext in EXTENSIONS_SCAN)
 
-
 def is_label(filename):
   return any(filename.endswith(ext) for ext in EXTENSIONS_LABEL)
-
 
 def my_collate(batch):
     data = [item[0] for item in batch]
@@ -286,7 +282,6 @@ class SemanticKitti(Dataset):
         print("Wrong key ", key)
     # do the mapping
     return lut[label]
-
 
 class Parser():
   # standard conv, BN, relu

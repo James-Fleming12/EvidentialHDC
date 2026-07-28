@@ -203,7 +203,6 @@ The automated sweep (`run_dual_gating_sweep.sh`) and verification test (`test_so
 
 ---
 
-
 ## 5. Physics-Based Plasticity & Continual Learning Dynamics
 ### 5.1 The Starvation-Thawing Hypothesis
 * Analysis of the S2 Norm-Driven Dynamic Learning Rate schedule and the vulnerability of permanently frozen momentum vectors ($M_c$) when encountering sudden domain transitions.

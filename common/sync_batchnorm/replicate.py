@@ -19,10 +19,8 @@ __all__ = [
     'patch_replication_callback'
 ]
 
-
 class CallbackContext(object):
     pass
-
 
 def execute_replication_callbacks(modules):
     """
@@ -46,7 +44,6 @@ def execute_replication_callbacks(modules):
             if hasattr(m, '__data_parallel_replicate__'):
                 m.__data_parallel_replicate__(ctxs[j], i)
 
-
 class DataParallelWithCallback(DataParallel):
     """
     Data Parallel with a replication callback.
@@ -66,7 +63,6 @@ class DataParallelWithCallback(DataParallel):
                         self).replicate(module, device_ids)
         execute_replication_callbacks(modules)
         return modules
-
 
 def patch_replication_callback(data_parallel):
     """

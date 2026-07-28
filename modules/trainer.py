@@ -159,7 +159,6 @@ class DGLSSTrainer():
             self.multi_gpu = True
             self.n_gpus = torch.cuda.device_count()
 
-
         self.criterion = nn.NLLLoss(weight=self.loss_w).to(self.device)
         self.ls = Lovasz_softmax(ignore=0).to(self.device)
         from modules.losses.boundary_loss import BoundaryLoss
@@ -373,7 +372,6 @@ class DGLSSTrainer():
                                                            color_fn=self.parser.to_color,
                                                            report=self.ARCH["train"]["report_batch"],
                                                            show_scans=self.ARCH["train"]["show_scans"])
-
 
             # update info
             self.info["train_loss"] = loss
@@ -608,7 +606,6 @@ class DGLSSTrainer():
                 if len(all_cell_protos) > self.max_cells:
                     idx = np.random.choice(len(all_cell_protos), self.max_cells, replace=False)
                     all_cell_protos = [all_cell_protos[k] for k in idx]
-
 
                 for ci in range(len(all_cell_protos)):
                     pi, vi = all_cell_protos[ci]
@@ -895,7 +892,6 @@ class Trainer():
             self.multi_gpu = True
             self.n_gpus = torch.cuda.device_count()
 
-
         self.criterion = nn.NLLLoss(weight=self.loss_w).to(self.device)
         self.ls = Lovasz_softmax(ignore=0).to(self.device)
         from modules.losses.boundary_loss import BoundaryLoss
@@ -947,7 +943,6 @@ class Trainer():
             print("dict epoch:", w_dict['epoch'])
             # self.info = w_dict['info']
             print("info", w_dict['info'])
-
 
     def calculate_estimate(self, epoch, iter):
         estimate = int((self.data_time_t.avg + self.batch_time_t.avg) * \
@@ -1040,7 +1035,6 @@ class Trainer():
                                                            color_fn=self.parser.to_color,
                                                            report=self.ARCH["train"]["report_batch"],
                                                            show_scans=self.ARCH["train"]["show_scans"])
-
 
             # update info
             self.info["train_loss"] = loss
@@ -1202,7 +1196,6 @@ class Trainer():
 
 
 
-
             with torch.no_grad():
                 evaluator.reset()
                 argmax = output.argmax(dim=1)
@@ -1244,7 +1237,6 @@ class Trainer():
             #             os.makedirs(directory)
             #         name = os.path.join(directory, str(i) + ".png")
             #         cv2.imwrite(name, out)
-
 
             # if i % self.ARCH["train"]["report_batch"] == 0:
             #     print('Lr: {lr:.3e} | '

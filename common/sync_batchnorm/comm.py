@@ -14,7 +14,6 @@ import threading
 
 __all__ = ['FutureResult', 'SlavePipe', 'SyncMaster']
 
-
 class FutureResult(object):
     """A thread-safe future implementation. Used only as one-to-one pipe."""
 
@@ -38,11 +37,9 @@ class FutureResult(object):
             self._result = None
             return res
 
-
 _MasterRegistry = collections.namedtuple('MasterRegistry', ['result'])
 _SlavePipeBase = collections.namedtuple(
     '_SlavePipeBase', ['identifier', 'queue', 'result'])
-
 
 class SlavePipe(_SlavePipeBase):
     """Pipe for master-slave communication."""
@@ -52,7 +49,6 @@ class SlavePipe(_SlavePipeBase):
         ret = self.result.get()
         self.queue.put(True)
         return ret
-
 
 class SyncMaster(object):
     """An abstract `SyncMaster` object.

@@ -86,7 +86,6 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     pass
     return {"mIoU": miou_history, "Accuracy": acc_history, "IoU_per_class": iou_per_class_history}
 
-
 def pretrain_pipeline(ARCH, DATA, data_dir, pretrained_path, return_trainer=False, skip_extractor=False, resume_path=None, hdc_epochs=15, extractor_epochs=60):
     log_base = os.path.dirname(pretrained_path)
     os.makedirs(log_base, exist_ok=True)
@@ -134,7 +133,6 @@ def pretrain_pipeline(ARCH, DATA, data_dir, pretrained_path, return_trainer=Fals
     if return_trainer:
         return model, trainer
     return model
-
 
 def load_hdc_model(path, num_classes=NUM_CLASSES):
     print(f"Loading pretrained HDC model from {path}...")

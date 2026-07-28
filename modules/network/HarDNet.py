@@ -5,7 +5,6 @@ import numpy as np
 import collections
 # from CatConv2d.catconv2d import CatConv2d
 
-
 class ConvLayer(nn.Sequential):
     def __init__(self, in_channels, out_channels, kernel=3, stride=1, dropout=0.1):
         super().__init__()
@@ -19,7 +18,6 @@ class ConvLayer(nn.Sequential):
     def forward(self, x):
         return super().forward(x)
 
-
 class BRLayer(nn.Sequential):
     def __init__(self, in_channels):
         super().__init__()
@@ -29,7 +27,6 @@ class BRLayer(nn.Sequential):
 
     def forward(self, x):
         return super().forward(x)
-
 
 class HarDBlock_v2(nn.Module):
     def get_link(self, layer, base_ch, growth_rate, grmul):
@@ -106,7 +103,6 @@ class HarDBlock_v2(nn.Module):
         else:
             return torch.cat(out_, 1)
 
-
 class HarDBlock(nn.Module):
     def get_link(self, layer, base_ch, growth_rate, grmul):
         if layer == 0:
@@ -173,7 +169,6 @@ class HarDBlock(nn.Module):
         return out
 
 
-
 class HarDNet(nn.Module):
     def __init__(self, nclasses=20, aux=False):
         super(HarDNet, self).__init__()
@@ -197,9 +192,7 @@ class HarDNet(nn.Module):
         blks = len(n_layers)
         self.aux = aux
 
-
         blks = len(n_layers)
-
 
         self.base = nn.ModuleList([])
         self.base.append(ConvLayer(in_channels=5, out_channels=first_ch[0], kernel=3))
@@ -236,7 +229,6 @@ class HarDNet(nn.Module):
             self.aux_head1 = nn.Conv2d(130, nclasses, 1)
             self.aux_head2 = nn.Conv2d(130, nclasses, 1)
             self.aux_head3 = nn.Conv2d(128, nclasses, 1)
-
 
     def v2_transform(self):
         for i in range(len(self.base)):
@@ -280,7 +272,6 @@ class HarDNet(nn.Module):
         # print(x.size())
         # print("*"*50)
 
-
         res_1 = skip_connections.pop(0)            # x_0
         res_2 = skip_connections.pop(0)            # x_0
 
@@ -299,7 +290,6 @@ class HarDNet(nn.Module):
 #             print(i.shape)
 
         out = torch.cat(res, dim=1)
-
 
 
         out = self.conv_1(out)
@@ -321,7 +311,6 @@ class HarDNet(nn.Module):
             return [out, res_3, res_4, res_5]
         else:
             return out
-
 
 
 # import time

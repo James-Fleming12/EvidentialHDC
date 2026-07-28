@@ -211,7 +211,6 @@ class BasicHD():
                 self.is_wrong_list[i] = is_wrong
                 # print(losses.min(), losses.max())
 
-
             model.classify.weight[:] = F.normalize(model.classify_weights)
             print("sum of is_wrong_list: ", sum([x.sum().item() for x in self.is_wrong_list if x is not None]))
             print("Mean HDC training time:{}\t std:{}".format(np.mean(train_time), np.std(train_time)))
@@ -302,7 +301,6 @@ class BasicHD():
                 self.is_wrong_list[i][actual_wrong_indices] = True
                 # print("is_wrong_list number of wrong: ", self.is_wrong_list[i].nonzero(as_tuple=False).squeeze().sum().item())
                 # print("Number of wrongs:", self.is_wrong_list[i].sum().item())
-
 
                 model.classify_weights.index_add_(0, proj_labels, samples_hv)
                 model.classify_weights.index_add_(0, proj_labels, samples_hv)

@@ -162,7 +162,6 @@ class ConformalHDC(nn.Module):
     update = inference_update
     adapt = inference_update
 
-
 class HyperDUM(nn.Module):
     """
     HyperDUM: Hyperdimensional Uncertainty Weighting Module for Multimodal/Single-modal Perception.

@@ -52,7 +52,6 @@ learning_map:
   21 : -1
   22 : 4
 
-
 learning_map_inv: # inverse of previous map
   -1 : 0
   0 : 1

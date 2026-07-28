@@ -11,7 +11,6 @@ import time
 from tqdm import tqdm
 from postproc.KNN import KNN
 
-
 class User():
   def __init__(self, ARCH, DATA, datadir, logdir, modeldir,split):
     # parameters
@@ -107,7 +106,6 @@ class User():
         # do test set
         self.infer_subset(loader=self.parser.get_test_set(),
                           to_orig_fn=self.parser.to_original, cnn=cnn, knn=knn)
-
 
     elif self.split == 'valid':
         self.infer_subset(loader=self.parser.get_valid_set(),

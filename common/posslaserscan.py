@@ -46,7 +46,6 @@ class LaserScan:
         # projected remission - [H,W] intensity (-1 is no data)
         self.proj_remission = np.full((self.proj_H, self.proj_W), -1, dtype=np.float32)
 
-
     def size(self):
         """ Return the size of the point cloud. """
         return self.points.shape[0]
@@ -128,7 +127,6 @@ class LaserScan:
         if self.project:
             self.do_range_projection()
 
-
     def do_range_projection(self):
         """ Project a pointcloud into a spherical projection image.projection.
             Function takes no arguments because it can be also called externally
@@ -153,7 +151,6 @@ class LaserScan:
         self.proj_range = np.reshape(self.midrange, (self.proj_H, self.proj_W))
         self.proj_xyz = np.reshape(self.midxyz, (self.proj_H, self.proj_W, 3))
         # get depth of all points
-
 
 
 class SemLaserScan(LaserScan):
@@ -182,7 +179,6 @@ class SemLaserScan(LaserScan):
                                                    size=(max_sem_key, 3))
             # force zero to a gray-ish color
             self.sem_color_lut[0] = np.full((3), 0.1)
-
 
     def reset(self):
         """ Reset scan members. """
@@ -259,5 +255,4 @@ class SemLaserScan(LaserScan):
         # semantics
         # self.proj_sem_label[mask] = self.sem_label[self.proj_idx[mask]]
         # self.proj_sem_color[mask] = self.sem_color_lut[self.sem_label[self.proj_idx[mask]]]
-
 

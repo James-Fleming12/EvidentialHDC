@@ -26,7 +26,6 @@ class User():
     self.modeldir = modeldir
     self.split = split
 
-
     # get the data
     from dataset.poss.parser import Parser
     self.parser = Parser(root=self.datadir,
@@ -85,7 +84,6 @@ class User():
       self.post = KNN(self.ARCH["post"]["KNN"]["params"],
                       self.parser.get_n_classes())
 
-
     # GPU?
     self.gpu = False
     self.model_single = self.model
@@ -96,7 +94,6 @@ class User():
       cudnn.fastest = True
       self.gpu = True
       self.model.cuda()
-
 
   def infer(self):
     cnn = []
@@ -112,7 +109,6 @@ class User():
         # do test set
         self.infer_subset(loader=self.parser.get_test_set(),
                           to_orig_fn=self.parser.to_original, cnn=cnn, knn=knn)
-
 
     elif self.split == 'valid':
         self.infer_subset(loader=self.parser.get_valid_set(),
@@ -202,7 +198,6 @@ class User():
                                             proj_argmax,
                                             proj_x,
                                             proj_y)
-
 
                 self.evaluator2.addBatch(unproj_argmax, unlabels.squeeze().cpu().numpy())
 

@@ -119,4 +119,3 @@ if __name__ == '__main__':
     # BasicHD = BasicHD(ARCH, DATA, FLAGS.dataset, FLAGS.log, FLAGS.model,FLAGS.split, None)
     # BasicHD.start()
 
-
