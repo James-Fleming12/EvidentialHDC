@@ -530,16 +530,16 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                                 model._baseline_adapter = HyperDUM(model.net, num_classes=num_classes, feature_dim=128, source_prototypes=model.classify.weight.data.clone())
                             elif update_method == 'd3ctta':
                                 from modules.D3CTTA import D3CTTA
-                                model._baseline_adapter = D3CTTA(model.net, num_classes=num_classes, feature_dim=128)
-                                model._baseline_adapter.source_prototypes = model.classify.weight.data.clone()
-                                model._baseline_adapter.prototypes = model.classify.weight.data.clone()
+                                model._baseline_adapter = D3CTTA(model.net, num_classes=num_classes, feature_dim=128, source_prototypes=model.classify.weight.data.clone())
                             model._baseline_adapter_name = update_method
                             model._baseline_adapter.to(device)
                         
                         # Sync prototypes before update
                         if hasattr(model._baseline_adapter, 'prototypes'):
                             model._baseline_adapter.prototypes.data = model.classify.weight.data.clone()
-                        elif hasattr(model._baseline_adapter, 'proto'):
+                        if hasattr(model._baseline_adapter, 'proto'):
+                            for i in range(len(model._baseline_adapter.proto)):
+                                model._baseline_adapter.proto[i].data = model.classify.weight.data.clone()
                             model._baseline_adapter.feat_source = latent_x_valid
                             model._baseline_adapter.pred_source = cos_sims
                             
@@ -552,8 +552,11 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         # Sync updated prototypes back to model.classify.weight
                         if hasattr(model._baseline_adapter, 'prototypes'):
                             model.classify.weight.data = model._baseline_adapter.prototypes.data.clone().to(model.classify.weight.dtype)
-                            if normalize_weights:
-                                model.classify.weight.data = F.normalize(model.classify.weight.data, p=2, dim=1)
+                        elif hasattr(model._baseline_adapter, 'proto'):
+                            mean_proto = torch.mean(torch.stack(model._baseline_adapter.proto), dim=0)
+                            model.classify.weight.data = mean_proto.to(model.classify.weight.dtype)
+                        if normalize_weights:
+                            model.classify.weight.data = F.normalize(model.classify.weight.data, p=2, dim=1)
                         if hasattr(model, 'class_update_counts'):
                             model.class_update_counts += 1
     
