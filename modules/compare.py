@@ -314,6 +314,8 @@ class _FeatOnly(nn.Module):
         self.net = net
         # expose BN modules so D3CTTA's get_last_bn_stats() still works
         self.modules_src = net
+        if hasattr(net, 'semantic_output'):
+            self.semantic_output = net.semantic_output   # lets D3CTTA find [17,128] head weights
 
     def forward(self, x, *a, **kw):
         with torch.amp.autocast('cuda', enabled=True):

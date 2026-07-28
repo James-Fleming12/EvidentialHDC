@@ -180,7 +180,6 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         model, update_method, proj_in, proj_xyz, num_classes, device)
                     predictions = torch.argmax(_b_logits, dim=1)
                     indices = torch.arange(_b_logits.shape[0], device=device)
-                    logits = _b_logits
 
                 if tau is not None:
                     w_norm = F.normalize(model.classify.weight, p=2, dim=1)
@@ -1345,82 +1344,64 @@ def main():
             target_dataloader = DataLoader(chunk_dataset, batch_size=1, shuffle=False, num_workers=ARCH["train"]["workers"])
             
             try:
-                if not args.continual and (not args.chunked or args.reset_per_corruption):
-                    # Pass 1: True Initial (Frozen on chunk)
-                    init_key = (ctype, sev, args.tau, args.ic_method, args.kappa, args.mv_tta, args.gate_mode, args.chunked)
-                    if init_key not in shared_init_metrics:
-                        logger.debug("  -> Pass 1: Computing True Initial metrics (Frozen)")
-                        init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom, dump_features=args.dump_features, diagnostics=args.diagnostics)
-                        shared_init_metrics[init_key] = init_metrics
-                    else:
-                        logger.debug("  -> Pass 1: Reusing cached True Initial metrics (Frozen)")
-                        init_metrics = shared_init_metrics[init_key]
-                    
-                    # Pass 2: Adapt (only if method is not frozen)
-                    if current_method != 'frozen':
-                        logger.debug("  -> Pass 2: Adapting model weights")
-                        eval_model.train()
-                        adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom, dump_features=args.dump_features, diagnostics=args.diagnostics)
-                    else:
-                        adapt_metrics = init_metrics
-                        
-                    # Pass 3: True Final (Frozen on chunk using adapted weights)
-                    logger.debug("  -> Pass 3: Computing True Final metrics (Frozen)")
-                    eval_model.eval()
-                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom, dump_features=args.dump_features, diagnostics=args.diagnostics)
-                    
-                    # We only care about the absolute end of the frozen evaluations for the sequence
-                    metrics = adapt_metrics  # Just for the trajectory json
-                    if len(init_metrics["mIoU"]) > 0:
-                        initial_miou = init_metrics["mIoU"][-1]
-                        final_miou = final_metrics["mIoU"][-1]
-                        online_miou = adapt_metrics["mIoU"][-1]
-                        initial_acc = init_metrics["Accuracy"][-1]
-                        final_acc = final_metrics["Accuracy"][-1]
-                        
-                        if 'ConfusionMatrix' in init_metrics:
-                            cm_init = np.array(init_metrics['ConfusionMatrix'])
-                            tp_init = np.diag(cm_init)
-                            fp_init = cm_init.sum(axis=0) - tp_init
-                            fn_init = cm_init.sum(axis=1) - tp_init
-                            
-                            if 'ConfusionMatrix' in final_metrics:
-                                cm_fin = np.array(final_metrics['ConfusionMatrix'])
-                                tp_fin = np.diag(cm_fin)
-                                fp_fin = cm_fin.sum(axis=0) - tp_fin
-                                fn_fin = cm_fin.sum(axis=1) - tp_fin
-                            else:
-                                tp_fin, fp_fin, fn_fin = tp_init, fp_init, fn_init
-                                
-                            tail_classes = [2, 3, 6, 7, 10]
-                            logger.info(f"  -> Initial Tail TP:  {tp_init[tail_classes].tolist()} | Final Tail TP:  {tp_fin[tail_classes].tolist()} (Delta: {(tp_fin - tp_init)[tail_classes].tolist()})")
-                            logger.info(f"  -> Initial Tail FP:  {fp_init[tail_classes].tolist()} | Final Tail FP:  {fp_fin[tail_classes].tolist()} (Delta: {(fp_fin - fp_init)[tail_classes].tolist()})")
-                            logger.info(f"  -> Initial Tail FN:  {fn_init[tail_classes].tolist()} | Final Tail FN:  {fn_fin[tail_classes].tolist()} (Delta: {(fn_fin - fn_init)[tail_classes].tolist()})")
-                    else:
-                        initial_miou = final_miou = online_miou = initial_acc = final_acc = 0.0
-                        
-                    firing_rate_str = ""
-                    if "FiringRate" in adapt_metrics:
-                        firing_rate_str = f", FiringRate={adapt_metrics['FiringRate']*100:.2f}%"
-                        if "UpdateMagnitude" in adapt_metrics:
-                            firing_rate_str += f", UpdateMag={adapt_metrics['UpdateMagnitude']:.4f}"
+                # Always run 3-pass protocol to get True Initial and True Final
+                init_key = (ctype, sev, current_method, args.tau, args.ic_method, args.kappa, args.mv_tta, args.gate_mode, args.chunked)
+                if not args.continual and (not args.chunked or args.reset_per_corruption) and init_key in shared_init_metrics:
+                    logger.debug("  -> Pass 1: Reusing cached True Initial metrics (Frozen)")
+                    init_metrics = shared_init_metrics[init_key]
                 else:
-                    # Original single-pass continuous evaluation
-                    metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=(current_method == 'frozen'), update_method=current_method, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom, dump_features=args.dump_features, diagnostics=args.diagnostics)
-                    if len(metrics["mIoU"]) > 0:
-                        initial_miou = metrics["mIoU"][0]
-                        final_miou = metrics["mIoU"][-1]
-                        online_miou = final_miou
-                        initial_acc = metrics["Accuracy"][0]
-                        final_acc = metrics["Accuracy"][-1]
-                    else:
-                        initial_miou = final_miou = online_miou = initial_acc = final_acc = 0.0
+                    logger.debug("  -> Pass 1: Computing True Initial metrics (Frozen)")
+                    init_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, update_method=current_method, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom, dump_features=args.dump_features, diagnostics=args.diagnostics)
+                    if not args.continual and (not args.chunked or args.reset_per_corruption):
+                        shared_init_metrics[init_key] = init_metrics
+                
+                # Pass 2: Adapt (only if method is not frozen)
+                if current_method != 'frozen':
+                    logger.debug("  -> Pass 2: Adapting model weights")
+                    eval_model.train()
+                    adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom, dump_features=args.dump_features, diagnostics=args.diagnostics)
+                else:
+                    adapt_metrics = init_metrics
+                    
+                # Pass 3: True Final (Frozen on chunk using adapted weights)
+                logger.debug("  -> Pass 3: Computing True Final metrics (Frozen)")
+                eval_model.eval()
+                final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, update_method=current_method, dry_run=args.dry_run, ic_method=args.ic_method, tau=args.tau, kappa=args.kappa, normalize_weights=args.normalize_weights, mv_tta=args.mv_tta, gate_mode=args.gate_mode, dynamic_geom=args.dynamic_geom, dump_features=args.dump_features, diagnostics=args.diagnostics)
+                
+                metrics = adapt_metrics  # Just for the trajectory json
+                if len(init_metrics["mIoU"]) > 0:
+                    initial_miou = init_metrics["mIoU"][-1]
+                    final_miou = final_metrics["mIoU"][-1]
+                    online_miou = adapt_metrics["mIoU"][-1]
+                    initial_acc = init_metrics["Accuracy"][-1]
+                    final_acc = final_metrics["Accuracy"][-1]
+                    
+                    if 'ConfusionMatrix' in init_metrics:
+                        cm_init = np.array(init_metrics['ConfusionMatrix'])
+                        tp_init = np.diag(cm_init)
+                        fp_init = cm_init.sum(axis=0) - tp_init
+                        fn_init = cm_init.sum(axis=1) - tp_init
                         
-                    firing_rate_str = ""
-                    if "FiringRate" in metrics:
-                        firing_rate_str = f", FiringRate={metrics['FiringRate']*100:.2f}%"
-                        if "UpdateMagnitude" in metrics:
-                            firing_rate_str += f", UpdateMag={metrics['UpdateMagnitude']:.4f}"
+                        if 'ConfusionMatrix' in final_metrics:
+                            cm_fin = np.array(final_metrics['ConfusionMatrix'])
+                            tp_fin = np.diag(cm_fin)
+                            fp_fin = cm_fin.sum(axis=0) - tp_fin
+                            fn_fin = cm_fin.sum(axis=1) - tp_fin
+                        else:
+                            tp_fin, fp_fin, fn_fin = tp_init, fp_init, fn_init
+                            
+                        tail_classes = [2, 3, 6, 7, 10]
+                        logger.info(f"  -> Initial Tail TP:  {tp_init[tail_classes].tolist()} | Final Tail TP:  {tp_fin[tail_classes].tolist()} (Delta: {(tp_fin - tp_init)[tail_classes].tolist()})")
+                        logger.info(f"  -> Initial Tail FP:  {fp_init[tail_classes].tolist()} | Final Tail FP:  {fp_fin[tail_classes].tolist()} (Delta: {(fp_fin - fp_init)[tail_classes].tolist()})")
+                        logger.info(f"  -> Initial Tail FN:  {fn_init[tail_classes].tolist()} | Final Tail FN:  {fn_fin[tail_classes].tolist()} (Delta: {(fn_fin - fn_init)[tail_classes].tolist()})")
+                else:
+                    initial_miou = final_miou = online_miou = initial_acc = final_acc = 0.0
+                    
+                firing_rate_str = ""
+                if "FiringRate" in adapt_metrics:
+                    firing_rate_str = f", FiringRate={adapt_metrics['FiringRate']*100:.2f}%"
+                    if "UpdateMagnitude" in adapt_metrics:
+                        firing_rate_str += f", UpdateMag={adapt_metrics['UpdateMagnitude']:.4f}"
             except Exception as e:
                 import traceback
                 logger.error(f"FATAL ERROR during {ctype} sev {sev} ({current_method}): {e}")
@@ -1435,20 +1416,12 @@ def main():
                 global_results['mIoU'][full_method_name][ctype][sev] = (initial_miou, final_miou)
                 global_results['Accuracy'][full_method_name][ctype][sev] = (initial_acc, final_acc)
                 
-                if not args.continual and (not args.chunked or args.reset_per_corruption):
-                    initial_head = init_metrics["Head_mIoU"][-1] if current_method != 'frozen' else metrics["Head_mIoU"][0]
-                    final_head = final_metrics["Head_mIoU"][-1] if current_method != 'frozen' else metrics["Head_mIoU"][-1]
-                    initial_mid = init_metrics["Mid_mIoU"][-1] if current_method != 'frozen' else metrics["Mid_mIoU"][0]
-                    final_mid = final_metrics["Mid_mIoU"][-1] if current_method != 'frozen' else metrics["Mid_mIoU"][-1]
-                    initial_tail = init_metrics["Tail_mIoU"][-1] if current_method != 'frozen' else metrics["Tail_mIoU"][0]
-                    final_tail = final_metrics["Tail_mIoU"][-1] if current_method != 'frozen' else metrics["Tail_mIoU"][-1]
-                else:
-                    initial_head = metrics["Head_mIoU"][0]
-                    final_head = metrics["Head_mIoU"][-1]
-                    initial_mid = metrics["Mid_mIoU"][0]
-                    final_mid = metrics["Mid_mIoU"][-1]
-                    initial_tail = metrics["Tail_mIoU"][0]
-                    final_tail = metrics["Tail_mIoU"][-1]
+                initial_head = init_metrics["Head_mIoU"][-1]
+                final_head = final_metrics["Head_mIoU"][-1]
+                initial_mid = init_metrics["Mid_mIoU"][-1]
+                final_mid = final_metrics["Mid_mIoU"][-1]
+                initial_tail = init_metrics["Tail_mIoU"][-1]
+                final_tail = final_metrics["Tail_mIoU"][-1]
                 
                 protocol_str = "continual" if args.continual else ("chunked" if args.chunked else "full")
                 n_frames_str = len(target_dataloader)

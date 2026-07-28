@@ -285,14 +285,18 @@ class D3CTTA(nn.Module):
         except ImportError:
             try: # the one that actually runs (since open3d cant be installed in my env)
                 from scipy.spatial import cKDTree
+                
+                step = 4
+                sub_points = points_np[::step]
+                
                 tree = cKDTree(points_np)
-                dists, idxs = tree.query(points_np, k=min(30, len(points_np)), distance_upper_bound=2.0, workers=-1)
+                dists, idxs = tree.query(sub_points, k=min(30, len(points_np)), distance_upper_bound=2.0, workers=2)
                 
                 invalid_mask = np.isinf(dists)
                 idxs[invalid_mask] = 0
                 neighbors = points_np[idxs]
                 
-                query_points = points_np[:, np.newaxis, :]
+                query_points = sub_points[:, np.newaxis, :]
                 neighbors = np.where(invalid_mask[:, :, np.newaxis], query_points, neighbors)
                 
                 centroids = np.mean(neighbors, axis=1, keepdims=True)
@@ -300,7 +304,11 @@ class D3CTTA(nn.Module):
                 covs = np.einsum('nij,nik->njk', centered, centered)
                 
                 w, v = np.linalg.eigh(covs)
-                normals = np.abs(v[:, 2, 0])
+                sub_normals = np.abs(v[:, 2, 0])
+                
+                sub_tree = cKDTree(sub_points)
+                _, up_idxs = sub_tree.query(points_np, k=1, workers=2)
+                normals = sub_normals[up_idxs]
             except ImportError:
                 ones = torch.ones(len(pred), dtype=torch.bool, device=orig_device)
                 return ones, ones
