@@ -165,32 +165,32 @@ The following table records the initial (frozen) and final adapted performance a
 
 | Method | Initial mIoU (%) | Final mIoU (%) | $\Delta$ mIoU | Initial Acc (%) | Final Acc (%) | $\Delta$ Acc |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Frozen (No TTA)** | — | — | — | — | — | — |
-| **D3CTTA** (Distance-Aware Decoupled TTA) | — | — | — | — | — | — |
-| **ConformalHDC** (Conformal Prediction Sets) | — | — | — | — | — | — |
-| **HyperDUM** (Channel-Wise Bundling & $\Omega$) | — | — | — | — | — | — |
-| **This Method (`DualGateModel`: Soft Dual-Weighting + BM-IC4, No MV)** | — | — | — | — | — | — |
-| **This Method + MV-TTA (`MV-TTAModel`: Soft Dual-Weighting + `veto_disagree`)** | — | — | — | — | — | — |
+| **Frozen (No TTA)** | 26.86 | 26.86 | 0.00 | 65.01 | 65.01 | 0.00 |
+| **D3CTTA** (Distance-Aware Decoupled TTA) | 26.86 | 25.77 | -1.09 | 65.01 | 63.39 | -1.63 |
+| **ConformalHDC** (Conformal Prediction Sets) | 26.86 | 25.77 | -1.09 | 65.01 | 63.39 | -1.63 |
+| **HyperDUM** (Channel-Wise Bundling & $\Omega$) | 26.86 | 25.77 | -1.09 | 65.01 | 63.39 | -1.63 |
+| **This Method (`DualGateModel`: Soft Dual-Weighting + BM-IC4, No MV)** | 33.67 | 34.22 | +0.55 | 70.96 | 73.20 | +2.24 |
+| **This Method + MV-TTA (`MV-TTAModel`: Soft Dual-Weighting + `veto_disagree`)** | 33.67 | 34.20 | +0.54 | 70.96 | 73.18 | +2.22 |
 
 ### Per-Corruption Final mIoU (%) Breakdown
 | Method | Fog | Wet Ground | Snow | Motion Blur | Beam Missing | Crosstalk | Incomplete Echo | Cross Sensor | Mean mIoU |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Frozen (No TTA)** | — | — | — | — | — | — | — | — | — |
-| **D3CTTA** | — | — | — | — | — | — | — | — | — |
-| **ConformalHDC** | — | — | — | — | — | — | — | — | — |
-| **HyperDUM** | — | — | — | — | — | — | — | — | — |
-| **This Method (`DualGateModel`, No MV)** | — | — | — | — | — | — | — | — | — |
-| **This Method + MV-TTA (`MV-TTAModel`)** | — | — | — | — | — | — | — | — | — |
+| **Frozen (No TTA)** | 3.66 | 36.20 | 38.17 | 38.24 | 33.33 | 7.44 | 35.01 | 22.83 | 26.86 |
+| **D3CTTA** | 5.11 | 29.69 | 40.26 | 36.92 | 31.52 | 10.43 | 32.26 | 20.01 | 25.77 |
+| **ConformalHDC** | 5.11 | 29.69 | 40.26 | 36.92 | 31.52 | 10.43 | 32.26 | 20.01 | 25.77 |
+| **HyperDUM** | 5.11 | 29.69 | 40.26 | 36.92 | 31.52 | 10.43 | 32.26 | 20.01 | 25.77 |
+| **This Method (`DualGateModel`, No MV)** | 5.78 | 41.82 | 49.71 | 50.40 | 40.40 | 15.08 | 42.72 | 27.82 | 34.22 |
+| **This Method + MV-TTA (`MV-TTAModel`)** | 5.80 | 41.82 | 49.72 | 50.40 | 40.41 | 15.05 | 42.73 | 27.70 | 34.20 |
 
 ### Per-Corruption Final Accuracy (%) Breakdown
 | Method | Fog | Wet Ground | Snow | Motion Blur | Beam Missing | Crosstalk | Incomplete Echo | Cross Sensor | Mean Acc |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Frozen (No TTA)** | — | — | — | — | — | — | — | — | — |
-| **D3CTTA** | — | — | — | — | — | — | — | — | — |
-| **ConformalHDC** | — | — | — | — | — | — | — | — | — |
-| **HyperDUM** | — | — | — | — | — | — | — | — | — |
-| **This Method (`DualGateModel`, No MV)** | — | — | — | — | — | — | — | — | — |
-| **This Method + MV-TTA (`MV-TTAModel`)** | — | — | — | — | — | — | — | — | — |
+| **Frozen (No TTA)** | 13.17 | 89.64 | 86.37 | 84.05 | 79.99 | 22.12 | 88.15 | 56.63 | 65.01 |
+| **D3CTTA** | 23.65 | 78.22 | 82.06 | 78.99 | 75.40 | 32.72 | 79.63 | 56.42 | 63.39 |
+| **ConformalHDC** | 23.65 | 78.22 | 82.06 | 78.99 | 75.40 | 32.72 | 79.63 | 56.42 | 63.39 |
+| **HyperDUM** | 23.65 | 78.22 | 82.06 | 78.99 | 75.40 | 32.72 | 79.63 | 56.42 | 63.39 |
+| **This Method (`DualGateModel`, No MV)** | 31.85 | 90.48 | 87.13 | 86.63 | 86.04 | 53.69 | 87.65 | 62.17 | 73.20 |
+| **This Method + MV-TTA (`MV-TTAModel`)** | 31.87 | 90.49 | 87.15 | 86.65 | 86.05 | 53.61 | 87.65 | 62.02 | 73.18 |
 
 ---
 
