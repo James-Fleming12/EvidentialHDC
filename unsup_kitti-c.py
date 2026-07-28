@@ -36,6 +36,9 @@ SEVERITY_MAP = {1: 'light', 2: 'moderate', 3: 'heavy', 4: 'extreme'}
 CONFIG_ARCH = "config/arch/senet-2048p.yml"
 CONFIG_LABELS_KITTI_ALL = "config/labels/semantic-kitti-all.yaml"  # Standard 17 classes
 
+ARCH = yaml.safe_load(open(CONFIG_ARCH, 'r'))
+DATA = yaml.safe_load(open(CONFIG_LABELS_KITTI_ALL, 'r'))
+
 def compute_auroc_torch(scores, labels):
     if len(scores) == 0: return float('nan')
     pos_mask = labels.bool()
