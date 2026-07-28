@@ -74,7 +74,7 @@ def compute_correlations_torch(x, y):
     spearman = float(cov_r / (srx * sry)) if srx != 0 and sry != 0 else 0.0
     return f"Pearson r={pearson:.6f}, Spearman rho={spearman:.6f} (over {len(x):,} pairs)"
 
-def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, ic_method='none', tau=None, kappa=15.0, normalize_weights=False, mv_tta='none', gate_mode='epistemic', dynamic_geom=False, diagnostics=True, dump_features=False):
+def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, ic_method='none', tau=None, kappa=15.0, normalize_weights=False, mv_tta='none', gate_mode='epistemic', dynamic_geom=False, diagnostics=True, dump_features=False, fire_th=0.0):
     if ic_method not in ['none', 'ic4']:
         raise ValueError(f"Unknown ic_method: {ic_method}")
     logger = logging.getLogger("EvalAdapt")
@@ -301,10 +301,11 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
 
                     if update_method in ['evidential_hdc_tta', 'bm_ic4', 'bm'] or 'evidential' in update_method or 'bm' in update_method:
                         # 1. & 2. Compute Confidence & Gating via DualGateModel / MV_TTAModel
+                        method_for_conf = 'uniform' if gate_mode == 'oracle' else gate_mode
                         update_weights, uncertainty, z_score = model.get_confidence(
                             latent_x_valid,
                             preds=pseudo_labels,
-                            method=gate_mode,
+                            method=method_for_conf,
                             logits=cos_sims,
                             active_mu_cos=active_mu_cos,
                             active_sigma_cos=active_sigma_cos,
@@ -544,7 +545,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             uncertainty=uncertainty,
                             update_lr=update_lr,
                             normalize_weights=normalize_weights,
-                            view_preds=view_preds
+                            view_preds=view_preds,
+                            fire_th=fire_th
                         )
     
     try:
