@@ -287,7 +287,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     if update_method in ['evidential_hdc_tta', 'bm_ic4', 'bm'] or 'evidential' in update_method or 'bm' in update_method:
                         # 1. & 2. Compute Confidence & Gating via DualGateModel / MV_TTAModel
                         update_weights, uncertainty, z_score = model.get_confidence(
-                            norm_enc,
+                            latent_x_valid,
                             preds=pseudo_labels,
                             method=gate_mode,
                             logits=cos_sims,
