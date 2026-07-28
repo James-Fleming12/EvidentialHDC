@@ -168,7 +168,6 @@ class HarDBlock(nn.Module):
         out = torch.cat(out_, 1)
         return out
 
-
 class HarDNet(nn.Module):
     def __init__(self, nclasses=20, aux=False):
         super(HarDNet, self).__init__()
@@ -291,7 +290,6 @@ class HarDNet(nn.Module):
 
         out = torch.cat(res, dim=1)
 
-
         out = self.conv_1(out)
         out = self.conv_2(out)
         out = self.semantic_output(out)
@@ -311,7 +309,6 @@ class HarDNet(nn.Module):
             return [out, res_3, res_4, res_5]
         else:
             return out
-
 
 # import time
 # model = HarDNet()

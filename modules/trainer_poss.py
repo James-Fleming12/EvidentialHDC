@@ -18,7 +18,6 @@ from modules.scheduler.cosine import CosineAnnealingWarmUpRestarts
 
 from tqdm import tqdm
 
-
 def save_to_log(logdir, logfile, message):
     f = open(logdir + '/' + logfile, "a")
     f.write(message + '\n')
@@ -110,7 +109,6 @@ class Trainer():
             if self.ARCH["train"]["pipeline"] == "fid":
                 from modules.network.Fid import ResNet_34
                 self.model = ResNet_34(self.parser.get_n_classes(), self.ARCH["train"]["aux_loss"])
-
 
         save_to_log(self.log, 'model.txt', str(self.model))
         pytorch_total_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
@@ -527,7 +525,6 @@ class Trainer():
                 jaccs.update(jacc.mean().item(),in_vol.size(0))
 
                 wces.update(wce.mean().item(),in_vol.size(0))
-
 
                 if save_scans:
                     # get the first scan in batch and project points

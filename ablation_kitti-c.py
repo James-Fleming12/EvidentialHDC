@@ -1,353 +1,437 @@
+"""
+ablation_kitti-c.py -- corrected ablation suite.
+
+See docs/method_details.md Section 8 for the full list of functional changes.
+The short version of what was wrong with the previous runner:
+
+  * It ran ONE pass and read
+        initial = metrics["mIoU"][0]     # cumulative mIoU after ONE frame
+        final   = metrics["mIoU"][-1]    # cumulative mIoU after ~581 frames
+    which are different quantities. That is why the FROZEN row reported a -7.53
+    "drop" while performing zero updates, and why every ablation shared the
+    identical "initial" of 41.20. Every Delta in Ablation Tables 1-3 was void.
+  * It discarded Head/Mid/Tail mIoU, which evaluate_and_adapt already returns --
+    so it could not show that Accuracy rose +1.85 while mIoU fell -0.24.
+  * One seed, so contributions of +-0.01..0.3 had no noise floor.
+  * Leave-one-out only, so component interactions were invisible.
+
+This version: 3-pass protocol, Head/Mid/Tail recorded, add-one-in ladder,
+multi-seed, gate-preset sweep, and a live-path check that warns if the corrected
+gating in HDC_utils is never actually invoked.
+"""
+
 import os
 import json
+import inspect
 import logging
 import argparse
 import importlib
+import random
+
 import torch
 import numpy as np
+import yaml
 from torch.utils.data import DataLoader
 
-# Dynamically import unsup_kitti-c module (handling hyphen in filename)
 ukc = importlib.import_module("unsup_kitti-c")
+from modules import HDC_utils
 
-# Define systematic ablation suite for our unified architecture
+
+# ==========================================================================
+# Ablation matrix
+# ==========================================================================
+def _cfg(name, family, tau=-1.0, gate_mode="soft_dual_weight", ic_method="ic4",
+         normalize_weights=False, dynamic_geom=True, mv_tta="none",
+         update_method="evidential_hdc_tta", gain=False, kappa=15.0,
+         preset="soft", gate_cfg=None):
+    return dict(name=name, family=family, update_method=update_method,
+                gate_mode=gate_mode, ic_method=ic_method, tau=tau, kappa=kappa,
+                normalize_weights=normalize_weights, mv_tta=mv_tta,
+                dynamic_geom=dynamic_geom, gain_control=gain,
+                preset=preset, gate_cfg=gate_cfg or {})
+
+
 ABLATIONS = {
-    "frozen": {
-        "name": "Frozen Baseline (No Adaptation)",
-        "update_method": "frozen",
-        "gate_mode": "epistemic",
-        "ic_method": "none",
-        "tau": -1.0,
-        "normalize_weights": False,
-        "mv_tta": "none",
-        "dynamic_geom": False,
-        "kappa": 15.0
-    },
-    "full_method": {
-        "name": "Full Unified Method (Soft Dual-Weighting + BM-IC4 + Temporal Consistency)",
-        "update_method": "evidential_hdc_tta",
-        "gate_mode": "soft_dual_weight",
-        "ic_method": "ic4",
-        "tau": -1.0,
-        "normalize_weights": False,
-        "mv_tta": "none",
-        "dynamic_geom": True,
-        "kappa": 15.0
-    },
-    "no_dual_gating": {
-        "name": "Ablation: Without Dual Gating (Epistemic Dirichlet Gating Only)",
-        "update_method": "evidential_hdc_tta",
-        "gate_mode": "epistemic",
-        "ic_method": "ic4",
-        "tau": -1.0,
-        "normalize_weights": False,
-        "mv_tta": "none",
-        "dynamic_geom": True,
-        "kappa": 15.0
-    },
-    "no_temporal_consistency": {
-        "name": "Ablation: Without Temporal Consistency (Normalized Weights / No BM Inertia)",
-        "update_method": "evidential_hdc_tta",
-        "gate_mode": "soft_dual_weight",
-        "ic_method": "ic4",
-        "tau": -1.0,
-        "normalize_weights": True,  # Disables BM prototype accumulator inertia
-        "mv_tta": "none",
-        "dynamic_geom": True,
-        "kappa": 15.0
-    },
-    "no_inter_class_balance": {
-        "name": "Ablation: Without Inter-Class Balance (No Tau-Prior Boundary Shift)",
-        "update_method": "evidential_hdc_tta",
-        "gate_mode": "soft_dual_weight",
-        "ic_method": "ic4",
-        "tau": 0.0,  # 0.0 removes prior frequency adjustment
-        "normalize_weights": False,
-        "mv_tta": "none",
-        "dynamic_geom": True,
-        "kappa": 15.0
-    },
-    "no_intra_class_balance": {
-        "name": "Ablation: Without Intra-Class Balance (No IC4 Active Learning Gradient Scaling)",
-        "update_method": "evidential_hdc_tta",
-        "gate_mode": "soft_dual_weight",
-        "ic_method": "none",  # 'none' disables IC4 active learning multiplier
-        "tau": -1.0,
-        "normalize_weights": False,
-        "mv_tta": "none",
-        "dynamic_geom": True,
-        "kappa": 15.0
-    },
-    "no_gating": {
-        "name": "Ablation: Without Uncertainty Gating (Uniform Weighting)",
-        "update_method": "evidential_hdc_tta",
-        "gate_mode": "uniform",
-        "ic_method": "ic4",
-        "tau": -1.0,
-        "normalize_weights": False,
-        "mv_tta": "none",
-        "dynamic_geom": True,
-        "kappa": 15.0
-    }
+    # ---- reference ----------------------------------------------------
+    "frozen": _cfg("Frozen (no adaptation)", "ref", update_method="frozen",
+                   gate_mode="epistemic"),
+    "oracle": _cfg("Oracle gate (GT-gated CEILING, not a method)", "ref",
+                   gate_mode="oracle"),
+
+    # ---- leave-one-out ------------------------------------------------
+    "full_method": _cfg("Full unified method", "loo"),
+    "no_dual_gating": _cfg("- dual gating (epistemic only)", "loo", gate_mode="epistemic"),
+    "no_temporal": _cfg("- temporal consistency (no BM inertia)", "loo",
+                        normalize_weights=True),
+    "no_inter_class": _cfg("- inter-class balance (no tau prior)", "loo", tau=0.0),
+    "no_intra_class": _cfg("- intra-class balance (no IC4)", "loo", ic_method="none"),
+    "no_gating": _cfg("- uncertainty gating (uniform weights)", "loo", gate_mode="uniform"),
+
+    # ---- add-one-in ladder --------------------------------------------
+    "aoi_1_tau": _cfg("+ tau only", "aoi", gate_mode="uniform", ic_method="none",
+                      normalize_weights=True),
+    "aoi_2_gate": _cfg("+ tau + epistemic gating", "aoi", gate_mode="epistemic",
+                       ic_method="none", normalize_weights=True),
+    "aoi_3_bm": _cfg("+ tau + gating + BM", "aoi", gate_mode="epistemic",
+                     ic_method="none", normalize_weights=False),
+    "aoi_4_ic4": _cfg("+ tau + gating + BM + IC4", "aoi", gate_mode="epistemic",
+                      ic_method="ic4", normalize_weights=False),
+    "aoi_5_dual": _cfg("+ dual gating (== full method)", "aoi",
+                       gate_mode="soft_dual_weight"),
+
+    # ---- gate preset sweep --------------------------------------------
+    # The old ablation compared soft_dual_weight (u_th=0.5, coef=1.5) against
+    # epistemic (u_th=0.1, coef=2.0): different REGIMES, not just offsets.
+    # These four cells disentangle preset from the geometric term.
+    "epi_soft": _cfg("epistemic, soft preset", "preset", gate_mode="epistemic",
+                     preset="soft"),
+    "epi_sharp": _cfg("epistemic, sharp preset", "preset", gate_mode="epistemic",
+                      preset="sharp"),
+    "dual_soft": _cfg("soft_dual_weight, soft preset", "preset",
+                      gate_mode="soft_dual_weight", preset="soft"),
+    "dual_sharp": _cfg("soft_dual_weight, sharp preset", "preset",
+                       gate_mode="soft_dual_weight", preset="sharp"),
+
+    # ---- gate zoo ------------------------------------------------------
+    "geometric_only": _cfg("geometric only", "zoo", gate_mode="geometric"),
+    "and_gate": _cfg("AND gate (fuzzy min)", "zoo", gate_mode="and_gate"),
+    "or_gate": _cfg("OR gate (fuzzy max)", "zoo", gate_mode="or_gate"),
+    "ellipsoid_gate": _cfg("ellipsoid gate", "zoo", gate_mode="ellipsoid_gate"),
+    "rescue_gate": _cfg("rescue cascade (sign+units fixed)", "zoo",
+                        gate_mode="rescue_gate"),
+    "rescue_tight": _cfg("rescue cascade, tight z (top slice only)", "zoo",
+                         gate_mode="rescue_gate",
+                         gate_cfg={"rescue_z_th": -0.5, "rescue_min": 0.75}),
+
+    # ---- gain control --------------------------------------------------
+    "gain_full": _cfg("Full + domain-gap gain control", "gain", gain=True),
+    "gain_epi": _cfg("Epistemic only + gain control", "gain",
+                     gate_mode="epistemic", gain=True),
+
+    # ---- multi-view ----------------------------------------------------
+    "mv_veto": _cfg("Full + MV veto_disagree", "mv", mv_tta="veto_disagree"),
+    "mv_conf": _cfg("Full + MV conf_pred", "mv", mv_tta="conf_pred"),
 }
 
-def main():
-    parser = argparse.ArgumentParser(description="Evidential HDC Ablation Study Runner (Section 7.3)")
-    parser.add_argument("--ablations", type=str, default="default",
-                        help="Comma-separated list of ablations to run, or 'default'/'all'. Available: " + ", ".join(ABLATIONS.keys()))
-    parser.add_argument("--pretrained_path", type=str, default="logs/kitti_pretrain/hdc_sub.pth", help="Path to pretrained HDC model")
-    parser.add_argument("--log_dir", type=str, default="logs/ablation_kitti_c", help="Directory to save ablation logs and plots")
-    parser.add_argument("--corruptions", type=str, default="fog,wet_ground,snow,motion_blur,beam_missing,crosstalk,incomplete_echo,cross_sensor",
-                        help="Comma-separated list of corruptions to evaluate")
-    parser.add_argument("--severity", type=int, default=3, help="Severity level (1 to 5)")
-    parser.add_argument("--chunked", action="store_true", help="Use chunked protocol across disjoint splits")
-    parser.add_argument("--reset_per_corruption", action="store_true", help="Reset model to clean weights before each corruption")
-    parser.add_argument("--continual", action="store_true", help="Continual learning mode (no resets between sequences)")
-    parser.add_argument("--dry_run", action="store_true", help="Run only 2 batches per condition for quick verification")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--kitti_dir", type=str, default="/mnt/alpha/jmfleming/KITTI", help="Path to SemanticKITTI dataset")
-    parser.add_argument("--kittic_dir", type=str, default="/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C", help="Path to SemanticKITTI-C dataset")
-    parser.add_argument("--no_diagnostics", action="store_false", dest="diagnostics", help="Disable heavy diagnostic logging")
-    parser.add_argument("--dump_features", action="store_true", default=False, help="Dump offline probe features")
-    
-    args = parser.parse_args()
-    
-    os.makedirs(args.log_dir, exist_ok=True)
-    logger = ukc.setup_logger(os.path.join(args.log_dir, "ablation_suite.log"))
-    
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    
-    active_corruptions = [c.strip() for c in args.corruptions.split(",")]
-    
-    if args.ablations in ["default", "all"]:
-        active_ablations = ["frozen", "full_method", "no_dual_gating", "no_temporal_consistency", "no_inter_class_balance", "no_intra_class_balance"]
-        if args.ablations == "all":
-            active_ablations.append("no_gating")
-    else:
-        active_ablations = [a.strip() for a in args.ablations.split(",")]
-        for a in active_ablations:
-            if a not in ABLATIONS:
-                raise ValueError(f"Unknown ablation '{a}'. Available: {list(ABLATIONS.keys())}")
-                
-    logger.info("==========================================================")
-    logger.info("Starting Evidential HDC Ablation Suite (Section 7.3)")
-    logger.info(f"Pretrained Model: {args.pretrained_path}")
-    logger.info(f"Log Directory:    {args.log_dir}")
-    logger.info(f"Corruptions:      {active_corruptions} (Severity: {args.severity})")
-    logger.info(f"Active Ablations: {active_ablations}")
-    logger.info("==========================================================")
+SETS = {
+    "core": ["frozen", "full_method", "no_dual_gating"],
+    "loo": ["frozen", "full_method", "no_dual_gating", "no_temporal",
+            "no_inter_class", "no_intra_class", "no_gating"],
+    "aoi": ["frozen", "aoi_1_tau", "aoi_2_gate", "aoi_3_bm", "aoi_4_ic4", "aoi_5_dual"],
+    "preset": ["frozen", "epi_soft", "epi_sharp", "dual_soft", "dual_sharp"],
+    "zoo": ["frozen", "full_method", "geometric_only", "and_gate", "or_gate",
+            "ellipsoid_gate", "rescue_gate", "rescue_tight"],
+    "gain": ["frozen", "full_method", "no_dual_gating", "gain_full", "gain_epi"],
+    "mv": ["frozen", "full_method", "mv_veto", "mv_conf"],
+    "ceiling": ["frozen", "full_method", "oracle"],
+}
+SETS["all"] = list(ABLATIONS.keys())
 
-    # Load initial dataset split for chunking calculation
-    parser_obj = ukc.Parser(root=ukc.KITTI_DATA_DIR,
-                            train_sequences=ukc.DATA["split"]["train"],
-                            valid_sequences=ukc.DATA["split"]["valid"],
-                            test_sequences=None,
-                            labels=ukc.DATA["labels"],
-                            color_map=ukc.DATA.get("color_map", {}),
-                            learning_map=ukc.DATA["learning_map"],
-                            learning_map_inv=ukc.DATA["learning_map_inv"],
-                            sensor=ukc.ARCH["dataset"]["sensor"],
-                            max_points=ukc.ARCH["dataset"]["max_points"],
-                            batch_size=1,
-                            workers=ukc.ARCH["train"]["workers"],
-                            gt=True,
-                            shuffle_train=False)
-    
-    target_dataset = parser_obj.validloader.dataset
-    total_len = len(target_dataset)
-    chunk_size = total_len // len(ukc.CORRUPTIONS)
-    
-    indices = list(range(total_len))
-    chunks = []
-    for i in range(len(ukc.CORRUPTIONS)):
-        start_idx = i * chunk_size
-        end_idx = (i + 1) * chunk_size if i < len(ukc.CORRUPTIONS) - 1 else total_len
-        chunks.append(indices[start_idx:end_idx])
 
-    # Load base model and populate source statistics
-    logger.info("Loading base pretrained model and source statistics...")
-    base_model = ukc.load_hdc_model(args.pretrained_path, num_classes=ukc.NUM_CLASSES, mv_tta="none")
-    ukc.populate_source_statistics(base_model, args.kitti_dir, ukc.ARCH, ukc.DATA, device, dry_run=args.dry_run)
-    
-    source_stats_cache = {
-        "class_latent_means": base_model.class_latent_means,
-        "source_density_mean": getattr(base_model, "source_density_mean", None),
-        "source_density_std": getattr(base_model, "source_density_std", None),
-        "source_mu_cos": getattr(base_model, "source_mu_cos", None),
-        "source_sigma_cos": getattr(base_model, "source_sigma_cos", None),
-        "drift_mu_0": getattr(base_model, "drift_mu_0", None),
-        "source_class_freq": getattr(base_model, "source_class_freq", None),
-        "source_bank": getattr(base_model, "source_bank", None)
-    }
-    clean_state_dict = torch.load(args.pretrained_path, map_location=device)
-    
-    # Pre-load corruption datasets
-    logger.info("Pre-loading corruption datasets...")
-    corruption_datasets = {}
-    sev_str = ukc.SEVERITY_MAP.get(args.severity, "moderate")
-    for ctype in active_corruptions:
-        corruption_root = os.path.join(args.kittic_dir, ctype, sev_str)
-        seq_dir = os.path.join(corruption_root, "sequences")
-        if not os.path.exists(seq_dir):
-            os.makedirs(seq_dir, exist_ok=True)
-            if not os.path.exists(os.path.join(seq_dir, "08")):
-                os.symlink("..", os.path.join(seq_dir, "08"))
-        try:
-            parser_c = ukc.Parser(root=corruption_root,
-                                  train_sequences=ukc.DATA["split"]["valid"],
-                                  valid_sequences=ukc.DATA["split"]["valid"],
-                                  test_sequences=None,
-                                  labels=ukc.DATA["labels"],
-                                  color_map=ukc.DATA.get("color_map", {}),
-                                  learning_map=ukc.DATA["learning_map"],
-                                  learning_map_inv=ukc.DATA["learning_map_inv"],
-                                  sensor=ukc.ARCH["dataset"]["sensor"],
-                                  max_points=ukc.ARCH["dataset"]["max_points"],
-                                  batch_size=1,
-                                  workers=ukc.ARCH["train"]["workers"],
-                                  gt=True,
-                                  shuffle_train=False)
-            corruption_datasets[ctype] = parser_c.validloader.dataset
-        except Exception as e:
-            logger.error(f"Failed loading dataset for {ctype}: {e}")
-            
-    global_results = {}
-    
-    # Loop over active ablation tests
-    for ab_key in active_ablations:
-        cfg = ABLATIONS[ab_key]
-        logger.info("\n" + "=" * 60)
-        logger.info(f">>> ABLATION TEST: [{ab_key}] - {cfg['name']}")
-        logger.info("=" * 60)
-        
-        # Reset model to clean state and restore source statistics
-        model = ukc.load_hdc_model(args.pretrained_path, num_classes=ukc.NUM_CLASSES, mv_tta=cfg["mv_tta"])
-        model.load_state_dict(clean_state_dict, strict=False)
-        for k, v in source_stats_cache.items():
-            if v is not None:
-                setattr(model, k, v if not isinstance(v, torch.Tensor) else v.clone())
-                
-        # Clean up runtime tracking attributes
-        attrs_to_del = ["drift_mu_c", "class_freq_ema", "class_update_counts", "class_M",
-                        "running_density_std", "running_density_mean", "_contingency_table",
-                        "_mv_contingency_table", "_decay_logs", "_class_n_points", "_class_n_fired",
-                        "_class_true_errors_rejected", "_class_correct_rejected", "_firing_log",
-                        "_veto_stats", "_update_magnitude_log", "initial_classify_weights"]
-        for attr in attrs_to_del:
-            if hasattr(model, attr):
-                delattr(model, attr)
-                
-        results_miou = {c: {} for c in active_corruptions}
-        results_acc = {c: {} for c in active_corruptions}
-        
-        for i, ctype in enumerate(active_corruptions):
-            if args.reset_per_corruption and args.chunked and not args.continual:
-                logger.info("Resetting model to clean pretrained weights for this corruption.")
-                model.load_state_dict(clean_state_dict, strict=False)
-                for attr in attrs_to_del:
-                    if hasattr(model, attr):
-                        delattr(model, attr)
-                        
-            logger.info(f"Evaluating {ctype} severity {args.severity} (Ablation: {ab_key})")
-            if ctype not in corruption_datasets:
-                continue
-            full_dataset = corruption_datasets[ctype]
-            assert len(full_dataset) == total_len, f"Length mismatch on {ctype}"
-            
-            if not args.chunked:
-                chunk_dataset = full_dataset
-                if not args.continual:
-                    model.load_state_dict(clean_state_dict, strict=False)
-                    for attr in attrs_to_del:
-                        if hasattr(model, attr):
-                            delattr(model, attr)
-            else:
-                chunk_dataset = torch.utils.data.Subset(full_dataset, chunks[i])
-                
-            dataloader = DataLoader(chunk_dataset, batch_size=1, shuffle=False, num_workers=ukc.ARCH["train"]["workers"])
-            
+# ==========================================================================
+# Compatibility shims (tolerate either version of unsup_kitti-c.py)
+# ==========================================================================
+def _load_configs():
+    ARCH = getattr(ukc, "ARCH", None) or yaml.safe_load(open(ukc.CONFIG_ARCH))
+    DATA = getattr(ukc, "DATA", None) or yaml.safe_load(open(ukc.CONFIG_LABELS_KITTI_ALL))
+    return ARCH, DATA
+
+
+def _build_model(path, num_classes, mv_tta):
+    sig = inspect.signature(ukc.load_hdc_model)
+    kw = {"num_classes": num_classes}
+    if "mv_tta" in sig.parameters:
+        kw["mv_tta"] = mv_tta
+    return ukc.load_hdc_model(path, **kw)
+
+
+def _call_eval(model, dataloader, device, **kwargs):
+    sig = inspect.signature(ukc.evaluate_and_adapt)
+    ok = {k: v for k, v in kwargs.items() if k in sig.parameters}
+    return ukc.evaluate_and_adapt(model, dataloader, device, **ok)
+
+
+RESET_ATTRS = [
+    "drift_mu_c", "class_freq_ema", "class_update_counts", "class_M",
+    "running_density_std", "running_density_mean", "_contingency_table",
+    "_mv_contingency_table", "_decay_logs", "_class_n_points", "_class_n_fired",
+    "_class_true_errors_rejected", "_class_correct_rejected", "_firing_log",
+    "_veto_stats", "_update_magnitude_log", "initial_classify_weights",
+    "_feature_dump_list",
+]
+
+
+def _reset_model(model, clean_state_dict):
+    model.load_state_dict(clean_state_dict, strict=False)
+    for a in RESET_ATTRS:
+        if hasattr(model, a):
             try:
-                is_frozen = (cfg["update_method"] == "frozen")
-                if not is_frozen:
-                    logger.debug(f"  -> Adapting model online ({cfg['update_method']})")
-                    model.train()
-                else:
-                    logger.debug("  -> Computing frozen baseline evaluation")
-                    model.eval()
+                delattr(model, a)
+            except AttributeError:
+                setattr(model, a, None)
+    model.gain_controller = None
+    model.gate_cfg = None
 
-                metrics = ukc.evaluate_and_adapt(
-                    model, dataloader, device,
-                    eval_only=is_frozen,
-                    update_method=cfg["update_method"],
-                    dry_run=args.dry_run,
-                    ic_method=cfg["ic_method"],
-                    tau=cfg["tau"],
-                    kappa=cfg["kappa"],
-                    normalize_weights=cfg["normalize_weights"],
-                    mv_tta=cfg["mv_tta"],
-                    gate_mode=cfg["gate_mode"],
-                    dynamic_geom=cfg["dynamic_geom"],
-                    dump_features=args.dump_features,
-                    diagnostics=args.diagnostics
-                )
 
-                if len(metrics["mIoU"]) > 0:
-                    initial_miou = metrics["mIoU"][0]
-                    final_miou = metrics["mIoU"][-1]
-                    initial_acc = metrics["Accuracy"][0]
-                    final_acc = metrics["Accuracy"][-1]
-                    
-                    # Store as 2-tuples (initial, final) required by save_degradation_plot
-                    results_miou[ctype][args.severity] = (initial_miou, final_miou)
-                    results_acc[ctype][args.severity] = (initial_acc, final_acc)
-                    logger.info(f"  --> [{ab_key}] {ctype}-{args.severity} Result: Initial mIoU={initial_miou:.4f} -> Final={final_miou:.4f} | Acc={initial_acc:.4f} -> {final_acc:.4f}")
-                    
-                    # Save per-corruption trajectory JSON and graphic
-                    suffix = f"_{ab_key}"
-                    traj_json_path = os.path.join(args.log_dir, f"traj_{ctype}_{args.severity}{suffix}.json")
-                    with open(traj_json_path, "w") as f:
-                        json.dump(metrics, f, indent=4)
-                    try:
-                        ukc.save_graphic(os.path.join(args.log_dir, f"traj_{ctype}_{args.severity}{suffix}.png"), f"{ctype} Sev {args.severity} ({ab_key})", metrics)
-                    except Exception as g_err:
-                        logger.warning(f"Could not generate trajectory graphic for {ctype}-{args.severity}: {g_err}")
-                else:
-                    results_miou[ctype][args.severity] = (0.0, 0.0)
-                    results_acc[ctype][args.severity] = (0.0, 0.0)
+def _restore_stats(model, cache, device):
+    for k, v in cache.items():
+        if v is None:
+            continue
+        setattr(model, k, v.clone().to(device) if isinstance(v, torch.Tensor) else v)
 
-            except Exception as e:
-                logger.error(f"CRITICAL ERROR evaluating {ctype}-{args.severity} under ablation {ab_key}: {e}", exc_info=True)
-                results_miou[ctype][args.severity] = (0.0, 0.0)
-                results_acc[ctype][args.severity] = (0.0, 0.0)
 
-        total_evals = sum(len(sev_dict) for sev_dict in results_miou.values())
-        if total_evals == 0 and not args.dry_run:
-            logger.error(f"CRITICAL ERROR: No evaluation outcomes recorded for ablation '{ab_key}'. Check for silent exceptions during evaluation.")
-            raise RuntimeError(f"Evaluation failed to record any metrics for ablation '{ab_key}'.")
+def _tail(m, key, default=0.0):
+    seq = m.get(key) or []
+    return seq[-1] if len(seq) else default
 
-        global_results[ab_key] = {
-            "name": cfg["name"],
-            "mIoU": results_miou,
-            "Accuracy": results_acc
-        }
-        
-        # Save per-ablation plots and JSON
-        suffix = f"_{ab_key}"
-        with open(os.path.join(args.log_dir, f"results{suffix}.json"), "w") as f:
-            json.dump({"name": cfg["name"], "mIoU": results_miou, "Accuracy": results_acc}, f, indent=4)
+
+# ==========================================================================
+def main():
+    p = argparse.ArgumentParser("Evidential HDC ablation suite (corrected)")
+    p.add_argument("--ablations", default="loo",
+                   help="comma list of keys, or a named set: " + ", ".join(SETS))
+    p.add_argument("--pretrained_path", default="logs/kitti_pretrain/hdc_sub.pth")
+    p.add_argument("--log_dir", default="logs/ablation_v2")
+    p.add_argument("--corruptions",
+                   default="fog,wet_ground,snow,motion_blur,beam_missing,crosstalk,incomplete_echo,cross_sensor")
+    p.add_argument("--severity", type=int, default=3)
+    p.add_argument("--seeds", default="42")
+    p.add_argument("--chunked", action="store_true")
+    p.add_argument("--reset_per_corruption", action="store_true")
+    p.add_argument("--dry_run", action="store_true")
+    p.add_argument("--kitti_dir", default="/mnt/alpha/jmfleming/KITTI")
+    p.add_argument("--kittic_dir",
+                   default="/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C")
+    p.add_argument("--no_diagnostics", action="store_false", dest="diagnostics")
+    p.add_argument("--fire_th", type=float, default=0.0,
+                   help="minimum fused weight to contribute. The old code used >0, "
+                        "which never vetoes since exp() is strictly positive.")
+    p.add_argument("--gap_lo", type=float, default=0.35)
+    p.add_argument("--gap_hi", type=float, default=0.75)
+    p.add_argument("--calibrate_gap", action="store_true",
+                   help="measure mean epistemic uncertainty on CLEAN source and exit")
+    p.set_defaults(diagnostics=True)
+    a = p.parse_args()
+
+    os.makedirs(a.log_dir, exist_ok=True)
+    logger = ukc.setup_logger(os.path.join(a.log_dir, "ablation.log"))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    ARCH, DATA = _load_configs()
+    corruptions = [c.strip() for c in a.corruptions.split(",")]
+    seeds = [int(s) for s in a.seeds.split(",")]
+    keys = SETS[a.ablations] if a.ablations in SETS else [k.strip() for k in a.ablations.split(",")]
+    for k in keys:
+        if k not in ABLATIONS:
+            raise ValueError(f"unknown ablation '{k}'; available: {list(ABLATIONS)}")
+
+    logger.info("=" * 78)
+    logger.info(f"ablations  : {keys}")
+    logger.info(f"seeds      : {seeds}")
+    logger.info(f"corruptions: {corruptions} @ sev {a.severity}")
+    logger.info(f"protocol   : {'chunked' if a.chunked else 'full'} "
+                f"(reset_per_corruption={a.reset_per_corruption})  fire_th={a.fire_th}")
+    logger.info("=" * 78)
+
+    # chunk layout
+    pobj = ukc.Parser(root=ukc.KITTI_DATA_DIR, train_sequences=DATA["split"]["train"],
+                      valid_sequences=DATA["split"]["valid"], test_sequences=None,
+                      labels=DATA["labels"], color_map=DATA.get("color_map", {}),
+                      learning_map=DATA["learning_map"],
+                      learning_map_inv=DATA["learning_map_inv"],
+                      sensor=ARCH["dataset"]["sensor"],
+                      max_points=ARCH["dataset"]["max_points"], batch_size=1,
+                      workers=ARCH["train"]["workers"], gt=True, shuffle_train=False)
+    total_len = len(pobj.validloader.dataset)
+    nch = len(ukc.CORRUPTIONS)
+    cs = total_len // nch
+    chunks = [list(range(i * cs, (i + 1) * cs if i < nch - 1 else total_len)) for i in range(nch)]
+
+    # source stats
+    logger.info("populating source statistics ...")
+    base = _build_model(a.pretrained_path, ukc.NUM_CLASSES, "none")
+    ukc.populate_source_statistics(base, a.kitti_dir, ARCH, DATA, device, dry_run=a.dry_run)
+    stats = {k: getattr(base, k, None) for k in
+             ["class_latent_means", "source_density_mean", "source_density_std",
+              "source_mu_cos", "source_sigma_cos", "drift_mu_0", "source_class_freq",
+              "source_bank"]}
+    missing = [k for k in ["source_density_mean", "source_density_std",
+                           "source_mu_cos", "source_class_freq"] if stats.get(k) is None]
+    if missing:
+        raise RuntimeError(f"source statistics missing: {missing}. A stale cache here "
+                           "silently restores the uncentred-kernel bug (exp(-128)).")
+    clean_sd = torch.load(a.pretrained_path, map_location=device)
+
+    # ---- gap calibration on clean source ----
+    if a.calibrate_gap:
+        logger.info("calibrating gap_lo on CLEAN source validation data ...")
+        m = _build_model(a.pretrained_path, ukc.NUM_CLASSES, "none")
+        _reset_model(m, clean_sd); _restore_stats(m, stats, device)
+        gc = HDC_utils.GainController(gap_lo=0.0, gap_hi=1.0)
+        m.gain_controller = gc
+        m.train()
+        dl = DataLoader(pobj.validloader.dataset, batch_size=1, shuffle=False,
+                        num_workers=ARCH["train"]["workers"])
+        _call_eval(m, dl, device, eval_only=False, update_method="evidential_hdc_tta",
+                   dry_run=a.dry_run, ic_method="none", tau=-1.0, kappa=15.0,
+                   normalize_weights=True, mv_tta="none", gate_mode="uniform",
+                   dynamic_geom=False, diagnostics=False, fire_th=a.fire_th)
+        logger.info(f"CLEAN SOURCE {gc.summary()}")
+        if gc.gap is not None:
+            logger.info(f"  ==> set --gap_lo {gc.gap:.4f}  --gap_hi {2*gc.gap:.4f}")
+        else:
+            logger.warning("  gain controller never invoked: evaluate_and_adapt is not "
+                           "routing through DualGateModel.online_update.")
+        return
+
+    # datasets
+    logger.info("pre-loading corruption datasets ...")
+    sev_str = ukc.SEVERITY_MAP.get(a.severity, "moderate")
+    dsets = {}
+    for ct in corruptions:
+        root = os.path.join(a.kittic_dir, ct, sev_str)
+        sq = os.path.join(root, "sequences")
+        if not os.path.exists(sq):
+            os.makedirs(sq, exist_ok=True)
+            if not os.path.exists(os.path.join(sq, "08")):
+                os.symlink("..", os.path.join(sq, "08"))
         try:
-            ukc.save_degradation_plot(os.path.join(args.log_dir, f"degradation_miou{suffix}.png"), f"KITTI-C ({ab_key})", results_miou, metric="mIoU")
-            ukc.save_degradation_plot(os.path.join(args.log_dir, f"degradation_acc{suffix}.png"), f"KITTI-C ({ab_key})", results_acc, metric="Accuracy")
-        except Exception as plot_err:
-            logger.warning(f"Could not generate degradation plot for {ab_key}: {plot_err}")
+            pc = ukc.Parser(root=root, train_sequences=DATA["split"]["valid"],
+                            valid_sequences=DATA["split"]["valid"], test_sequences=None,
+                            labels=DATA["labels"], color_map=DATA.get("color_map", {}),
+                            learning_map=DATA["learning_map"],
+                            learning_map_inv=DATA["learning_map_inv"],
+                            sensor=ARCH["dataset"]["sensor"],
+                            max_points=ARCH["dataset"]["max_points"], batch_size=1,
+                            workers=ARCH["train"]["workers"], gt=True, shuffle_train=False)
+            dsets[ct] = pc.validloader.dataset
+        except Exception as e:
+            logger.error(f"failed to load {ct}: {e}")
 
-    # Save comprehensive global ablation results
-    global_json_path = os.path.join(args.log_dir, "global_ablation_results.json")
-    with open(global_json_path, "w") as f:
-        json.dump(global_results, f, indent=4)
-    logger.info(f"\n✅ All ablation tests completed successfully! Comprehensive summary saved to: {global_json_path}")
+    records, frozen_cache = [], {}
+    warned_path = False
+
+    for seed in seeds:
+        torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
+        np.random.seed(seed); random.seed(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+        for key in keys:
+            cfg = ABLATIONS[key]
+            logger.info("\n" + "=" * 78)
+            logger.info(f">>> seed={seed}  {key}  ({cfg['name']})")
+            logger.info(f"    tau={cfg['tau']} gate={cfg['gate_mode']} preset={cfg['preset']} "
+                        f"ic={cfg['ic_method']} norm_w={cfg['normalize_weights']} "
+                        f"dyn={cfg['dynamic_geom']} mv={cfg['mv_tta']} gain={cfg['gain_control']}")
+            logger.info("=" * 78)
+
+            model = _build_model(a.pretrained_path, ukc.NUM_CLASSES, cfg["mv_tta"])
+            _reset_model(model, clean_sd); _restore_stats(model, stats, device)
+
+            for i, ct in enumerate(corruptions):
+                if ct not in dsets:
+                    continue
+                if a.reset_per_corruption:
+                    _reset_model(model, clean_sd); _restore_stats(model, stats, device)
+
+                gate_cfg = dict(HDC_utils.PRESETS[cfg["preset"]])
+                gate_cfg.update(cfg["gate_cfg"])
+                model.gate_cfg = gate_cfg
+                model.gain_controller = (
+                    HDC_utils.GainController(gap_lo=a.gap_lo, gap_hi=a.gap_hi)
+                    if cfg["gain_control"] else None)
+
+                ds = dsets[ct]
+                chunk = torch.utils.data.Subset(ds, chunks[i]) if a.chunked else ds
+                dl = DataLoader(chunk, batch_size=1, shuffle=False,
+                                num_workers=ARCH["train"]["workers"])
+
+                common = dict(dry_run=a.dry_run, ic_method=cfg["ic_method"], tau=cfg["tau"],
+                              kappa=cfg["kappa"], normalize_weights=cfg["normalize_weights"],
+                              mv_tta=cfg["mv_tta"], gate_mode=cfg["gate_mode"],
+                              dynamic_geom=cfg["dynamic_geom"], diagnostics=a.diagnostics,
+                              fire_th=a.fire_th)
+
+                try:
+                    # Pass 1: frozen -> TRUE initial. Cached across configs that
+                    # share (seed, corruption, tau, kappa, mv_tta); gate_mode and
+                    # ic_method do not affect frozen evaluation.
+                    fk = (seed, ct, cfg["tau"], cfg["kappa"], cfg["mv_tta"])
+                    if fk in frozen_cache:
+                        init_m = frozen_cache[fk]
+                    else:
+                        model.eval()
+                        init_m = _call_eval(model, dl, device, eval_only=True, **common)
+                        frozen_cache[fk] = init_m
+
+                    if cfg["update_method"] == "frozen":
+                        adapt_m = final_m = init_m
+                    else:
+                        HDC_utils.reset_counters()
+                        model.train()
+                        adapt_m = _call_eval(model, dl, device, eval_only=False,
+                                             update_method=cfg["update_method"], **common)
+                        c = HDC_utils.counters()
+                        if not warned_path and c["fuse"] == 0 and c["update"] == 0:
+                            warned_path = True
+                            logger.warning(
+                                "  !! HDC_utils gating was NEVER invoked during adaptation.\n"
+                                "     evaluate_and_adapt is using its own inline gating, so the "
+                                "corrected fusion, the fire_th veto and gain control are ALL "
+                                "INACTIVE. Route unsup_kitti-c.py's gate block through "
+                                "HDC_utils.fuse_uncertainties before trusting these rows.")
+                        model.eval()
+                        final_m = _call_eval(model, dl, device, eval_only=True, **common)
+
+                    rec = dict(
+                        seed=seed, ablation=key, name=cfg["name"], family=cfg["family"],
+                        corruption=ct, severity=a.severity,
+                        protocol="chunked" if a.chunked else "full", n_frames=len(dl),
+                        gate_mode=cfg["gate_mode"], preset=cfg["preset"], tau=cfg["tau"],
+                        ic_method=cfg["ic_method"], normalize_weights=cfg["normalize_weights"],
+                        gain_control=cfg["gain_control"], mv_tta=cfg["mv_tta"],
+                        fire_th=a.fire_th,
+                        init_miou=_tail(init_m, "mIoU"), final_miou=_tail(final_m, "mIoU"),
+                        online_miou=_tail(adapt_m, "mIoU"),
+                        init_head=_tail(init_m, "Head_mIoU"), final_head=_tail(final_m, "Head_mIoU"),
+                        init_mid=_tail(init_m, "Mid_mIoU"), final_mid=_tail(final_m, "Mid_mIoU"),
+                        init_tail=_tail(init_m, "Tail_mIoU"), final_tail=_tail(final_m, "Tail_mIoU"),
+                        init_acc=_tail(init_m, "Accuracy"), final_acc=_tail(final_m, "Accuracy"),
+                        firing_rate=adapt_m.get("FiringRate", 0.0),
+                        update_mag=adapt_m.get("UpdateMagnitude", 0.0),
+                        hdc_fuse_calls=HDC_utils.counters()["fuse"],
+                        hdc_update_calls=HDC_utils.counters()["update"],
+                    )
+                    if cfg["gain_control"] and model.gain_controller is not None:
+                        rec["gain_summary"] = model.gain_controller.summary()
+                        logger.info(f"    {model.gain_controller.summary()}")
+                    records.append(rec)
+
+                    logger.info(
+                        f"  {ct}-{a.severity} [{rec['protocol']}, n={rec['n_frames']}] "
+                        f"mIoU {rec['init_miou']:.4f} -> {rec['final_miou']:.4f} "
+                        f"(online {rec['online_miou']:.4f}) | "
+                        f"H {rec['init_head']:.4f}->{rec['final_head']:.4f} "
+                        f"M {rec['init_mid']:.4f}->{rec['final_mid']:.4f} "
+                        f"T {rec['init_tail']:.4f}->{rec['final_tail']:.4f} | "
+                        f"Acc {rec['init_acc']:.4f}->{rec['final_acc']:.4f} | "
+                        f"fire {rec['firing_rate']*100:.2f}% mag {rec['update_mag']:.5f}")
+
+                except Exception as e:
+                    logger.error(f"FAILED {key}/{ct}: {e}", exc_info=True)
+
+                with open(os.path.join(a.log_dir, "records.json"), "w") as f:
+                    json.dump(records, f, indent=2)
+
+    if not records:
+        raise RuntimeError("no records produced -- check the log for exceptions.")
+    out = os.path.join(a.log_dir, "records.json")
+    with open(out, "w") as f:
+        json.dump(records, f, indent=2)
+    logger.info(f"\nwrote {len(records)} records -> {out}")
+    logger.info(f"now run:  python analyze_ablations.py --records {out} --pct")
+
 
 if __name__ == "__main__":
     main()

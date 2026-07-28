@@ -204,7 +204,6 @@ class SemanticKitti(Dataset):
 
     tags = torch.from_numpy(scan.tags)
 
-
 #     if self.transform:
 #         if random.random() > 0.5:
 #             scale = random.uniform(1, 1.5)
