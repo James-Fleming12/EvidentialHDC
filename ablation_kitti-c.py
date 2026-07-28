@@ -64,17 +64,20 @@ from modules import HDC_utils
 def _cfg(name, family, tau=-1.0, gate_mode="soft_dual_weight", ic_method="ic4",
          normalize_weights=False, dynamic_geom=True, mv_tta="none",
          update_method="evidential_hdc_tta", gain=False, kappa=15.0,
-         preset="soft", gate_cfg=None):
+         preset="soft", gate_cfg=None, prior_mode="source"):
     return dict(name=name, family=family, update_method=update_method,
                 gate_mode=gate_mode, ic_method=ic_method, tau=tau, kappa=kappa,
                 normalize_weights=normalize_weights, mv_tta=mv_tta,
                 dynamic_geom=dynamic_geom, gain_control=gain,
-                preset=preset, gate_cfg=gate_cfg or {})
+                preset=preset, gate_cfg=gate_cfg or {},
+                prior_mode=prior_mode)
 
 ABLATIONS = {
     # ---- reference ----------------------------------------------------
     "frozen": _cfg("Frozen (no adaptation)", "ref", update_method="frozen",
                    gate_mode="epistemic"),
+    "prior_oracle": _cfg("Prior oracle (FROZEN, pi = TRUE chunk prior)", "ref",
+                         update_method="frozen", prior_mode="chunk"),
     "oracle": _cfg("Oracle gate (GT-gated CEILING, not a method)", "ref",
                    gate_mode="oracle"),
 
@@ -143,7 +146,7 @@ SETS = {
             "ellipsoid_gate", "rescue_gate", "rescue_tight"],
     "gain": ["frozen", "full_method", "no_dual_gating", "gain_full", "gain_epi"],
     "mv": ["frozen", "full_method", "mv_veto", "mv_conf"],
-    "ceiling": ["frozen", "full_method", "oracle"],
+    "ceiling": ["frozen", "prior_oracle", "full_method", "oracle"],
 }
 SETS["all"] = list(ABLATIONS.keys())
 
@@ -398,11 +401,34 @@ def main():
                               dynamic_geom=cfg["dynamic_geom"], diagnostics=a.diagnostics,
                               fire_th=a.fire_th)
 
+                # --- PRIOR ORACLE: replace pi_source with the chunk's TRUE prior ---
+                # The frozen confusion matrix's ROW SUMS are the GT class counts,
+                # so this costs no extra data pass.
+                if cfg.get("prior_mode") == "chunk":
+                    base_fk = (seed, ct, cfg["tau"], cfg["kappa"], cfg["mv_tta"], "source")
+                    if base_fk not in frozen_cache:
+                        raise RuntimeError(
+                            "prior_oracle needs the plain 'frozen' ablation to run first "
+                            "so the chunk GT prior can be read from its confusion matrix. "
+                            "Put 'frozen' before 'prior_oracle' in the ablation list.")
+                    cm = np.array(frozen_cache[base_fk]["ConfusionMatrix"], dtype=np.float64)
+                    gt_counts = cm.sum(axis=1)
+                    pi_chunk = gt_counts / max(1.0, gt_counts.sum())
+                    model.source_class_freq = torch.clamp(
+                        torch.tensor(pi_chunk, dtype=torch.float32, device=device), min=1e-5)
+                    pi_src = stats["source_class_freq"].to(device).float()
+                    l1 = float((model.source_class_freq - pi_src).abs().sum())
+                    logger.info(f"    [prior_oracle] L1(pi_chunk, pi_source) = {l1:.4f}  "
+                                f"(0 => no prior drift => nothing for online estimation to recover)")
+                else:
+                    model.source_class_freq = stats["source_class_freq"].to(device).float()
+
                 try:
                     # Pass 1: frozen -> TRUE initial. Cached across configs that
                     # share (seed, corruption, tau, kappa, mv_tta); gate_mode and
                     # ic_method do not affect frozen evaluation.
-                    fk = (seed, ct, cfg["tau"], cfg["kappa"], cfg["mv_tta"])
+                    fk = (seed, ct, cfg["tau"], cfg["kappa"], cfg["mv_tta"],
+                          cfg.get("prior_mode", "source"))
                     if fk in frozen_cache:
                         init_m = frozen_cache[fk]
                     else:
