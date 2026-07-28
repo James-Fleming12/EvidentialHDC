@@ -113,7 +113,7 @@ def main():
     args = parser.parse_args()
     
     os.makedirs(args.log_dir, exist_ok=True)
-    logger = ukc.setup_logger("AblationSuite", os.path.join(args.log_dir, "ablation_suite.log"))
+    logger = ukc.setup_logger(os.path.join(args.log_dir, "ablation_suite.log"))
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(args.seed)
