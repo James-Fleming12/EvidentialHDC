@@ -289,4 +289,3 @@ if __name__ == "__main__":
           fwt / 1, sum(time_train) / len(time_train) / 1))
         time.sleep(0.15)
 
-

@@ -1194,7 +1194,6 @@ class Trainer():
             scaler.step(optimizer)
             scaler.update()
 
-
             with torch.no_grad():
                 evaluator.reset()
                 argmax = output.argmax(dim=1)

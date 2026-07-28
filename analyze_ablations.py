@@ -16,11 +16,9 @@ import json
 import argparse
 from collections import defaultdict
 
-
 def mean(xs):
     xs = [x for x in xs if x is not None]
     return sum(xs) / len(xs) if xs else float("nan")
-
 
 def std(xs):
     xs = [x for x in xs if x is not None]
@@ -28,7 +26,6 @@ def std(xs):
         return 0.0
     m = mean(xs)
     return (sum((x - m) ** 2 for x in xs) / (len(xs) - 1)) ** 0.5
-
 
 def agg(records, key, field):
     """mean over corruptions, per seed -> then stats over seeds"""
@@ -38,7 +35,6 @@ def agg(records, key, field):
             per_seed[r["seed"]].append(r[field])
     seed_means = [mean(v) for v in per_seed.values()]
     return mean(seed_means), std(seed_means), len(seed_means)
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -189,7 +185,6 @@ def main():
     else:
         print(f"  OK single protocol: {protocols[0]}")
     print()
-
 
 if __name__ == "__main__":
     main()

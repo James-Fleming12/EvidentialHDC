@@ -306,7 +306,6 @@ logger = logging.getLogger("baselines")
 
 BASELINE_METHODS = ("d3ctta", "conformalhdc", "hyperdum")
 
-
 class _FeatOnly(nn.Module):
     """Forces the backbone to return 128D features rather than logits."""
 
@@ -322,7 +321,6 @@ class _FeatOnly(nn.Module):
 
     def modules(self):
         return self.net.modules()
-
 
 def get_adapter(model, name, num_classes, device, feature_dim=128):
     """Lazily build (and cache on `model`) the baseline adapter."""
@@ -361,7 +359,6 @@ def get_adapter(model, name, num_classes, device, feature_dim=128):
                 f"source_prototypes={tuple(src_proto.shape)}")
     return adapter
 
-
 @torch.no_grad()
 def baseline_forward(model, name, proj_in, proj_xyz, num_classes, device):
     """Run the baseline's OWN forward. Returns (logits, state).
@@ -384,7 +381,6 @@ def baseline_forward(model, name, proj_in, proj_xyz, num_classes, device):
 
     return logits, {"h": h, "adapter": adapter}
 
-
 @torch.no_grad()
 def baseline_update(state, predictions, proj_xyz):
     """Run the baseline's own online adaptation."""
@@ -395,7 +391,6 @@ def baseline_update(state, predictions, proj_xyz):
                        "skipping update this frame")
         return
     adapter.inference_update(h, predictions, proj_xyz)
-
 
 def reset(model):
     for a in ("_baseline_adapter", "_baseline_adapter_name"):

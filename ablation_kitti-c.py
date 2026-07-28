@@ -58,7 +58,6 @@ except RuntimeError:
 ukc = importlib.import_module("unsup_kitti-c")
 from modules import HDC_utils
 
-
 # ==========================================================================
 # Ablation matrix
 # ==========================================================================
@@ -71,7 +70,6 @@ def _cfg(name, family, tau=-1.0, gate_mode="soft_dual_weight", ic_method="ic4",
                 normalize_weights=normalize_weights, mv_tta=mv_tta,
                 dynamic_geom=dynamic_geom, gain_control=gain,
                 preset=preset, gate_cfg=gate_cfg or {})
-
 
 ABLATIONS = {
     # ---- reference ----------------------------------------------------
@@ -149,7 +147,6 @@ SETS = {
 }
 SETS["all"] = list(ABLATIONS.keys())
 
-
 # ==========================================================================
 # Compatibility shims (tolerate either version of unsup_kitti-c.py)
 # ==========================================================================
@@ -158,7 +155,6 @@ def _load_configs():
     DATA = getattr(ukc, "DATA", None) or yaml.safe_load(open(ukc.CONFIG_LABELS_KITTI_ALL))
     return ARCH, DATA
 
-
 def _build_model(path, num_classes, mv_tta):
     sig = inspect.signature(ukc.load_hdc_model)
     kw = {"num_classes": num_classes}
@@ -166,12 +162,10 @@ def _build_model(path, num_classes, mv_tta):
         kw["mv_tta"] = mv_tta
     return ukc.load_hdc_model(path, **kw)
 
-
 def _call_eval(model, dataloader, device, **kwargs):
     sig = inspect.signature(ukc.evaluate_and_adapt)
     ok = {k: v for k, v in kwargs.items() if k in sig.parameters}
     return ukc.evaluate_and_adapt(model, dataloader, device, **ok)
-
 
 RESET_ATTRS = [
     "drift_mu_c", "class_freq_ema", "class_update_counts", "class_M",
@@ -181,7 +175,6 @@ RESET_ATTRS = [
     "_veto_stats", "_update_magnitude_log", "initial_classify_weights",
     "_feature_dump_list",
 ]
-
 
 def _reset_model(model, clean_state_dict):
     model.load_state_dict(clean_state_dict, strict=False)
@@ -194,55 +187,38 @@ def _reset_model(model, clean_state_dict):
     model.gain_controller = None
     model.gate_cfg = None
 
-
 def _restore_stats(model, cache, device):
     for k, v in cache.items():
         if v is None:
             continue
         setattr(model, k, v.clone().to(device) if isinstance(v, torch.Tensor) else v)
 
-
 def _tail(m, key, default=0.0):
     seq = m.get(key) or []
     return seq[-1] if len(seq) else default
 
-
-# ==========================================================================
 def main():
     p = argparse.ArgumentParser("Evidential HDC ablation suite (corrected)")
-    p.add_argument("--ablations", default="loo",
-                   help="comma list of keys, or a named set: " + ", ".join(SETS))
+    p.add_argument("--ablations", default="loo", help="comma list of keys, or a named set: " + ", ".join(SETS))
     p.add_argument("--pretrained_path", default="logs/kitti_pretrain/hdc_sub.pth")
     p.add_argument("--log_dir", default="logs/ablation_v2")
-    p.add_argument("--corruptions",
-                   default="fog,wet_ground,snow,motion_blur,beam_missing,crosstalk,incomplete_echo,cross_sensor")
+    p.add_argument("--corruptions", default="fog,wet_ground,snow,motion_blur,beam_missing,crosstalk,incomplete_echo,cross_sensor")
     p.add_argument("--severity", type=int, default=3)
     p.add_argument("--seeds", default="42")
     p.add_argument("--chunked", action="store_true")
     p.add_argument("--reset_per_corruption", action="store_true")
     p.add_argument("--dry_run", action="store_true")
     p.add_argument("--kitti_dir", default="/mnt/alpha/jmfleming/KITTI")
-    p.add_argument("--kittic_dir",
-                   default="/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C")
+    p.add_argument("--kittic_dir", default="/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C")
     p.add_argument("--no_diagnostics", action="store_false", dest="diagnostics")
-    p.add_argument("--fire_th", type=float, default=0.0,
-                   help="minimum fused weight to contribute. The old code used >0, "
-                        "which never vetoes since exp() is strictly positive.")
+    p.add_argument("--fire_th", type=float, default=0.0, help="minimum fused weight to contribute. The old code used >0, which never vetoes since exp() is strictly positive.")
     p.add_argument("--gap_lo", type=float, default=0.35)
     p.add_argument("--gap_hi", type=float, default=0.75)
-    p.add_argument("--calibrate_gap", action="store_true",
-                   help="measure mean epistemic uncertainty on CLEAN source and exit")
-    p.add_argument("--num_workers", type=int, default=4,
-                   help="DataLoader workers. Overrides ARCH['train']['workers'], which is "
-                        "tuned for TRAINING and is far too high for batch_size=1 inference. "
-                        "Total CPU load ~ (1+num_workers) x ABLATION_THREADS.")
-    p.add_argument("--stats_cache", default="logs/source_stats_cache.pt",
-                   help="cache source statistics here; every stage otherwise recomputes "
-                        "populate_source_statistics (550 frames) from scratch")
+    p.add_argument("--calibrate_gap", action="store_true", help="measure mean epistemic uncertainty on CLEAN source and exit")
+    p.add_argument("--num_workers", type=int, default=4, help="DataLoader workers. Overrides ARCH['train']['workers'], which is tuned for TRAINING and is far too high for batch_size=1 inference. Total CPU load ~ (1+num_workers) x ABLATION_THREADS.")
+    p.add_argument("--stats_cache", default="logs/source_stats_cache.pt", help="cache source statistics here; every stage otherwise recomputes populate_source_statistics (550 frames) from scratch")
     p.add_argument("--force_stats", action="store_true", help="ignore the stats cache")
-    p.add_argument("--skip_done", action="store_true",
-                   help="resume: skip (seed, ablation, corruption) triples already present "
-                        "in log_dir/records.json")
+    p.add_argument("--skip_done", action="store_true", help="resume: skip (seed, ablation, corruption) triples already present in log_dir/records.json")
     p.set_defaults(diagnostics=True)
     a = p.parse_args()
 
@@ -264,11 +240,10 @@ def main():
             raise ValueError(f"unknown ablation '{k}'; available: {list(ABLATIONS)}")
 
     logger.info("=" * 78)
-    logger.info(f"ablations  : {keys}")
-    logger.info(f"seeds      : {seeds}")
+    logger.info(f"ablations: {keys}")
+    logger.info(f"seeds: {seeds}")
     logger.info(f"corruptions: {corruptions} @ sev {a.severity}")
-    logger.info(f"protocol   : {'chunked' if a.chunked else 'full'} "
-                f"(reset_per_corruption={a.reset_per_corruption})  fire_th={a.fire_th}")
+    logger.info(f"protocol: {'chunked' if a.chunked else 'full'} (reset_per_corruption={a.reset_per_corruption})  fire_th={a.fire_th}")
     logger.info("=" * 78)
 
     # chunk layout
@@ -287,9 +262,7 @@ def main():
 
     # source stats (cached: each stage is a separate process and would otherwise
     # redo 550 frames of forward passes before any ablation starts)
-    STAT_KEYS = ["class_latent_means", "source_density_mean", "source_density_std",
-                 "source_mu_cos", "source_sigma_cos", "drift_mu_0", "source_class_freq",
-                 "source_bank"]
+    STAT_KEYS = ["class_latent_means", "source_density_mean", "source_density_std", "source_mu_cos", "source_sigma_cos", "drift_mu_0", "source_class_freq", "source_bank"]
     stats = None
     if a.stats_cache and os.path.exists(a.stats_cache) and not a.force_stats and not a.dry_run:
         try:
@@ -314,8 +287,7 @@ def main():
     missing = [k for k in ["source_density_mean", "source_density_std",
                            "source_mu_cos", "source_class_freq"] if stats.get(k) is None]
     if missing:
-        raise RuntimeError(f"source statistics missing: {missing}. A stale cache here "
-                           "silently restores the uncentred-kernel bug (exp(-128)).")
+        raise RuntimeError(f"source statistics missing: {missing}. A stale cache here silently restores the uncentred-kernel bug (exp(-128)).")
     clean_sd = torch.load(a.pretrained_path, map_location=device)
 
     # ---- gap calibration on clean source ----
@@ -326,18 +298,13 @@ def main():
         gc = HDC_utils.GainController(gap_lo=0.0, gap_hi=1.0)
         m.gain_controller = gc
         m.train()
-        dl = DataLoader(pobj.validloader.dataset, batch_size=1, shuffle=False,
-                        num_workers=ARCH["train"]["workers"])
-        _call_eval(m, dl, device, eval_only=False, update_method="evidential_hdc_tta",
-                   dry_run=a.dry_run, ic_method="none", tau=-1.0, kappa=15.0,
-                   normalize_weights=True, mv_tta="none", gate_mode="uniform",
-                   dynamic_geom=False, diagnostics=False, fire_th=a.fire_th)
+        dl = DataLoader(pobj.validloader.dataset, batch_size=1, shuffle=False, num_workers=ARCH["train"]["workers"])
+        _call_eval(m, dl, device, eval_only=False, update_method="evidential_hdc_tta", dry_run=a.dry_run, ic_method="none", tau=-1.0, kappa=15.0, normalize_weights=True, mv_tta="none", gate_mode="uniform", dynamic_geom=False, diagnostics=False, fire_th=a.fire_th)
         logger.info(f"CLEAN SOURCE {gc.summary()}")
         if gc.gap is not None:
             logger.info(f"  ==> set --gap_lo {gc.gap:.4f}  --gap_hi {2*gc.gap:.4f}")
         else:
-            logger.warning("  gain controller never invoked: evaluate_and_adapt is not "
-                           "routing through DualGateModel.online_update.")
+            logger.warning("  gain controller never invoked: evaluate_and_adapt is not routing through DualGateModel.online_update.")
         return
 
     # datasets
@@ -374,8 +341,7 @@ def main():
         try:
             records = json.load(open(rec_path))
             done = {(r["seed"], r["ablation"], r["corruption"]) for r in records}
-            logger.info(f"resuming: {len(records)} records already present, "
-                        f"{len(done)} (seed, ablation, corruption) triples will be skipped")
+            logger.info(f"resuming: {len(records)} records already present, {len(done)} (seed, ablation, corruption) triples will be skipped")
         except Exception as e:
             logger.warning(f"could not read {rec_path} for resume ({e}); starting fresh")
             records, done = [], set()
@@ -416,8 +382,7 @@ def main():
 
                 ds = dsets[ct]
                 chunk = torch.utils.data.Subset(ds, chunks[i]) if a.chunked else ds
-                dl = DataLoader(chunk, batch_size=1, shuffle=False,
-                                num_workers=ARCH["train"]["workers"])
+                dl = DataLoader(chunk, batch_size=1, shuffle=False, num_workers=ARCH["train"]["workers"])
 
                 common = dict(dry_run=a.dry_run, ic_method=cfg["ic_method"], tau=cfg["tau"],
                               kappa=cfg["kappa"], normalize_weights=cfg["normalize_weights"],
@@ -493,9 +458,6 @@ def main():
                 except Exception as e:
                     logger.error(f"FAILED {key}/{ct}: {e}", exc_info=True)
 
-                # Release worker processes promptly. Each of the 3 passes spawns
-                # a fresh pool; across a full night that is >10k process creations,
-                # and stragglers accumulate if the loader object lingers.
                 del dl
                 torch.cuda.empty_cache()
 
@@ -509,7 +471,6 @@ def main():
         json.dump(records, f, indent=2)
     logger.info(f"\nwrote {len(records)} records -> {out}")
     logger.info(f"now run:  python analyze_ablations.py --records {out} --pct")
-
 
 if __name__ == "__main__":
     main()

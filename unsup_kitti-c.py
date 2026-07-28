@@ -851,9 +851,7 @@ def pretrain_pipeline(ARCH, DATA, data_dir, pretrained_path, return_trainer=Fals
     ARCH["train"]["batch_size"] = 6
     print(f"Pretraining HDC density model on {data_dir} for {hdc_epochs} epochs...")
     model, _ = train_hdc(ARCH, DATA, epochs=hdc_epochs, data_dir=data_dir, return_extractor=True)
-    
 
-    
     if return_trainer:
         return model, trainer
     return model
