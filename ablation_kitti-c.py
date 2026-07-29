@@ -345,6 +345,10 @@ def main():
     if a.skip_done and os.path.exists(rec_path):
         try:
             records = json.load(open(rec_path))
+            current_proto = "chunked" if a.chunked else "full"
+            for r in records:
+                if r.get("protocol") and r.get("protocol") != current_proto:
+                    raise ValueError(f"Mixed protocols! Log contains {r.get('protocol')} but current is {current_proto}")
             done = {(r["seed"], r["ablation"], r["corruption"]) for r in records}
             logger.info(f"resuming: {len(records)} records already present, {len(done)} (seed, ablation, corruption) triples will be skipped")
         except Exception as e:
