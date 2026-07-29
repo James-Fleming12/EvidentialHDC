@@ -41,10 +41,54 @@ At high severities, feature distortion causes spatial gating (both epistemic and
 ---
 
 ## 2. Diagnostic Tests
-*This section tracks active investigations and diagnostic tests to uncover the root causes of the geometric method's collapse and inform the next strategic pivot.*
+*This section tracks active investigations to uncover the root causes of the geometric method's collapse and separates fundamental method failures from issues with the problem setting.*
 
-### 2.1 Planned Diagnostics
-- **Prototype Statistics Under Corruption:** Analyze the statistics (norms, intra-class variance, angular drift) of the learned HDC prototypes for each specific corruption condition to observe exactly how spatial distortion breaks the geometry.
-- **Prior vs. TTA Mechanisms:** Compile stats to deeply analyze *why* the fixed prior ($\tau = -1$) works exponentially better than active Test-Time Adaptation, and evaluate if applying active TTA actually breaks or overrides the benefits of the prior.
-- **Component Interference:** Check if each piece (Bayesian Momentum, IC4, Dual Gating, Temporal Consistency) works well in isolation, but when combined, they begin to impede each other and artificially constrain the model into a near-frozen state.
-- **Problem Setting Validation:** Check for an incorrect problem setting—evaluate whether testing on Severity 3 exclusively masked structural issues, or if the entire dataset flow (such as SemanticKITTI-C applying corruptions to unchanged label distributions) is fundamentally flawed for the intended TTA task.
+### D0. The Prime Suspect: Label/Weight Mismatch
+The immediate lead is a suspected wiring fault in the adaptation loop. Currently, the pseudo-label uses the $\tau$-corrected logit, but the confidence weight gating the update uses the raw cosine similarity:
+```python
+pseudo_labels = argmax( cos_sims*kappa - tau*log(pi) )   # tau-CORRECTED label
+base_weights  = softmax(cos_sims * 100).max()            # tau-FREE weight
+```
+This means a majority-class point (e.g., road) that $\tau$ flips to a rare class carries a **high** weight (due to its raw cosine to road) while being bound to the rare prototype. The update then writes a road-shaped hypervector into the rare prototype at high weight, corrupting exactly the classes $\tau$ was protecting.
+* **D0a (Measure Disagreement):** Per frame, log the fraction of points where `argmax(cos_sims) != pseudo_labels`, and their mean `base_weight`.
+* **D0b (The Fix-Test):** Make the gate weight $\tau$-consistent by setting `base_weights = softmax(pl_logits).max()`. If performance substantially recovers (e.g., on `wet_ground`), this was the root cause.
+* **D0c (The Confirming Picture):** Log per-class angular drift. Prediction: under current code, tail prototypes rotate the most and lose IoU. Under the D0b fix, tail rotation drops.
+
+### D1. Prototype Statistics Per Condition
+Compile the following existing metrics into per-corruption tables:
+* **Norms:** `‖w_c‖` initial vs. final to check for accumulation blowout.
+* **Angular Drift:** `∠(w_t^c, w_0^c)` to see how far prototypes moved (tail should not move more than head).
+* **Step Dilution:** Mean `_update_magnitude_log`. Expect ~5e-3; if ~1e-4, the veto isn't firing.
+* **Correlation:** Map drift° vs. $\Delta$IoU per class. If classes that moved most lost the most IoU, adaptation is actively harming.
+
+### D2. Why the Prior Beats TTA
+Compare the quantity both mechanisms try to improve: pseudo-label accuracy.
+* **D2a:** On a frozen model, measure accuracy of `argmax(cos_sims)` vs. $\tau$-corrected labels.
+* **D2b:** Measure $\tau$-corrected accuracy *after* adaptation. If it falls, TTA is degrading the labels $\tau$ fixed.
+* **D2c:** Report three numbers: `frozen` $\rightarrow$ `frozen+τ` $\rightarrow$ `frozen+τ+TTA`. If adaptation consistently degrades performance, the paper's honest claim becomes: *"The gain is an inference-time prior correction; gradient adaptation is not required."*
+
+### D3. Component Interference
+* **D3a (Pairwise Interaction):** For pieces like $\tau$, gating, BM, and IC4, run pairs to compute interaction: `(A+B - base) - (A - base) - (B - base)`. High negative values mean pieces are fighting.
+* **D3b (Churn Test):** Compare net prototype displacement `‖Σ Δw_c‖` vs total displacement `Σ ‖Δw_c‖`. If net $\ll$ total, updates are cancelling out, mimicking a frozen model while actually churning.
+
+### D4. Problem Setting Validation
+* **Severity Guard:** Confirm on-disk directories actually exist (already patched via `run_tier_tests.sh` Stage 0) to avoid silent fallbacks to easier severities.
+* **Prior Drift ($L_1$):** Measure $L_1(\pi_{chunk\_GT}, \pi_{source})$. If $\approx 0$, KITTI-C preserves the source distribution, meaning the prior pivot is fundamentally dead due to the dataset setting.
+* **Data Flow Invariants:**
+  1. Clean validation frozen mIoU must match pretraining val mIoU.
+  2. The same corruption via a 3-item vs 8-item list must match (chunk determinism).
+  3. Verify the published baseline frozen mIoU (e.g., fog at 6.04 is suspiciously low; could be a broken loader).
+
+### D5. Is it *Completely* Broken? (The Ceilings)
+Run the Gate Oracle (`gate_mode='oracle'`) and Prior Oracle at matched `fire_th` to bound the problem:
+* **Gate $\approx 0$, Prior $\approx 0$:** No headroom. Saturated. Move to a harder setting.
+* **Gate Large, Prior $\approx 0$:** Gating is the lever. Prior pivot is dead. Fix D0.
+* **Gate $\approx 0$, Prior Large:** Prior is the lever. Pivot to online prior estimation.
+* **Gate Large, Prior Large:** Both help, but the method is underperforming its ceiling.
+
+### Execution Order
+1. **D0b Fix-Test & Logging** (Most likely to explain everything).
+2. **D5 Ceilings** (Decides "broken" vs. "no headroom").
+3. **D4 Invariants** (Cheap pipeline confirmation).
+4. **D2 Comparison** (Formalizes the performance drop).
+5. **D1 / D3 Tables** (Deep dives only if D0/D5 don't close the case).

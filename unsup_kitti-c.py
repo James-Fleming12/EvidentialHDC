@@ -74,7 +74,7 @@ def compute_correlations_torch(x, y):
     spearman = float(cov_r / (srx * sry)) if srx != 0 and sry != 0 else 0.0
     return f"Pearson r={pearson:.6f}, Spearman rho={spearman:.6f} (over {len(x):,} pairs)"
 
-def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, ic_method='none', tau=None, kappa=15.0, normalize_weights=False, mv_tta='none', gate_mode='epistemic', dynamic_geom=False, diagnostics=True, dump_features=False, fire_th=0.0):
+def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, ic_method='none', tau=None, kappa=15.0, normalize_weights=False, mv_tta='none', gate_mode='epistemic', dynamic_geom=False, diagnostics=True, dump_features=False, fire_th=0.0, consistent_tau_weights=False, veto_tau_mismatch=False, lr_schedule='constant', adapt_frames=None, base_lr=0.01):
     if ic_method not in ['none', 'ic4']:
         raise ValueError(f"Unknown ic_method: {ic_method}")
     logger = logging.getLogger("EvalAdapt")
@@ -272,7 +272,20 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
             if not eval_only and update_method != 'frozen':
                 model.eval()
                 with torch.no_grad():
-                    update_lr = 0.01
+                    # --- recovery arms: reintroduce the prelim annealing on PURPOSE ---
+                    # The preliminary numbers came from the unnormalised-weight regime
+                    # (the .data bug): ||w|| grew, so effective angular LR ~ 1/t. That
+                    # accidental schedule is what these arms reproduce deliberately.
+                    if adapt_frames is not None and batch_idx >= adapt_frames:
+                        update_lr = 0.0                      # adapt-then-freeze
+                    elif lr_schedule == 'inv_t':
+                        update_lr = base_lr / (1.0 + batch_idx / 50.0)   # ~1/t anneal, tau_half=50
+                    elif lr_schedule == 'cosine':
+                        import math as _m
+                        T = max(1, len(target_dataloader))
+                        update_lr = 0.5 * base_lr * (1.0 + _m.cos(_m.pi * min(batch_idx, T) / T))
+                    else:                                    # 'constant'
+                        update_lr = base_lr
                     proto_norm = F.normalize(model.classify.weight, dim=1)
                     cos_sims = F.linear(norm_enc, proto_norm)
                     
@@ -281,8 +294,19 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         pi = torch.clamp(model.source_class_freq, min=1e-5).to(device)
                         pl_logits = pl_logits - tau * torch.log(pi).unsqueeze(0)
                         pseudo_labels = torch.argmax(pl_logits, dim=1)
+                        
+                        raw_labels = torch.argmax(cos_sims, dim=1)
+                        mismatch = (pseudo_labels != raw_labels)
+                        if not hasattr(model, '_d0a_mismatch_count'):
+                            model._d0a_mismatch_count = 0
+                            model._d0a_mismatch_weight_sum = 0.0
+                            model._d0a_all_weight_sum = 0.0
+                            model._d0a_total_points = 0
+                        model._d0a_mismatch_count += mismatch.sum().item()
+                        model._d0a_total_points += mismatch.numel()
                     else:
                         pseudo_labels = torch.argmax(cos_sims, dim=1)
+                        mismatch = torch.zeros_like(pseudo_labels, dtype=torch.bool)
                         
                     max_cos_sim = cos_sims[torch.arange(cos_sims.size(0)), pseudo_labels]
                     
@@ -290,8 +314,19 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     # HDC cosine similarities are extremely small (e.g. ~0.05 to ~0.15). 
                     # We use a sharp temperature scaling (x 100.0) to properly stretch these into [0, 1] probability weights.
                     cos_sim_probs = F.softmax(cos_sims * 100.0, dim=1)
-                    base_weights = cos_sim_probs.max(dim=1)[0]
+                    if consistent_tau_weights and tau is not None and tau != 0.0:
+                        base_weights = F.softmax(pl_logits, dim=1).max(dim=1)[0]
+                    else:
+                        base_weights = cos_sim_probs.max(dim=1)[0]
+                        
+                    if mismatch.any():
+                        model._d0a_mismatch_weight_sum += base_weights[mismatch].sum().item()
+                    if hasattr(model, '_d0a_all_weight_sum'):
+                        model._d0a_all_weight_sum += base_weights.sum().item()
+                        
                     update_weights = base_weights.clone()
+                    if veto_tau_mismatch and mismatch.any():
+                        update_weights[mismatch] = 0.0
                     
                     uncertainty = None
                     z_score = None
@@ -535,7 +570,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     # why they report bit-identical numbers in every cell.
                     if update_method in _baselines.BASELINE_METHODS:
                         _baselines.baseline_update(_baseline_state, predictions, proj_xyz)
-                    elif fired_mask.any():
+                    elif fired_mask.any() and update_lr > 0.0:
                         model.online_update(
                             norm_enc,
                             pseudo_labels,
@@ -580,6 +615,16 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
             logger.info(f"[Stats] Final Prototype Norms: {final_norms}")
     except Exception as e:
         logger.warning(f"Diagnostic logging (Prototype Rotation/Norms) failed non-fatally: {e}")
+
+    try:
+        if hasattr(model, '_d0a_mismatch_count') and model._d0a_total_points > 0:
+            frac = model._d0a_mismatch_count / model._d0a_total_points
+            mean_w = model._d0a_mismatch_weight_sum / max(1, model._d0a_mismatch_count)
+            global_mean_w = model._d0a_all_weight_sum / max(1, model._d0a_total_points)
+            logger.info(f"[D0a] flip_frac={frac:.4f} mean_w_flipped={mean_w:.4f} "
+                        f"mean_w_all={global_mean_w:.4f} ratio={mean_w/max(1e-9,global_mean_w):.2f}")
+    except Exception as e:
+        logger.warning(f"Diagnostic logging (D0a mismatch) failed non-fatally: {e}")
 
     try:
         if hasattr(model, '_class_true_errors_rejected') and not eval_only:

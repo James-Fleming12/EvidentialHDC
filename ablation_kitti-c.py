@@ -64,13 +64,17 @@ from modules import HDC_utils
 def _cfg(name, family, tau=-1.0, gate_mode="soft_dual_weight", ic_method="ic4",
          normalize_weights=False, dynamic_geom=True, mv_tta="none",
          update_method="evidential_hdc_tta", gain=False, kappa=15.0,
-         preset="soft", gate_cfg=None, prior_mode="source"):
+         preset="soft", gate_cfg=None, prior_mode="source", consistent_tau_weights=False, veto_tau_mismatch=False,
+         lr_schedule="constant", adapt_frames=None, base_lr=0.01):
     return dict(name=name, family=family, update_method=update_method,
                 gate_mode=gate_mode, ic_method=ic_method, tau=tau, kappa=kappa,
                 normalize_weights=normalize_weights, mv_tta=mv_tta,
                 dynamic_geom=dynamic_geom, gain_control=gain,
                 preset=preset, gate_cfg=gate_cfg or {},
-                prior_mode=prior_mode)
+                prior_mode=prior_mode, consistent_tau_weights=consistent_tau_weights,
+                veto_tau_mismatch=veto_tau_mismatch,
+                lr_schedule=lr_schedule, adapt_frames=adapt_frames,
+                base_lr=base_lr)
 
 ABLATIONS = {
     # ---- reference ----------------------------------------------------
@@ -83,6 +87,8 @@ ABLATIONS = {
 
     # ---- leave-one-out ------------------------------------------------
     "full_method": _cfg("Full unified method", "loo"),
+    "full_method_d0b": _cfg("Full unified method (D0b consistent tau gate)", "loo", consistent_tau_weights=True),
+    "full_method_d0b_veto": _cfg("Full unified method (D0b veto tau mismatch)", "loo", veto_tau_mismatch=True),
     "no_dual_gating": _cfg("- dual gating (epistemic only)", "loo", gate_mode="epistemic"),
     "no_temporal": _cfg("- temporal consistency (no BM inertia)", "loo",
                         normalize_weights=True),
@@ -134,6 +140,31 @@ ABLATIONS = {
     # ---- multi-view ----------------------------------------------------
     "mv_veto": _cfg("Full + MV veto_disagree", "mv", mv_tta="veto_disagree"),
     "mv_conf": _cfg("Full + MV conf_pred", "mv", mv_tta="conf_pred"),
+
+    # ---- PRIOR REMOVAL (family 'prior') ------------------------------------
+    # Every adaptation arm so far carries tau=-1 on the PSEUDO-LABELS. These
+    # isolate whether the prior on the labels helps or hurts the gradient.
+    "adapt_tau0":      _cfg("Adapt, tau=0 pseudo-labels (prior OFF for TTA)",
+                            "prior", tau=0.0),
+    "adapt_tau0_d0b":  _cfg("Adapt, tau=0 + consistent gate",
+                            "prior", tau=0.0, consistent_tau_weights=True),
+    "adapt_tau_half":  _cfg("Adapt, tau=-0.5 (half prior on labels)",
+                            "prior", tau=-0.5, consistent_tau_weights=True),
+
+    # ---- SCHEDULE RECOVERY (family 'recover') ------------------------------
+    # Reproduce the prelim ~1/t annealing on purpose, on the D0b-fixed base.
+    "rec_invt":        _cfg("D0b + inv_t LR schedule", "recover",
+                            consistent_tau_weights=True, lr_schedule="inv_t"),
+    "rec_cosine":      _cfg("D0b + cosine LR schedule", "recover",
+                            consistent_tau_weights=True, lr_schedule="cosine"),
+    "rec_stop100":     _cfg("D0b + adapt 100f of 581 then freeze", "recover",
+                            consistent_tau_weights=True, adapt_frames=100),
+    "rec_stop250":     _cfg("D0b + adapt 250f of 581 then freeze", "recover",
+                            consistent_tau_weights=True, adapt_frames=250),
+    "rec_lr_hi":       _cfg("D0b + constant LR 0.05", "recover",
+                            consistent_tau_weights=True, base_lr=0.05),
+    "rec_lr_lo":       _cfg("D0b + constant LR 0.002", "recover",
+                            consistent_tau_weights=True, base_lr=0.002),
 }
 
 SETS = {
@@ -147,6 +178,8 @@ SETS = {
     "gain": ["frozen", "full_method", "no_dual_gating", "gain_full", "gain_epi"],
     "mv": ["frozen", "full_method", "mv_veto", "mv_conf"],
     "ceiling": ["frozen", "prior_oracle", "full_method", "oracle"],
+    "prior": ["frozen", "full_method_d0b", "adapt_tau0", "adapt_tau0_d0b", "adapt_tau_half"],
+    "recover": ["frozen", "full_method_d0b", "rec_invt", "rec_cosine", "rec_stop100", "rec_stop250", "rec_lr_hi", "rec_lr_lo"],
 }
 SETS["all"] = list(ABLATIONS.keys())
 
@@ -399,7 +432,11 @@ def main():
                               kappa=cfg["kappa"], normalize_weights=cfg["normalize_weights"],
                               mv_tta=cfg["mv_tta"], gate_mode=cfg["gate_mode"],
                               dynamic_geom=cfg["dynamic_geom"], diagnostics=a.diagnostics,
-                              fire_th=a.fire_th)
+                              fire_th=a.fire_th, consistent_tau_weights=cfg.get("consistent_tau_weights", False),
+                              veto_tau_mismatch=cfg.get("veto_tau_mismatch", False),
+                              lr_schedule=cfg.get("lr_schedule", "constant"),
+                              adapt_frames=cfg.get("adapt_frames", None),
+                              base_lr=cfg.get("base_lr", 0.01))
 
                 # --- PRIOR ORACLE: replace pi_source with the chunk's TRUE prior ---
                 # The frozen confusion matrix's ROW SUMS are the GT class counts,
