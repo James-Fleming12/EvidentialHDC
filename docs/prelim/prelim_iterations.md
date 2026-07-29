@@ -59,3 +59,23 @@ Tested against the native state-of-the-art fallback baseline (D3CTTA) and the st
 *(Note: The HDC Balanced Temporal Density results from Phase 1 were achieved under an unintentional learning-rate decay bug, acting as an optimal stopping mechanism. Phase 2 aims to mathematically reconstruct this performance using continuous, unbroken physics.)*
 
 **Conclusion:** Unfiltered pseudo-labeling (`HDC Baseline`) actively degrades performance on 5 out of 8 corruptions due to severe confirmation bias. D3CTTA's reliance on spatial geometric filtering is highly fragile, actively causing negative adaptation. The Phase 1 HDC pipeline delivered staggering robustness, establishing a new bar for all future optimizations.
+
+---
+
+## Experiment Issues (Updated July 29, 2026)
+
+Based on subsequent deep-dive diagnostics, it was determined that the staggering astronomical gains reported in Phase 1 (e.g., +31.62% on Wet Ground) were an illusion artificially inflated by three compounding experimental flaws. The setup was mathematically unsound as the mechanisms were not functioning as theoretically designed:
+
+1. **The Uncalibrated Evidence Flaw (Dead Gate):** 
+Because the 10,000D HDC cosine similarities were all compressed into a tiny mathematical band (0.02 to 0.12), passing them directly into the Dirichlet Softplus function caused all class evidence to squash together. This pushed the calculated uncertainty to 1.0 for almost all samples, meaning the "epistemic gate" was effectively blind and broken.
+
+2. **The "Margin Proxy" Accident (Random Dropout):** 
+To fix class imbalance, a `balanced_margin` mechanism was used, but it was structurally flawed. Instead of intelligently balancing classes, it acted as a crude random dropout that simply halved the firing rate of common classes (from ~19% down to ~9.5%). This accidental dropout restricted the flow of gradients and masked the fact that the epistemic gate was broken.
+
+3. **The Unintentional LR-Decay Bug (Accidental Early Stopping):** 
+The most critical flaw was an unintended learning-rate decay bug in the underlying training loop. This bug silently choked off the learning rate as the adaptation progressed, acting as an "optimal stopping mechanism." 
+
+**The Source of the +7-8% Artifacts:**
+The combination of the Random Dropout (Issue #2) and the LR-Decay Bug (Issue #3) is exactly what caused the **+7-8% mIoU artificial gains** seen in the table above for corruptions like **Motion Blur (+7.99%)**, **Beam Missing (+7.14%)**, and **Wet Ground (+6.79%)**. By randomly dropping updates and then freezing the learning rate entirely, the system was physically prevented from rotating the prototypes far enough to shatter the classes. It artificially locked in the early, tiny zero-shot gains and completely prevented the catastrophic prototype drift (e.g., the massive 46-degree rotation and -7.25% mIoU collapse on Wet Ground) that inevitably occurs when the physics are allowed to run continuously to the end of the sequence.
+
+In short, the early pipeline only "worked" because a mathematically broken gate was hidden by random dropout, and catastrophic prototype drift was prevented by a bug that stopped the model from actually learning. Current pipelines (e.g., the M-series continuous adaptation controllers) must structurally solve these issues—such as enforcing explicit mathematical bounds like rotation caps—rather than relying on hidden bugs.
