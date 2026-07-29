@@ -74,7 +74,7 @@ def compute_correlations_torch(x, y):
     spearman = float(cov_r / (srx * sry)) if srx != 0 and sry != 0 else 0.0
     return f"Pearson r={pearson:.6f}, Spearman rho={spearman:.6f} (over {len(x):,} pairs)"
 
-def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, ic_method='none', tau=None, kappa=15.0, normalize_weights=False, mv_tta='none', gate_mode='epistemic', dynamic_geom=False, diagnostics=True, dump_features=False, fire_th=0.0, consistent_tau_weights=False, veto_tau_mismatch=False, lr_schedule='constant', adapt_frames=None, base_lr=0.01):
+def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, ic_method='none', tau=None, kappa=15.0, normalize_weights=False, mv_tta='none', gate_mode='epistemic', dynamic_geom=False, diagnostics=True, dump_features=False, fire_th=0.0, consistent_tau_weights=False, veto_tau_mismatch=False, lr_schedule='constant', adapt_frames=None, base_lr=0.01, rotation_cap=None, loosen_beta=0.0, prior_est=False):
     if ic_method not in ['none', 'ic4']:
         raise ValueError(f"Unknown ic_method: {ic_method}")
     logger = logging.getLogger("EvalAdapt")
@@ -92,7 +92,11 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
     disagree_conf_matrix = torch.zeros((num_classes, num_classes), dtype=torch.int64, device=device)
     
     prev_preds_2d = None
-
+    model.g2_uncertainty_sum = 0.0
+    model.g2_margin_sum = 0.0
+    model.g2_churn_sum = 0.0
+    model.g2_count = 0
+    model.g2_churn_count = 0
     active_mu_cos = model.source_mu_cos
     active_sigma_cos = model.source_sigma_cos
 
@@ -187,7 +191,10 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     def get_logits(enc):
                         l = F.linear(enc, w_norm) * kappa
                         if tau != 0.0 and hasattr(model, 'source_class_freq'):
-                            pi = torch.clamp(model.source_class_freq, min=1e-5).to(device)
+                            if prior_est and hasattr(model, 'target_prior'):
+                                pi = torch.clamp(model.target_prior, min=1e-5).to(device)
+                            else:
+                                pi = torch.clamp(model.source_class_freq, min=1e-5).to(device)
                             l = l - tau * torch.log(pi).unsqueeze(0)
                         return l
                         
@@ -291,7 +298,10 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     
                     if tau is not None and tau != 0.0 and hasattr(model, 'source_class_freq'):
                         pl_logits = cos_sims * kappa
-                        pi = torch.clamp(model.source_class_freq, min=1e-5).to(device)
+                        if prior_est and hasattr(model, 'target_prior'):
+                            pi = torch.clamp(model.target_prior, min=1e-5).to(device)
+                        else:
+                            pi = torch.clamp(model.source_class_freq, min=1e-5).to(device)
                         pl_logits = pl_logits - tau * torch.log(pi).unsqueeze(0)
                         pseudo_labels = torch.argmax(pl_logits, dim=1)
                         
@@ -309,6 +319,11 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         mismatch = torch.zeros_like(pseudo_labels, dtype=torch.bool)
                         
                     max_cos_sim = cos_sims[torch.arange(cos_sims.size(0)), pseudo_labels]
+                    
+                    if not hasattr(model, 'target_prior'):
+                        model.target_prior = model.source_class_freq.clone().to(device) if hasattr(model, 'source_class_freq') else torch.ones(num_classes, device=device) / num_classes
+                    batch_prior = torch.bincount(pseudo_labels, minlength=num_classes).float() / max(1, len(pseudo_labels))
+                    model.target_prior = 0.99 * model.target_prior + 0.01 * batch_prior
                     
                     # Soft Gating Initialization
                     # HDC cosine similarities are extremely small (e.g. ~0.05 to ~0.15). 
@@ -354,6 +369,13 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         valid_gt_mask = (selected_labels >= 0) & (selected_labels < num_classes)
                         gt_corr = (pseudo_labels == selected_labels)
                         
+                        # Margin between top-1 and top-2 cosine similarities
+                        top2_cos = torch.topk(cos_sims, k=min(2, cos_sims.size(1)), dim=1)[0]
+                        margin = (top2_cos[:, 0] - top2_cos[:, 1]) if top2_cos.size(1) > 1 else top2_cos[:, 0]
+                        
+                        if hasattr(model, 'gain_controller') and model.gain_controller is not None:
+                            model.gain_controller.update(uncertainty)
+                            
                         if diagnostics:
                             # Track decay statistics, cosines, and GT-labelled contingency table (subsample by ::256 to prevent RAM bloat and quantile indexing limits)
                             if not hasattr(model, '_decay_logs'):
@@ -364,11 +386,12 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             model._decay_logs['epi_score'].append((-uncertainty).detach()[::256].cpu())
                             model._decay_logs['gt_valid'].append(valid_gt_mask.detach()[::256].cpu())
                             model._decay_logs['gt_corr'].append(gt_corr.detach()[::256].cpu())
-                            
-                            # Margin between top-1 and top-2 cosine similarities
-                            top2_cos = torch.topk(cos_sims, k=min(2, cos_sims.size(1)), dim=1)[0]
-                            margin = (top2_cos[:, 0] - top2_cos[:, 1]) if top2_cos.size(1) > 1 else top2_cos[:, 0]
                             model._decay_logs['margin'].append(margin.detach()[::256].cpu())
+                            
+                            if hasattr(model, 'g2_count'):
+                                model.g2_uncertainty_sum += uncertainty.mean().item()
+                                model.g2_margin_sum += margin.mean().item()
+                                model.g2_count += 1
                             
                             # Test D0: Random point pairs for reference-free isometry check
                             if len(latent_x_valid) > 1:
@@ -570,19 +593,40 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     # why they report bit-identical numbers in every cell.
                     if update_method in _baselines.BASELINE_METHODS:
                         _baselines.baseline_update(_baseline_state, predictions, proj_xyz)
-                    elif fired_mask.any() and update_lr > 0.0:
-                        model.online_update(
+                    else:
+                        eff_lr = update_lr
+                        fire_th_eff = fire_th
+                        if hasattr(model, 'gain_controller') and model.gain_controller is not None:
+                            eff_lr = update_lr * model.gain_controller.gain()
+                            if loosen_beta > 0.0:
+                                fire_th_eff = fire_th * (1.0 - loosen_beta * model.gain_controller.gain())
+                            
+                        if fired_mask.any() and eff_lr > 0.0:
+                            if rotation_cap is not None:
+                                pre_step_weight = model.classify.weight.clone().detach()
+                                
+                            model.online_update(
                             norm_enc,
                             pseudo_labels,
                             update_weights,
                             update_method=update_method,
                             ic_method=ic_method,
                             uncertainty=uncertainty,
-                            update_lr=update_lr,
+                            update_lr=eff_lr,
                             normalize_weights=normalize_weights,
                             view_preds=view_preds,
-                            fire_th=fire_th
+                            fire_th=fire_th_eff
                         )
+                        
+                        if rotation_cap is not None and fired_mask.any() and eff_lr > 0.0:
+                            import math
+                            w0 = F.normalize(model.initial_classify_weights, dim=1)
+                            wt = F.normalize(model.classify.weight.data, dim=1)
+                            cos_angles = (w0 * wt).sum(dim=1).clamp(-1.0, 1.0)
+                            over = torch.acos(cos_angles) > math.radians(rotation_cap)
+                            if over.any():
+                                model.classify.weight.data[over] = pre_step_weight[over]
+
     
     try:
         if hasattr(model, '_veto_stats') and model._veto_stats['correct_labels_rejected'] > 0:
@@ -643,6 +687,15 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
             model._class_correct_rejected = torch.zeros(num_classes, dtype=torch.long, device=device)
     except Exception as e:
         logger.warning(f"Diagnostic logging (Per-Class Veto Purity) failed non-fatally: {e}")
+
+    try:
+        if hasattr(model, 'g2_uncertainty_sum') and model.g2_count > 0:
+            m_u = model.g2_uncertainty_sum / model.g2_count
+            m_m = model.g2_margin_sum / model.g2_count
+            m_c = model.g2_churn_sum / max(1, model.g2_churn_count)
+            logger.info(f"[G2 Metrics] mean_uncertainty={m_u:.4f} mean_margin={m_m:.4f} mean_churn={m_c:.4f}")
+    except Exception as e:
+        pass
         
     try:
         if hasattr(model, '_class_n_points') and not eval_only:

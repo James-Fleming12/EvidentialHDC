@@ -147,6 +147,9 @@ class GainController:
             return 1.0
         denom = max(1e-6, self.gap_hi - self.gap_lo)
         return float(min(1.0, max(self.min_gain, (self.gap - self.gap_lo) / denom)))
+        
+    def gap_value(self):
+        return self.gap if self.gap is not None else 0.0
 
     def summary(self):
         if not self._log:

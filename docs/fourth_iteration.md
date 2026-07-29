@@ -90,5 +90,93 @@ Run the Gate Oracle (`gate_mode='oracle'`) and Prior Oracle at matched `fire_th`
 1. **D0b Fix-Test & Logging** (Most likely to explain everything).
 2. **D5 Ceilings** (Decides "broken" vs. "no headroom").
 3. **D4 Invariants** (Cheap pipeline confirmation).
-4. **D2 Comparison** (Formalizes the performance drop).
 5. **D1 / D3 Tables** (Deep dives only if D0/D5 don't close the case).
+
+---
+
+## 3. Diagnostic Test Results (Overnight Run)
+
+*The following are the raw results collected from the overnight diagnostic run (Severity 3, Mean over 3 seeds). Analysis and claims are pending.*
+
+### 3.1 D0 (The Prime Suspect: Label/Weight Mismatch)
+**D0a Disagreement Logging:**
+* `flip_frac` ranged from ~8% to 31% depending on the corruption.
+* `mean_w_flipped` averaged ~0.94 - 0.97.
+* `mean_w_all` averaged ~0.98 - 0.99.
+* The ratio `mean_w_flipped / mean_w_all` was typically 0.95 - 0.99.
+
+**D0b & D0b_veto Outcomes:**
+*(Note: Firing rates and magnitudes tracked identically downstream)*
+| Method | Mean | fog | wet_ground | snow | motion_blur | beam_missing | crosstalk | incomplete_echo | cross_sensor |
+|---|---|---|---|---|---|---|---|---|---|
+| `frozen` | 33.68 | 6.04 | 42.02 | 50.22 | 50.52 | 39.44 | 10.71 | 43.90 | 26.56 |
+| `full_method` | 33.27 | 6.01 | 34.77 | 49.56 | 50.48 | 39.70 | 15.73 | 42.52 | 27.36 |
+| `full_method_d0b` | 33.27 | 6.01 | 34.77 | 49.56 | 50.48 | 39.70 | 15.73 | 42.52 | 27.36 |
+| `full_method_d0b_veto`| 33.27 | 6.01 | 34.77 | 49.56 | 50.48 | 39.70 | 15.73 | 42.52 | 27.36 |
+
+### 3.2 D5 (Is it completely broken? - Ceilings)
+| Method | Mean | fog | wet_ground | snow | motion_blur | beam_missing | crosstalk | incomplete_echo | cross_sensor |
+|---|---|---|---|---|---|---|---|---|---|
+| `frozen` | 33.68 | 6.04 | 42.02 | 50.22 | 50.52 | 39.44 | 10.71 | 43.90 | 26.56 |
+| `prior_oracle` | 35.46 | 5.27 | 53.73 | 49.91 | 49.25 | 39.28 | 11.80 | 46.70 | 27.76 |
+| `oracle` | 35.43 | 7.59 | 43.31 | 50.08 | 50.65 | 40.40 | 18.00 | 42.96 | 30.46 |
+
+### 3.3 Prior Removal (Does the tau prior help adaptation?)
+| Method | Mean | fog | wet_ground | snow | motion_blur | beam_missing | crosstalk | incomplete_echo | cross_sensor |
+|---|---|---|---|---|---|---|---|---|---|
+| `frozen` | 33.68 | 6.04 | 42.02 | 50.22 | 50.52 | 39.44 | 10.71 | 43.90 | 26.56 |
+| `full_method` (tau=-1)| 33.27 | 6.01 | 34.77 | 49.56 | 50.48 | 39.70 | 15.73 | 42.52 | 27.36 |
+| `adapt_tau_half` | 30.45 | 5.27 | 32.57 | 44.47 | 44.37 | 37.91 | 12.37 | 40.29 | 26.38 |
+| `adapt_tau0` | 25.95 | 5.80 | 29.35 | 38.48 | 36.96 | 31.28 | 11.15 | 32.10 | 22.48 |
+| `adapt_tau0_d0b` | 25.95 | 5.80 | 29.35 | 38.48 | 36.96 | 31.28 | 11.15 | 32.10 | 22.48 |
+
+### 3.4 Recovery (Can we recover the prelim gain?)
+| Method | Mean | fog | wet_ground | snow | motion_blur | beam_missing | crosstalk | incomplete_echo | cross_sensor |
+|---|---|---|---|---|---|---|---|---|---|
+| `frozen` | 33.68 | 6.04 | 42.02 | 50.22 | 50.52 | 39.44 | 10.71 | 43.90 | 26.56 |
+| `full_method` (0.01) | 33.27 | 6.01 | 34.77 | 49.56 | 50.48 | 39.70 | 15.73 | 42.52 | 27.36 |
+| `rec_invt` | 33.44 | 5.53 | 38.91 | 49.89 | 50.65 | 39.90 | 11.78 | 43.49 | 27.39 |
+| `rec_cosine` | 33.68 | 6.04 | 36.69 | 49.72 | 50.59 | 39.88 | 16.27 | 42.95 | 27.28 |
+| `rec_stop100` | 33.48 | 5.68 | 39.43 | 49.82 | 50.67 | 39.73 | 11.68 | 43.56 | 27.24 |
+| `rec_stop250` | 33.70 | 6.03 | 36.86 | 49.73 | 50.58 | 39.89 | 16.40 | 42.95 | 27.17 |
+| `rec_lr_lo` (0.002) | 33.43 | 5.54 | 39.28 | 49.98 | 50.60 | 39.87 | 11.22 | 43.55 | 27.40 |
+| `rec_lr_hi` (0.05) | 32.35 | 5.27 | 31.63 | 49.23 | 50.04 | 39.26 | 14.93 | 41.41 | 27.03 |
+
+### 3.5 D3 (Component Interference)
+*(Note: These were run on 1 seed initially as per the script default for this panel)*
+| Method | Mean | fog | wet_ground | snow | motion_blur | beam_missing | crosstalk | incomplete_echo | cross_sensor |
+|---|---|---|---|---|---|---|---|---|---|
+| `frozen` | 33.68 | 6.04 | 42.02 | 50.22 | 50.52 | 39.44 | 10.71 | 43.90 | 26.56 |
+| `aoi_1_tau` | 30.91 | 5.20 | 28.70 | 46.27 | 49.10 | 38.18 | 13.77 | 39.37 | 26.68 |
+| `aoi_2_gate` | 32.04 | 5.22 | 32.55 | 47.84 | 49.70 | 39.04 | 14.09 | 40.62 | 27.29 |
+| `aoi_3_bm` | 32.92 | 5.61 | 34.36 | 48.85 | 50.27 | 39.59 | 15.41 | 42.08 | 27.20 |
+| `aoi_4_ic4` | 33.04 | 5.87 | 34.49 | 48.81 | 50.23 | 39.56 | 15.95 | 42.23 | 27.20 |
+| `no_dual_gating` | 33.04 | 5.87 | 34.49 | 48.81 | 50.23 | 39.56 | 15.95 | 42.23 | 27.20 |
+| `full_method` | 33.27 | 6.01 | 34.77 | 49.56 | 50.48 | 39.70 | 15.73 | 42.52 | 27.36 |
+
+---
+
+## 4. Sixth Iteration Diagnostics (Per-Domain Switch)
+
+Based on the fourth iteration proving that `oracle` and `prior_oracle` recover different corruptions (crosstalk wants adapt, wet_ground wants prior-fix), we pivot to per-domain continuous or discrete control.
+
+### G1. The Decision-Oracle Ceiling (+2.62)
+Combining the best categorical action {freeze, adapt, prior-fix} per domain establishes the absolute headroom for any per-domain controller.
+* **Mean Performance:** 36.30 mIoU (+2.62 over frozen)
+* **Optimal Policy:**
+  * **Freeze:** fog, snow, motion_blur
+  * **Adapt:** beam_missing, crosstalk
+  * **Prior-Fix:** wet_ground, incomplete_echo, cross_sensor
+
+### G2. Signal Separability (TODO)
+**TODO:** Run `g2_frozen` ablation suite to extract label-free scalars (mean uncertainty, mean geometric margin, temporal churn) and rank-correlate them against the categorical oracle decisions above. This will determine if a 1D threshold (e.g., $s > \theta$) is sufficient, or if 2D fusion is required.
+
+### G3. Crosstalk False-Veto Breakdown
+The method recovers crosstalk slightly (+5.02) but dramatically underperforms the `oracle` ceiling (+7.29). Parsing the veto purity confirms that the dual gate is massively over-vetoing correct pseudo-labels:
+* **Crosstalk Purity (Head):** ~0.05. The gate rejects ~20 times more correct predictions than true errors. The gate is improperly calibrated (too tight) for domains with extreme epistemic uncertainty.
+
+### G4. Prototype Drift Audit (Wet Ground)
+The method loses -7.25 mIoU on `wet_ground`.
+* **Head Classes (Road, Building):** Rotated by a massive average of ~46 degrees, leading to a catastrophic -15.0 mIoU drop.
+* **Tail Classes:** Rotated by ~0.1 degrees, resulting in a negligible -0.4 mIoU drop.
+* **Conclusion:** The method is confidently and catastrophically updating the reflection geometries of major classes. Wet ground cannot be gated out by geometry—it must be frozen dynamically at the domain level.

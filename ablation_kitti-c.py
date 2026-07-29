@@ -63,18 +63,19 @@ from modules import HDC_utils
 # ==========================================================================
 def _cfg(name, family, tau=-1.0, gate_mode="soft_dual_weight", ic_method="ic4",
          normalize_weights=False, dynamic_geom=True, mv_tta="none",
-         update_method="evidential_hdc_tta", gain=False, kappa=15.0,
+         update_method="evidential_hdc_tta", gain_control=False, kappa=15.0,
          preset="soft", gate_cfg=None, prior_mode="source", consistent_tau_weights=False, veto_tau_mismatch=False,
-         lr_schedule="constant", adapt_frames=None, base_lr=0.01):
+         lr_schedule="constant", adapt_frames=None, base_lr=0.01,
+         rotation_cap=None, loosen_beta=0.0, prior_est=False):
     return dict(name=name, family=family, update_method=update_method,
                 gate_mode=gate_mode, ic_method=ic_method, tau=tau, kappa=kappa,
                 normalize_weights=normalize_weights, mv_tta=mv_tta,
-                dynamic_geom=dynamic_geom, gain_control=gain,
+                dynamic_geom=dynamic_geom, gain_control=gain_control,
                 preset=preset, gate_cfg=gate_cfg or {},
                 prior_mode=prior_mode, consistent_tau_weights=consistent_tau_weights,
                 veto_tau_mismatch=veto_tau_mismatch,
                 lr_schedule=lr_schedule, adapt_frames=adapt_frames,
-                base_lr=base_lr)
+                base_lr=base_lr, rotation_cap=rotation_cap, loosen_beta=loosen_beta, prior_est=prior_est)
 
 ABLATIONS = {
     # ---- reference ----------------------------------------------------
@@ -165,6 +166,20 @@ ABLATIONS = {
                             consistent_tau_weights=True, base_lr=0.05),
     "rec_lr_lo":       _cfg("D0b + constant LR 0.002", "recover",
                             consistent_tau_weights=True, base_lr=0.002),
+    "g2_frozen":       _cfg("G2 signal collection (frozen)", "g2",
+                            consistent_tau_weights=True, base_lr=0.0),
+                            
+    # ---- 6th Iteration Methods ----
+    "m_a_cap":         _cfg("M-A: Per-class rotation cap 20deg", "methods",
+                            consistent_tau_weights=True, rotation_cap=20.0),
+    "m_ab_gain":       _cfg("M-B: Cap + Gain Control", "methods",
+                            consistent_tau_weights=True, rotation_cap=20.0, gain_control=True),
+    "m_abc_loosen":    _cfg("M-C: Cap + Gain + Loosen Gate", "methods",
+                            consistent_tau_weights=True, rotation_cap=20.0, gain_control=True, loosen_beta=1.0),
+    "m_abcd_prior":    _cfg("M-D: Cap + Gain + Loosen + Prior", "methods",
+                            consistent_tau_weights=True, rotation_cap=20.0, gain_control=True, loosen_beta=1.0, prior_est=True),
+    "m_d_prior_only":  _cfg("M-D: Prior Only (frozen)", "methods",
+                            update_method="frozen", gate_mode="epistemic", prior_est=True),
 }
 
 SETS = {
@@ -180,6 +195,9 @@ SETS = {
     "ceiling": ["frozen", "prior_oracle", "full_method", "oracle"],
     "prior": ["frozen", "full_method_d0b", "adapt_tau0", "adapt_tau0_d0b", "adapt_tau_half"],
     "recover": ["frozen", "full_method_d0b", "rec_invt", "rec_cosine", "rec_stop100", "rec_stop250", "rec_lr_hi", "rec_lr_lo"],
+    "g2": ["g2_frozen"],
+    "methods": ["frozen", "full_method", "m_a_cap", "m_ab_gain", "m_abc_loosen", "m_abcd_prior"],
+    "prior": ["frozen", "m_d_prior_only", "prior_oracle"],
 }
 SETS["all"] = list(ABLATIONS.keys())
 
@@ -499,6 +517,7 @@ def main():
                         gate_mode=cfg["gate_mode"], preset=cfg["preset"], tau=cfg["tau"],
                         ic_method=cfg["ic_method"], normalize_weights=cfg["normalize_weights"],
                         gain_control=cfg["gain_control"], mv_tta=cfg["mv_tta"],
+                        rotation_cap=cfg["rotation_cap"], loosen_beta=cfg["loosen_beta"], prior_est=cfg["prior_est"],
                         fire_th=a.fire_th,
                         init_miou=_tail(init_m, "mIoU"), final_miou=_tail(final_m, "mIoU"),
                         online_miou=_tail(adapt_m, "mIoU"),
