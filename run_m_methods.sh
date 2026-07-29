@@ -8,17 +8,7 @@
 
 SEEDS="42,43,44"
 
-echo "=== STAGE 1: Dry Run Validation ==="
-# Test the new configurations with --dry_run to ensure no syntax/runtime crashes on the pipeline
-uv run ablation_kitti-c.py --ablations m_a_cap,m_ab_gain,m_abc_loosen,m_abcd_prior,m_d_prior_only --dry_run
-if [ $? -ne 0 ]; then
-    echo "Dry run failed! Please check syntax and logic errors."
-    exit 1
-fi
-echo "Dry run successful!"
-
-echo ""
-echo "=== STAGE 2: The Additive Component Ladder ==="
+echo "=== STAGE 1: The Additive Component Ladder ==="
 echo "Running the full ladder across 3 seeds to isolate each component's contribution."
 echo "Target: Compare this ladder against the +2.62 ceiling from G1."
 uv run ablation_kitti-c.py --ablations methods --seeds $SEEDS | tee logs/m_series_methods.log

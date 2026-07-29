@@ -540,10 +540,15 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             gt_mask_full = (pseudo_labels == selected_labels) & (selected_labels >= 0) & (selected_labels < num_classes)
                             update_weights = update_weights * gt_mask_full.float()
                         
+                    # M-C: Calculate loosened gate threshold
+                    fire_th_eff = fire_th
+                    if hasattr(model, 'gain_controller') and model.gain_controller is not None:
+                        if loosen_beta > 0.0:
+                            fire_th_eff = fire_th * (1.0 - loosen_beta * model.gain_controller.gain())
+
                     # Calculate tracking metrics
-                    # We define a "veto" as any point where the uncertainty method cut the base confidence by >50%
-                    veto_mask = update_weights < (0.5 * base_weights)
-                    # We define a point as "fired" if it passed the Epistemic Veto
+                    # A point is vetoed if its final weight falls below the effective threshold
+                    veto_mask = update_weights <= fire_th_eff
                     fired_mask = ~veto_mask
                     if mv_tta == 'veto_disagree':
                         fired_mask = fired_mask & (~view_disagreement)
@@ -595,11 +600,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         _baselines.baseline_update(_baseline_state, predictions, proj_xyz)
                     else:
                         eff_lr = update_lr
-                        fire_th_eff = fire_th
                         if hasattr(model, 'gain_controller') and model.gain_controller is not None:
                             eff_lr = update_lr * model.gain_controller.gain()
-                            if loosen_beta > 0.0:
-                                fire_th_eff = fire_th * (1.0 - loosen_beta * model.gain_controller.gain())
                             
                         if fired_mask.any() and eff_lr > 0.0:
                             if rotation_cap is not None:
