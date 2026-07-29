@@ -402,7 +402,10 @@ def main():
                               veto_tau_mismatch=cfg.get("veto_tau_mismatch", False),
                               lr_schedule=cfg.get("lr_schedule", "constant"),
                               adapt_frames=cfg.get("adapt_frames", None),
-                              base_lr=cfg.get("base_lr", 0.01))
+                              base_lr=cfg.get("base_lr", 0.01),
+                              rotation_cap=cfg.get("rotation_cap", None),
+                              loosen_beta=cfg.get("loosen_beta", 0.0),
+                              prior_est=cfg.get("prior_est", False))
 
                 # --- PRIOR ORACLE: replace pi_source with the chunk's TRUE prior ---
                 # The frozen confusion matrix's ROW SUMS are the GT class counts,
