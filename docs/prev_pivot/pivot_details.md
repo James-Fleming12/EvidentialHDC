@@ -50,7 +50,23 @@ Sweep the temporal window length (e.g., $N=10, 50, 100, 500$ frames) to optimize
 
 ---
 
-## 4. Implementation Steps
-1. **Tier 0/1 Execution:** Complete and log `run_tier_tests.sh`.
-2. **Oracle Baseline (T5a):** Plumb the ground-truth chunk label distribution into `unsup_kitti-c.py` as an explicit override for `source_class_freq`.
-3. **EM Integration (T5b):** Write an EM accumulator in `modules/HDC_utils.py` that intercepts the logit scaling pass, replacing the static $\tau \log \pi$ with a dynamically updated $\tau \log \hat{\pi}^{(t)}$.
+## 5. Post-Mortem: Tier Test Results (Hypotheses Falsified)
+**Update (July 2026): Both the Headroom Hypothesis and the Prior Pivot have been decisively falsified by the Tier 0 and Tier 1 tests.**
+
+### Falsification 1: The Prior Pivot is Dead
+The `prior_oracle` test substituted the *true* ground-truth class prior of each temporal chunk in place of the static source prior. 
+* **Result:** At severity 3, the baseline `frozen` model achieved **33.68 mIoU**. The `prior_oracle` model achieved exactly **33.68 mIoU** ($\Delta = +0.00$).
+* **Conclusion:** SemanticKITTI-C applies synthetic corruptions to the exact same scenes without altering the underlying class distribution. Because $L_1(\pi_{chunk}, \pi_{source}) \approx 0$, there is no target prior drift to estimate. The massive +6.8 mIoU gain from $\tau = -1.0$ is a static calibration fix for the dataset's base imbalance, not an adaptation to a domain shift. Online prior estimation (EM/BBSE) cannot succeed because there is nothing to recover. 
+
+### Falsification 2: The Headroom Hypothesis is Dead
+We hypothesized that geometric adaptation flattens out due to a lack of correctable headroom on hard corruptions (expecting a negative correlation between frozen mIoU and adaptation gain). However, the GT-gated `oracle` test proved that headroom *does* exist, and the severity sweep proved the geometric mechanism simply fails to extract it.
+* **Oracle Ceiling:** At Severity 3, the GT-gated `oracle` yielded a **+1.76 mIoU** gain (raising performance to 35.44 mIoU). However, the `full_method` suffered a **-0.40 mIoU** loss. Headroom exists, but the geometric gate fails to capture it.
+* **Cross-Severity Fit:** Across severities 1, 2, and 3, the linear fit is actually **positive**: `gain = -2.42 + 0.0667 * frozen_mIoU`.
+  * **Sev 1:** Frozen 41.17 $\rightarrow$ Full 41.43 (Gain: **+0.27**)
+  * **Sev 2:** Frozen 35.18 $\rightarrow$ Full 35.38 (Gain: **+0.20**)
+  * **Sev 3:** Frozen 33.68 $\rightarrow$ Full 33.28 (Gain: **-0.40**)
+  * **Crossover Point:** The fit crosses zero at a frozen mIoU of **36.3**.
+* **Conclusion:** Geometric adaptation actually performs *worse* as the data gets harder. The negative correlation previously observed within severity 3 alone was an artifact. The problem is not that the model lacks headroom to improve; the problem is that the geometric adaptation mechanism itself fundamentally fails under severe corruption.
+
+### Strategic Reset
+With the prior estimation pivot dead and the geometric gating mechanism proven fragile under severity, future directions must abandon prototype-level geometric pseudo-labeling in favor of either feature-level alignment (e.g., test-time batch normalization) or vastly more robust multi-modal consistency constraints.
