@@ -1,24 +1,27 @@
-import math
 import argparse
+import json
 import logging
 import os
-import json
-import torch
-import yaml
-import numpy as np
-import matplotlib.pyplot as plt
-from tqdm import tqdm
-from torch.utils.data import Dataset, DataLoader
-import torch.nn.functional as F
 
-from common.laserscan import SemLaserScan, LaserScan
-from dataset.kitti.parser import Parser
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import torch.nn.functional as F
+import yaml
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
 import unsup_main
-from unsup_main import train_extractor, train_hdc, extract_metrics_from_conf_matrix, setup_logger, save_graphic
-from modules.HDC_utils import UQModel
-from modules.HDC_utils import set_uq_model
+from dataset.kitti.parser import Parser
 from modules import compare as _baselines
-from torchhd import functional
+from modules.HDC_utils import set_uq_model
+from unsup_main import (
+    extract_metrics_from_conf_matrix,
+    save_graphic,
+    setup_logger,
+    train_extractor,
+    train_hdc,
+)
 
 NUM_CLASSES = 17
 KITTI_DATA_DIR = "/mnt/alpha/jmfleming/KITTI"
@@ -134,45 +137,12 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     latent_x = model.net(proj_in, only_feat=True)
                 latent_x = latent_x.permute(0, 2, 3, 1).reshape(-1, 128)
                 
-                # === MULTI-VIEW TTA AUGMENTATIONS (BATCHED) ===
-                if mv_tta != 'none' or gate_mode == 'view_var_gate':
-                    B_val, _, H_val, W_val = proj_in.shape
-                    shift_amount = W_val // 4
-                    proj_m1 = torch.roll(proj_in, shifts=shift_amount, dims=3)
-                    proj_m2 = proj_in * 0.95
-                    
-                    # Batch all 3 views into a single forward pass! (Size: [3 * B, 5, H, W])
-                    batched_proj = torch.cat([proj_in, proj_m1, proj_m2], dim=0)
-                    raw_enc_batched, _, _ = model.encode(batched_proj)
-                    C_val = raw_enc_batched.shape[-1]
-                    
-                    # Unpack batched encodings: shape [3, B, H, W, C]
-                    raw_enc_batched = raw_enc_batched.view(3, B_val, H_val, W_val, C_val)
-                    
-                    # Base view
-                    raw_enc = raw_enc_batched[0].view(-1, C_val)
-                    norm_enc = F.normalize(raw_enc, dim=1).to(model.classify.weight.dtype)
-                    indices = torch.arange(raw_enc.shape[0], device=device)
-                    
-                    # M1 (Yaw Shift) - Roll back horizontally to align features
-                    raw_enc_m1 = raw_enc_batched[1]
-                    raw_enc_m1 = torch.roll(raw_enc_m1, shifts=-shift_amount, dims=2).view(-1, C_val)
-                    norm_enc_m1 = F.normalize(raw_enc_m1, dim=1).to(model.classify.weight.dtype)
-                    
-                    # M2 (Depth Scale)
-                    raw_enc_m2 = raw_enc_batched[2].view(-1, C_val)
-                    norm_enc_m2 = F.normalize(raw_enc_m2, dim=1).to(model.classify.weight.dtype)
-                    
-                    norm_enc_base = norm_enc.clone()
-                else:
-                    raw_enc, indices, _ = model.encode(proj_in)
-                    assert torch.equal(indices, torch.arange(raw_enc.shape[0], device=device)), "encode() indices do not match full arange point set!"
-                    norm_enc = F.normalize(raw_enc, dim=1).to(model.classify.weight.dtype)
-                # ====================================
+                # === SINGLE-VIEW LATENT EXTRACTION ===
+                raw_enc, indices, _ = model.encode(proj_in)
+                assert torch.equal(indices, torch.arange(raw_enc.shape[0], device=device)), "encode() indices do not match full arange point set!"
+                norm_enc = F.normalize(raw_enc, dim=1).to(model.classify.weight.dtype)
                 
                 norm_enc = norm_enc.to(model.classify.weight.dtype)
-                if 'norm_enc_base' in locals():
-                    norm_enc_base = norm_enc_base.to(model.classify.weight.dtype)
                 
                 # --- BASELINE METHODS: use the baseline's OWN head for prediction ---
                 # Previously the HDC classifier produced predictions and only DAPL
@@ -205,40 +175,12 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         
                     logits = get_logits(norm_enc)
                     
-                # Calculate multi-view predictions if needed for MV-1
-                if mv_tta == 'conf_pred' and 'norm_enc_m1' in locals():
-                    logits_m1 = get_logits(norm_enc_m1)
-                    logits_m2 = get_logits(norm_enc_m2)
-                    
-                    # Average probabilities across views
-                    prob_base = F.softmax(logits, dim=1)
-                    prob_m1 = F.softmax(logits_m1, dim=1)
-                    prob_m2 = F.softmax(logits_m2, dim=1)
-                    mean_probs = (prob_base + prob_m1 + prob_m2) / 3.0
-                    predictions = torch.argmax(mean_probs, dim=1)
-                elif _baseline_state is None:
+                if _baseline_state is None:
                     predictions = torch.argmax(logits, dim=1)
                     
-                # MV-2: View Disagreement Precision Tracking & V2 Soft View Variance
-                if (mv_tta != 'none' or gate_mode == 'view_var_gate') and 'norm_enc_m1' in locals():
-                    l_base_mv2 = get_logits(norm_enc_base)
-                    l_m1_mv2 = get_logits(norm_enc_m1)
-                    l_m2_mv2 = get_logits(norm_enc_m2)
-                    pred_base_mv2 = torch.argmax(l_base_mv2, dim=1)
-                    pred_m1_mv2 = torch.argmax(l_m1_mv2, dim=1)
-                    pred_m2_mv2 = torch.argmax(l_m2_mv2, dim=1)
-                    view_preds = [pred_m1_mv2, pred_m2_mv2]
-                    view_disagreement = (pred_base_mv2 != pred_m1_mv2) | (pred_base_mv2 != pred_m2_mv2)
-                    
-                    pb_mv2 = F.softmax(l_base_mv2, dim=1)
-                    p1_mv2 = F.softmax(l_m1_mv2, dim=1)
-                    p2_mv2 = F.softmax(l_m2_mv2, dim=1)
-                    pm_mv2 = (pb_mv2 + p1_mv2 + p2_mv2) / 3.0
-                    soft_view_var_all = ((pb_mv2 - pm_mv2)**2 + (p1_mv2 - pm_mv2)**2 + (p2_mv2 - pm_mv2)**2).sum(dim=1) / 3.0
-                else:
-                    view_preds = None
-                    view_disagreement = torch.zeros_like(predictions, dtype=torch.bool)
-                    soft_view_var_all = torch.zeros(len(predictions), device=device)
+                view_preds = None
+                view_disagreement = torch.zeros_like(predictions, dtype=torch.bool)
+                soft_view_var_all = torch.zeros(len(predictions), device=device)
 
                 
                 selected_labels = proj_labels[indices]
@@ -651,7 +593,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                 angle = torch.acos(torch.tensor(cos_sim)).item() * (180.0 / torch.pi)
                 class_rotations[c] = angle
                 
-            logger.info(f"\n[Stats] Prototype Rotation (Degrees):")
+            logger.info("\n[Stats] Prototype Rotation (Degrees):")
             head_rot = {c: round(class_rotations[c], 2) for c in [11, 13, 14, 15, 16]}
             tail_rot = {c: round(class_rotations[c], 2) for c in [2, 3, 6, 7, 10]}
             logger.info(f"  Head Rotation: {head_rot}")
@@ -675,7 +617,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
     try:
         if hasattr(model, '_class_true_errors_rejected') and not eval_only:
             logger = logging.getLogger("EvalAdapt")
-            logger.info(f"\n[Stats] Per-Class Veto Purity (True Errors / Correct Labels Rejected):")
+            logger.info("\n[Stats] Per-Class Veto Purity (True Errors / Correct Labels Rejected):")
             err_np = model._class_true_errors_rejected.cpu().numpy()
             corr_np = model._class_correct_rejected.cpu().numpy()
             head_purity, tail_purity = {}, {}
@@ -696,7 +638,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
             m_m = model.g2_margin_sum / model.g2_count
             m_c = model.g2_churn_sum / max(1, model.g2_churn_count)
             logger.info(f"[G2 Metrics] mean_uncertainty={m_u:.4f} mean_margin={m_m:.4f} mean_churn={m_c:.4f}")
-    except Exception as e:
+    except Exception:
         pass
         
     try:
@@ -710,7 +652,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     val_str = f"{fir_np[c]}/{pts_np[c]} ({fir_np[c]/pts_np[c]*100:.2f}%)"
                     if c in [11, 13, 14, 15, 16]: head_firing[c] = val_str
                     elif c in [2, 3, 6, 7, 10]: tail_firing[c] = val_str
-            logger.info(f"\n[Stats] Per-Class Firing Rates (True Fired/Total):")
+            logger.info("\n[Stats] Per-Class Firing Rates (True Fired/Total):")
             logger.info(f"  Head Firing: {head_firing}")
             logger.info(f"  Tail Firing: {tail_firing}")
             model._class_n_points = torch.zeros(num_classes, dtype=torch.long, device=device)
@@ -723,7 +665,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
             ct = model._contingency_table
             def get_prec(cell):
                 return cell['correct'].item() / cell['n'].item() if cell['n'].item() > 0 else 0.0
-            logger.info(f"\n[Section 3.2] GT-Labelled Contingency Table (geom vs epi admission):")
+            logger.info("\n[Section 3.2] GT-Labelled Contingency Table (geom vs epi admission):")
             logger.info(f"  Geom Admits / Epi Admits:  N={ct['geom_adm_epi_adm']['n'].item():,}, Prec={get_prec(ct['geom_adm_epi_adm']):.4f}")
             logger.info(f"  Geom Admits / Epi Rejects (RESCUE CELL): N={ct['geom_adm_epi_rej']['n'].item():,}, Prec={get_prec(ct['geom_adm_epi_rej']):.4f}")
             logger.info(f"  Geom Rejects / Epi Admits: N={ct['geom_rej_epi_adm']['n'].item():,}, Prec={get_prec(ct['geom_rej_epi_adm']):.4f}")
@@ -734,7 +676,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
             mct = model._mv_contingency_table
             def get_prec(cell):
                 return cell['correct'].item() / cell['n'].item() if cell['n'].item() > 0 else 0.0
-            logger.info(f"\n[Test D4] MV-2 Disagreement vs Epistemic Gating Contingency Table:")
+            logger.info("\n[Test D4] MV-2 Disagreement vs Epistemic Gating Contingency Table:")
             logger.info(f"  View Agree / Epi Admits:    N={mct['view_agree_epi_adm']['n'].item():,}, Prec={get_prec(mct['view_agree_epi_adm']):.4f}")
             logger.info(f"  View Agree / Epi Rejects (RESCUE CELL): N={mct['view_agree_epi_rej']['n'].item():,}, Prec={get_prec(mct['view_agree_epi_rej']):.4f}")
             logger.info(f"  View Disagree / Epi Admits: N={mct['view_disagree_epi_adm']['n'].item():,}, Prec={get_prec(mct['view_disagree_epi_adm']):.4f}")
@@ -772,14 +714,14 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
             else:
                 corr_val = 0.0
             
-            logger.info(f"\n[Section 3.3] Decay Distribution Stats:")
+            logger.info("\n[Section 3.3] Decay Distribution Stats:")
             logger.info(f"  Geom Decay: {g_stats} | Fraction < 0.01: {frac_zero:.2f}%")
             logger.info(f"  Epi Decay:  {e_stats}")
             logger.info(f"  Pearson Correlation (geom vs epi): {corr_val:.4f}")
             
             # Test D0: Cosine similarity correlation (128D vs 10k) on random point pairs
             if cos10k_all is not None and cos128_all is not None and len(cos10k_all) > 1:
-                logger.info(f"\n[Test D0] Cosine Similarity Correlation (128D Latent vs 10,000D HDC Space on Random Point Pairs):")
+                logger.info("\n[Test D0] Cosine Similarity Correlation (128D Latent vs 10,000D HDC Space on Random Point Pairs):")
                 logger.info(f"  {compute_correlations_torch(cos128_all, cos10k_all)}")
                 
             # Test D1: Complementarity AUROC on Epistemic-Rejected subset (using raw un-saturated scores if available, else decays)
@@ -788,10 +730,10 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                 if epi_rej_mask.any() and gt_corr_all[epi_rej_mask].unique().numel() > 1:
                     score_to_eval = torch.cat(model._decay_logs['geom_score']).float()[epi_rej_mask] if len(model._decay_logs.get('geom_score', [])) > 0 else g_all[epi_rej_mask]
                     auroc_val = compute_auroc_torch(score_to_eval, gt_corr_all[epi_rej_mask])
-                    logger.info(f"\n[Test D1] Complementarity AUROC (geom score vs GT correctness on Epistemic-Rejected subset):")
+                    logger.info("\n[Test D1] Complementarity AUROC (geom score vs GT correctness on Epistemic-Rejected subset):")
                     logger.info(f"  AUROC = {auroc_val:.4f} (over {epi_rej_mask.sum().item():,} epistemic-rejected valid GT points)")
                 else:
-                    logger.info(f"\n[Test D1] Complementarity AUROC: N/A (no valid epistemic-rejected points or single class)")
+                    logger.info("\n[Test D1] Complementarity AUROC: N/A (no valid epistemic-rejected points or single class)")
 
                 # Test D2: Matched-Rate Contingency Table (ranking on raw geom_score instead of saturated decay)
                 epi_adm_rate = (e_all[gt_valid_all] >= 0.5).float().mean().item()
@@ -836,7 +778,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     else:
                         auroc_g_cond = float('nan')
                         
-                    logger.info(f"\n[Test D7] Conditional Redundancy (MV-2 View Agreement vs Geom on Epistemic-Rejected subset):")
+                    logger.info("\n[Test D7] Conditional Redundancy (MV-2 View Agreement vs Geom on Epistemic-Rejected subset):")
                     logger.info(f"  AUROC (View Agreement on Epi-Rej): {auroc_va:.4f} (over {len(vd_sub):,} points)")
                     logger.info(f"  AUROC (Geom Score on Epi-Rej AND View-Disagree): {auroc_g_cond:.4f} (over {vd_rej_mask.sum().item():,} points)")
                     
@@ -850,7 +792,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     n_vagr, p_vagr = cell_stats(va_mask & ~ga_mask)
                     n_vdga, p_vdga = cell_stats(~va_mask & ga_mask)
                     n_vdgr, p_vdgr = cell_stats(~va_mask & ~ga_mask)
-                    logger.info(f"  Contingency Table on Epistemic-Rejected subset (View Agree vs Geom Adm):")
+                    logger.info("  Contingency Table on Epistemic-Rejected subset (View Agree vs Geom Adm):")
                     logger.info(f"    View Agree / Geom Admits:  N={n_vaga:,}, Prec={p_vaga:.4f}")
                     logger.info(f"    View Agree / Geom Rejects: N={n_vagr:,}, Prec={p_vagr:.4f}")
                     logger.info(f"    View Disagree / Geom Admits (DOUBLE RESCUE): N={n_vdga:,}, Prec={p_vdga:.4f}")
@@ -865,14 +807,14 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
             ratio = (model.running_density_std / (model.source_density_std + 1e-8)).cpu().numpy()
             head_r = {c: round(float(ratio[c]), 2) for c in [11, 13, 14, 15, 16]}
             tail_r = {c: round(float(ratio[c]), 2) for c in [2, 3, 6, 7, 10]}
-            logger.info(f"\n[Section 3.3 / Dynamic Geom] Final Variance Inflation Ratio (running_std / source_std):")
+            logger.info("\n[Section 3.3 / Dynamic Geom] Final Variance Inflation Ratio (running_std / source_std):")
             logger.info(f"  Head Classes Ratio: {head_r}")
             logger.info(f"  Tail Classes Ratio: {tail_r}")
             if hasattr(model, 'running_density_mean') and hasattr(model, 'source_density_mean'):
                 ratio_mean = (model.running_density_mean / (model.source_density_mean + 1e-8)).cpu().numpy()
                 head_r_m = {c: round(float(ratio_mean[c]), 2) for c in [11, 13, 14, 15, 16]}
                 tail_r_m = {c: round(float(ratio_mean[c]), 2) for c in [2, 3, 6, 7, 10]}
-                logger.info(f"[Section 3.3 / Dynamic Geom] Final Mean Shift Ratio (running_mean / source_mean):")
+                logger.info("[Section 3.3 / Dynamic Geom] Final Mean Shift Ratio (running_mean / source_mean):")
                 logger.info(f"  Head Classes Mean Ratio: {head_r_m}")
                 logger.info(f"  Tail Classes Mean Ratio: {tail_r_m}")
     except Exception as e:
@@ -881,7 +823,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
     try:
         if mv_tta != 'none' or gate_mode == 'view_var_gate':
             logger = logging.getLogger("EvalAdapt")
-            logger.info(f"\n[MV-2] View Disagreement Precision Tracking")
+            logger.info("\n[MV-2] View Disagreement Precision Tracking")
             
             # Calculate overall precision for agreeing points
             agree_diag = torch.diag(agree_conf_matrix).sum().item()
@@ -946,7 +888,7 @@ def pretrain_pipeline(ARCH, DATA, data_dir, pretrained_path, return_trainer=Fals
         print(f"Pretraining feature extractor on {data_dir}...")
         trainer = train_extractor(ARCH, DATA, epochs=extractor_epochs, data_dir=data_dir, return_trainer=True, resume_path=resume_path)
     else:
-        print(f"Skipping feature extractor pretraining...")
+        print("Skipping feature extractor pretraining...")
         trainer = None
     
     ARCH["train"]["batch_size"] = 6
@@ -1198,13 +1140,10 @@ def main():
     parser.add_argument('--kittic_dir', type=str, default='/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C', help='Path to real SemanticKITTI-C dataset')
     parser.add_argument('--corruptions', type=str, default='fog,wet_ground,snow,motion_blur,beam_missing,crosstalk,incomplete_echo,cross_sensor', help='Comma separated list of corruptions to test. Defaults to all 8 corruptions.')
 
-    parser.add_argument('--ic_method', type=str, default='none', help='Inter/Intra-Class balancing method: none, ic4')
     parser.add_argument('--tau', type=float, default=None, help='Logit adjustment tau for inference prior. If not set, BM is used. τ=0 is normalized baseline. τ<0 is majority amplifier. τ>0 is balanced softmax.')
     parser.add_argument('--kappa', type=float, default=15.0, help='Logit scale kappa used with tau. Controls evidence weighting vs prior.')
     parser.add_argument('--normalize_weights', action='store_true', help='Force weights to be normalized after every update (disables Bayesian Momentum accumulator).')
-    parser.add_argument('--mv_tta', type=str, default='none', help='Multi-View TTA method. Options: none, conf_pred, veto_disagree')
     parser.add_argument('--gate_mode', type=str, default='epistemic', help='Uncertainty gating strategy: epistemic, geometric, and_gate, or_gate, oracle, rescue_gate, ellipsoid_gate, soft_dual_weight, view_var_gate')
-    parser.add_argument('--dynamic_geom', action='store_true', help='Use running batch EMA variance for geometric HDC density thresholding.')
     parser.add_argument('--no_diagnostics', action='store_false', dest='diagnostics', help='Disable heavy diagnostic tracking.')
     parser.add_argument('--dump_features', action='store_true', default=False, help='Dump per-point feature tensors for Test D5/D6 offline probe.')
     parser.set_defaults(diagnostics=True)
@@ -1384,9 +1323,9 @@ def main():
         model.source_bank = source_stats_cache['source_bank'].to(device) if source_stats_cache.get('source_bank') is not None else None
 
     for current_method, full_method_name in zip(methods_to_run, full_method_names):
-        logger.info(f"=========================================")
+        logger.info("=========================================")
         logger.info(f"Starting Evaluation for Method: {full_method_name}")
-        logger.info(f"=========================================")
+        logger.info("=========================================")
         
         active_corruptions = CORRUPTIONS
         if args.corruptions:

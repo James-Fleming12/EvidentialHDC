@@ -44,23 +44,7 @@ For each frame, a point $x$ is embedded on the unit hypersphere, $\mathbf{z} = f
 
 Mechanisms 2–4 govern the *update*; mechanism 1 governs *prediction* and is active even when the update is fully suppressed. This separation is deliberate: the largest single source of recoverable performance (reflection-type corruptions) is claimed at inference, with no prototype movement at all.
 
-The pseudocode for one frame:
-
-```
-z         = normalize(f_theta(x))                     # embedding
-S         = z @ W_norm.T                              # cosine similarities
-# --- prediction path ---
-pi_hat    = update_prior_estimate(prev_predictions)   # sec 4
-logits    = kappa * S - tau * log(pi_hat)             # sec 4
-y_hat     = argmax(logits)
-# --- update path (optional) ---
-u         = epistemic_uncertainty(S)                  # Dirichlet, sec 5
-g         = gain(mean(u))                             # sec 5, in [0,1]
-thresh    = fire_th * (1 - beta * u_norm)             # sec 6
-admit     = pseudo_label_weight(logits) > thresh      # sec 6
-W        += g * eta_0 * prototype_step(z[admit], y_hat[admit])
-enforce_rotation_budget(W, W_0, cap_degrees)          # sec 7
-```
+Formally, given an input frame yielding unit-normalized embeddings $\mathbf{Z} \in \mathbb{R}^{N \times D}$ and a prototype matrix $\tilde{\mathbf{W}}^{(t)}$, the unified per-frame step is defined by two sequential pathways. The **prediction pathway** computes the similarity matrix $\mathbf{S} = \mathbf{Z}\tilde{\mathbf{W}}^{(t)\top}$, updates the prior distribution estimate $\hat{\boldsymbol{\pi}}^{(t)}$, and evaluates the adjusted logits $\mathcal{L} = \kappa \mathbf{S} + \tau \log \hat{\boldsymbol{\pi}}^{(t)}$ to yield the pseudo-labels $\hat{\mathbf{y}} = \arg\max \mathcal{L}$. The parallel **adaptation pathway** maps the similarities to point-wise epistemic uncertainties $\mathbf{u} = \mathcal{U}(\mathbf{S})$, aggregating them into a frame-level domain-gap scalar $\bar{u}^{(t)} \in [0,1]$. This scalar simultaneously dictates the global step scale via the gain function $g(\bar{u}^{(t)}) \in [0,1]$ and relaxes the absolute admission boundary $\theta_{\text{eff}} = \theta_0(1 - \beta \bar{u}^{(t)})$. An indicator mask $\mathbf{a} = \mathbb{1}[ \operatorname{conf}(\mathcal{L}) > \theta_{\text{eff}} ]$ gates the pseudo-labels, allowing a high-confidence subset of embeddings to dictate the proposed prototype update $\mathbf{W}_{\text{prop}}$. Finally, the constraint projection $\Pi_{\Phi}(\mathbf{W}_{\text{prop}}, \mathbf{W}^0)$ strictly caps the angular divergence of each prototype relative to its source initialization, producing the bounded state $\mathbf{W}^{(t+1)}$.
 
 ---
 

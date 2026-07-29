@@ -61,8 +61,8 @@ from modules import HDC_utils
 # ==========================================================================
 # Ablation matrix
 # ==========================================================================
-def _cfg(name, family, tau=-1.0, gate_mode="soft_dual_weight", ic_method="ic4",
-         normalize_weights=False, dynamic_geom=True, mv_tta="none",
+def _cfg(name, family, tau=-1.0, gate_mode="epistemic", ic_method="none",
+         normalize_weights=False, dynamic_geom=False, mv_tta="none",
          update_method="evidential_hdc_tta", gain_control=False, kappa=15.0,
          preset="soft", gate_cfg=None, prior_mode="source", consistent_tau_weights=False, veto_tau_mismatch=False,
          lr_schedule="constant", adapt_frames=None, base_lr=0.01,
@@ -86,61 +86,13 @@ ABLATIONS = {
     "oracle": _cfg("Oracle gate (GT-gated CEILING, not a method)", "ref",
                    gate_mode="oracle"),
 
-    # ---- leave-one-out ------------------------------------------------
-    "full_method": _cfg("Full unified method", "loo"),
-    "full_method_d0b": _cfg("Full unified method (D0b consistent tau gate)", "loo", consistent_tau_weights=True),
-    "full_method_d0b_veto": _cfg("Full unified method (D0b veto tau mismatch)", "loo", veto_tau_mismatch=True),
-    "no_dual_gating": _cfg("- dual gating (epistemic only)", "loo", gate_mode="epistemic"),
-    "no_temporal": _cfg("- temporal consistency (no BM inertia)", "loo",
-                        normalize_weights=True),
-    "no_inter_class": _cfg("- inter-class balance (no tau prior)", "loo", tau=0.0),
-    "no_intra_class": _cfg("- intra-class balance (no IC4)", "loo", ic_method="none"),
-    "no_gating": _cfg("- uncertainty gating (uniform weights)", "loo", gate_mode="uniform"),
-
-    # ---- add-one-in ladder --------------------------------------------
-    "aoi_1_tau": _cfg("+ tau only", "aoi", gate_mode="uniform", ic_method="none",
-                      normalize_weights=True),
-    "aoi_2_gate": _cfg("+ tau + epistemic gating", "aoi", gate_mode="epistemic",
-                       ic_method="none", normalize_weights=True),
-    "aoi_3_bm": _cfg("+ tau + gating + BM", "aoi", gate_mode="epistemic",
-                     ic_method="none", normalize_weights=False),
-    "aoi_4_ic4": _cfg("+ tau + gating + BM + IC4", "aoi", gate_mode="epistemic",
-                      ic_method="ic4", normalize_weights=False),
-    "aoi_5_dual": _cfg("+ dual gating (== full method)", "aoi",
-                       gate_mode="soft_dual_weight"),
-
     # ---- gate preset sweep --------------------------------------------
     # The old ablation compared soft_dual_weight (u_th=0.5, coef=1.5) against
     # epistemic (u_th=0.1, coef=2.0): different REGIMES, not just offsets.
-    # These four cells disentangle preset from the geometric term.
-    "epi_soft": _cfg("epistemic, soft preset", "preset", gate_mode="epistemic",
-                     preset="soft"),
-    "epi_sharp": _cfg("epistemic, sharp preset", "preset", gate_mode="epistemic",
-                      preset="sharp"),
-    "dual_soft": _cfg("soft_dual_weight, soft preset", "preset",
-                      gate_mode="soft_dual_weight", preset="soft"),
-    "dual_sharp": _cfg("soft_dual_weight, sharp preset", "preset",
-                       gate_mode="soft_dual_weight", preset="sharp"),
-
-    # ---- gate zoo ------------------------------------------------------
-    "geometric_only": _cfg("geometric only", "zoo", gate_mode="geometric"),
-    "and_gate": _cfg("AND gate (fuzzy min)", "zoo", gate_mode="and_gate"),
-    "or_gate": _cfg("OR gate (fuzzy max)", "zoo", gate_mode="or_gate"),
-    "ellipsoid_gate": _cfg("ellipsoid gate", "zoo", gate_mode="ellipsoid_gate"),
-    "rescue_gate": _cfg("rescue cascade (sign+units fixed)", "zoo",
-                        gate_mode="rescue_gate"),
-    "rescue_tight": _cfg("rescue cascade, tight z (top slice only)", "zoo",
-                         gate_mode="rescue_gate",
-                         gate_cfg={"rescue_z_th": -0.5, "rescue_min": 0.75}),
-
     # ---- gain control --------------------------------------------------
     "gain_full": _cfg("Full + domain-gap gain control", "gain", gain_control=True),
     "gain_epi": _cfg("Epistemic only + gain control", "gain",
                      gate_mode="epistemic", gain_control=True),
-
-    # ---- multi-view ----------------------------------------------------
-    "mv_veto": _cfg("Full + MV veto_disagree", "mv", mv_tta="veto_disagree"),
-    "mv_conf": _cfg("Full + MV conf_pred", "mv", mv_tta="conf_pred"),
 
     # ---- PRIOR REMOVAL (family 'prior') ------------------------------------
     # Every adaptation arm so far carries tau=-1 on the PSEUDO-LABELS. These
@@ -183,20 +135,12 @@ ABLATIONS = {
 }
 
 SETS = {
-    "core": ["frozen", "full_method", "no_dual_gating"],
-    "loo": ["frozen", "full_method", "no_dual_gating", "no_temporal",
-            "no_inter_class", "no_intra_class", "no_gating"],
-    "aoi": ["frozen", "aoi_1_tau", "aoi_2_gate", "aoi_3_bm", "aoi_4_ic4", "aoi_5_dual"],
-    "preset": ["frozen", "epi_soft", "epi_sharp", "dual_soft", "dual_sharp"],
-    "zoo": ["frozen", "full_method", "geometric_only", "and_gate", "or_gate",
-            "ellipsoid_gate", "rescue_gate", "rescue_tight"],
-    "gain": ["frozen", "full_method", "no_dual_gating", "gain_full", "gain_epi"],
-    "mv": ["frozen", "full_method", "mv_veto", "mv_conf"],
-    "ceiling": ["frozen", "prior_oracle", "full_method", "oracle"],
-    "prior": ["frozen", "full_method_d0b", "adapt_tau0", "adapt_tau0_d0b", "adapt_tau_half"],
-    "recover": ["frozen", "full_method_d0b", "rec_invt", "rec_cosine", "rec_stop100", "rec_stop250", "rec_lr_hi", "rec_lr_lo"],
+    "gain": ["frozen", "gain_full", "gain_epi"],
+    "ceiling": ["frozen", "prior_oracle", "oracle"],
+    "tau_prior": ["frozen", "adapt_tau0", "adapt_tau0_d0b", "adapt_tau_half"],
+    "recover": ["frozen", "rec_invt", "rec_cosine", "rec_stop100", "rec_stop250", "rec_lr_hi", "rec_lr_lo"],
     "g2": ["g2_frozen"],
-    "methods": ["frozen", "full_method", "m_a_cap", "m_ab_gain", "m_abc_loosen", "m_abcd_prior"],
+    "methods": ["frozen", "m_a_cap", "m_ab_gain", "m_abc_loosen", "m_abcd_prior"],
     "prior": ["frozen", "m_d_prior_only", "prior_oracle"],
 }
 SETS["all"] = list(ABLATIONS.keys())
