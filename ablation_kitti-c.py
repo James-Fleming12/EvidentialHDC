@@ -134,9 +134,9 @@ ABLATIONS = {
                          gate_cfg={"rescue_z_th": -0.5, "rescue_min": 0.75}),
 
     # ---- gain control --------------------------------------------------
-    "gain_full": _cfg("Full + domain-gap gain control", "gain", gain=True),
+    "gain_full": _cfg("Full + domain-gap gain control", "gain", gain_control=True),
     "gain_epi": _cfg("Epistemic only + gain control", "gain",
-                     gate_mode="epistemic", gain=True),
+                     gate_mode="epistemic", gain_control=True),
 
     # ---- multi-view ----------------------------------------------------
     "mv_veto": _cfg("Full + MV veto_disagree", "mv", mv_tta="veto_disagree"),
