@@ -75,10 +75,10 @@ Under corruption, feature distortion scatters points across the hypersphere. Bec
 Let $\pi_c$ be an estimate of the class prior and $\kappa$ a cosine scaling factor. By Bayes' rule the log-posterior decomposes as
 $$ \log P(y=c \mid \mathbf{z}) = \log P(\mathbf{z} \mid y=c) + \log P(y=c) - \log P(\mathbf{z}). $$
 Modeling the scaled cosine $\kappa\, \mathbf{z}^\top \tilde{\mathbf{w}}_c$ as the log-likelihood term and introducing a calibration coefficient $\tau$, the adjusted logit is
-$$ \mathcal{L}_{c} = \kappa\, \mathbf{z}^\top \tilde{\mathbf{w}}_c - \tau \log \pi_c. $$
-With $\tau < 0$ and $\pi_c \in (0,1)$ (so $\log\pi_c < 0$), rare classes receive a stronger negative offset than common ones. Because the $\arg\max$ boundary depends only on the ratio $\tau/\kappa$, this defines a scale-invariant similarity margin: a point is assigned to a rarer class only if its cosine advantage exceeds
-$$ \Delta S \ge \frac{|\tau|}{\kappa}\,\log\!\left(\frac{\pi_{\text{common}}}{\pi_{\text{rare}}}\right), $$
-which removes diffuse false-positive clouds without lowering true-positive recall. We use $\tau = -1.0$, $\kappa = 15.0$.
+$$ \mathcal{L}_{c} = \kappa\, \mathbf{z}^\top \tilde{\mathbf{w}}_c + \tau \log \pi_c. $$
+With $\tau > 0$ and $\pi_c \in (0,1)$ (so $\log\pi_c < 0$), rare classes receive a negative offset (we effectively subtract $|\log \pi_c|$). Because the $\arg\max$ boundary depends only on the ratio $\tau/\kappa$, this defines a scale-invariant similarity margin: a point is assigned to a rarer class only if its cosine advantage exceeds
+$$ \Delta S \ge \frac{\tau}{\kappa}\,\log\!\left(\frac{\pi_{\text{common}}}{\pi_{\text{rare}}}\right), $$
+which removes diffuse false-positive clouds without lowering true-positive recall. In our implementation, to match the theoretical formulation $S - \tau \log \pi_c$ with $\tau = -1.0$, this explicitly adds $\log \pi_c$. We consistently use an effective $\tau = +1.0$ in the additive formulation and $\kappa = 15.0$.
 
 ### 4.3 Online Prior Estimation
 
