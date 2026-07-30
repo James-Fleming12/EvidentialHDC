@@ -44,8 +44,8 @@ def run_m2_diagnostic():
         corruption_root = "/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C/"
         
     parser_obj = ukc.Parser(root=corruption_root,
-                            train_sequences=None,
-                            valid_sequences=None,
+                            train_sequences=['08'],
+                            valid_sequences=['08'],
                             test_sequences=['08'],
                             labels=DATA["labels"],
                             color_map=DATA["color_map"],
