@@ -77,7 +77,81 @@ def compute_correlations_torch(x, y):
     spearman = float(cov_r / (srx * sry)) if srx != 0 and sry != 0 else 0.0
     return f"Pearson r={pearson:.6f}, Spearman rho={spearman:.6f} (over {len(x):,} pairs)"
 
-def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, ic_method='none', tau=None, kappa=15.0, normalize_weights=False, mv_tta='none', gate_mode='epistemic', dynamic_geom=False, diagnostics=True, dump_features=False, fire_th=0.0, consistent_tau_weights=False, veto_tau_mismatch=False, lr_schedule='constant', adapt_frames=None, base_lr=0.01, rotation_cap=None, loosen_beta=0.0, prior_est=False, prior_switch=False, prior_ramp=False, prior_inverse=False, adaptive_budget=False, boost_tail_prior=False):
+def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', **kwargs):
+    logger = logging.getLogger("EvalAdapt")
+    model_was_training = model.training
+    
+    miou_history = []
+    head_miou_history = []
+    mid_miou_history = []
+    tail_miou_history = []
+    acc_history = []
+    iou_per_class_history = []
+    num_classes = model.num_classes
+    cumulative_confusion_matrix = torch.zeros((num_classes, num_classes), dtype=torch.int64, device=device)
+    
+    # --- Category 2 & Category 1 Integration ---
+    # TODO: Initialize Adaptive Memory Bank here if update_method == 'adapt_mem'
+    # mem_bank = AdaptiveMemoryBank(hd_dim=10000, num_classes=num_classes, memory_capacity=10000).to(device)
+
+    for batch_idx, batch_data in enumerate(tqdm(target_dataloader, desc="Adapting", leave=False)):
+        if kwargs.get('dry_run', False) and batch_idx >= 2:
+            break
+            
+        proj_in = batch_data[0].to(device)
+        proj_labels = batch_data[2].to(device).view(-1)
+        
+        if proj_in.shape[1] > 0:
+            model.eval()
+            with torch.no_grad():
+                with torch.amp.autocast('cuda', enabled=True):
+                    latent_x = model.net(proj_in, only_feat=True)
+                
+                raw_enc, indices, _ = model.encode(proj_in)
+                norm_enc = F.normalize(raw_enc, dim=1).to(device)
+                
+                if update_method == 'adapt_mem':
+                    # TODO: Integrate AdaptMemModel.py
+                    # predictions, conf = mem_bank.query(norm_enc)
+                    # if not eval_only:
+                    #     mem_bank.update(norm_enc, predictions, conf)
+                    pass
+                else:
+                    # Legacy frozen inference
+                    logits = model.classify(norm_enc)
+                    predictions = torch.argmax(logits, dim=1)
+                
+                selected_labels = proj_labels[indices]
+                mask = (selected_labels >= 0) & (selected_labels < num_classes)
+                if mask.any():
+                    hist = torch.bincount(
+                        num_classes * selected_labels[mask] + predictions[mask], 
+                        minlength=num_classes ** 2
+                    ).reshape(num_classes, num_classes)
+                    cumulative_confusion_matrix += hist
+                    
+            cumulative_miou, head_miou, mid_miou, tail_miou, cumulative_acc, cumulative_iou_per_class = extract_metrics_from_conf_matrix(cumulative_confusion_matrix)
+            miou_history.append(cumulative_miou)
+            head_miou_history.append(head_miou)
+            mid_miou_history.append(mid_miou)
+            tail_miou_history.append(tail_miou)
+            acc_history.append(cumulative_acc)
+            iou_per_class_history.append(cumulative_iou_per_class)
+            
+    if not eval_only:
+        model.train(model_was_training)
+        
+    return {
+        "mIoU": miou_history, 
+        "Head_mIoU": head_miou_history,
+        "Mid_mIoU": mid_miou_history,
+        "Tail_mIoU": tail_miou_history,
+        "Accuracy": acc_history, 
+        "IoU_per_class": iou_per_class_history, 
+        "FiringRate": 0.0, 
+        "UpdateMagnitude": 0.0,
+        "ConfusionMatrix": cumulative_confusion_matrix.cpu().numpy().tolist()
+    }
     if ic_method not in ['none', 'ic4']:
         raise ValueError(f"Unknown ic_method: {ic_method}")
     logger = logging.getLogger("EvalAdapt")
