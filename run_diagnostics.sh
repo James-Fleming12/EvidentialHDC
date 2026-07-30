@@ -6,9 +6,9 @@ export PYTHONUNBUFFERED=1
 echo "=== Killing stale contaminated records ==="
 rm -f logs/ablation_v2/records.json
 
-echo "=== D-STANDARD & D-POISON (T3A Textbook Prototype Update & ConformalHDC Variants) ==="
+echo "=== D-STANDARD & D-POISON (ConformalHDC_10K) ==="
 uv run python ablation_kitti-c.py \
-    --ablations standard_t3a,conformalhdc,conformalhdc_10k \
+    --ablations conformalhdc_10k \
     --seeds 42 \
     --corruptions fog,wet_ground,snow,motion_blur,beam_missing,crosstalk,incomplete_echo,cross_sensor \
     --severity 3 \
