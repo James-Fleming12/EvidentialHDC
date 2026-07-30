@@ -105,7 +105,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     latent_x = model.net(proj_in, only_feat=True)
                 
                 raw_enc, indices, _ = model.encode(proj_in)
-                norm_enc = F.normalize(raw_enc, dim=1).to(device)
+                norm_enc = F.normalize(raw_enc, dim=1).to(device).to(model.classify.weight.dtype)
                 
                 if update_method == 'adapt_mem':
                     from modules.AdaptMemModel import AdaptiveMemoryBank

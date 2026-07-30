@@ -31,8 +31,8 @@ class AdaptiveMemoryBank(nn.Module):
             return torch.zeros(features.size(0), dtype=torch.int64, device=features.device), \
                    torch.zeros(features.size(0), dtype=torch.float32, device=features.device)
                    
-        # Binarize incoming features
-        bin_features = torch.sign(features)
+        # Binarize incoming features and cast to float32
+        bin_features = torch.sign(features).to(torch.float32)
         bin_features[bin_features == 0] = 1.0 
         
         # Convert bank to float32 for fast matmul (simulating XOR bitcount hardware)
@@ -70,7 +70,7 @@ class AdaptiveMemoryBank(nn.Module):
         valid_labels = pseudo_labels[valid_mask]
         
         # Binarize before storing
-        bin_features = torch.sign(valid_features)
+        bin_features = torch.sign(valid_features).to(torch.float32)
         bin_features[bin_features == 0] = 1.0
         
         n_incoming = valid_features.size(0)
