@@ -16,9 +16,9 @@ except ImportError as e:
 
 def compute_uncertainties(alphas):
     K = alphas.shape[1]
-    S = torch.sum(alphas, dim=1, keepdim=True)
-    dist_unc = K / S.squeeze(-1)
-    p = alphas / S
+    S = torch.sum(alphas, dim=1) # [B, H, W]
+    dist_unc = K / S
+    p = alphas / S.unsqueeze(1)
     data_unc = -torch.sum(p * torch.log(p + 1e-8), dim=1)
     return dist_unc, data_unc
 
@@ -70,6 +70,7 @@ def run_n2_diagnostic():
         with torch.no_grad():
             for batch in tqdm(dl):
                 proj_in = batch[0].to(device)
+                proj_mask = batch[1].to(device) # [B, H, W]
                 if proj_in.shape[1] == 0:
                     continue
                     
@@ -79,8 +80,10 @@ def run_n2_diagnostic():
                 
                 dist_unc, data_unc = compute_uncertainties(alphas)
                 
-                all_dist_unc.append(dist_unc.cpu())
-                all_data_unc.append(data_unc.cpu())
+                valid_mask = proj_mask > 0
+                if valid_mask.sum() > 0:
+                    all_dist_unc.append(dist_unc[valid_mask].cpu())
+                    all_data_unc.append(data_unc[valid_mask].cpu())
                 
         dist_mean = torch.cat(all_dist_unc).mean().item()
         data_mean = torch.cat(all_data_unc).mean().item()
