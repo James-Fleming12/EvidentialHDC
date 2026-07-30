@@ -106,3 +106,18 @@ We are out of filtering mechanisms. It is structurally impossible to build a gat
 Instead of trying to filter the hallucinations, we **bound the damage**. In a 128D HDC hyperspace, angles are extremely rigid (orthogonal is 90 degrees). A domain shift (like `wet_ground`) only shifts the true semantic manifold by a small angle. A confident hallucination (like `fog` pulling the vegetation prototype into empty space) requires dragging the prototype across a massive angular distance.
 
 The official narrative pivot is **M-A: Adaptive Budget (Rotation Cap)**. We enforce a hard physical tether (e.g., 20 degrees) on the prototypes. They are allowed to adapt to genuine domain shifts, but the moment a hallucination tries to hijack them, they hit the physical tether and stop, preserving the pre-trained semantics while preventing runaway collapse.
+
+### Information Diagnostics (Tier 1)
+Following the structural failure of the filtering gates, we mathematically audited the information geometry of the available TTA signals using a Logistic Regression **Complementary Information Test**. 
+We fit a classifier to predict pseudo-label correctness using all available uncertainty signals concurrently, then performed a leave-one-out ablation to isolate unique information versus redundancy.
+
+**Results:**
+- **Fog (Full AUROC 0.8272):**
+  - **Redundant:** Dirichlet Unc (+0.0004), Entropy (+0.0012), Margin (+0.0008), Feat Norm (-0.0006)
+  - **Unique Info:** Max Cosine (+0.0061), Consistency (+0.0169)
+- **Crosstalk (Full AUROC 0.6421):**
+  - **Redundant:** Max Cosine (+0.0047), Entropy (+0.0005), Margin (-0.0008), Feat Norm (+0.0000)
+  - **Unique Info:** Dirichlet Unc (+0.0562), Consistency (+0.0118)
+
+**Verdict:** Within a linear decision model, nearly all network-derived confidence measures (Dirichlet Epistemic, Entropy, Margin, Max Cosine) are redundant. Adding one provides the maximum possible AUROC, and the others add ~0.0005 AUROC. 
+Furthermore, no linear combination of these uncertainty signals can reliably separate hallucinations from true points on `crosstalk` (maximum AUROC is only **0.6421**). This strongly implies the limitation lies in the available information rather than the choice of gating algorithm. The pivot to **Adaptive Budget (M-A)** is strictly mandatory to avoid relying on these signals.

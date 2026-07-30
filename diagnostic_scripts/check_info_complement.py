@@ -44,8 +44,26 @@ class LogisticRegression(nn.Module):
     def forward(self, x):
         return self.linear(x).squeeze(1)
 
-def fit_logistic_regression(X, y, epochs=1000, lr=0.01):
-    model = LogisticRegression(X.shape[1]).to(X.device)
+class MLP(nn.Module):
+    def __init__(self, input_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 32),
+            nn.ReLU(),
+            nn.Linear(32, 16),
+            nn.ReLU(),
+            nn.Linear(16, 1)
+        )
+        
+    def forward(self, x):
+        return self.net(x).squeeze(1)
+
+def fit_classifier(X, y, model_type="logistic", epochs=1000, lr=0.01):
+    if model_type == "logistic":
+        model = LogisticRegression(X.shape[1]).to(X.device)
+    else:
+        model = MLP(X.shape[1]).to(X.device)
+        
     optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = nn.BCEWithLogitsLoss()
     
@@ -192,15 +210,18 @@ def run_info_diagnostics():
         signal_names = ["Dirichlet Unc", "Max Cosine", "Entropy", "Margin", "Feat Norm", "Consistency"]
         
         print(f"\n--- Complementary Information Test ({ct}) ---")
-        base_auroc = fit_logistic_regression(X, y)
-        print(f"Full Model AUROC: {base_auroc:.4f}")
+        base_auroc = fit_classifier(X, y, model_type="logistic")
+        print(f"Full Model AUROC (Logistic): {base_auroc:.4f}")
+        
+        mlp_auroc = fit_classifier(X, y, model_type="mlp")
+        print(f"Full Model AUROC (Nonlinear MLP Oracle): {mlp_auroc:.4f}")
         
         print("\nDrop-One Analysis (Does signal contain unique info?):")
         for i, name in enumerate(signal_names):
             mask = torch.ones(X.shape[1], dtype=torch.bool)
             mask[i] = False
             X_drop = X[:, mask]
-            drop_auroc = fit_logistic_regression(X_drop, y)
+            drop_auroc = fit_classifier(X_drop, y, model_type="logistic")
             drop_diff = base_auroc - drop_auroc
             
             status = "REDUNDANT" if drop_diff < 0.005 else "UNIQUE INFO"
