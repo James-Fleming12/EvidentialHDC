@@ -451,7 +451,8 @@ def main():
                               prior_ramp=cfg.get("prior_ramp", False),
                               prior_inverse=cfg.get("prior_inverse", False),
                               adaptive_budget=cfg.get("adaptive_budget", False),
-                              boost_tail_prior=cfg.get("boost_tail_prior", False))
+                              boost_tail_prior=cfg.get("boost_tail_prior", False),
+                              update_method=cfg["update_method"])
 
                 # --- PRIOR ORACLE: replace pi_source with the chunk's TRUE prior ---
                 # The frozen confusion matrix's ROW SUMS are the GT class counts,
@@ -485,7 +486,8 @@ def main():
                           cfg.get("prior_switch", False),
                           cfg.get("prior_ramp", False),
                           cfg.get("prior_inverse", False),
-                          cfg.get("boost_tail_prior", False))
+                          cfg.get("boost_tail_prior", False),
+                          cfg["update_method"])
                     if fk in frozen_cache:
                         init_m, init_conf = frozen_cache[fk]
                         if init_conf is not None:
@@ -505,8 +507,7 @@ def main():
                     else:
                         HDC_utils.reset_counters()
                         model.train()
-                        adapt_m = _call_eval(model, dl, device, eval_only=False,
-                                             update_method=cfg["update_method"], **common)
+                        adapt_m = _call_eval(model, dl, device, eval_only=False, **common)
                         c = HDC_utils.counters()
                         if not warned_path and c["fuse"] == 0 and c["update"] == 0:
                             warned_path = True
