@@ -116,8 +116,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         # Cold start: rely on prototype projection for the very first frame to seed the graph
                         fallback_logits = model.classify(norm_enc)
                         predictions = torch.argmax(fallback_logits, dim=1)
-                        # We use 0.9 as a strict threshold for the initial prototype seed
-                        conf = F.softmax(fallback_logits, dim=1).max(dim=1)[0]
+                        # We use 0.9 as a strict threshold for the initial prototype seed (scaled by 0.05 temp)
+                        conf = F.softmax(fallback_logits / 0.05, dim=1).max(dim=1)[0]
                         if not eval_only:
                             rate = model.mem_bank.update(norm_enc, predictions, (conf >= 0.9).float())
                             if rate is not None: firing_rates.append(rate)
@@ -622,7 +622,7 @@ def main():
 
         # Reset model at the start of each new method loop
         model.load_state_dict(clean_state_dict, strict=False)
-        attrs_to_del = ['drift_mu_c', 'class_freq_ema', 'class_update_counts', 'class_M', 'running_density_std', 'running_density_mean', '_contingency_table', '_mv_contingency_table', '_decay_logs', '_class_n_points', '_class_n_fired', '_class_true_errors_rejected', '_class_correct_rejected', '_firing_log', '_veto_stats', '_update_magnitude_log', 'initial_classify_weights', '_feature_dump_list', '_baseline_adapter', '_baseline_adapter_name']
+        attrs_to_del = ['mem_bank', 'drift_mu_c', 'class_freq_ema', 'class_update_counts', 'class_M', 'running_density_std', 'running_density_mean', '_contingency_table', '_mv_contingency_table', '_decay_logs', '_class_n_points', '_class_n_fired', '_class_true_errors_rejected', '_class_correct_rejected', '_firing_log', '_veto_stats', '_update_magnitude_log', 'initial_classify_weights', '_feature_dump_list', '_baseline_adapter', '_baseline_adapter_name']
         for attr in attrs_to_del:
             if hasattr(model, attr):
                 delattr(model, attr)
@@ -633,7 +633,7 @@ def main():
             if args.reset_per_corruption and args.chunked and not args.continual:
                 logger.info("Resetting model to clean pretrained weights for this corruption.")
                 model.load_state_dict(clean_state_dict, strict=False)
-                attrs_to_del = ['drift_mu_c', 'class_freq_ema', 'class_update_counts', 'class_M', 'running_density_std', 'running_density_mean', '_contingency_table', '_mv_contingency_table', '_decay_logs', '_class_n_points', '_class_n_fired', '_class_true_errors_rejected', '_class_correct_rejected', '_firing_log', '_veto_stats', '_update_magnitude_log', 'initial_classify_weights', '_feature_dump_list', '_baseline_adapter', '_baseline_adapter_name']
+                attrs_to_del = ['mem_bank', 'drift_mu_c', 'class_freq_ema', 'class_update_counts', 'class_M', 'running_density_std', 'running_density_mean', '_contingency_table', '_mv_contingency_table', '_decay_logs', '_class_n_points', '_class_n_fired', '_class_true_errors_rejected', '_class_correct_rejected', '_firing_log', '_veto_stats', '_update_magnitude_log', 'initial_classify_weights', '_feature_dump_list', '_baseline_adapter', '_baseline_adapter_name']
                 for attr in attrs_to_del:
                     if hasattr(model, attr):
                         delattr(model, attr)
@@ -659,7 +659,7 @@ def main():
                 if not args.continual:
                     # Reset model before each corruption
                     model.load_state_dict(clean_state_dict, strict=False)
-                    attrs_to_del = ['drift_mu_c', 'class_freq_ema', 'class_update_counts', 'class_M', 'running_density_std', 'running_density_mean', '_contingency_table', '_mv_contingency_table', '_decay_logs', '_class_n_points', '_class_n_fired', '_class_true_errors_rejected', '_class_correct_rejected', '_firing_log', '_veto_stats', '_update_magnitude_log', 'initial_classify_weights', '_feature_dump_list', '_baseline_adapter', '_baseline_adapter_name']
+                    attrs_to_del = ['mem_bank', 'drift_mu_c', 'class_freq_ema', 'class_update_counts', 'class_M', 'running_density_std', 'running_density_mean', '_contingency_table', '_mv_contingency_table', '_decay_logs', '_class_n_points', '_class_n_fired', '_class_true_errors_rejected', '_class_correct_rejected', '_firing_log', '_veto_stats', '_update_magnitude_log', 'initial_classify_weights', '_feature_dump_list', '_baseline_adapter', '_baseline_adapter_name']
                     for attr in attrs_to_del:
                         if hasattr(model, attr):
                             delattr(model, attr)
