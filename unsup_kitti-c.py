@@ -206,6 +206,12 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                 if _baseline_state is None:
                     predictions = torch.argmax(logits, dim=1)
                     
+                if prior_est:
+                    if not hasattr(model, 'target_prior'):
+                        model.target_prior = model.source_class_freq.clone().to(device) if hasattr(model, 'source_class_freq') else torch.ones(num_classes, device=device) / num_classes
+                    batch_prior = torch.bincount(predictions, minlength=num_classes).float() / max(1, len(predictions))
+                    model.target_prior = 0.99 * model.target_prior + 0.01 * batch_prior
+                    
                 if eval_only:
                     if not hasattr(model, '_eval_class_conf_sum'):
                         model._eval_class_conf_sum = torch.zeros(num_classes, device=device)
@@ -335,11 +341,6 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         mismatch = torch.zeros_like(pseudo_labels, dtype=torch.bool)
                         
                     max_cos_sim = cos_sims[torch.arange(cos_sims.size(0)), pseudo_labels]
-                    
-                    if not hasattr(model, 'target_prior'):
-                        model.target_prior = model.source_class_freq.clone().to(device) if hasattr(model, 'source_class_freq') else torch.ones(num_classes, device=device) / num_classes
-                    batch_prior = torch.bincount(pseudo_labels, minlength=num_classes).float() / max(1, len(pseudo_labels))
-                    model.target_prior = 0.99 * model.target_prior + 0.01 * batch_prior
                     
                     # Soft Gating Initialization
                     # HDC cosine similarities are extremely small (e.g. ~0.05 to ~0.15). 
