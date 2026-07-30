@@ -140,4 +140,20 @@ The diagnostic execution revealed a profound structural incompatibility: the 128
 | `incomplete_echo` | 16.53 -> 20.02 | - |
 | `cross_sensor` | 19.45 -> 21.29 | - |
 
-*(Note: The `conformalhdc` run was cancelled after `fog` once the structural flaw was verified. The upcoming `conformalhdc_10k` evaluates on the 10,000D space).*
+*(Note: The `conformalhdc` run was cancelled after `fog` once the structural flaw was verified).*
+
+### 6.1 `conformalhdc_10k` Prototype Normalization Failure
+
+While `conformalhdc_10k` correctly maps features into the 10,000D hypervector space, the textbook Euclidean baseline implementations actively sabotage the HDC representation by explicitly L2-normalizing the learned prototypes (`W = F.normalize(W, dim=1)`). 
+
+In an HDC network, the magnitudes of the learned `classify.weight` vectors are critical as they act as a learned class prior. Stripping this magnitude causes a massive drop in initial performance (e.g., dropping from the true frozen baseline of 42.02% down to 36.08% on `wet_ground`). 
+
+Furthermore, the standard `0.90` softmax confidence threshold acts as a total blockade in high dimensions. The baseline scales the cosine similarity by a fixed temperature of `15.0`. In a 10,000-dimensional space, random cosine similarities are naturally extremely small ($\approx 0.01$). This yields tiny logits, capping the maximum softmax confidence around ~0.06. Because it never reaches the hard-coded 0.90 threshold, the gate rejects *every single point*, resulting in zero prototype updates during the sequence (the slight $\Delta$ in final mIoU is merely a side-effect of backbone BatchNorm running stat drift).
+
+| Corruption | `conformalhdc_10k` |
+|---|---|
+| `fog` | 3.66 -> 4.07 |
+| `wet_ground` | 36.08 -> 35.51 |
+| `snow` | 37.97 -> 37.81 |
+
+**Conclusion:** The standard Euclidean baselines (`ConformalHDC`, `StandardT3A`) are fundamentally incompatible with the mathematical mechanics of high-dimensional computing. Valid adaptation must occur using HDC-native mechanisms (e.g., Evidential Epistemic gating, Tau calibration) as developed in the M-series component ladder.
