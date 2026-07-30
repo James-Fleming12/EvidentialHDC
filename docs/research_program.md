@@ -68,7 +68,12 @@ Track the topology across `Input -> Backbone -> HDC Projection -> Prototype` usi
 - Neighborhood rank preservation (Spearman correlation)
 - Trustworthiness & Continuity
 
-**Deliverable:** Identification of which geometric structures survive each projection and transformation.
+**Phase II Findings (Fog Corruption)**
+- **Global Dimensionality Collapse:** The effective rank (Participation Ratio) of the 10,000D HDC space is 13.3 dimensions, closely tracking the 17 semantic classes. After the prototype projection, the effective rank collapses to a devastating **2.8 dimensions**. The global geometric structure is crushed.
+- **Topological Scrambling:** While global linear alignment (CKA) remains at 0.93, the local neighborhood topology is scrambled. The Spearman rank correlation of the 50 nearest neighbors between the HDC space and the Prototype space is only **0.3892**. 
+- **Verdict:** The prototype projection severely destroys local geometric topology. Your closest neighbor in the pristine HDC space is arbitrarily shuffled when squashed into the 17D space. This mathematically guarantees that distance-based logic (like confidence margin gating) will fail in the 17D space, as the relative distances no longer reflect the true geometry of the data.
+
+**Deliverable:** Identification of which geometric structures survive each projection and transformation. (Completed: Local ranking topology is destroyed by prototype projection).
 
 ---
 
