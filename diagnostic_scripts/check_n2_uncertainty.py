@@ -5,13 +5,16 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import os
 
+import sys
+sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
+
 # Assuming EvidentialHDC structure is in path
 try:
     from modules.HDC_utils import HDC_Net
     from models.pointnet2.pointnet2_msg import Pointnet2MSG as Pointnet2
     import datasets.kitti_c_utils as ukc
-except ImportError:
-    print("Please run this script from the EvidentialHDC root directory.")
+except ImportError as e:
+    print(f"ImportError: {e}\\nPlease run this script from the EvidentialHDC root directory.")
     exit(1)
 
 def compute_uncertainties(alphas):
