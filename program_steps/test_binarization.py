@@ -46,11 +46,11 @@ def eval_knn(X_train, Y_train, Y_corr_train, X_test, Y_test, Y_corr_test):
         sims = torch.mm(chunk, X_train.to(device).t())
         topk_sims, topk_idx = sims.topk(k=k, dim=1)
         
-        neighbor_sem = Y_train[topk_idx].to(device)
+        neighbor_sem = Y_train[topk_idx.cpu()].to(device)
         pred = torch.mode(neighbor_sem, dim=1).values
         preds_sem.append(pred.cpu())
         
-        neighbor_corr = Y_corr_train[topk_idx].to(device)
+        neighbor_corr = Y_corr_train[topk_idx.cpu()].to(device)
         prob = neighbor_corr.float().mean(dim=1)
         probs_corr.append(prob.cpu())
         
