@@ -64,6 +64,10 @@ def fit_classifier(X, y, model_type="logistic", epochs=1000, lr=0.01):
     else:
         model = MLP(X.shape[1]).to(X.device)
         
+    # Scale LR down for MLP with 10k dimensions to avoid divergence
+    if model_type == "mlp" and X.shape[1] > 1000:
+        lr = 0.001
+        
     optimizer = optim.Adam(model.parameters(), lr=lr)
     criterion = nn.BCEWithLogitsLoss()
     
@@ -126,7 +130,8 @@ def run_separability_diagnostics():
         subset = torch.utils.data.Subset(ds, range(20))
         dl = DataLoader(subset, batch_size=1, shuffle=False)
         
-        all_features = []
+        all_hdc = []
+        all_backbone = []
         all_correctness = []
         
         with torch.no_grad():
@@ -137,10 +142,16 @@ def run_separability_diagnostics():
                 if proj_in.shape[1] == 0:
                     continue
                     
+                # Extract 10,000D HDC Hypervectors
                 raw_enc, indices, _ = model.encode(proj_in)
                 if len(indices) == 0:
                     continue
                     
+                # Extract 128D Continuous Backbone Features
+                with torch.amp.autocast('cuda', enabled=True):
+                    backbone = model.net(proj_in, only_feat=True)
+                backbone = backbone.permute(0, 2, 3, 1).reshape(-1, 128)[indices]
+                
                 norm_enc = F.normalize(raw_enc, dim=1).to(model.classify.weight.dtype)
                 cos_sims = model.classify(norm_enc)
                 clean_preds = cos_sims.argmax(dim=1)
@@ -149,26 +160,39 @@ def run_separability_diagnostics():
                 correctness = (clean_preds == clean_labels).float()
                 valid_gt = (clean_labels >= 0) & (clean_labels < 17)
                 
-                all_features.append(raw_enc[valid_gt].cpu())
+                all_hdc.append(raw_enc[valid_gt].cpu())
+                all_backbone.append(backbone[valid_gt].cpu())
                 all_correctness.append(correctness[valid_gt].cpu())
                 
-        X_cpu = torch.cat(all_features, dim=0)
+        X_hdc_cpu = torch.cat(all_hdc, dim=0)
+        X_bb_cpu = torch.cat(all_backbone, dim=0)
         y_cpu = torch.cat(all_correctness, dim=0)
         
-        if len(X_cpu) > 100000:
-            perm = torch.randperm(len(X_cpu))[:100000]
-            X_cpu = X_cpu[perm]
+        if len(y_cpu) > 100000:
+            perm = torch.randperm(len(y_cpu))[:100000]
+            X_hdc_cpu = X_hdc_cpu[perm]
+            X_bb_cpu = X_bb_cpu[perm]
             y_cpu = y_cpu[perm]
             
-        X = X_cpu.to(device).float()
         y = y_cpu.to(device)
         
-        print(f"\n--- HDC Linear Separability Test ({ct}) ---")
-        base_auroc = fit_classifier(X, y, model_type="logistic")
-        print(f"HDC 128D Embeddings AUROC (Logistic): {base_auroc:.4f}")
+        print(f"\n--- Diagnostic M: Information Loss Through HDC ({ct}) ---")
         
-        mlp_auroc = fit_classifier(X, y, model_type="mlp")
-        print(f"HDC 128D Embeddings AUROC (Nonlinear MLP): {mlp_auroc:.4f}")
+        X_bb = X_bb_cpu.to(device).float()
+        print(f"\n[1] 128D Continuous Backbone Features:")
+        base_auroc = fit_classifier(X_bb, y, model_type="logistic")
+        print(f"  AUROC (Logistic):      {base_auroc:.4f}")
+        mlp_auroc = fit_classifier(X_bb, y, model_type="mlp")
+        print(f"  AUROC (Nonlinear MLP): {mlp_auroc:.4f}")
+        del X_bb
+        
+        X_hdc = X_hdc_cpu.to(device).float()
+        print(f"\n[2] 10,000D Binary HDC Embeddings:")
+        base_auroc = fit_classifier(X_hdc, y, model_type="logistic")
+        print(f"  AUROC (Logistic):      {base_auroc:.4f}")
+        mlp_auroc = fit_classifier(X_hdc, y, model_type="mlp")
+        print(f"  AUROC (Nonlinear MLP): {mlp_auroc:.4f}")
+        del X_hdc
             
 if __name__ == "__main__":
     run_separability_diagnostics()
