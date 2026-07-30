@@ -159,7 +159,14 @@ We bypassed the class prototypes entirely and extracted a memory bank of 50,000 
 - **Crosstalk:** Prototype Accuracy (27.87%) $\rightarrow$ Source 1-NN Accuracy (**53.38%**)
 **Verdict:** The 10,000D feature representations remain vastly more informative than the 17 global prototypes. Memory bank methods, feature denoisers, or representation alignment methods have immense performance headroom.
 
-**3. MB-2 (Target Neighborhood Purity)**
+**3. Prototype Information Recovery Curve**
+To definitively answer whether the bottleneck is the *dimensionality reduction* (from 10,000D to 17D) or the *prototypes themselves*, we replaced the 17 class prototypes with $N$ random reference vectors sampled from the source manifold. We then trained a Logistic Regression Oracle to predict correctness using only the cosine similarities to these $N$ reference vectors.
+- **17 Class Prototypes:** AUROC 0.6421
+- **17 Random Source Vectors:** AUROC **0.9309**
+- **100 Random Source Vectors:** AUROC **0.9582**
+**Verdict:** **THE ULTIMATE CAUSE OF FAILURE.** The dimensionality reduction to 17 scalars does *not* destroy the information. The information is destroyed specifically because we use **class centroids**. By computing distances to centroids, we average away the rich local geometry, blinding the model to hallucinations. Computing distances to 17 *randomly distributed* points effectively triangulates the spatial location of the hallucinations, retaining 0.93 AUROC.
+
+**4. MB-2 (Target Neighborhood Purity)**
 We queried the 10-Nearest Neighbors of each corrupted target point *within the corrupted target domain itself* and calculated how often the neighbors shared the same ground truth label.
 - **Fog:** Target Neighborhood Purity = **90.54%**
 - **Crosstalk:** Target Neighborhood Purity = **88.06%**
