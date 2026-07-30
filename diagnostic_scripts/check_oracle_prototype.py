@@ -97,17 +97,15 @@ def run_oracle_prototype_diagnostics():
         # Now evaluate accuracy using these PERFECT centroids
         # To avoid OOM, chunk the evaluation
         chunk_size = 10000
-        X_tgt_gpu = X_tgt_cpu_norm.to(device)
-        Y_tgt_gpu = Y_tgt_cpu.to(device)
         
         correct = 0
         all_correctness = []
         all_max_cos = []
         
         print("Classifying target points using Oracle Target Centroids...")
-        for i in range(0, len(X_tgt_gpu), chunk_size):
-            chunk = X_tgt_gpu[i:i+chunk_size]
-            y_chunk = Y_tgt_gpu[i:i+chunk_size]
+        for i in range(0, len(X_tgt_cpu_norm), chunk_size):
+            chunk = X_tgt_cpu_norm[i:i+chunk_size].to(device)
+            y_chunk = Y_tgt_cpu[i:i+chunk_size].to(device)
             
             # [chunk_size, 17]
             sims = torch.mm(chunk, oracle_centroids.t())
@@ -123,19 +121,19 @@ def run_oracle_prototype_diagnostics():
             all_correctness.append((preds == y_chunk).float())
             all_max_cos.append(max_cos)
             
-        oracle_acc = correct / len(X_tgt_gpu)
+        oracle_acc = correct / len(X_tgt_cpu_norm)
         
         # Original Baseline Prototype Accuracy
         print("Computing Baseline Prototype Accuracy...")
         baseline_correct = 0
         with torch.no_grad():
-            for i in range(0, len(X_tgt_gpu), chunk_size):
-                chunk = X_tgt_gpu[i:i+chunk_size].to(model.classify.weight.dtype)
-                y_chunk = Y_tgt_gpu[i:i+chunk_size]
+            for i in range(0, len(X_tgt_cpu_norm), chunk_size):
+                chunk = X_tgt_cpu_norm[i:i+chunk_size].to(device).to(model.classify.weight.dtype)
+                y_chunk = Y_tgt_cpu[i:i+chunk_size].to(device)
                 sims = model.classify(chunk)
                 preds = sims.argmax(dim=1)
                 baseline_correct += (preds == y_chunk).sum().item()
-        baseline_acc = baseline_correct / len(X_tgt_gpu)
+        baseline_acc = baseline_correct / len(X_tgt_cpu_norm)
         
         print(f"\n--- Diagnostic 16: Oracle Prototype ---")
         print(f"Baseline (Source) Prototype Accuracy: {baseline_acc:.4f}")
