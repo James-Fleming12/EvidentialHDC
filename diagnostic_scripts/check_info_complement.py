@@ -142,7 +142,7 @@ def run_info_diagnostics():
                 max_cos = cos_sims.max(dim=1)[0]
                 
                 # Signal 3: Entropy
-                probs = F.softmax(cos_sims * 100.0, dim=1)
+                probs = F.softmax(cos_sims.float() * 100.0, dim=1)
                 entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=1)
                 
                 # Signal 4: Prototype Margin
