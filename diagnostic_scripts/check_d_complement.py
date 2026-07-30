@@ -38,7 +38,7 @@ def run_d_complement():
     
     for ct in corruptions:
         print(f"\nRunning D-COMPLEMENT on {ct}...")
-        corruption_root = f"/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C/{ct}/1"
+        corruption_root = f"/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C/{ct}/heavy"
         if not os.path.exists(corruption_root):
             corruption_root = "/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C/"
             
