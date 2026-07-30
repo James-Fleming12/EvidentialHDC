@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
 try:
-    from modules.HDC_utils import HDC_Net
+    from modules.HDC_utils import set_uq_model
     from models.pointnet2.pointnet2_msg import Pointnet2MSG as Pointnet2
     import datasets.kitti_c_utils as ukc
 except ImportError as e:
@@ -39,7 +39,7 @@ def run_m2_diagnostic():
     print("Initializing model...")
     
     net = Pointnet2(num_classes=17, use_xyz=True).to(device)
-    model = HDC_Net(net, num_classes=17, device=device).to(device)
+    model = set_uq_model(net, num_classes=17).to(device)
     
     ckpt_path = 'logs/kitti_pretrain/hdc_sub.pth'
     if not os.path.exists(ckpt_path):
