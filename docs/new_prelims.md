@@ -183,3 +183,26 @@ We analyzed where hallucinations (confident incorrect predictions) lie geometric
 - **Fog:** 90.2% of hallucinations lie deep inside a wrong Voronoi cell (Margin > 0.05). Average Margin: 0.3062.
 - **Crosstalk:** 84.3% of hallucinations lie deep inside a wrong Voronoi cell (Margin > 0.05). Average Margin: 0.2086.
 **Verdict:** Hallucinations are NOT just uncertain points hovering near decision boundaries. Due to the massive cluster drift (Diagnostic 5), entire clusters of points are dragged deep into the core territory of the *wrong* prototype. Because they are deep inside the wrong Voronoi cell, they exhibit massive confidence and are mathematically indistinguishable from true positives when using logit-derived uncertainty.
+
+### Diagnostic 4: Oracle Information Ceilings (The Final Verdict)
+Before designing a new adaptation architecture, we must know the absolute maximum performance ceiling of each paradigm under ideal conditions (Diagnostic 20).
+
+**1. Oracle Prototype Ceiling (Diagnostic 16)**
+What if our adaptation algorithm was perfect? We computed the *exact* target class centroids using the ground truth labels from the corrupted target domain, and evaluated the model using these perfectly-placed "Oracle Prototypes".
+- **Fog:** Oracle Prototype Accuracy = **69.29%** (Baseline: 13.05%)
+- **Crosstalk:** Oracle Prototype Accuracy = **65.78%** (Baseline: 27.71%)
+**Verdict:** Even if an adaptation algorithm magically placed the 17 prototypes in the absolute perfect locations in the corrupted domain, performance would cap out at ~65-69%. The corruption fragments and stretches the clusters so severely that they can no longer be modeled by a single centroid. Prototype adaptation fundamentally lacks the capacity to succeed in this setting.
+
+**2. Oracle Neighborhood Ceiling (Graph / Contrastive)**
+In contrast to the 69% ceiling of Oracle Prototypes, our earlier Target Neighborhood Purity test demonstrated that **90.54%** of a corrupted point's local neighbors share its exact ground-truth class. 
+**Verdict:** An algorithm that exploits local geometric neighborhoods (e.g., AdaContrast, k-NN memory banks, or graph label propagation) has a theoretical performance ceiling of **>90%**. Local geometry contains vastly more exploitable information than global prototypes.
+
+**Final Conclusion:**
+Prototype adaptation (Branch A) is dead. Confident hallucinations poison the gating mechanisms, and even an oracle adaptation algorithm cannot overcome the representational bottleneck of the 17 centroids. The future of this work lies entirely in **Memory Banks** and **Contrastive Learning (e.g., AdaContrast)**, which can exploit the 90%+ pure local neighborhoods that survive HDC corruption intact.
+
+### Next Steps: The Representation and Adaptation Characterization Framework
+Moving forward, we are transitioning from individual diagnostics into a structured research program. We will explicitly characterize the fundamental properties of the learning system across the entire adaptation pipeline (`Input -> Backbone -> HDC Embedding -> Prototype Projection -> Logits`). 
+
+By deeply evaluating the Information, Geometry, Dynamics, Stability, and Recoverability of the representations, architecture design becomes a mathematical consequence of empirical findings.
+
+The full 6-phase master framework for this research program is formally outlined in [The Representation and Adaptation Characterization Framework](./research_program.md).
