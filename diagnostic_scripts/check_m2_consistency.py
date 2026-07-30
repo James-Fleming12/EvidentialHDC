@@ -57,8 +57,8 @@ def run_m2_diagnostic():
                             workers=4,
                             gt=True,
                             shuffle_train=False)
-    ds = parser_obj.get_test_set()
-    subset = torch.utils.data.Subset(ds.dataset, range(20)) # Just 20 frames
+    ds = parser_obj.validloader.dataset
+    subset = torch.utils.data.Subset(ds, range(20)) # Just 20 frames
     dl = DataLoader(subset, batch_size=1, shuffle=False)
     
     total_points = 0
