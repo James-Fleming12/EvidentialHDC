@@ -4,7 +4,7 @@ import os
 
 def check_singular_spectrum():
     # 1. Load the pre-trained HDC classification weights
-    ckpt_path = 'checkpoints/model.pt'
+    ckpt_path = 'logs/kitti_pretrain/hdc_sub.pth'
     if not os.path.exists(ckpt_path):
         print(f"Cannot find {ckpt_path}. Please run this where the weights are located.")
         return

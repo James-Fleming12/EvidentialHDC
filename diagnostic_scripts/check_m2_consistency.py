@@ -38,7 +38,7 @@ def run_m2_diagnostic():
     net = Pointnet2(num_classes=17, use_xyz=True).to(device)
     model = HDC_Net(net, num_classes=17, device=device).to(device)
     
-    ckpt_path = 'checkpoints/model.pt'
+    ckpt_path = 'logs/kitti_pretrain/hdc_sub.pth'
     if not os.path.exists(ckpt_path):
         print(f"Cannot find {ckpt_path}.")
         return
