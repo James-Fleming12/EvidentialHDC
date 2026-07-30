@@ -243,3 +243,16 @@ The following tables show the independent contribution of each algorithm pillar 
 
 3. **Eliminating Heuristic Fragility (Vs. D3CTTA):**
    D3CTTA relies heavily on domain-specific geometric heuristics (e.g., assuming roads are flat planes within specific Z-height bounds and grouping points into fixed Euclidean distance rings). While effective on clean KITTI benchmarks, these assumptions fail catastrophically under sensor misalignments, varying camera/LiDAR mount pitches, or across different class taxonomies (e.g., migrating from 7-class to 17-class segmentation). Our Evidential HDC framework operates purely on Riemannian latent representations and multi-view geometric invariance (`veto_disagree`), achieving generalizable robustness without a single hand-crafted spatial rule.
+
+---
+
+## 7.5 Reflection: Disentangling Adaptation vs. Prior Calibration
+
+Throughout the development of the unified method, early reporting indicated a seemingly "universal" adaptation gain of $+7.4\%$ mIoU across all corruptions. However, rigorous git-archaeology and component isolation have revealed a critical insight: **the vast majority of that reported gain was completely independent of the online gradient updates.**
+
+When isolating the structural components:
+1. **The Structural Gain ($\sim +7\%$):** The massive performance lift (most notably $+11.7\%$ on `wet_ground`) was driven entirely by the **$\tau=-1.0$ Source Frequency Prior Calibration**. This static boundary shift operates on the inference path by heavily penalizing common classes and boosting rare classes, which is phenomenally effective at rescuing tail recall under specific structure-destroying corruptions (like wet ground and echo). This benefit exists entirely in the *frozen* model.
+2. **The Adaptation "No-Op" ($\sim +0.55\%$):** The actual gradient-based adaptation mechanism in the early pipeline (`gate_mode="soft_dual_weight"`) was incredibly permissive. Its gating equation—$\exp(-1.5 \cdot \text{relu}(u - 0.5) - 1.0 \cdot \text{relu}(z - 0.5))$—alongside a relative veto threshold ($\text{decay} < 0.5$) essentially guaranteed that nearly *all* points were admitted. By executing near-unconstrained gradient updates toward the model's own argmax pseudo-labels, the adaptation did not learn new environmental structure; instead, it merely performed a **self-reinforcing sharpening** of the model's existing predictions. 
+
+**Conclusion:**
+The $+0.55\%$ gain from adaptation was a tiny, structureless sharpening artifact that occurred universally across short temporal chunks. However, running this permissive adaptation continuously without resets quickly results in catastrophic prototype drift (collapsing the geometry). Thus, the defining insight for our final architecture is that **adaptation itself was never carrying the result**. The true breakthrough of this framework lies in the static, selective application of the test-time prior—demonstrating that robust perception under severe sensor corruption is overwhelmingly a problem of boundary calibration, not rapid geometric re-learning.
