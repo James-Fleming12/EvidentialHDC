@@ -1,15 +1,18 @@
-import os
 import torch
 import torch.nn.functional as F
-import numpy as np
-from tqdm import tqdm
 from torch.utils.data import DataLoader
-
+from tqdm import tqdm
+import os
 import sys
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-import importlib
-ukc = importlib.import_module("unsup_kitti-c")
+sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
+
+try:
+    import importlib
+    ukc = importlib.import_module("unsup_kitti-c")
+except ImportError as e:
+    print(f"ImportError: {e}\nPlease run this script from the EvidentialHDC root directory.")
+    exit(1)
 
 ARCH = ukc.ARCH
 DATA = ukc.DATA
@@ -36,7 +39,9 @@ def run_d_complement():
     for ct in corruptions:
         print(f"\nRunning D-COMPLEMENT on {ct}...")
         corruption_root = f"/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C/{ct}/1"
-        
+        if not os.path.exists(corruption_root):
+            corruption_root = "/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C/"
+            
         parser_obj = ukc.Parser(root=corruption_root,
                                 train_sequences=['08'],
                                 valid_sequences=['08'],
