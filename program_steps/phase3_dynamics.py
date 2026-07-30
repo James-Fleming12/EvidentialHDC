@@ -85,7 +85,8 @@ def run_phase3_dynamics():
             
             # Predict and calculate pseudo-labels
             logits = model.classify(norm_enc)
-            probs = torch.softmax(logits, dim=1)
+            # Scale logits by temperature (tau=0.05) to get meaningful softmax probabilities from cosine sims
+            probs = torch.softmax(logits / 0.05, dim=1)
             conf, pseudo_labels = probs.max(dim=1)
             
             clean_labels = labels[indices]
@@ -101,7 +102,7 @@ def run_phase3_dynamics():
             confident_mask = (conf > 0.9) & valid
             if confident_mask.sum() > 0:
                 optimizer.zero_grad()
-                loss = F.cross_entropy(logits[confident_mask], pseudo_labels[confident_mask])
+                loss = F.cross_entropy(logits[confident_mask] / 0.05, pseudo_labels[confident_mask])
                 loss.backward()
                 optimizer.step()
                 
