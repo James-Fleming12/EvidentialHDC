@@ -42,10 +42,9 @@ def run_n2_diagnostic():
     results = {}
     
     for ct in corruptions:
-        corruption_root = f"/mnt/alpha/jmfleming/KITTI/dataset/sequences/08/corruption/{ct}/3/"
+        corruption_root = f"/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C/{ct}/heavy"
         if not os.path.exists(corruption_root):
-            corruption_root = f"/mnt/alpha/jmfleming/KITTI/dataset/sequences/08/"
-            
+            corruption_root = "/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C/"            
         parser_obj = ukc.Parser(root=corruption_root,
                                 train_sequences=None,
                                 valid_sequences=None,
