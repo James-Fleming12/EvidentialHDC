@@ -152,8 +152,16 @@ def run_separability_diagnostics():
                 all_features.append(raw_enc[valid_gt].cpu())
                 all_correctness.append(correctness[valid_gt].cpu())
                 
-        X = torch.cat(all_features, dim=0).to(device).float()
-        y = torch.cat(all_correctness, dim=0).to(device)
+        X_cpu = torch.cat(all_features, dim=0)
+        y_cpu = torch.cat(all_correctness, dim=0)
+        
+        if len(X_cpu) > 100000:
+            perm = torch.randperm(len(X_cpu))[:100000]
+            X_cpu = X_cpu[perm]
+            y_cpu = y_cpu[perm]
+            
+        X = X_cpu.to(device).float()
+        y = y_cpu.to(device)
         
         print(f"\n--- HDC Linear Separability Test ({ct}) ---")
         base_auroc = fit_classifier(X, y, model_type="logistic")
