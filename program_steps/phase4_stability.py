@@ -19,6 +19,7 @@ DATA = ukc.DATA
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def compute_auroc(probs, labels):
+    labels = labels.float()
     if len(labels) == 0 or labels.sum() == 0 or labels.sum() == len(labels):
         return 0.5
     desc_score_indices = torch.argsort(probs, descending=True)
