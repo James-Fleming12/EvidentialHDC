@@ -120,4 +120,20 @@ We fit a classifier to predict pseudo-label correctness using all available unce
   - **Unique Info:** Dirichlet Unc (+0.0562), Consistency (+0.0118)
 
 **Verdict:** Within a linear decision model, nearly all network-derived confidence measures (Dirichlet Epistemic, Entropy, Margin, Max Cosine) are redundant. Adding one provides the maximum possible AUROC, and the others add ~0.0005 AUROC. 
-Furthermore, no linear combination of these uncertainty signals can reliably separate hallucinations from true points on `crosstalk` (maximum AUROC is only **0.6421**). This strongly implies the limitation lies in the available information rather than the choice of gating algorithm. The pivot to **Adaptive Budget (M-A)** is strictly mandatory to avoid relying on these signals.
+Furthermore, no linear combination of these uncertainty signals can reliably separate hallucinations from true points on `crosstalk` (maximum AUROC is only **0.6421**). This strongly implies the limitation lies in the available information rather than the choice of gating algorithm.
+
+### Diagnostic M: Information Loss Through HDC
+Following the mentor's recommendation to trace *where* information is destroyed, we completely bypassed the uncertainty metrics and trained Logistic Regression and MLP classifiers directly on the internal feature representations to predict correctness.
+We tested two points in the pipeline:
+1. **128D Continuous Backbone Features** (Before HDC projection)
+2. **10,000D Binary HDC Embeddings** (After HDC binarization)
+
+**Results (AUROC across Logistic/MLP):**
+- **Fog:** 128D Backbone (~0.99) $\rightarrow$ 10,000D HDC (1.0000)
+- **Crosstalk:** 128D Backbone (~0.99) $\rightarrow$ 10,000D HDC (1.0000)
+
+**The Final Verdict:** This is a massive revelation. The information required to perfectly separate confident hallucinations from true points **exists** and is linearly decodable (AUROC 1.0000) in the 10,000D HDC space! The HDC projection/binarization *preserves* the information perfectly.
+The information is **destroyed** at the final step: when the 10,000D vector is reduced to 17 prototype cosine similarities. Because hallucinations form dense, linearly separable clusters in arbitrary corners of the 10,000D space, they are easily detected by a hyper-plane. But because the network only measures distance to the 17 prototypes, a hallucination that happens to fall vaguely in the direction of the "vegetation" prototype is assigned high confidence, and its true spatial location is lost. 
+Once reduced to logits, the maximum decodable AUROC plummets from 1.0000 to 0.6421. 
+
+**The Pivot to Adaptive Budget (M-A) is Strictly Mandatory:** We cannot filter points using uncertainty because the logits themselves have already destroyed the separability. However, because the hallucinations live in a completely different region of the 10,000D space, if we enforce a hard physical tether (e.g., a 20-degree rotation cap) on the prototypes, they will be physically prevented from being dragged out of the true semantic manifold and into the hallucination clusters.
