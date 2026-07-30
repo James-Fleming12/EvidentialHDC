@@ -157,7 +157,7 @@ class ConformalHDC(nn.Module):
                     c_feats = valid_feats[c_mask]
                     c_scales = scale_factors[c_mask].unsqueeze(1)
                     weighted_step = (c_feats * c_scales).mean(dim=0)
-                    self.prototypes[c].data = F.normalize(self.prototypes[c].data + self.lr * weighted_step, dim=0)
+                    self.prototypes.data[c] = F.normalize(self.prototypes.data[c] + self.lr * weighted_step, dim=0)
 
     # Alias methods for interface uniformity
     update = inference_update
@@ -296,7 +296,7 @@ class HyperDUM(nn.Module):
                 if c_mask.sum() > 0:
                     c_feats = valid_z_hat[c_mask]
                     weighted_step = c_feats.mean(dim=0)
-                    self.prototypes[c].data = F.normalize(self.prototypes[c].data + self.lr * weighted_step, dim=0)
+                    self.prototypes.data[c] = F.normalize(self.prototypes.data[c] + self.lr * weighted_step, dim=0)
 
     # Alias methods for interface uniformity
     update = inference_update
@@ -379,7 +379,7 @@ class StandardT3A(nn.Module):
                 if c_mask.sum() > 0:
                     c_feats = valid_feats[c_mask]
                     weighted_step = c_feats.mean(dim=0)
-                    self.prototypes[c].data = F.normalize((1.0 - self.lr) * self.prototypes[c].data + self.lr * weighted_step, dim=0)
+                    self.prototypes.data[c] = F.normalize((1.0 - self.lr) * self.prototypes.data[c] + self.lr * weighted_step, dim=0)
 
     update = inference_update
     adapt = inference_update
