@@ -58,9 +58,17 @@ def run_cluster_diagnostics():
             source_feats.append(raw_enc[valid].cpu())
             source_labels.append(clean_labels[valid].cpu())
             
-    X_src = torch.cat(source_feats, dim=0).to(device).float()
+    # Subsample X_src on CPU to avoid OOM
+    X_src_cpu = torch.cat(source_feats, dim=0)
+    Y_src_cpu = torch.cat(source_labels, dim=0)
+    if len(X_src_cpu) > 100000:
+        perm = torch.randperm(len(X_src_cpu))[:100000]
+        X_src_cpu = X_src_cpu[perm]
+        Y_src_cpu = Y_src_cpu[perm]
+        
+    X_src = X_src_cpu.to(device).float()
     X_src = F.normalize(X_src, dim=1)
-    Y_src = torch.cat(source_labels, dim=0).to(device)
+    Y_src = Y_src_cpu.to(device)
     
     # Compute Source Centroids (Empirical Prototypes)
     src_centroids = torch.zeros((17, X_src.shape[1]), device=device)
@@ -106,9 +114,17 @@ def run_cluster_diagnostics():
                 all_feats.append(raw_enc[valid].cpu())
                 all_labels.append(clean_labels[valid].cpu())
                 
-        X_tgt = torch.cat(all_feats, dim=0).to(device).float()
+        # Subsample X_tgt on CPU to avoid OOM
+        X_tgt_cpu = torch.cat(all_feats, dim=0)
+        Y_tgt_cpu = torch.cat(all_labels, dim=0)
+        if len(X_tgt_cpu) > 100000:
+            perm = torch.randperm(len(X_tgt_cpu))[:100000]
+            X_tgt_cpu = X_tgt_cpu[perm]
+            Y_tgt_cpu = Y_tgt_cpu[perm]
+            
+        X_tgt = X_tgt_cpu.to(device).float()
         X_tgt = F.normalize(X_tgt, dim=1)
-        Y_tgt = torch.cat(all_labels, dim=0).to(device)
+        Y_tgt = Y_tgt_cpu.to(device)
         
         # 1. Cluster Drift Diagnostic
         tgt_centroids = torch.zeros((17, X_tgt.shape[1]), device=device)
