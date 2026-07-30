@@ -66,7 +66,7 @@ def _cfg(name, family, tau=-1.0, gate_mode="epistemic", ic_method="none",
          update_method="evidential_hdc_tta", gain_control=False, kappa=15.0,
          preset="soft", gate_cfg=None, prior_mode="source", consistent_tau_weights=False, veto_tau_mismatch=False,
          lr_schedule="constant", adapt_frames=None, base_lr=0.01,
-         rotation_cap=None, loosen_beta=0.0, prior_est=False, prior_switch=False, prior_ramp=False, prior_inverse=False, adaptive_budget=False, fire_th=None):
+         rotation_cap=None, loosen_beta=0.0, prior_est=False, prior_switch=False, prior_ramp=False, prior_inverse=False, adaptive_budget=False, fire_th=None, boost_tail_prior=False):
     return dict(name=name, family=family, update_method=update_method,
                 gate_mode=gate_mode, ic_method=ic_method, tau=tau, kappa=kappa,
                 normalize_weights=normalize_weights, mv_tta=mv_tta,
@@ -75,7 +75,7 @@ def _cfg(name, family, tau=-1.0, gate_mode="epistemic", ic_method="none",
                 prior_mode=prior_mode, consistent_tau_weights=consistent_tau_weights,
                 veto_tau_mismatch=veto_tau_mismatch,
                 lr_schedule=lr_schedule, adapt_frames=adapt_frames,
-                base_lr=base_lr, rotation_cap=rotation_cap, loosen_beta=loosen_beta, prior_est=prior_est, prior_switch=prior_switch, prior_ramp=prior_ramp, prior_inverse=prior_inverse, adaptive_budget=adaptive_budget, fire_th=fire_th)
+                base_lr=base_lr, rotation_cap=rotation_cap, loosen_beta=loosen_beta, prior_est=prior_est, prior_switch=prior_switch, prior_ramp=prior_ramp, prior_inverse=prior_inverse, adaptive_budget=adaptive_budget, fire_th=fire_th, boost_tail_prior=boost_tail_prior)
 
 ABLATIONS = {
     # ---- reference ----------------------------------------------------
@@ -138,6 +138,8 @@ ABLATIONS = {
                             update_method="frozen", gate_mode="epistemic", prior_est=True, prior_ramp=True),
     "m_d_prior_inverse":_cfg("M-D: Prior Inverse Switch (frozen)", "methods",
                             update_method="frozen", gate_mode="epistemic", prior_est=True, prior_inverse=True),
+    "m_d_prior_boosted":_cfg("M-D: Prior Boosted Switch (frozen)", "methods",
+                            update_method="frozen", gate_mode="epistemic", prior_est=True, prior_switch=True, boost_tail_prior=True),
     "m_a_adaptive_cap":_cfg("M-A: Adaptive Budget 20deg", "methods",
                             consistent_tau_weights=True, rotation_cap=20.0, adaptive_budget=True),
                             
@@ -202,7 +204,9 @@ RESET_ATTRS = [
     "_mv_contingency_table", "_decay_logs", "_class_n_points", "_class_n_fired",
     "_class_true_errors_rejected", "_class_correct_rejected", "_firing_log",
     "_veto_stats", "_update_magnitude_log", "initial_classify_weights",
-    "_feature_dump_list",
+    "_feature_dump_list", "target_prior", "class_conf", "_eval_class_conf_sum",
+    "_eval_class_counts", "_d0a_mismatch_count", "_d0a_mismatch_weight_sum",
+    "_d0a_all_weight_sum", "_d0a_total_points", "_d4_gains", "_d4_ths", "initial_class_conf"
 ]
 
 def _reset_model(model, clean_state_dict):
@@ -440,7 +444,8 @@ def main():
                               prior_switch=cfg.get("prior_switch", False),
                               prior_ramp=cfg.get("prior_ramp", False),
                               prior_inverse=cfg.get("prior_inverse", False),
-                              adaptive_budget=cfg.get("adaptive_budget", False))
+                              adaptive_budget=cfg.get("adaptive_budget", False),
+                              boost_tail_prior=cfg.get("boost_tail_prior", False))
 
                 # --- PRIOR ORACLE: replace pi_source with the chunk's TRUE prior ---
                 # The frozen confusion matrix's ROW SUMS are the GT class counts,
@@ -473,7 +478,8 @@ def main():
                           cfg.get("prior_est", False),
                           cfg.get("prior_switch", False),
                           cfg.get("prior_ramp", False),
-                          cfg.get("prior_inverse", False))
+                          cfg.get("prior_inverse", False),
+                          cfg.get("boost_tail_prior", False))
                     if fk in frozen_cache:
                         init_m, init_conf = frozen_cache[fk]
                         if init_conf is not None:
@@ -482,6 +488,11 @@ def main():
                         model.eval()
                         init_m = _call_eval(model, dl, device, eval_only=True, **common)
                         frozen_cache[fk] = (init_m, getattr(model, 'initial_class_conf', None))
+                        
+                        # Fix Intra-Ablation State Leak: eval_only=True mutates target_prior. 
+                        # We MUST reset before adaptation begins!
+                        _reset_model(model, clean_sd)
+                        _restore_stats(model, stats, device)
 
                     if cfg["update_method"] == "frozen":
                         adapt_m = final_m = init_m

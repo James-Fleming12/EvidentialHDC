@@ -77,7 +77,7 @@ def compute_correlations_torch(x, y):
     spearman = float(cov_r / (srx * sry)) if srx != 0 and sry != 0 else 0.0
     return f"Pearson r={pearson:.6f}, Spearman rho={spearman:.6f} (over {len(x):,} pairs)"
 
-def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, ic_method='none', tau=None, kappa=15.0, normalize_weights=False, mv_tta='none', gate_mode='epistemic', dynamic_geom=False, diagnostics=True, dump_features=False, fire_th=0.0, consistent_tau_weights=False, veto_tau_mismatch=False, lr_schedule='constant', adapt_frames=None, base_lr=0.01, rotation_cap=None, loosen_beta=0.0, prior_est=False, prior_switch=False, prior_ramp=False, prior_inverse=False, adaptive_budget=False):
+def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, ic_method='none', tau=None, kappa=15.0, normalize_weights=False, mv_tta='none', gate_mode='epistemic', dynamic_geom=False, diagnostics=True, dump_features=False, fire_th=0.0, consistent_tau_weights=False, veto_tau_mismatch=False, lr_schedule='constant', adapt_frames=None, base_lr=0.01, rotation_cap=None, loosen_beta=0.0, prior_est=False, prior_switch=False, prior_ramp=False, prior_inverse=False, adaptive_budget=False, boost_tail_prior=False):
     if ic_method not in ['none', 'ic4']:
         raise ValueError(f"Unknown ic_method: {ic_method}")
     logger = logging.getLogger("EvalAdapt")
@@ -132,6 +132,18 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         if proj_in.shape[1] > 0:
             model.eval()
             with torch.no_grad():
+                if prior_est and batch_idx == 0:
+                    if hasattr(model, 'target_prior') and hasattr(model, 'source_class_freq'):
+                        diff = (model.target_prior - model.source_class_freq).abs().sum().item()
+                        if diff > 1e-5:
+                            raise RuntimeError(f"T0a Guard Failed: target_prior leaked! diff={diff:.6f}")
+                    elif not hasattr(model, 'target_prior'):
+                        model.target_prior = model.source_class_freq.clone().to(device) if hasattr(model, 'source_class_freq') else torch.ones(num_classes, device=device) / num_classes
+                        
+                    if boost_tail_prior:
+                        tail_classes = [2, 3, 6, 7, 10]
+                        model.target_prior[tail_classes] *= 5.0
+                        model.target_prior = model.target_prior / model.target_prior.sum()
                 # Get raw latent and encodings for updates
                 with torch.amp.autocast('cuda', enabled=True):
                     latent_x = model.net(proj_in, only_feat=True)

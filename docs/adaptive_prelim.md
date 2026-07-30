@@ -80,19 +80,23 @@ The honest framing of our current architecture is now **"frozen model + selectiv
 ## 5. Preliminary Redo Results (Prior Switch & T-DRIFT)
 
 ### 5.1 Stage 1: Frozen Prior Methods
-*Note: Due to a cache key collision in the `ablation_kitti-c.py` test runner (`fk` excluded the prior flags), the `m_d_prior_*` methods inadvertently loaded the cached `frozen` evaluation results instead of running their unique prior logic. These results are identically matched to the `frozen` baseline and will need to be re-run with a fixed cache key.*
+*Note: The initial run of Stage 1 suffered from a cache key collision in the `ablation_kitti-c.py` test runner. Upon fixing the cache key and re-running, a second major bug was discovered: `target_prior` was missing from `RESET_ATTRS`, meaning the estimated prior was leaking across corruptions.*
+
+**Clean Re-evaluation Findings:**
+When properly isolated and initialized from the clean `source` distribution, the `ratio >= 1.15` heuristic in `m_d_prior_switch` **fails to trigger on wet ground**. Because the frozen model is highly conservative, its initial predictions lack sufficient tail mass to pull the estimated `target_prior` up to the 1.15x threshold. Consequently, the switch remains OFF for the entire sequence, and performance identically matches the `frozen` baseline (42.02).
 
 ### 5.2 Stage 3: Prior Switch (D5 Test)
-*Because `frozen` was not evaluated in Stage 3, `m_d_prior_switch` successfully bypassed the cache and evaluated its prior logic across all 8 corruptions.*
+*In this run, `fog` evaluated before `wet_ground`. Due to the `target_prior` leak, `wet_ground` inherited the corrupted prior from `fog`.*
 
 | Method | Mean | fog | wet_ground | snow | motion_blur | beam_missing | crosstalk | incomplete_echo | cross_sensor |
 |---|---|---|---|---|---|---|---|---|---|
 | `frozen` | 33.68 | 6.04 | 42.02 | 50.22 | 50.52 | 39.44 | 10.71 | 43.90 | 26.56 |
 | `m_d_prior_switch` | 32.24 | 1.29 | 47.84 | 49.80 | 49.42 | 39.15 | 5.57 | 38.00 | 26.84 |
 
-**Observations:**
-- **Wet Ground (+5.82):** The prior switch successfully turns on and yields massive gains!
-- **Fog (-4.75) & Crosstalk (-5.14):** The switch was supposed to remain off for these domains, but performance cratered far below `frozen`. This indicates the simple `tail_ratio >= 1.15` heuristic is falsely triggering on these corruptions.
+**Observations (The State Leak Phenomenon):**
+- **Wet Ground (+5.82):** The switch was violently kicked into the ON position at frame 0 because it inherited a high-tail-mass prior from `fog`. This leaked prior broke the model's conservative bias, allowing it to predict tail classes, which kept the switch ON and drove mIoU to a massive 47.84!
+- **Implications for the Controller:** A simple `ratio >= 1.15` heuristic is too weak to self-bootstrap from a clean source prior. The model's baseline predictions are too biased to overcome the threshold. However, if artificially "kicked" (e.g., by a leaked prior), the mechanism sustains itself and yields immense gains.
+- **Fog (-4.75) & Crosstalk (-5.14):** The heuristic falsely triggered on these domains, crashing performance. The model hallucinates noise as tail classes, falsely elevating the tail ratio.
 
 ### 5.3 Stage 5: T-DRIFT Continual Run (Legacy Loose)
 *The continual run on wet ground (4071 frames) over time with loose gating.*
