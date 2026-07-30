@@ -171,3 +171,15 @@ We queried the 10-Nearest Neighbors of each corrupted target point *within the c
 - **Fog:** Target Neighborhood Purity = **90.54%**
 - **Crosstalk:** Target Neighborhood Purity = **88.06%**
 **Verdict:** **SUCCESS.** The semantic topology of the 10,000D HDC space remains pristine even under severe corruption! Hallucinated points do not scatter into random noise; they move together in dense, semantically pure clusters that simply no longer align with the global class prototypes. This provides incredibly strong theoretical justification for Contrastive Learning (AdaContrast), k-NN graphs, and Memory Bank methods, which can directly exploit this preserved local geometry.
+
+**5. Cluster Drift Diagnostic**
+We measured how far the actual semantic clusters moved by computing the cosine similarity between the clean `source` centroid and the corrupted `target` centroid for each class.
+- **Fog:** Average Centroid Similarity = **0.2202** (e.g., Class 14 is -0.0029, nearly perfectly orthogonal)
+- **Crosstalk:** Average Centroid Similarity = **0.3405**
+**Verdict:** The semantic clusters undergo massive angular translation/rotation during corruption. The "vegetation" cluster in fog is located in a completely different part of the 10,000D hyperspace than the "vegetation" cluster in clean data. 
+
+**6. Prototype Voronoi (Hallucination Depth)**
+We analyzed where hallucinations (confident incorrect predictions) lie geometrically with respect to the 17 class prototypes. Specifically, we computed the margin (Cosine Sim to Top-1 Pred - Cosine Sim to Top-2 Pred). 
+- **Fog:** 90.2% of hallucinations lie deep inside a wrong Voronoi cell (Margin > 0.05). Average Margin: 0.3062.
+- **Crosstalk:** 84.3% of hallucinations lie deep inside a wrong Voronoi cell (Margin > 0.05). Average Margin: 0.2086.
+**Verdict:** Hallucinations are NOT just uncertain points hovering near decision boundaries. Due to the massive cluster drift (Diagnostic 5), entire clusters of points are dragged deep into the core territory of the *wrong* prototype. Because they are deep inside the wrong Voronoi cell, they exhibit massive confidence and are mathematically indistinguishable from true positives when using logit-derived uncertainty.
