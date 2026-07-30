@@ -86,7 +86,23 @@ We ran automated diagnostic scripts on the frozen HDC network to validate the th
 - Clean Accuracy: 89.46%
 - Augmented Accuracy: 82.80%
 - Accuracy Drop: 6.66%
-**Verdict:** **SUCCESS.** The strong augmentation is well-defined. It drops accuracy slightly but strongly preserves core semantics. This proves that pseudo-labels generated under M2 consistency gating will be highly reliable.
+**Verdict:** **SUCCESS.** The strong augmentation is well-defined. It introduces enough variation to scatter outliers and causes a mild drop in clean accuracy without completely destroying core semantics. Consistency gating is structurally viable.
 
-### The Fork Resolution
-Because N2 is fundamentally degenerate in HDC space and M2's consistency augmentations are highly viable, **Branch A is officially the winner**. Our narrative will focus entirely on **Consistency Gating (M2/M1)** to fix the confident-wrong poisoning that collapses prototype TTA.
+### D-COMPLEMENT Diagnostic: Consistency vs. Network Uncertainty Trap
+**Test Protocol:** We tested whether view-disagreement provides a *complementary* signal to network uncertainty on severe hallucination corruptions (`fog` and `crosstalk`). We isolated points that the network was highly confident about (Dirichlet uncertainty < 0.5) and applied strong augmentation. We then measured the pseudo-label precision of points that *agreed* across views versus points that *disagreed* (`check_d_complement.py`).
+**Results:** The consistency gate behaves in exactly the worst possible manner on structural hallucinations.
+- **Fog (Confident):** Agree Precision = 9.67% | Disagree Precision = 45.21%
+- **Crosstalk (Confident):** Agree Precision = 26.32% | Disagree Precision = 36.11%
+**Verdict:** **FATAL FLAW.** Confident hallucinations are structurally robust to local noise/dropout. As a result, the views *agree* on the hallucination, meaning consistency gating preserves the poison (9.67% precision) and instead vetos the delicate, fragile structures that were actually more accurate (45.21% precision). The consistency signal is worse than redundant—it actively selects for confident-wrong errors. M2 Consistency Gating is officially abandoned.
+
+### The Fork Resolution: Pivoting to the Physical Tether (Adaptive Budget)
+We have now mathematically and empirically exhausted all three proposed branches for preventing TTA collapse:
+1. **N4 (D-Optimal SVD):** Dead. HDC is holographic; it cannot be compressed.
+2. **N2 (Dual Uncertainty):** Dead. The channels are entangled and cannot separate noise from domain gap.
+3. **M2 (Consistency Gating):** Dead. View agreement perfectly correlates with robust structural hallucinations.
+
+We are out of filtering mechanisms. It is structurally impossible to build a gate that perfectly separates confident true points from confident hallucinations in this hyperspace.
+
+Instead of trying to filter the hallucinations, we **bound the damage**. In a 128D HDC hyperspace, angles are extremely rigid (orthogonal is 90 degrees). A domain shift (like `wet_ground`) only shifts the true semantic manifold by a small angle. A confident hallucination (like `fog` pulling the vegetation prototype into empty space) requires dragging the prototype across a massive angular distance.
+
+The official narrative pivot is **M-A: Adaptive Budget (Rotation Cap)**. We enforce a hard physical tether (e.g., 20 degrees) on the prototypes. They are allowed to adapt to genuine domain shifts, but the moment a hallucination tries to hijack them, they hit the physical tether and stop, preserving the pre-trained semantics while preventing runaway collapse.
