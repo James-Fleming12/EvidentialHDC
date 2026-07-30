@@ -8,7 +8,8 @@ from torch.utils.data import DataLoader
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from unsup_kitti_c import load_hdc_model
+import importlib
+ukc = importlib.import_module("unsup_kitti-c")
 import dataset.kitti_c_utils as ukc
 from config import ARCH, DATA
 
@@ -26,7 +27,7 @@ def compute_epistemic_uncertainty(logits):
 
 def run_d_complement():
     print("Initializing model...")
-    model = load_hdc_model("logs/kitti_pretrain/hdc_sub.pth", num_classes=17)
+    model = ukc.load_hdc_model("logs/kitti_pretrain/hdc_sub.pth", num_classes=17)
     model.eval()
     
     corruptions = ['fog', 'crosstalk']
