@@ -75,15 +75,14 @@ def run_n2_diagnostic():
                     continue
                     
                 logits, _, _, _ = model(proj_in)
+                logits = logits * 15.0  # HDC temperature scaling to break the 0.01 cosine blockade
                 evidence = F.softplus(logits)
                 alphas = evidence + 1.0
                 
                 dist_unc, data_unc = compute_uncertainties(alphas)
                 
-                valid_mask = proj_mask > 0
-                if valid_mask.sum() > 0:
-                    all_dist_unc.append(dist_unc[valid_mask].cpu())
-                    all_data_unc.append(data_unc[valid_mask].cpu())
+                all_dist_unc.append(dist_unc.cpu())
+                all_data_unc.append(data_unc.cpu())
                 
         dist_mean = torch.cat(all_dist_unc).mean().item()
         data_mean = torch.cat(all_data_unc).mean().item()
