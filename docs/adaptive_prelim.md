@@ -91,12 +91,29 @@ When properly isolated and initialized from the clean `source` distribution, the
 | Method | Mean | fog | wet_ground | snow | motion_blur | beam_missing | crosstalk | incomplete_echo | cross_sensor |
 |---|---|---|---|---|---|---|---|---|---|
 | `frozen` | 33.68 | 6.04 | 42.02 | 50.22 | 50.52 | 39.44 | 10.71 | 43.90 | 26.56 |
-| `m_d_prior_switch` | 32.24 | 1.29 | 47.84 | 49.80 | 49.42 | 39.15 | 5.57 | 38.00 | 26.84 |
+| `m_d_prior_switch` (Original) | 32.24 | 1.29 | 47.84 | 49.80 | 49.42 | 39.15 | 5.57 | 38.00 | 26.84 |
 
-**Observations (The State Leak Phenomenon):**
-- **Wet Ground (+5.82):** The switch was violently kicked into the ON position at frame 0 because it inherited a high-tail-mass prior from `fog`. This leaked prior broke the model's conservative bias, allowing it to predict tail classes, which kept the switch ON and drove mIoU to a massive 47.84!
-- **Implications for the Controller:** A simple `ratio >= 1.15` heuristic is too weak to self-bootstrap from a clean source prior. The model's baseline predictions are too biased to overcome the threshold. However, if artificially "kicked" (e.g., by a leaked prior), the mechanism sustains itself and yields immense gains.
-- **Fog (-4.75) & Crosstalk (-5.14):** The heuristic falsely triggered on these domains, crashing performance. The model hallucinates noise as tail classes, falsely elevating the tail ratio.
+### 5.3 T0a & T0b Clean Reproductions
+*Because the original Stage 3 results were contaminated by a state leak, we ran a fully guarded repro (T0a) and a deliberate kick-start (T0b) on a fast subset of 4 corruptions.*
+
+**T0a (Fully Cleaned, No Leaks):**
+| Method | fog | crosstalk | wet_ground | incomplete_echo |
+|---|---|---|---|---|
+| `frozen` | 6.04 | 10.71 | 42.02 | 43.90 |
+| `m_d_prior_only` | 1.29 | 5.68 | 44.47 | 42.44 |
+| `m_d_prior_switch` | 1.29 | 5.68 | 42.02 | 42.93 |
+| `m_d_prior_ramp` | 1.29 | 5.68 | 42.30 | 42.92 |
+| `m_d_prior_inverse` | 6.04 | 10.71 | 44.27 | 43.39 |
+
+**T0b (Deliberate Tail-Prior Kick-Start):**
+| Method | wet_ground |
+|---|---|
+| `m_d_prior_boosted` | 42.29 |
+
+**Observations (The State Leak Phenomenon & T0a/T0b Reproduction):**
+- **The "Kick" is a Fluke (T0b Failure):** We hypothesized that the switch needed a "kick" to bootstrap out of the frozen model's bias. However, a deliberate, clean kick-start of the tail prior on `wet_ground` (T0b) yielded only **42.29** mIoU (reverting almost instantly to the frozen baseline). The massive 47.84 score in Stage 3 was a pure fluke: it inherited a highly skewed, hallucinated prior from the end of the `fog` sequence, which just happened to spuriously align with `wet_ground`!
+- **False Triggers on Noise:** In the clean, fully-guarded T0a run, `m_d_prior_switch` on `fog` still crashed to **1.29** (compared to frozen 6.04). Even from a clean start, the frozen model hallucinates fog points as tail classes, inflating the predicted tail ratio, falsely triggering the switch, and initiating a feedback loop that destroys performance.
+- **Conclusion:** The `ratio >= 1.15` heuristic is dead, and moreover, the geometric domain-gap scalar hypothesis is also dead. A geometric scalar would rate `fog` as maximally far from the source, meaning it would positively green-light the exact domain that crashes the model. The real finding is that the prior mechanism itself is unstable under corruptions that induce tail-hallucination. `fog` and `crosstalk` do not have a "when to fire" problem—they have a "the prior correction is the wrong operation entirely" problem because the model's errors there are not precision failures that a prior can fix.
 
 ### 5.3 Stage 5: T-DRIFT Continual Run (Legacy Loose)
 *The continual run on wet ground (4071 frames) over time with loose gating.*

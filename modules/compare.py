@@ -302,9 +302,91 @@ class HyperDUM(nn.Module):
     update = inference_update
     adapt = inference_update
 
+class StandardT3A(nn.Module):
+    def __init__(self, feature_extractor, num_classes=19, feature_dim=128, proj_dim=1024, source_prototypes=None, lr=0.01, conf_thresh=0.90, *args, **kwargs):
+        super().__init__()
+        self.feature_extractor = feature_extractor
+        self.num_classes = num_classes
+        self.feature_dim = feature_dim
+        self.lr = lr
+        self.conf_thresh = conf_thresh
+        
+        if source_prototypes is not None:
+            self.source_prototypes = F.normalize(source_prototypes.clone().float(), dim=1)
+        else:
+            self.source_prototypes = F.normalize(torch.randn(num_classes, feature_dim), dim=1)
+            
+        self.prototypes = nn.Parameter(self.source_prototypes.clone(), requires_grad=False)
+        self.poison_correct = 0
+        self.poison_total = 0
+
+    def _flatten_features(self, feat):
+        if feat.dim() == 4:
+            return feat.permute(0, 2, 3, 1).reshape(-1, self.feature_dim)
+        elif feat.dim() == 3:
+            return feat.reshape(-1, self.feature_dim)
+        return feat
+
+    def forward(self, x, xyz=None, *args, **kwargs):
+        with torch.no_grad():
+            out = self.feature_extractor(x)
+            feat = out[-1] if isinstance(out, tuple) else out
+            feat_flat = self._flatten_features(feat)
+            
+            Z = F.normalize(feat_flat.float(), dim=1)
+            W = F.normalize(self.prototypes.to(feat_flat.device).float(), dim=1)
+            logits = Z @ W.T * 15.0 # Temperature scaling for softmax
+            
+        return logits, None, torch.arange(logits.shape[0], device=logits.device), feat_flat
+
+    def inference_update(self, h, predictions=None, xyz=None, proj_labels=None, *args, **kwargs):
+        if h is None or h.numel() == 0:
+            return
+            
+        device = h.device
+        h_flat = self._flatten_features(h)
+        
+        Z = F.normalize(h_flat.float(), dim=1)
+        W = F.normalize(self.prototypes.to(device).float(), dim=1)
+        logits = Z @ W.T * 15.0
+        
+        probs = F.softmax(logits, dim=1)
+        conf, pred_labels = probs.max(dim=1)
+        
+        valid_point_mask = (proj_labels != 255) if proj_labels is not None else torch.ones_like(conf, dtype=torch.bool)
+        mask = (conf > self.conf_thresh) & valid_point_mask
+        
+        if not mask.any():
+            return
+            
+        valid_feats = Z[mask]
+        valid_preds = pred_labels[mask]
+        
+        if proj_labels is not None:
+            gt_labels = proj_labels[mask]
+            self.poison_correct += (valid_preds == gt_labels).sum().item()
+            self.poison_total += mask.sum().item()
+            
+            if not hasattr(self, '_last_print_total') or (self.poison_total - self._last_print_total) > 50000:
+                precision = self.poison_correct / max(1, self.poison_total)
+                logger.info(f"[D-POISON] Gated pseudo-label precision: {precision:.2%} ({self.poison_correct}/{self.poison_total})")
+                self._last_print_total = self.poison_total
+        
+        with torch.no_grad():
+            self.prototypes.data = self.prototypes.data.to(device)
+            for c in range(self.num_classes):
+                c_mask = (valid_preds == c)
+                if c_mask.sum() > 0:
+                    c_feats = valid_feats[c_mask]
+                    weighted_step = c_feats.mean(dim=0)
+                    self.prototypes[c].data = F.normalize((1.0 - self.lr) * self.prototypes[c].data + self.lr * weighted_step, dim=0)
+
+    update = inference_update
+    adapt = inference_update
+
 logger = logging.getLogger("baselines")
 
-BASELINE_METHODS = ("d3ctta", "conformalhdc", "hyperdum")
+BASELINE_METHODS = ("d3ctta", "conformalhdc", "hyperdum", "standard_t3a", "conformalhdc_10k")
 
 class _FeatOnly(nn.Module):
     """Forces the backbone to return 128D features rather than logits."""
@@ -324,32 +406,57 @@ class _FeatOnly(nn.Module):
     def modules(self):
         return self.net.modules()
 
+class _FeatHDC(nn.Module):
+    """Forces the backbone to return 10000D HDC hypervectors using the model's native encode function."""
+    def __init__(self, encode_fn, modules_src):
+        super().__init__()
+        self.encode_fn = encode_fn
+        self.modules_src = modules_src
+
+    def forward(self, x, *a, **kw):
+        raw_enc, _, _ = self.encode_fn(x)
+        return raw_enc.float()
+
+    def modules(self):
+        return self.modules_src.modules()
+
 def get_adapter(model, name, num_classes, device, feature_dim=128):
     """Lazily build (and cache on `model`) the baseline adapter."""
     if getattr(model, "_baseline_adapter_name", None) == name and \
             getattr(model, "_baseline_adapter", None) is not None:
         return model._baseline_adapter
 
-    if getattr(model, "class_latent_means", None) is None:
-        raise ValueError(
-            "baselines need model.class_latent_means ([num_classes, 128]) as source "
-            "prototypes. The HDC classify weights are [num_classes, 10000] and are the "
-            "wrong space -- seeding with them is what made the old sync silently break.")
-    src_proto = model.class_latent_means.detach().clone().to(device).float()
-    assert src_proto.shape == (num_classes, feature_dim), \
-        f"source prototypes {tuple(src_proto.shape)} != ({num_classes}, {feature_dim})"
+    is_10k = (name == "conformalhdc_10k")
 
-    backbone = _FeatOnly(model.net)
+    if is_10k:
+        backbone = _FeatHDC(model.encode, model.net)
+        src_proto = model.classify.weight.detach().clone().to(device).float()
+        active_dim = src_proto.shape[1]
+
+    else:
+        if getattr(model, "class_latent_means", None) is None:
+            raise ValueError(
+                "baselines need model.class_latent_means ([num_classes, 128]) as source "
+                "prototypes. The HDC classify weights are [num_classes, 10000] and are the "
+                "wrong space -- seeding with them is what made the old sync silently break.")
+        src_proto = model.class_latent_means.detach().clone().to(device).float()
+        active_dim = feature_dim
+        assert src_proto.shape == (num_classes, active_dim), \
+            f"source prototypes {tuple(src_proto.shape)} != ({num_classes}, {active_dim})"
+        backbone = _FeatOnly(model.net)
 
     if name == "d3ctta":
         from modules.D3CTTA import D3CTTA
-        adapter = D3CTTA(backbone, num_classes=num_classes, feature_dim=feature_dim,
+        adapter = D3CTTA(backbone, num_classes=num_classes, feature_dim=active_dim,
                          source_prototypes=src_proto)
-    elif name == "conformalhdc":
-        adapter = ConformalHDC(backbone, num_classes=num_classes, feature_dim=feature_dim,
+    elif name == "conformalhdc" or name == "conformalhdc_10k":
+        adapter = ConformalHDC(backbone, num_classes=num_classes, feature_dim=active_dim,
                                source_prototypes=src_proto)
     elif name == "hyperdum":
-        adapter = HyperDUM(backbone, num_classes=num_classes, feature_dim=feature_dim,
+        adapter = HyperDUM(backbone, num_classes=num_classes, feature_dim=active_dim,
+                           source_prototypes=src_proto)
+    elif name == "standard_t3a":
+        adapter = StandardT3A(backbone, num_classes=num_classes, feature_dim=active_dim,
                            source_prototypes=src_proto)
     else:
         raise ValueError(f"unknown baseline '{name}'; known: {BASELINE_METHODS}")
@@ -357,7 +464,7 @@ def get_adapter(model, name, num_classes, device, feature_dim=128):
     adapter = adapter.to(device)
     model._baseline_adapter = adapter
     model._baseline_adapter_name = name
-    logger.info(f"[baselines] built {name}: feature_dim={feature_dim}, "
+    logger.info(f"[baselines] built {name}: feature_dim={active_dim}, "
                 f"source_prototypes={tuple(src_proto.shape)}")
     return adapter
 
@@ -384,7 +491,7 @@ def baseline_forward(model, name, proj_in, proj_xyz, num_classes, device):
     return logits, {"h": h, "adapter": adapter}
 
 @torch.no_grad()
-def baseline_update(state, predictions, proj_xyz):
+def baseline_update(state, predictions, proj_xyz, proj_labels=None):
     """Run the baseline's own online adaptation."""
     adapter = state["adapter"]
     h = state["h"]
@@ -392,7 +499,7 @@ def baseline_update(state, predictions, proj_xyz):
         logger.warning("[baselines] adapter forward returned no projected features; "
                        "skipping update this frame")
         return
-    adapter.inference_update(h, predictions, proj_xyz)
+    adapter.inference_update(h, predictions, proj_xyz, proj_labels=proj_labels)
 
 def reset(model):
     for a in ("_baseline_adapter", "_baseline_adapter_name"):

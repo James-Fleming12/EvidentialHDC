@@ -648,7 +648,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     # All three "baselines" silently ran the generic HDC path, which is
                     # why they report bit-identical numbers in every cell.
                     if update_method in _baselines.BASELINE_METHODS:
-                        _baselines.baseline_update(_baseline_state, predictions, proj_xyz)
+                        _baselines.baseline_update(_baseline_state, predictions, proj_xyz, proj_labels=proj_labels)
                     else:
                         eff_lr = update_lr
                         if hasattr(model, 'gain_controller') and model.gain_controller is not None:

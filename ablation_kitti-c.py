@@ -142,6 +142,12 @@ ABLATIONS = {
                             update_method="frozen", gate_mode="epistemic", prior_est=True, prior_switch=True, boost_tail_prior=True),
     "m_a_adaptive_cap":_cfg("M-A: Adaptive Budget 20deg", "methods",
                             consistent_tau_weights=True, rotation_cap=20.0, adaptive_budget=True),
+    "standard_t3a":_cfg("D-STANDARD: T3A Prototype Update", "baselines",
+                            update_method="standard_t3a", prior_est=False, prior_switch=False),
+    "conformalhdc":_cfg("ConformalHDC (128D latent)", "baselines",
+                            update_method="conformalhdc", prior_est=False, prior_switch=False),
+    "conformalhdc_10k":_cfg("ConformalHDC (10,000D HDC)", "baselines",
+                            update_method="conformalhdc_10k", prior_est=False, prior_switch=False),
                             
     # ---- Legacy Validation (T1 & T-LOOSE & T-DRIFT) ----
     "legacy_frozen_t0":_cfg("Legacy: Frozen (tau=0)", "legacy", update_method="frozen", tau=0.0),
