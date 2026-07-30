@@ -4,33 +4,29 @@ import numpy as np
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import os
-
+import yaml
 import sys
+
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
-# Assuming EvidentialHDC structure is in path
 try:
-    from modules.HDC_utils import set_uq_model
-    from models.pointnet2.pointnet2_msg import Pointnet2MSG as Pointnet2
-    import datasets.kitti_c_utils as ukc
+    import unsup_main
+    from dataset.kitti.parser import Parser
 except ImportError as e:
-    print(f"ImportError: {e}\\nPlease run this script from the EvidentialHDC root directory.")
+    print(f"ImportError: {e}\nPlease run this script from the EvidentialHDC root directory.")
     exit(1)
 
 def compute_uncertainties(alphas):
     """
     Computes EviATTA's dual-channel uncertainties from Dirichlet evidence.
-    alphas: [B, K] where K is num_classes (alpha = evidence + 1)
     """
     K = alphas.shape[1]
     S = torch.sum(alphas, dim=1, keepdim=True)
     
     # 1. Distribution Uncertainty (Epistemic / Domain Gap)
-    # Measured by the vacuity of the Dirichlet distribution
     dist_unc = K / S.squeeze(-1)
     
     # 2. Data Uncertainty (Aleatoric / Inherent Noise)
-    # Measured by the entropy of the mean categorical distribution
     p = alphas / S
     data_unc = -torch.sum(p * torch.log(p + 1e-8), dim=1)
     
@@ -40,9 +36,11 @@ def run_n2_diagnostic():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print("Initializing model...")
     
-    # Minimal model setup
-    net = Pointnet2(num_classes=17, use_xyz=True).to(device)
-    model = set_uq_model(net, num_classes=17).to(device)
+    ARCH = yaml.safe_load(open("config/arch/senet-2048p.yml", 'r'))
+    DATA = yaml.safe_load(open("config/labels/semantic-kitti-all.yaml", 'r'))
+    
+    model = unsup_main.train_hdc(ARCH, DATA, epochs=0, return_extractor=False)
+    model = model.to(device)
     
     ckpt_path = 'logs/kitti_pretrain/hdc_sub.pth'
     if not os.path.exists(ckpt_path):
@@ -50,22 +48,35 @@ def run_n2_diagnostic():
         return
         
     ckpt = torch.load(ckpt_path, map_location=device)
-    if 'state_dict' in ckpt:
-        model.load_state_dict(ckpt['state_dict'], strict=False)
-    else:
-        model.load_state_dict(ckpt, strict=False)
+    model.load_state_dict(ckpt['state_dict'] if 'state_dict' in ckpt else ckpt, strict=False)
     model.eval()
 
     print("Loading datasets...")
-    # Load just one sequence of fog and one of wet_ground
-    # Assuming standard KITTI-C dataset location
     corruptions = ['fog', 'wet_ground']
     results = {}
     
     for ct in corruptions:
-        ds = ukc.SemanticKITTI_C(corruption=ct, severity=3, split='test')
-        # Just use first 50 frames to be fast
-        subset = torch.utils.data.Subset(ds, range(50))
+        corruption_root = f"/mnt/alpha/jmfleming/KITTI/dataset/sequences/08/corruption/{ct}/3/"
+        if not os.path.exists(corruption_root):
+            # Fallback for generic structure
+            corruption_root = f"/mnt/alpha/jmfleming/KITTI/dataset/sequences/08/"
+            
+        parser_obj = Parser(root=corruption_root,
+                            train_sequences=None,
+                            valid_sequences=None,
+                            test_sequences=['08'],
+                            labels=DATA["labels"],
+                            color_map=DATA["color_map"],
+                            learning_map=DATA["learning_map"],
+                            learning_map_inv=DATA["learning_map_inv"],
+                            sensor=ARCH["dataset"]["sensor"],
+                            max_points=ARCH["dataset"]["max_points"],
+                            batch_size=1,
+                            workers=4,
+                            gt=True,
+                            shuffle_train=False)
+        ds = parser_obj.get_test_set()
+        subset = torch.utils.data.Subset(ds, range(20)) # Just 20 frames for diagnostic
         dl = DataLoader(subset, batch_size=1, shuffle=False)
         
         print(f"\nProcessing {ct}...")
@@ -74,17 +85,11 @@ def run_n2_diagnostic():
         
         with torch.no_grad():
             for batch in tqdm(dl):
-                # proj_in is [B, 5, H, W]
                 proj_in = batch[0].to(device)
                 if proj_in.shape[1] == 0:
                     continue
                     
-                # Get logits
                 logits, _, _, _ = model(proj_in)
-                
-                # In EvidentialHDC, evidence = exp(logits) or relu(logits). 
-                # Assuming standard relu-based evidence for simplicity (update if exp is used)
-                # We'll use softplus as a safe generalized evidence function
                 evidence = F.softplus(logits)
                 alphas = evidence + 1.0
                 

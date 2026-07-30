@@ -2,17 +2,17 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import os
+import yaml
+import sys
 import random
 
-import sys
 sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 
 try:
-    from modules.HDC_utils import set_uq_model
-    from models.pointnet2.pointnet2_msg import Pointnet2MSG as Pointnet2
-    import datasets.kitti_c_utils as ukc
+    import unsup_main
+    from dataset.kitti.parser import Parser
 except ImportError as e:
-    print(f"ImportError: {e}\\nPlease run this script from the EvidentialHDC root directory.")
+    print(f"ImportError: {e}\nPlease run this script from the EvidentialHDC root directory.")
     exit(1)
 
 def strong_augmentation(proj_in, drop_prob=0.2, noise_std=0.05):
@@ -22,15 +22,12 @@ def strong_augmentation(proj_in, drop_prob=0.2, noise_std=0.05):
     """
     aug_proj = proj_in.clone()
     
-    # 1. Random Point Dropout (simulated by setting features to 0)
-    # We apply this mask to the range map and features
     B, C, H, W = aug_proj.shape
     drop_mask = (torch.rand(B, 1, H, W, device=aug_proj.device) > drop_prob).float()
     aug_proj = aug_proj * drop_mask
     
-    # 2. Gaussian Noise on XYZ channels (channels 0, 1, 2)
     noise = torch.randn(B, 3, H, W, device=aug_proj.device) * noise_std
-    aug_proj[:, 0:3, :, :] += (noise * drop_mask) # Only add noise to non-dropped points
+    aug_proj[:, 0:3, :, :] += (noise * drop_mask) 
     
     return aug_proj
 
@@ -38,8 +35,11 @@ def run_m2_diagnostic():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print("Initializing model...")
     
-    net = Pointnet2(num_classes=17, use_xyz=True).to(device)
-    model = set_uq_model(net, num_classes=17).to(device)
+    ARCH = yaml.safe_load(open("config/arch/senet-2048p.yml", 'r'))
+    DATA = yaml.safe_load(open("config/labels/semantic-kitti-all.yaml", 'r'))
+    
+    model = unsup_main.train_hdc(ARCH, DATA, epochs=0, return_extractor=False)
+    model = model.to(device)
     
     ckpt_path = 'logs/kitti_pretrain/hdc_sub.pth'
     if not os.path.exists(ckpt_path):
@@ -50,15 +50,31 @@ def run_m2_diagnostic():
     model.load_state_dict(ckpt['state_dict'] if 'state_dict' in ckpt else ckpt, strict=False)
     model.eval()
 
-    # Load a clean sequence (or wet_ground) to see if consistency holds for REAL points
-    ds = ukc.SemanticKITTI_C(corruption='wet_ground', severity=3, split='test')
+    print("\nValidating Strong Augmentation Semantics on wet_ground...")
+    
+    corruption_root = f"/mnt/alpha/jmfleming/KITTI/dataset/sequences/08/corruption/wet_ground/3/"
+    if not os.path.exists(corruption_root):
+        corruption_root = f"/mnt/alpha/jmfleming/KITTI/dataset/sequences/08/"
+        
+    parser_obj = Parser(root=corruption_root,
+                        train_sequences=None,
+                        valid_sequences=None,
+                        test_sequences=['08'],
+                        labels=DATA["labels"],
+                        color_map=DATA["color_map"],
+                        learning_map=DATA["learning_map"],
+                        learning_map_inv=DATA["learning_map_inv"],
+                        sensor=ARCH["dataset"]["sensor"],
+                        max_points=ARCH["dataset"]["max_points"],
+                        batch_size=1,
+                        workers=4,
+                        gt=True,
+                        shuffle_train=False)
+    ds = parser_obj.get_test_set()
     subset = torch.utils.data.Subset(ds, range(20)) # Just 20 frames
     dl = DataLoader(subset, batch_size=1, shuffle=False)
     
-    print("\nValidating Strong Augmentation Semantics on wet_ground...")
-    
     total_points = 0
-    consistent_points = 0
     clean_acc = 0
     aug_acc = 0
     
@@ -70,21 +86,17 @@ def run_m2_diagnostic():
             if proj_in.shape[1] == 0:
                 continue
                 
-            # Clean pass
             clean_logits, _, clean_indices, _ = model(proj_in)
             clean_preds = clean_logits.argmax(dim=1)
             clean_labels = labels[clean_indices]
             valid_mask = (clean_labels >= 0) & (clean_labels < 17)
             
-            # Strong Aug pass
             aug_in = strong_augmentation(proj_in)
             aug_logits, _, aug_indices, _ = model(aug_in)
             aug_preds = aug_logits.argmax(dim=1)
             aug_labels = labels[aug_indices]
             aug_valid_mask = (aug_labels >= 0) & (aug_labels < 17)
             
-            # For simplicity, compare points that survived encoding in both (assuming indices align roughly)
-            # In practice, HDC encodes valid points. We compare accuracy to GT.
             clean_acc += (clean_preds[valid_mask] == clean_labels[valid_mask]).sum().item()
             aug_acc += (aug_preds[aug_valid_mask] == aug_labels[aug_valid_mask]).sum().item()
             total_points += valid_mask.sum().item()
