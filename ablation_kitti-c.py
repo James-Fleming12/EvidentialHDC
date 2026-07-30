@@ -446,7 +446,7 @@ def main():
                 # The frozen confusion matrix's ROW SUMS are the GT class counts,
                 # so this costs no extra data pass.
                 if cfg.get("prior_mode") == "chunk":
-                    base_fk = (seed, ct, cfg["tau"], cfg["kappa"], cfg["mv_tta"], "source")
+                    base_fk = (seed, ct, cfg["tau"], cfg["kappa"], cfg["mv_tta"], "source", False, False, False, False)
                     if base_fk not in frozen_cache:
                         raise RuntimeError(
                             "prior_oracle needs the plain 'frozen' ablation to run first "
@@ -469,7 +469,11 @@ def main():
                     # share (seed, corruption, tau, kappa, mv_tta); gate_mode and
                     # ic_method do not affect frozen evaluation.
                     fk = (seed, ct, cfg["tau"], cfg["kappa"], cfg["mv_tta"],
-                          cfg.get("prior_mode", "source"))
+                          cfg.get("prior_mode", "source"),
+                          cfg.get("prior_est", False),
+                          cfg.get("prior_switch", False),
+                          cfg.get("prior_ramp", False),
+                          cfg.get("prior_inverse", False))
                     if fk in frozen_cache:
                         init_m, init_conf = frozen_cache[fk]
                         if init_conf is not None:

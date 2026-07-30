@@ -74,3 +74,30 @@ The honest framing of our current architecture is now **"frozen model + selectiv
 2.  **Adaptive Budget (Targeted Scope):** Implement the confidence-keyed adaptive budget $\Phi_c = \Phi_{\text{max}} \cdot (1 - \text{conf}_c)$. Crucially, this is *not* a global mechanism to raise the mean. It is scoped strictly as bounded adaptation on crosstalk only, layered on top of the frozen+prior baseline to claw back performance where the prior alone fails.
 3.  **BBSE (Gated on D2):** Pursue Black Box Shift Estimation *only* if diagnostic D2 shows that label shift dominates covariate shift. If the assumption holds, it is genuinely promising for pushing wet ground past +11.7. If it fails, BBSE is a theoretical trap.
 4.  **Un-saturate Dirichlet (Lowest Priority):** Scaling the Dirichlet prior to un-saturate the domain-gap scalar is only worth doing if the adaptive budget (Step 2) specifically needs the domain-gap scalar as a trigger. Otherwise, fixing inert mechanisms (M-B/M-C) to chase a +1.75 gate ceiling is counterproductive when the prior switch already yields +2.10.
+
+---
+
+## 5. Preliminary Redo Results (Prior Switch & T-DRIFT)
+
+### 5.1 Stage 1: Frozen Prior Methods
+*Note: Due to a cache key collision in the `ablation_kitti-c.py` test runner (`fk` excluded the prior flags), the `m_d_prior_*` methods inadvertently loaded the cached `frozen` evaluation results instead of running their unique prior logic. These results are identically matched to the `frozen` baseline and will need to be re-run with a fixed cache key.*
+
+### 5.2 Stage 3: Prior Switch (D5 Test)
+*Because `frozen` was not evaluated in Stage 3, `m_d_prior_switch` successfully bypassed the cache and evaluated its prior logic across all 8 corruptions.*
+
+| Method | Mean | fog | wet_ground | snow | motion_blur | beam_missing | crosstalk | incomplete_echo | cross_sensor |
+|---|---|---|---|---|---|---|---|---|---|
+| `frozen` | 33.68 | 6.04 | 42.02 | 50.22 | 50.52 | 39.44 | 10.71 | 43.90 | 26.56 |
+| `m_d_prior_switch` | 32.24 | 1.29 | 47.84 | 49.80 | 49.42 | 39.15 | 5.57 | 38.00 | 26.84 |
+
+**Observations:**
+- **Wet Ground (+5.82):** The prior switch successfully turns on and yields massive gains!
+- **Fog (-4.75) & Crosstalk (-5.14):** The switch was supposed to remain off for these domains, but performance cratered far below `frozen`. This indicates the simple `tail_ratio >= 1.15` heuristic is falsely triggering on these corruptions.
+
+### 5.3 Stage 5: T-DRIFT Continual Run (Legacy Loose)
+*The continual run on wet ground (4071 frames) over time with loose gating.*
+
+- **Initial mIoU:** 48.73
+- **Final mIoU:** 38.47 (Structural Collapse of -10.26)
+- **Accuracy:** 91.18 -> 79.77
+- **Firing Rate:** 74.03%
