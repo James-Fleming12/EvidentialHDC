@@ -89,10 +89,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
     iou_per_class_history = []
     num_classes = model.num_classes
     cumulative_confusion_matrix = torch.zeros((num_classes, num_classes), dtype=torch.int64, device=device)
-    
-    # --- Category 2 & Category 1 Integration ---
-    # TODO: Initialize Adaptive Memory Bank here if update_method == 'adapt_mem'
-    # mem_bank = AdaptiveMemoryBank(hd_dim=10000, num_classes=num_classes, memory_capacity=10000).to(device)
+    firing_rates = []
 
     for batch_idx, batch_data in enumerate(tqdm(target_dataloader, desc="Adapting", leave=False)):
         if kwargs.get('dry_run', False) and batch_idx >= 2:
@@ -111,11 +108,24 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                 norm_enc = F.normalize(raw_enc, dim=1).to(device)
                 
                 if update_method == 'adapt_mem':
-                    # TODO: Integrate AdaptMemModel.py
-                    # predictions, conf = mem_bank.query(norm_enc)
-                    # if not eval_only:
-                    #     mem_bank.update(norm_enc, predictions, conf)
-                    pass
+                    from modules.AdaptMemModel import AdaptiveMemoryBank
+                    if not hasattr(model, 'mem_bank'):
+                        model.mem_bank = AdaptiveMemoryBank(hd_dim=10000, num_classes=num_classes, memory_capacity=10000).to(device)
+                    
+                    if model.mem_bank.keys.size(0) == 0:
+                        # Cold start: rely on prototype projection for the very first frame to seed the graph
+                        fallback_logits = model.classify(norm_enc)
+                        predictions = torch.argmax(fallback_logits, dim=1)
+                        # We use 0.9 as a strict threshold for the initial prototype seed
+                        conf = F.softmax(fallback_logits, dim=1).max(dim=1)[0]
+                        if not eval_only:
+                            rate = model.mem_bank.update(norm_enc, predictions, (conf >= 0.9).float())
+                            if rate is not None: firing_rates.append(rate)
+                    else:
+                        predictions, conf = model.mem_bank.query(norm_enc)
+                        if not eval_only:
+                            rate = model.mem_bank.update(norm_enc, predictions, conf)
+                            if rate is not None: firing_rates.append(rate)
                 else:
                     # Legacy frozen inference
                     logits = model.classify(norm_enc)
@@ -141,6 +151,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
     if not eval_only:
         model.train(model_was_training)
         
+    avg_firing = sum(firing_rates) / max(1, len(firing_rates))
+        
     return {
         "mIoU": miou_history, 
         "Head_mIoU": head_miou_history,
@@ -148,7 +160,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         "Tail_mIoU": tail_miou_history,
         "Accuracy": acc_history, 
         "IoU_per_class": iou_per_class_history, 
-        "FiringRate": 0.0, 
+        "FiringRate": avg_firing, 
         "UpdateMagnitude": 0.0,
         "ConfusionMatrix": cumulative_confusion_matrix.cpu().numpy().tolist()
     }
