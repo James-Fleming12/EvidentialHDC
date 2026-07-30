@@ -77,7 +77,7 @@ def compute_correlations_torch(x, y):
     spearman = float(cov_r / (srx * sry)) if srx != 0 and sry != 0 else 0.0
     return f"Pearson r={pearson:.6f}, Spearman rho={spearman:.6f} (over {len(x):,} pairs)"
 
-def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, ic_method='none', tau=None, kappa=15.0, normalize_weights=False, mv_tta='none', gate_mode='epistemic', dynamic_geom=False, diagnostics=True, dump_features=False, fire_th=0.0, consistent_tau_weights=False, veto_tau_mismatch=False, lr_schedule='constant', adapt_frames=None, base_lr=0.01, rotation_cap=None, loosen_beta=0.0, prior_est=False):
+def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update_method='frozen', dry_run=False, custom_update_fn=None, ic_method='none', tau=None, kappa=15.0, normalize_weights=False, mv_tta='none', gate_mode='epistemic', dynamic_geom=False, diagnostics=True, dump_features=False, fire_th=0.0, consistent_tau_weights=False, veto_tau_mismatch=False, lr_schedule='constant', adapt_frames=None, base_lr=0.01, rotation_cap=None, loosen_beta=0.0, prior_est=False, prior_switch=False, prior_ramp=False, prior_inverse=False, adaptive_budget=False):
     if ic_method not in ['none', 'ic4']:
         raise ValueError(f"Unknown ic_method: {ic_method}")
     logger = logging.getLogger("EvalAdapt")
@@ -162,10 +162,38 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         l = F.linear(enc, w_norm) * kappa
                         if tau != 0.0 and hasattr(model, 'source_class_freq'):
                             if prior_est and hasattr(model, 'target_prior'):
-                                pi = torch.clamp(model.target_prior, min=1e-5).to(device)
+                                tail_classes = [2, 3, 6, 7, 10]
+                                tail_rate = model.target_prior[tail_classes].sum().item()
+                                src_tail_rate = model.source_class_freq[tail_classes].sum().item()
+                                
+                                eff_tau = tau
+                                use_target = True
+                                
+                                if prior_switch or prior_ramp or prior_inverse:
+                                    ratio = tail_rate / max(1e-5, src_tail_rate)
+                                    
+                                    if prior_switch:
+                                        use_target = ratio >= 1.15
+                                    elif prior_inverse:
+                                        use_target = ratio < 1.15
+                                    elif prior_ramp:
+                                        k = 1.15
+                                        scale = (ratio - 1.0) / (k - 1.0)
+                                        scale = max(0.0, min(1.0, scale))
+                                        pi_target = torch.clamp(model.target_prior, min=1e-5).to(device)
+                                        pi_source = torch.clamp(model.source_class_freq, min=1e-5).to(device)
+                                        pi = scale * pi_target + (1.0 - scale) * pi_source
+                                        use_target = None
+                                        
+                                if use_target is True:
+                                    pi = torch.clamp(model.target_prior, min=1e-5).to(device)
+                                elif use_target is False:
+                                    pi = torch.clamp(model.source_class_freq, min=1e-5).to(device)
+                                    
+                                l = l - eff_tau * torch.log(pi).unsqueeze(0)
                             else:
                                 pi = torch.clamp(model.source_class_freq, min=1e-5).to(device)
-                            l = l - tau * torch.log(pi).unsqueeze(0)
+                                l = l - tau * torch.log(pi).unsqueeze(0)
                         return l
                         
                     logits = get_logits(norm_enc)
@@ -177,6 +205,14 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     
                 if _baseline_state is None:
                     predictions = torch.argmax(logits, dim=1)
+                    
+                if eval_only:
+                    if not hasattr(model, '_eval_class_conf_sum'):
+                        model._eval_class_conf_sum = torch.zeros(num_classes, device=device)
+                        model._eval_class_counts = torch.zeros(num_classes, device=device)
+                    conf_vals = F.softmax(logits, dim=1).max(dim=1)[0]
+                    model._eval_class_conf_sum += torch.bincount(predictions, weights=conf_vals, minlength=num_classes)
+                    model._eval_class_counts += torch.bincount(predictions, minlength=num_classes).float()
                     
                 view_preds = None
                 view_disagreement = torch.zeros_like(predictions, dtype=torch.bool)
@@ -241,10 +277,48 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     if tau is not None and tau != 0.0 and hasattr(model, 'source_class_freq'):
                         pl_logits = cos_sims * kappa
                         if prior_est and hasattr(model, 'target_prior'):
-                            pi = torch.clamp(model.target_prior, min=1e-5).to(device)
+                            tail_classes = [2, 3, 6, 7, 10]
+                            tail_rate = model.target_prior[tail_classes].sum().item()
+                            src_tail_rate = model.source_class_freq[tail_classes].sum().item()
+                            
+                            eff_tau = tau
+                            use_target = True
+                            
+                            if prior_switch or prior_ramp or prior_inverse:
+                                ratio = tail_rate / max(1e-5, src_tail_rate)
+                                
+                                if prior_switch:
+                                    use_target = ratio >= 1.15
+                                elif prior_inverse:
+                                    use_target = ratio < 1.15
+                                elif prior_ramp:
+                                    k = 1.15
+                                    scale = (ratio - 1.0) / (k - 1.0)
+                                    scale = max(0.0, min(1.0, scale))
+                                    pi_target = torch.clamp(model.target_prior, min=1e-5).to(device)
+                                    pi_source = torch.clamp(model.source_class_freq, min=1e-5).to(device)
+                                    pi = scale * pi_target + (1.0 - scale) * pi_source
+                                    use_target = None
+                                    
+                                if batch_idx == len(target_dataloader) - 1:
+                                    oracle_helps = getattr(target_dataloader, 'corruption', 'unknown') in ['wet_ground', 'incomplete_echo', 'cross_sensor']
+                                    if prior_ramp:
+                                        decision = f"RAMP({scale:.2f})"
+                                        matched = (scale >= 0.5) == oracle_helps
+                                    else:
+                                        decision = "ON" if use_target else "OFF"
+                                        matched = use_target == oracle_helps
+                                    logger.info(f"  [D1] Switch decision: {decision} | ratio={ratio:.3f} | Matched Oracle? {matched}")
+                                    
+                            if use_target is True:
+                                pi = torch.clamp(model.target_prior, min=1e-5).to(device)
+                            elif use_target is False:
+                                pi = torch.clamp(model.source_class_freq, min=1e-5).to(device)
+                                
+                            pl_logits = pl_logits - eff_tau * torch.log(pi).unsqueeze(0)
                         else:
                             pi = torch.clamp(model.source_class_freq, min=1e-5).to(device)
-                        pl_logits = pl_logits - tau * torch.log(pi).unsqueeze(0)
+                            pl_logits = pl_logits - tau * torch.log(pi).unsqueeze(0)
                         pseudo_labels = torch.argmax(pl_logits, dim=1)
                         
                         raw_labels = torch.argmax(cos_sims, dim=1)
@@ -280,6 +354,18 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         model._d0a_mismatch_weight_sum += base_weights[mismatch].sum().item()
                     if hasattr(model, '_d0a_all_weight_sum'):
                         model._d0a_all_weight_sum += base_weights.sum().item()
+                        
+                    if not hasattr(model, 'class_conf'):
+                        if hasattr(model, 'initial_class_conf'):
+                            model.class_conf = model.initial_class_conf.clone()
+                        else:
+                            model.class_conf = torch.ones(num_classes, device=device)
+                    batch_conf = torch.zeros(num_classes, device=device)
+                    batch_counts = torch.bincount(pseudo_labels, minlength=num_classes).float()
+                    batch_conf_sum = torch.bincount(pseudo_labels, weights=base_weights, minlength=num_classes)
+                    valid_classes = batch_counts > 0
+                    batch_conf[valid_classes] = batch_conf_sum[valid_classes] / batch_counts[valid_classes]
+                    model.class_conf[valid_classes] = 0.9 * model.class_conf[valid_classes] + 0.1 * batch_conf[valid_classes]
                         
                     update_weights = base_weights.clone()
                     if veto_tau_mismatch and mismatch.any():
@@ -488,9 +574,19 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         if loosen_beta > 0.0:
                             fire_th_eff = fire_th * (1.0 - loosen_beta * model.gain_controller.gain())
 
+                    if not hasattr(model, '_d4_gains'): model._d4_gains = []
+                    if not hasattr(model, '_d4_ths'): model._d4_ths = []
+                    if hasattr(model, 'gain_controller') and model.gain_controller is not None:
+                        model._d4_gains.append(model.gain_controller.gain())
+                    model._d4_ths.append(fire_th_eff)
+
                     # Calculate tracking metrics
                     # A point is vetoed if its final weight falls below the effective threshold
-                    veto_mask = update_weights <= fire_th_eff
+                    if gate_mode == 'legacy_soft':
+                        veto_mask = update_weights < (0.5 * base_weights)
+                    else:
+                        veto_mask = update_weights <= fire_th_eff
+                    
                     fired_mask = ~veto_mask
                     if mv_tta == 'veto_disagree':
                         fired_mask = fired_mask & (~view_disagreement)
@@ -567,7 +663,16 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             w0 = F.normalize(model.initial_classify_weights, dim=1)
                             wt = F.normalize(model.classify.weight.data, dim=1)
                             cos_angles = (w0 * wt).sum(dim=1).clamp(-1.0, 1.0)
-                            over = torch.acos(cos_angles) > math.radians(rotation_cap)
+                            
+                            if adaptive_budget and hasattr(model, 'class_conf'):
+                                assert hasattr(model, 'initial_class_conf'), "initial_class_conf missing - frozen pass skipped or cache bug?"
+                                conf = model.class_conf.clamp(0.0, 1.0)
+                                adaptive_cap = rotation_cap * (1.0 - conf)
+                                adaptive_cap_rad = (adaptive_cap * math.pi / 180.0).to(device)
+                                over = torch.acos(cos_angles) > adaptive_cap_rad
+                            else:
+                                over = torch.acos(cos_angles) > math.radians(rotation_cap)
+                                
                             if over.any():
                                 model.classify.weight.data[over] = pre_step_weight[over]
 
@@ -861,6 +966,13 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
     if hasattr(model, '_update_magnitude_log') and len(model._update_magnitude_log) > 0:
         avg_update_magnitude = sum(model._update_magnitude_log) / len(model._update_magnitude_log)
         model._update_magnitude_log = []
+    if eval_only and hasattr(model, '_eval_class_conf_sum'):
+        valid = model._eval_class_counts > 0
+        conf = torch.zeros(num_classes, device=device)
+        conf[valid] = model._eval_class_conf_sum[valid] / model._eval_class_counts[valid]
+        model.initial_class_conf = conf.clone()
+        del model._eval_class_conf_sum
+        del model._eval_class_counts
         
     return {
         "mIoU": miou_history, 
@@ -1467,6 +1579,17 @@ def main():
                 protocol_str = "continual" if args.continual else ("chunked" if args.chunked else "full")
                 n_frames_str = len(target_dataloader)
                 logger.info(f"Result for {ctype}-{sev} [protocol={protocol_str}, n_frames={n_frames_str}]: Initial mIoU={initial_miou:.4f} -> Final (Online)={online_miou:.4f} -> Final (Frozen)={final_miou:.4f} (Head: {initial_head:.4f} -> {final_head:.4f}, Mid: {initial_mid:.4f} -> {final_mid:.4f}, Tail: {initial_tail:.4f} -> {final_tail:.4f}), Acc={initial_acc:.4f} -> {final_acc:.4f}{firing_rate_str}")
+                
+                if hasattr(model, 'target_prior'):
+                    tail_classes = [2, 3, 6, 7, 10]
+                    tail_rate = model.target_prior[tail_classes].sum().item()
+                    src_tail_rate = model.source_class_freq[tail_classes].sum().item() if hasattr(model, 'source_class_freq') else 0.0
+                    logger.info(f"  [D1] Rare-class prediction rate: {tail_rate:.5f} (Source: {src_tail_rate:.5f}) -> Ratio: {tail_rate/max(1e-5, src_tail_rate):.2f}")
+                
+                if hasattr(model, '_d4_gains') and len(model._d4_gains) > 0:
+                    g_min, g_max = min(model._d4_gains), max(model._d4_gains)
+                    th_min, th_max = min(model._d4_ths), max(model._d4_ths)
+                    logger.info(f"  [D4] Gain saturation check: Gain range [{g_min:.3f}, {g_max:.3f}], Eff-Threshold range [{th_min:.5f}, {th_max:.5f}]")
                 suffix = f"_{full_method_name}"
                 
                 traj_json_path = os.path.join(args.log_dir, f'traj_{ctype}_{sev}{suffix}.json')

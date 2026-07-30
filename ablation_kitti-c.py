@@ -66,7 +66,7 @@ def _cfg(name, family, tau=-1.0, gate_mode="epistemic", ic_method="none",
          update_method="evidential_hdc_tta", gain_control=False, kappa=15.0,
          preset="soft", gate_cfg=None, prior_mode="source", consistent_tau_weights=False, veto_tau_mismatch=False,
          lr_schedule="constant", adapt_frames=None, base_lr=0.01,
-         rotation_cap=None, loosen_beta=0.0, prior_est=False):
+         rotation_cap=None, loosen_beta=0.0, prior_est=False, prior_switch=False, prior_ramp=False, prior_inverse=False, adaptive_budget=False, fire_th=None):
     return dict(name=name, family=family, update_method=update_method,
                 gate_mode=gate_mode, ic_method=ic_method, tau=tau, kappa=kappa,
                 normalize_weights=normalize_weights, mv_tta=mv_tta,
@@ -75,7 +75,7 @@ def _cfg(name, family, tau=-1.0, gate_mode="epistemic", ic_method="none",
                 prior_mode=prior_mode, consistent_tau_weights=consistent_tau_weights,
                 veto_tau_mismatch=veto_tau_mismatch,
                 lr_schedule=lr_schedule, adapt_frames=adapt_frames,
-                base_lr=base_lr, rotation_cap=rotation_cap, loosen_beta=loosen_beta, prior_est=prior_est)
+                base_lr=base_lr, rotation_cap=rotation_cap, loosen_beta=loosen_beta, prior_est=prior_est, prior_switch=prior_switch, prior_ramp=prior_ramp, prior_inverse=prior_inverse, adaptive_budget=adaptive_budget, fire_th=fire_th)
 
 ABLATIONS = {
     # ---- reference ----------------------------------------------------
@@ -132,6 +132,34 @@ ABLATIONS = {
                             consistent_tau_weights=True, rotation_cap=20.0, gain_control=True, loosen_beta=1.0, prior_est=True),
     "m_d_prior_only":  _cfg("M-D: Prior Only (frozen)", "methods",
                             update_method="frozen", gate_mode="epistemic", prior_est=True),
+    "m_d_prior_switch":_cfg("M-D: Prior Switch (frozen)", "methods",
+                            update_method="frozen", gate_mode="epistemic", prior_est=True, prior_switch=True),
+    "m_d_prior_ramp":  _cfg("M-D: Prior Ramp (frozen)", "methods",
+                            update_method="frozen", gate_mode="epistemic", prior_est=True, prior_ramp=True),
+    "m_d_prior_inverse":_cfg("M-D: Prior Inverse Switch (frozen)", "methods",
+                            update_method="frozen", gate_mode="epistemic", prior_est=True, prior_inverse=True),
+    "m_a_adaptive_cap":_cfg("M-A: Adaptive Budget 20deg", "methods",
+                            consistent_tau_weights=True, rotation_cap=20.0, adaptive_budget=True),
+                            
+    # ---- Legacy Validation (T1 & T-LOOSE & T-DRIFT) ----
+    "legacy_frozen_t0":_cfg("Legacy: Frozen (tau=0)", "legacy", update_method="frozen", tau=0.0),
+    "legacy_frozen_t1":_cfg("Legacy: Frozen (tau=-1)", "legacy", update_method="frozen", tau=-1.0),
+    "legacy_loose_t0": _cfg("Legacy: Loose Adaptation (tau=0)", "legacy", 
+                            update_method="evidential_hdc_tta", gate_mode="legacy_soft",
+                            preset="soft", ic_method="ic4", tau=0.0, mv_tta="none", dynamic_geom=True, fire_th=0.0),
+    "legacy_loose_t1": _cfg("Legacy: Loose Adaptation (tau=-1)", "legacy", 
+                            update_method="evidential_hdc_tta", gate_mode="legacy_soft",
+                            preset="soft", ic_method="ic4", tau=-1.0, mv_tta="none", dynamic_geom=True, fire_th=0.0),
+                            
+    # ---- D3 Drift-Knee Sweep ----
+    "d3_cap_2":        _cfg("D3: Rotation cap 2deg", "d3_sweep",
+                            consistent_tau_weights=True, rotation_cap=2.0),
+    "d3_cap_5":        _cfg("D3: Rotation cap 5deg", "d3_sweep",
+                            consistent_tau_weights=True, rotation_cap=5.0),
+    "d3_cap_10":       _cfg("D3: Rotation cap 10deg", "d3_sweep",
+                            consistent_tau_weights=True, rotation_cap=10.0),
+    "d3_cap_20":       _cfg("D3: Rotation cap 20deg", "d3_sweep",
+                            consistent_tau_weights=True, rotation_cap=20.0),
 }
 
 SETS = {
@@ -142,6 +170,9 @@ SETS = {
     "g2": ["g2_frozen"],
     "methods": ["frozen", "m_a_cap", "m_ab_gain", "m_abc_loosen", "m_abcd_prior"],
     "prior": ["frozen", "m_d_prior_only", "prior_oracle"],
+    "d3_sweep": ["frozen", "d3_cap_2", "d3_cap_5", "d3_cap_10", "d3_cap_20"],
+    "legacy_val": ["legacy_frozen_t0", "legacy_frozen_t1", "legacy_loose_t0", "legacy_loose_t1"],
+    "overnight": ["frozen", "m_d_prior_only", "m_d_prior_switch", "m_d_prior_ramp", "m_d_prior_inverse", "m_a_adaptive_cap", "m_abc_loosen"],
 }
 SETS["all"] = list(ABLATIONS.keys())
 
@@ -393,19 +424,23 @@ def main():
                 chunk_idx = ukc.CORRUPTIONS.index(ct)
                 chunk = torch.utils.data.Subset(ds, chunks[chunk_idx]) if a.chunked else ds
                 dl = DataLoader(chunk, batch_size=1, shuffle=False, num_workers=ARCH["train"]["workers"])
+                dl.corruption = ct
 
                 common = dict(dry_run=a.dry_run, ic_method=cfg["ic_method"], tau=cfg["tau"],
                               kappa=cfg["kappa"], normalize_weights=cfg["normalize_weights"],
                               mv_tta=cfg["mv_tta"], gate_mode=cfg["gate_mode"],
                               dynamic_geom=cfg["dynamic_geom"], diagnostics=a.diagnostics,
-                              fire_th=a.fire_th, consistent_tau_weights=cfg.get("consistent_tau_weights", False),
-                              veto_tau_mismatch=cfg.get("veto_tau_mismatch", False),
-                              lr_schedule=cfg.get("lr_schedule", "constant"),
-                              adapt_frames=cfg.get("adapt_frames", None),
-                              base_lr=cfg.get("base_lr", 0.01),
+                              fire_th=cfg.get("fire_th") if cfg.get("fire_th") is not None else a.fire_th,
+                              consistent_tau_weights=cfg["consistent_tau_weights"],
+                              veto_tau_mismatch=cfg["veto_tau_mismatch"],
+                              lr_schedule=cfg["lr_schedule"], base_lr=cfg["base_lr"],
                               rotation_cap=cfg.get("rotation_cap", None),
                               loosen_beta=cfg.get("loosen_beta", 0.0),
-                              prior_est=cfg.get("prior_est", False))
+                              prior_est=cfg.get("prior_est", False),
+                              prior_switch=cfg.get("prior_switch", False),
+                              prior_ramp=cfg.get("prior_ramp", False),
+                              prior_inverse=cfg.get("prior_inverse", False),
+                              adaptive_budget=cfg.get("adaptive_budget", False))
 
                 # --- PRIOR ORACLE: replace pi_source with the chunk's TRUE prior ---
                 # The frozen confusion matrix's ROW SUMS are the GT class counts,
@@ -436,11 +471,13 @@ def main():
                     fk = (seed, ct, cfg["tau"], cfg["kappa"], cfg["mv_tta"],
                           cfg.get("prior_mode", "source"))
                     if fk in frozen_cache:
-                        init_m = frozen_cache[fk]
+                        init_m, init_conf = frozen_cache[fk]
+                        if init_conf is not None:
+                            model.initial_class_conf = init_conf.clone().to(device)
                     else:
                         model.eval()
                         init_m = _call_eval(model, dl, device, eval_only=True, **common)
-                        frozen_cache[fk] = init_m
+                        frozen_cache[fk] = (init_m, getattr(model, 'initial_class_conf', None))
 
                     if cfg["update_method"] == "frozen":
                         adapt_m = final_m = init_m

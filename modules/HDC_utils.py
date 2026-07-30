@@ -722,6 +722,11 @@ class DualGateModel(nn.Module):
     def _fuse_uncertainties(self, epistemic, consistency, geometric,
                             method='soft_dual_weight'):
         CALL_COUNTERS["fuse"] += 1
+        if method == 'legacy_soft':
+            u_excess = torch.relu(epistemic - 0.5)
+            z_excess = torch.relu(geometric - 0.5)
+            return torch.exp(-1.5 * u_excess - 1.0 * z_excess)
+            
         return fuse_uncertainties(epistemic, geometric, method=method,
                                   cfg=getattr(self, 'gate_cfg', None))
 

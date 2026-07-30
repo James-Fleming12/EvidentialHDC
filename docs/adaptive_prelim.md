@@ -52,3 +52,25 @@ We are currently executing an additive 3-seed component ladder against the +2.62
 | Method | Mean | fog | wet_ground | snow | motion_blur | beam_missing | crosstalk | incomplete_echo | cross_sensor |
 |---|---|---|---|---|---|---|---|---|---|
 | `m_d_prior_only` | 35.46 | 5.27 | 53.73 | 49.91 | 49.25 | 39.28 | 11.80 | 46.70 | 27.76 |
+
+---
+
+## 3. Diagnostic Tests (D1-D4)
+
+Before building new mechanisms, we must run four specific diagnostic tests to validate our assumptions and gather tuning parameters.
+
+*   **D1 — The Prior-Switch Signal:** The prior is a precision tool that suppresses rare classes (killing false positives on wet ground) but hurts when the model is already precise (deleting correct predictions on fog/snow/blur). We need to log the label-free *rare-class prediction rate* vs. the *source rare-class rate*. If this signal correlates with the prior's per-domain $\Delta$ (+helps vs -hurts), we have a zero-label controller for switching the prior on/off.
+*   **D2 — Label Shift vs. Covariate Shift (The BBSE Trap):** BBSE assumes pure label shift ($p(x|y)$ is fixed, $p(y)$ changes). However, LiDAR corruptions like fog physically alter $p(x|y)$ (covariate shift). We must test if BBSE is viable by estimating the target confusion structure on a held-out labeled slice of corruption and comparing it to the source confusion matrix $C$. If they diverge sharply, BBSE will invert the wrong matrix and inject error.
+*   **D3 — The Drift-Knee Sweep:** The 20° cap still lost -2.5 mIoU on wet ground. We must sweep $\Phi \in \{2, 5, 10, 20\}^\circ$ on wet ground alone to find the exact angle where the loss crosses zero. This identifies the "damage knee" and sets the target $\Phi_{\text{max}}$ for any future adaptive budget.
+*   **D4 — Confirm M-B/M-C Saturation in Code:** `m_ab_gain` and `m_abc_loosen` were byte-identical to the cap-only run. We must log the actual gain multiplier and effective threshold per frame to guarantee they are constant. If they vary but simply don't matter, un-saturating the Dirichlet mapping won't help.
+
+---
+
+## 4. Reprioritized Improvement Steps
+
+The honest framing of our current architecture is now **"frozen model + selectively-applied inference-time prior correction,"** with bounded adaptation treated purely as an optional per-domain extra. 
+
+1.  **Prior Switch (Highest Priority - Target: 35.78):** Gate the inference prior using D1's rare-class-rate signal. An oracle that applies the prior only where it helps (wet ground, echo) and turns it off where it hurts scores 35.78 (+2.10 over frozen). This is a simple logic switch, requires zero new machinery, and is the single biggest available gain.
+2.  **Adaptive Budget (Targeted Scope):** Implement the confidence-keyed adaptive budget $\Phi_c = \Phi_{\text{max}} \cdot (1 - \text{conf}_c)$. Crucially, this is *not* a global mechanism to raise the mean. It is scoped strictly as bounded adaptation on crosstalk only, layered on top of the frozen+prior baseline to claw back performance where the prior alone fails.
+3.  **BBSE (Gated on D2):** Pursue Black Box Shift Estimation *only* if diagnostic D2 shows that label shift dominates covariate shift. If the assumption holds, it is genuinely promising for pushing wet ground past +11.7. If it fails, BBSE is a theoretical trap.
+4.  **Un-saturate Dirichlet (Lowest Priority):** Scaling the Dirichlet prior to un-saturate the domain-gap scalar is only worth doing if the adaptive budget (Step 2) specifically needs the domain-gap scalar as a trigger. Otherwise, fixing inert mechanisms (M-B/M-C) to chase a +1.75 gate ceiling is counterproductive when the prior switch already yields +2.10.
