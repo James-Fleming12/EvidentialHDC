@@ -10,9 +10,11 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 import importlib
 ukc = importlib.import_module("unsup_kitti-c")
-from config import ARCH, DATA
 
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+ARCH = ukc.ARCH
+DATA = ukc.DATA
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def compute_epistemic_uncertainty(logits):
     # Logits should be [N, C] and scaled by tau=15.0 to break blockade
