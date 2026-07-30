@@ -74,11 +74,11 @@ We ran automated diagnostic scripts on the frozen HDC network to validate the th
 **Verdict:** **FAILED.** D-optimal compression (N4) will destroy the distributed semantic representation. N4 is abandoned.
 
 ### N2 Diagnostic: Dual-Channel Uncertainty Decomposition
-**Test Protocol:** We passed `wet_ground` (domain shift) and `fog` (sensor noise) projections through the model, applying a Dirichlet subjective-logic transformation (`evidence = softplus(logits)`) to the HDC logits. We then computed Distribution Uncertainty (epistemic) and Data Uncertainty (aleatoric) across 20 frames (`check_n2_uncertainty.py`).
-**Results:** Both channels yielded virtually identical values across both corruptions:
-- **Fog:** Dist Unc = 0.5781 | Data Unc = 2.8320
-- **Wet Ground:** Dist Unc = 0.5791 | Data Unc = 2.8320
-**Verdict:** **FAILED.** The Dirichlet uncertainty channels are completely degenerate and entangled in the HDC space. It is mathematically impossible to use N2 as a switch to separate domain gap from noise. Branch B (Uncertainty Gated Prior) is structurally blocked.
+**Test Protocol:** We passed `wet_ground` (domain shift) and `fog` (sensor noise) projections through the model. To break the softmax blockade of HDC cosines (which naturally squashes evidence to uniform), we scaled logits by a temperature of $\tau=15.0$ before applying the Dirichlet subjective-logic transformation (`evidence = softplus(logits * 15.0)`). We then masked out empty background pixels and computed Distribution Uncertainty (epistemic) and Data Uncertainty (aleatoric) across 20 frames (`check_n2_uncertainty.py`).
+**Results:** Even after correcting the scaling and background artifacts, both channels remained heavily entangled and nearly identical across physically distinct corruptions:
+- **Fog (Heavy Noise):** Dist Unc = 0.3855 | Data Unc = 2.5977
+- **Wet Ground (Clean, Domain Shift):** Dist Unc = 0.3994 | Data Unc = 2.6328
+**Verdict:** **FAILED.** The Dirichlet uncertainty channels are degenerate in the HDC space. The model is incapable of cleanly separating structural domain gap from hallucinated noise. Using N2 as a switch to gate a class prior (Branch B) is structurally unviable.
 
 ### M2 Diagnostic: Strong Augmentation Consistency
 **Test Protocol:** We validated whether LiDAR range projections possess sufficient structural robustness to survive strong augmentations (20% random point dropout + $0.05$ std Gaussian noise on XYZ coordinates). We compared the accuracy of the frozen model on clean vs. augmented `wet_ground` frames (`check_m2_consistency.py`).

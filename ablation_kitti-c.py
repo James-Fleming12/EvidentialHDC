@@ -148,6 +148,9 @@ ABLATIONS = {
                             update_method="conformalhdc", prior_est=False, prior_switch=False),
     "conformalhdc_10k":_cfg("ConformalHDC (10,000D HDC)", "baselines",
                             update_method="conformalhdc_10k", prior_est=False, prior_switch=False),
+    "m2_consistency":_cfg("M2 Consistency Gating", "methods",
+                          update_method="evidential_hdc_tta", gate_mode="consistency", mv_tta="weak_strong",
+                          prior_est=False, prior_switch=False),
                             
     # ---- Legacy Validation (T1 & T-LOOSE & T-DRIFT) ----
     "legacy_frozen_t0":_cfg("Legacy: Frozen (tau=0)", "legacy", update_method="frozen", tau=0.0),

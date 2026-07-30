@@ -234,6 +234,35 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     
                 view_preds = None
                 view_disagreement = torch.zeros_like(predictions, dtype=torch.bool)
+                
+                if mv_tta == 'weak_strong':
+                    # GPU-based strong augmentation on proj_in
+                    aug_in = proj_in.clone()
+                    # Apply 20% spatial dropout (zero out pixels)
+                    drop_mask = torch.rand_like(aug_in[:, 0:1, :, :]) > 0.20
+                    aug_in = aug_in * drop_mask
+                    # Add 0.05 gaussian noise to XYZ (channels 1, 2, 3)
+                    noise = torch.randn_like(aug_in[:, 1:4, :, :]) * 0.05
+                    aug_in[:, 1:4, :, :] += noise * drop_mask # Only add noise to valid points
+                    
+                    with torch.amp.autocast('cuda', enabled=True):
+                        aug_raw_enc, aug_indices, _ = model.encode(aug_in)
+                        
+                    if len(aug_indices) > 0:
+                        aug_norm_enc = F.normalize(aug_raw_enc, dim=1).to(model.classify.weight.dtype)
+                        aug_logits = model.classify(aug_norm_enc)
+                        aug_preds = torch.argmax(aug_logits, dim=1)
+                        
+                        # Align augmented predictions with original clean points
+                        B, C_ch, H, W = proj_in.shape
+                        full_aug_preds = torch.full((B * H * W,), -1, device=device, dtype=predictions.dtype)
+                        full_aug_preds[aug_indices] = aug_preds
+                        aligned_aug_preds = full_aug_preds[indices] # indices from clean pass
+                        
+                        # Disagree if the prediction flipped OR if the point was dropped in the aug view
+                        view_disagreement = (predictions != aligned_aug_preds)
+                        view_preds = [aligned_aug_preds, aligned_aug_preds]
+                
                 soft_view_var_all = torch.zeros(len(predictions), device=device)
 
                 
@@ -601,7 +630,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         veto_mask = update_weights <= fire_th_eff
                     
                     fired_mask = ~veto_mask
-                    if mv_tta == 'veto_disagree':
+                    if mv_tta in ['veto_disagree', 'weak_strong']:
                         fired_mask = fired_mask & (~view_disagreement)
                     effective_veto = ~fired_mask
                     
