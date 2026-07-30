@@ -103,29 +103,35 @@ def get_knn_score(X, y, task="semantic"):
     X_test, y_test = X[idx_test].to(device), y[idx_test].to(device)
     
     # Cosine distance
-    X_train_norm = F.normalize(X_train, dim=1)
-    X_test_norm = F.normalize(X_test, dim=1)
+    X_train_norm = F.normalize(X_train.float(), dim=1)
+    X_test_norm = F.normalize(X_test.float(), dim=1)
     
-    # compute chunked to avoid OOM
     chunk_size = 2000
-    preds = []
+    preds_or_probs = []
     
     for i in range(0, len(X_test_norm), chunk_size):
         chunk = X_test_norm[i:i+chunk_size]
         sims = torch.mm(chunk, X_train_norm.t())
         
-        # 1-NN
-        max_idx = sims.argmax(dim=1)
-        preds.append(y_train[max_idx])
+        # k=10 NN
+        topk_sims, topk_idx = sims.topk(k=10, dim=1)
+        neighbor_labels = y_train[topk_idx]
         
-    preds = torch.cat(preds)
+        if task == "semantic":
+            # Mode of neighbors
+            pred = torch.mode(neighbor_labels, dim=1).values
+            preds_or_probs.append(pred)
+        else:
+            # Probability of being class 1 (correctness)
+            prob = neighbor_labels.float().mean(dim=1)
+            preds_or_probs.append(prob)
+            
+    preds_or_probs = torch.cat(preds_or_probs)
     
     if task == "semantic":
-        return (preds == y_test).float().mean().item()
+        return (preds_or_probs == y_test).float().mean().item()
     else:
-        # For correctness, we return AUROC using 1-NN predictability? No, knn just outputs a binary pred.
-        # Let's just return accuracy for the correctness kNN too
-        return (preds == y_test).float().mean().item()
+        return compute_auroc(preds_or_probs, y_test)
 
 def run_phase1_audit():
     print("Initializing model for Phase I Representation Audit...")
@@ -182,13 +188,18 @@ def run_phase1_audit():
             clean_preds = cos_sims.argmax(dim=1)
             clean_labels = labels[indices]
             
+            # Subsample 2000 points per frame to avoid 52GB CPU RAM spike
             valid = (clean_labels >= 0) & (clean_labels < 17)
+            valid_idx = valid.nonzero(as_tuple=True)[0]
+            if len(valid_idx) > 2000:
+                perm = torch.randperm(len(valid_idx))[:2000]
+                valid_idx = valid_idx[perm]
             
-            all_backbone.append(backbone[valid].cpu())
-            all_hdc.append(raw_enc[valid].cpu())
-            all_sims.append(cos_sims[valid].cpu())
-            all_labels.append(clean_labels[valid].cpu())
-            all_correctness.append((clean_preds[valid] == clean_labels[valid]).cpu())
+            all_backbone.append(backbone[valid_idx].cpu())
+            all_hdc.append(raw_enc[valid_idx].cpu())
+            all_sims.append(cos_sims[valid_idx].cpu())
+            all_labels.append(clean_labels[valid_idx].cpu())
+            all_correctness.append((clean_preds[valid_idx] == clean_labels[valid_idx]).cpu())
             
     X_bb = torch.cat(all_backbone, dim=0).float()
     X_hdc = torch.cat(all_hdc, dim=0).float()
@@ -196,15 +207,6 @@ def run_phase1_audit():
     Y_sem = torch.cat(all_labels, dim=0).long()
     Y_corr = torch.cat(all_correctness, dim=0).long()
     
-    # Subsample to 20,000 for probing to save memory and time
-    if len(X_bb) > 20000:
-        perm = torch.randperm(len(X_bb))[:20000]
-        X_bb = X_bb[perm]
-        X_hdc = X_hdc[perm]
-        X_sims = X_sims[perm]
-        Y_sem = Y_sem[perm]
-        Y_corr = Y_corr[perm]
-        
     print("\n--- Phase I: Representation Audit (Predictive Decodability) ---")
     
     representations = [
