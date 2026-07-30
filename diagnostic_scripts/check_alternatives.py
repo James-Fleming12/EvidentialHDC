@@ -137,12 +137,27 @@ def run_diagnostics():
                 all_logits.append(cos_sims[valid].cpu())
                 all_max_cos.append(max_cos[valid].cpu())
                 
-        # Aggregate Target
-        X_target = torch.cat(all_feats, dim=0).to(device).float()
-        Y_target = torch.cat(all_labels, dim=0).to(device)
-        Preds = torch.cat(all_preds, dim=0).to(device)
-        Logits = torch.cat(all_logits, dim=0).to(device)
-        MaxCos = torch.cat(all_max_cos, dim=0).to(device)
+        # Aggregate Target on CPU first to avoid OOM
+        X_cpu = torch.cat(all_feats, dim=0)
+        Y_cpu = torch.cat(all_labels, dim=0)
+        Preds_cpu = torch.cat(all_preds, dim=0)
+        Logits_cpu = torch.cat(all_logits, dim=0)
+        MaxCos_cpu = torch.cat(all_max_cos, dim=0)
+        
+        # Subsample to 50k points to fit in VRAM easily during k-NN
+        if len(X_cpu) > 50000:
+            perm = torch.randperm(len(X_cpu))[:50000]
+            X_cpu = X_cpu[perm]
+            Y_cpu = Y_cpu[perm]
+            Preds_cpu = Preds_cpu[perm]
+            Logits_cpu = Logits_cpu[perm]
+            MaxCos_cpu = MaxCos_cpu[perm]
+            
+        X_target = X_cpu.to(device).float()
+        Y_target = Y_cpu.to(device)
+        Preds = Preds_cpu.to(device)
+        Logits = Logits_cpu.to(device)
+        MaxCos = MaxCos_cpu.to(device)
         
         # We may need to chunk X_target to avoid OOM during k-NN
         chunk_size = 10000
@@ -165,13 +180,8 @@ def run_diagnostics():
         knn_purity = 0
         target_purity = 0
         
-        # Subsample target for self-kNN to avoid OOM
         target_bank = X_target
         target_bank_labels = Y_target
-        if len(target_bank) > 50000:
-            perm = torch.randperm(len(target_bank))[:50000]
-            target_bank = target_bank[perm]
-            target_bank_labels = target_bank_labels[perm]
             
         for i in range(0, len(X_target), chunk_size):
             chunk = X_target[i:i+chunk_size]
