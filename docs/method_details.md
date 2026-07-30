@@ -144,6 +144,22 @@ The per-domain oracle is the target: it is the score of an oracle that chooses, 
 
 ---
 
-## 10. Software
+## 10. Key Empirical Findings (July 29 Update)
+
+A clean single-seed run of the full component ladder definitively answered the core architectural questions:
+
+1. **Frozen + Online Prior (35.46 mIoU) is the Working Baseline:** The simplest configuration (`m_d_prior_only` without any prototype adaptation) is the best result on the board. It scores +1.78 over frozen, matching the prior oracle exactly. The online EMA correctly converges to the true chunk prior, proving the estimator works perfectly when decoupled from prototype drift.
+2. **Adaptation Destroys the Prior Gain:** The full pipeline (`m_abcd_prior`) collapses to 32.56 mIoU (e.g., crosstalk drops from 11.80 to 4.82, fog 5.27 to 2.74). Adapting prototypes shifts the predicted-label distribution that the prior EMA estimates from, meaning the online prior chases a moving target and diverges. Frozen-prior is stable; adapt-plus-prior is unstable. These two mechanisms interfere and cannot be combined naively.
+3. **Gain Control and Gate-Loosening are Inert:** In the component ladder, `m_a_cap`, `m_ab_gain`, and `m_abc_loosen` yielded byte-identical results across all 8 corruptions (33.36 mIoU). M-B and M-C did exactly zero work on top of the cap, as the uncertainty signal remained fully saturated for all corruptions in the protocol.
+4. **The Fixed 20° Rotation Cap is Too Loose:** A fixed 20° cap still performs worse than frozen (33.36 vs 33.68 mIoU), and wet ground still loses 2.5 mIoU. The budget is too loose to be protective. The next iteration will replace the fixed 20° cap with a confidence-keyed adaptive budget: $\Phi_c = \Phi_{\text{max}} \cdot (1 - \text{conf}_c)$. This auto-freezes high-confidence head classes while allowing adaptation room for low-confidence tail classes.
+
+**Next Steps:**
+* **Confirm `m_d_prior_only` with 3-seeds** to lock it in as the headline working baseline.
+* **Explore BBSE Correction** to de-bias the predicted distribution through the source confusion matrix and push the prior estimator past the oracle.
+* **Layer Adaptive Rotation Constraints** strictly as an additive experiment on top of the frozen+prior baseline, testing whether sparse adaptation can claw back performance on domains like crosstalk without pulling down the domains that frozen+prior already wins.
+
+---
+
+## 11. Software
 
 The controller is implemented in `modules/HDC_utils.py`. Prediction-path prior correction and the online prior estimator are frame-local and stateless beyond the prior EMA; gain control maintains a single scalar EMA; the rotation budget maintains the source prototype matrix $\mathbf{w}^0$ and the pre-step matrix for reversion. No component requires gradients, replay buffers, or additional forward passes beyond the single embedding computed for prediction.

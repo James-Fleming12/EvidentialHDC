@@ -41,14 +41,14 @@ We are currently executing an additive 3-seed component ladder against the +2.62
 | Method | Mean | fog | wet_ground | snow | motion_blur | beam_missing | crosstalk | incomplete_echo | cross_sensor |
 |---|---|---|---|---|---|---|---|---|---|
 | `frozen` | 33.68 | 6.04 | 42.02 | 50.22 | 50.52 | 39.44 | 10.71 | 43.90 | 26.56 |
-| `m_a_cap` | TODO | TODO | TODO | TODO | TODO | TODO | TODO | TODO | TODO |
-| `m_ab_gain` | TODO | TODO | TODO | TODO | TODO | TODO | TODO | TODO | TODO |
-| `m_abc_loosen` | TODO | TODO | TODO | TODO | TODO | TODO | TODO | TODO | TODO |
-| `m_abcd_prior` | TODO | TODO | TODO | TODO | TODO | TODO | TODO | TODO | TODO |
+| `m_a_cap` | 33.36 | 5.56 | 39.50 | 49.29 | 50.57 | 39.94 | 12.33 | 42.77 | 26.93 |
+| `m_ab_gain` | 33.36 | 5.56 | 39.50 | 49.29 | 50.57 | 39.94 | 12.33 | 42.77 | 26.93 |
+| `m_abc_loosen` | 33.36 | 5.56 | 39.50 | 49.29 | 50.57 | 39.94 | 12.33 | 42.77 | 26.93 |
+| `m_abcd_prior` | 32.56 | 2.74 | 46.06 | 48.24 | 49.88 | 38.84 | 4.82 | 42.70 | 27.21 |
 
 ### 2.2 STAGE 2: Isolated Prior Test (M-D)
 *Verifies the pure inference-time gain (claimed +11.7 on wet_ground) without any prototype adaptation.*
 
 | Method | Mean | fog | wet_ground | snow | motion_blur | beam_missing | crosstalk | incomplete_echo | cross_sensor |
 |---|---|---|---|---|---|---|---|---|---|
-| `m_d_prior_only` | TODO | TODO | TODO | TODO | TODO | TODO | TODO | TODO | TODO |
+| `m_d_prior_only` | 35.46 | 5.27 | 53.73 | 49.91 | 49.25 | 39.28 | 11.80 | 46.70 | 27.76 |
