@@ -551,7 +551,7 @@ def main():
         end_idx = (i + 1) * chunk_size if i < len(CORRUPTIONS) - 1 else total_len
         chunks.append(indices[start_idx:end_idx])
 
-    base_model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES, mv_tta=args.mv_tta)
+    base_model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES)
     populate_source_statistics(base_model, args.kitti_dir, ARCH, DATA, device, dry_run=args.dry_run)
     
     source_stats_cache = {
@@ -597,7 +597,7 @@ def main():
             logger.error(f"Failed to load KITTI-C corruption dataset at {corruption_root}: {e}")
 
     # Initialize the model exactly ONCE to be shared
-    model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES, mv_tta=args.mv_tta)
+    model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES)
     if source_stats_cache is not None:
         model.class_latent_means = source_stats_cache['class_latent_means'].to(device) if source_stats_cache['class_latent_means'] is not None else None
         model.source_density_mean = source_stats_cache['source_density_mean'].to(device) if source_stats_cache.get('source_density_mean') is not None else None
