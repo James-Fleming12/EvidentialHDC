@@ -217,3 +217,18 @@ To ensure the final selected architecture is viable for real-time robotic deploy
 - Runtime / Latency / FLOPs
 - Adaptation time
 - Energy & Storage
+
+**Phase VI Findings (Hardware Profiling)**
+| Operation | VRAM (MB) | Latency (ms) | Speed (FPS) |
+| :--- | :--- | :--- | :--- |
+| **Prototype Method** | 0.64 | 64.58 (Total) | ~15.5 FPS |
+| - Inference | - | 6.83 | 146.4 FPS |
+| - EMA Update | - | 57.75 | - |
+| **Memory Bank (10k)** | 381.47 | 641.55 (Total) | ~1.6 FPS |
+| - Inference (130k pts) | - | 638.08 | - |
+| - FIFO Update | - | 3.47 | - |
+
+- **Memory Feasibility:** A pristine 10,000-capacity continuous (float32) memory bank requires just 381 MB of VRAM, making it phenomenally lightweight and easy to deploy on edge robotics (e.g., Jetson).
+- **Adaptation Speed:** Updating the memory bank via FIFO shift (3.47 ms) is vastly faster than calculating cluster means for the Prototype EMA update (57.75 ms).
+- **Inference Bottleneck:** Querying 130,000 points against a 10,000 $\times$ 10,000 matrix via k-NN takes 638 ms, dragging the system down to 1.6 FPS. 
+- **Verdict (Final Design Constraint):** The Adaptive Memory Bank solves the accuracy/drift problem, but introduces an inference bottleneck. To hit real-time $>$10 FPS bounds, the incoming LiDAR frame must either be (1) subsampled to ~20,000 points before k-NN, (2) indexed via FAISS, or (3) binarized for XOR operations. Subsampling is the most direct solution for initial prototyping.
