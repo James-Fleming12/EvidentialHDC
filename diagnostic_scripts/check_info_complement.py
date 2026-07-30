@@ -126,7 +126,7 @@ def run_info_diagnostics():
                 if proj_in.shape[1] == 0:
                     continue
                     
-                raw_enc, _, indices, _ = model.encode(proj_in)
+                raw_enc, indices, _ = model.encode(proj_in)
                 if len(indices) == 0:
                     continue
                     
