@@ -152,7 +152,7 @@ def run_separability_diagnostics():
                 all_features.append(raw_enc[valid_gt].cpu())
                 all_correctness.append(correctness[valid_gt].cpu())
                 
-        X = torch.cat(all_features, dim=0).to(device)
+        X = torch.cat(all_features, dim=0).to(device).float()
         y = torch.cat(all_correctness, dim=0).to(device)
         
         print(f"\n--- HDC Linear Separability Test ({ct}) ---")
