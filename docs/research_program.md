@@ -93,7 +93,12 @@ Estimate the **reproduction number** of a hallucination to quantify confirmation
 **Influence Functions**
 Estimate how much one sample changes the prototypes, logits, and neighboring predictions to measure the mathematical influence of specific points.
 
-**Deliverable:** A dynamic understanding of which samples and interactions dominate adaptation collapse.
+**Phase III Findings (Fog Corruption)**
+- **Massive Confirmation Bias:** In the very first frame of adaptation, the system generates over **~91,000 Confident Hallucinations** (points with $>0.9$ confidence but incorrect labels). Since there are only ~130k points per frame, this implies nearly 70% of the point cloud is acting as a destructive gradient signal.
+- **Instantaneous Drift:** Because these 91,000 points are treated identically to true positives, they forcefully drag the prototypes away from their ground-truth locations in a single frame (Prototype Velocity Spike: 0.2355). 
+- **Verdict:** Adaptation fails as a dynamical system because the initial representation (in the 17D prototype space) is so geometrically distorted that it confidently triggers massive pseudo-label errors. The adaptation loop possesses no geometric checks to detect these outlier gradients, resulting in instantaneous confirmation-bias collapse.
+
+**Deliverable:** A dynamic understanding of which samples and interactions dominate adaptation collapse. (Completed: Collapse is driven by a massive volume of highly-confident initial hallucinations).
 
 ---
 
