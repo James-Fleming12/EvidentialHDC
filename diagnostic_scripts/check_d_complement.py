@@ -10,7 +10,6 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 import importlib
 ukc = importlib.import_module("unsup_kitti-c")
-import dataset.kitti_c_utils as ukc
 from config import ARCH, DATA
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
