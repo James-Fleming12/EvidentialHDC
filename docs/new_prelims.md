@@ -144,3 +144,23 @@ Once reduced to logits, the maximum decodable AUROC plummets from 1.0000 to 0.64
 5. **Filtering Fails $\rightarrow$ Prototype Drift:** The prototypes are poisoned, leading to continual structural collapse.
 
 **Conclusion:** Existing uncertainty signals are insufficient because the prototype projection discards discriminative information. This motivates methods that constrain prototype motion (such as an Adaptive Budget rotation cap, metric learning, or k-NN ensembles) rather than relying solely on logit-derived uncertainty.
+
+### Diagnostic 3: Alternative Method Viability (Memory Banks, Soft Labels, Diffusion)
+Following the realization that information is destroyed at the prototype projection layer, we evaluated alternative adaptation mechanisms that operate directly on the richer 10,000D representations or candidate sets (`check_alternatives.py`).
+
+**1. PL-1 (Top-k Candidate Coverage)**
+- **Fog:** Top-1 (13.08%) $\rightarrow$ Top-5 (66.51%)
+- **Crosstalk:** Top-1 (27.87%) $\rightarrow$ Top-5 (75.13%)
+**Verdict:** Approximately ~30% of the time, the true class is not even present in the Top-5 logits. Methods like PASLE that rely on iteratively refining soft candidate sets are fundamentally handicapped because the true answer has already been irrecoverably discarded by the logit bottleneck.
+
+**2. DD-2 / MB-3 (Oracle Source Projection vs. Prototypes)**
+We bypassed the class prototypes entirely and extracted a memory bank of 50,000 clean source 10,000D HDC vectors. We then classified corrupted target points based purely on their 1-Nearest Neighbor (1-NN) in the source bank.
+- **Fog:** Prototype Accuracy (13.08%) $\rightarrow$ Source 1-NN Accuracy (**73.57%**)
+- **Crosstalk:** Prototype Accuracy (27.87%) $\rightarrow$ Source 1-NN Accuracy (**53.38%**)
+**Verdict:** The 10,000D feature representations remain vastly more informative than the 17 global prototypes. Memory bank methods, feature denoisers, or representation alignment methods have immense performance headroom.
+
+**3. MB-2 (Target Neighborhood Purity)**
+We queried the 10-Nearest Neighbors of each corrupted target point *within the corrupted target domain itself* and calculated how often the neighbors shared the same ground truth label.
+- **Fog:** Target Neighborhood Purity = **90.54%**
+- **Crosstalk:** Target Neighborhood Purity = **88.06%**
+**Verdict:** **SUCCESS.** The semantic topology of the 10,000D HDC space remains pristine even under severe corruption! Hallucinated points do not scatter into random noise; they move together in dense, semantically pure clusters that simply no longer align with the global class prototypes. This provides incredibly strong theoretical justification for Contrastive Learning (AdaContrast), k-NN graphs, and Memory Bank methods, which can directly exploit this preserved local geometry.
