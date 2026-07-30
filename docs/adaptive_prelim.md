@@ -122,3 +122,22 @@ When properly isolated and initialized from the clean `source` distribution, the
 - **Final mIoU:** 38.47 (Structural Collapse of -10.26)
 - **Accuracy:** 91.18 -> 79.77
 - **Firing Rate:** 74.03%
+
+## 6. Previous Diagnostics (128D Prototype Implementations)
+
+The `standard_t3a` and `conformalhdc` baselines evaluate prototypes in the 128D backbone latent space rather than the non-linearly projected 10,000D hypervector space on which the HDC classification head is trained. 
+
+The diagnostic execution revealed a profound structural incompatibility: the 128D latent space features are not linearly separable via cosine similarity. As a result, the initial predictions using 128D centroids are effectively random chance (e.g., ~4.4% for fog, ~26% for wet ground) compared to the correct 10,000D space evaluations.
+
+| Corruption | `standard_t3a` (128D) | `conformalhdc` (128D) |
+|---|---|---|
+| `fog` | 4.39 -> 5.08 | 4.39 -> 4.53 |
+| `wet_ground` | 26.02 -> 22.64 | - |
+| `snow` | 29.25 -> 31.09 | - |
+| `motion_blur` | 28.85 -> 29.40 | - |
+| `beam_missing` | 24.94 -> 28.16 | - |
+| `crosstalk` | 13.69 -> 11.31 | - |
+| `incomplete_echo` | 16.53 -> 20.02 | - |
+| `cross_sensor` | 19.45 -> 21.29 | - |
+
+*(Note: The `conformalhdc` run was cancelled after `fog` once the structural flaw was verified. The upcoming `conformalhdc_10k` evaluates on the 10,000D space).*
