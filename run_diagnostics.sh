@@ -9,7 +9,7 @@ rm -f logs/ablation_v2/records.json
 echo "=== D-STANDARD & D-POISON (T3A Textbook Prototype Update & ConformalHDC Variants) ==="
 uv run python ablation_kitti-c.py \
     --ablations standard_t3a,conformalhdc,conformalhdc_10k \
-    --seeds 42,43,44 \
+    --seeds 42 \
     --corruptions fog,wet_ground,snow,motion_blur,beam_missing,crosstalk,incomplete_echo,cross_sensor \
     --severity 3 \
     --chunked --reset_per_corruption \
