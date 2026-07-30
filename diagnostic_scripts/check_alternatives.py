@@ -46,7 +46,7 @@ def run_diagnostics():
     
     # 1. Extract Source Bank (DD-2 / AC-3)
     print("\nExtracting Source Memory Bank...")
-    source_root = "/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C/"
+    source_root = "/mnt/alpha/jmfleming/KITTI"
     source_parser = ukc.Parser(root=source_root,
                             train_sequences=['08'],
                             valid_sequences=['08'],
