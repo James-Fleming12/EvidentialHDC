@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 load_hdc_model = __import__("unsup_kitti-c").load_hdc_model
 import yaml
 
-args = argparse.Namespace(pretrained_path='saved_models/HDC_10000D/best_hdc.pth', kitti_c_dir='/mnt/alpha/jmfleming/KITTI-C', tau=0.0)
+args = argparse.Namespace(pretrained_path='saved_models/pointpillars_SemanticKITTI/best_hdc.pth', kitti_c_dir='/mnt/alpha/jmfleming/KITTI-C', tau=0.0)
 with open('config/arch/senet-2048p.yml', 'r') as f:
     ARCH = yaml.safe_load(f)
 with open('config/labels/semantic-kitti-all.yaml', 'r') as f:
