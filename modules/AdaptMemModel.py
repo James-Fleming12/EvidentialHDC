@@ -36,21 +36,27 @@ class AdaptiveMemoryBank(nn.Module):
         bin_features[bin_features == 0] = 1.0 
         
         # Convert bank to float32 for fast matmul (simulating XOR bitcount hardware)
-        # Dot product of bipolar vectors gives exact topological preservation
-        sims = torch.mm(bin_features, self.keys.t())
-        
-        # Get k nearest neighbors
         k = min(self.k, self.keys.size(0))
-        topk_sims, topk_idx = sims.topk(k=k, dim=1)
+        predictions = []
+        purity = []
         
-        neighbor_sem = self.values[topk_idx]
-        
-        # Majority voting
-        predictions = torch.mode(neighbor_sem, dim=1).values
-        
-        # Compute purity (fraction of neighbors that agree with the majority vote)
-        agreements = (neighbor_sem == predictions.unsqueeze(1)).float()
-        purity = agreements.mean(dim=1)
+        # Process in chunks to prevent 5.2 GB VRAM spike per frame
+        chunk_size = 5000
+        for i in range(0, bin_features.size(0), chunk_size):
+            chunk = bin_features[i:i+chunk_size]
+            sims = torch.mm(chunk, self.keys.t())
+            
+            topk_sims, topk_idx = sims.topk(k=k, dim=1)
+            neighbor_sem = self.values[topk_idx]
+            
+            pred_chunk = torch.mode(neighbor_sem, dim=1).values
+            predictions.append(pred_chunk)
+            
+            agreements = (neighbor_sem == pred_chunk.unsqueeze(1)).float()
+            purity.append(agreements.mean(dim=1))
+            
+        predictions = torch.cat(predictions, dim=0)
+        purity = torch.cat(purity, dim=0)
         
         return predictions, purity
 

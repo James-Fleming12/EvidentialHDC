@@ -118,6 +118,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         predictions = torch.argmax(fallback_logits, dim=1)
                         # We use 0.9 as a strict threshold for the initial prototype seed (scaled by 0.05 temp)
                         conf = F.softmax(fallback_logits / 0.05, dim=1).max(dim=1)[0]
+                        print(f"COLD START CONF: max={conf.max().item():.4f}, mean={conf.mean().item():.4f}, above 0.9={(conf >= 0.9).sum().item()}")
                         if not eval_only:
                             rate = model.mem_bank.update(norm_enc, predictions, (conf >= 0.9).float())
                             if rate is not None: firing_rates.append(rate)
