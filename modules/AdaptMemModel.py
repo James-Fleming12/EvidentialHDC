@@ -20,6 +20,7 @@ class AdaptiveMemoryBank(nn.Module):
         self.register_buffer("values", torch.zeros(self.capacity, dtype=torch.int64))
         self.register_buffer("is_valid", torch.zeros(self.capacity, dtype=torch.bool))
         self.register_buffer("ptr", torch.tensor(0, dtype=torch.int64))
+        self.register_buffer("reserved_slots", torch.tensor(0, dtype=torch.int64))
         
     def query(self, features):
         """
@@ -45,7 +46,12 @@ class AdaptiveMemoryBank(nn.Module):
         purity = []
         
         # Adaptive Metric tuning parameter (Margin Penalty)
-        alpha = 0.5
+        # Using Extreme Value Theory (EVT) for the max of N Gaussian variables.
+        # The dot product of two random 10,000D bipolar vectors is Gaussian with sigma = 100.
+        # The expected maximum of N such variables grows as sigma * sqrt(2 * ln(N)).
+        # We subtract this exact statistical advantage to make the similarity density-blind.
+        target_penalties = 100.0 * torch.sqrt(2.0 * torch.log(class_counts + 1.0))
+        target_penalties = target_penalties[flat_values]
         
         # Process in chunks using float16 for massive speedup
         chunk_size = 50000
@@ -53,10 +59,6 @@ class AdaptiveMemoryBank(nn.Module):
             chunk = bin_features[i:i+chunk_size]
             sims = torch.mm(chunk.half(), flat_keys.t().half()).float()
             
-            # Density-Adaptive k-NN: We apply a margin penalty proportional to the log class density.
-            # Normalizing by max count ensures the penalty doesn't scale unbounded, preventing massive 
-            # classes from mathematically eclipsing the valid similarity scores of rare classes.
-            target_penalties = (torch.log(class_counts + 1) * alpha)[flat_values]
             adaptive_sims = sims - target_penalties.unsqueeze(0)
             
             topk_sims, topk_idx = adaptive_sims.topk(k=k, dim=1)
@@ -117,29 +119,30 @@ class AdaptiveMemoryBank(nn.Module):
                 self.values[ptr:] = valid_labels[:available]
                 self.is_valid[ptr:] = True
                 
-                # The remainder undergo Reservoir Sampling
+                # The remainder undergo Reservoir Sampling in the non-reserved space
                 remainder_features = bin_features[available:]
                 remainder_labels = valid_labels[available:]
                 
-                # Replace with probability P = 0.1 (Momentum-based write policy)
-                prob_mask = torch.rand(remainder_features.size(0), device=features.device) < 0.1
+                # Replace with probability P = 0.01 (Slower Momentum-based write policy to prevent rapid flushing)
+                prob_mask = torch.rand(remainder_features.size(0), device=features.device) < 0.01
                 replace_features = remainder_features[prob_mask]
                 replace_labels = remainder_labels[prob_mask]
                 
                 if replace_features.size(0) > 0:
-                    replace_idx = torch.randint(0, cap, (replace_features.size(0),), device=features.device)
+                    replace_idx = torch.randint(self.reserved_slots.item(), cap, (replace_features.size(0),), device=features.device)
                     self.keys[replace_idx] = replace_features
                     self.values[replace_idx] = replace_labels
                     
                 self.ptr.fill_(0) # Pointer meaning is lost after full, but we keep it at 0
         else:
-            # Queue is full, use global Reservoir Sampling replacement
-            prob_mask = torch.rand(n_in, device=features.device) < 0.1
+            # Queue is full, use global Reservoir Sampling replacement in non-reserved space
+            # Using P = 0.01 to prevent rapid flushing of the memory bank
+            prob_mask = torch.rand(n_in, device=features.device) < 0.01
             replace_features = bin_features[prob_mask]
             replace_labels = valid_labels[prob_mask]
             
             if replace_features.size(0) > 0:
-                replace_idx = torch.randint(0, cap, (replace_features.size(0),), device=features.device)
+                replace_idx = torch.randint(self.reserved_slots.item(), cap, (replace_features.size(0),), device=features.device)
                 self.keys[replace_idx] = replace_features
                 self.values[replace_idx] = replace_labels
                 

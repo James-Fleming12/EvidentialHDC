@@ -111,17 +111,29 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                 if update_method == 'adapt_mem':
                     from modules.AdaptMemModel import AdaptiveMemoryBank
                     if not hasattr(model, 'mem_bank'):
-                        model.mem_bank = AdaptiveMemoryBank(hd_dim=10000, num_classes=num_classes, memory_capacity=10000).to(device)
+                        # Capacity 20,000 allows for 9996 frozen Coreset Seed points + 10,004 dynamic online points
+                        model.mem_bank = AdaptiveMemoryBank(hd_dim=10000, num_classes=num_classes, memory_capacity=20000).to(device)
                         
-                        # Coreset Seed: Seed with 10 copies of the pre-trained prototypes to prevent cold-start missing classes.
-                        # We must binarize it, otherwise it corrupts the Float16 dot products in query().
-                        proto_weights = torch.sign(model.classify.weight.clone().detach())
-                        proto_weights[proto_weights == 0] = 1.0
-                        for c in range(num_classes):
-                            model.mem_bank.keys[c*10:(c+1)*10] = proto_weights[c]
-                            model.mem_bank.values[c*10:(c+1)*10] = c
-                            model.mem_bank.is_valid[c*10:(c+1)*10] = True
-                        model.mem_bank.ptr.fill_(num_classes * 10)
+                        # Coreset Seed: Seed with the offline extracted coresets and lock them in reserved_slots!
+                        if hasattr(model, 'coreset_seed_keys') and model.coreset_seed_keys is not None:
+                            num_coreset_pts = model.coreset_seed_keys.size(0)
+                            model.mem_bank.keys[:num_coreset_pts] = model.coreset_seed_keys
+                            model.mem_bank.values[:num_coreset_pts] = model.coreset_seed_values
+                            model.mem_bank.is_valid[:num_coreset_pts] = True
+                            
+                            # Lock these points from being overwritten
+                            model.mem_bank.reserved_slots.fill_(num_coreset_pts)
+                            model.mem_bank.ptr.fill_(num_coreset_pts)
+                        else:
+                            # Fallback just in case
+                            proto_weights = torch.sign(model.classify.weight.clone().detach())
+                            proto_weights[proto_weights == 0] = 1.0
+                            for c in range(num_classes):
+                                model.mem_bank.keys[c*10:(c+1)*10] = proto_weights[c]
+                                model.mem_bank.values[c*10:(c+1)*10] = c
+                                model.mem_bank.is_valid[c*10:(c+1)*10] = True
+                            model.mem_bank.reserved_slots.fill_(num_classes * 10)
+                            model.mem_bank.ptr.fill_(num_classes * 10)
                     
                     if batch_idx == 0:
                         # Cold start: rely on prototype projection for the very first frame to seed the graph
