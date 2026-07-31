@@ -686,7 +686,10 @@ def main():
                 # Pass 2: Adapt (only if method is not frozen)
                 if current_method != 'frozen':
                     logger.debug("  -> Pass 2: Adapting model weights")
-                    eval_model.train()
+                    if current_method != 'adapt_mem':
+                        eval_model.train()
+                    else:
+                        eval_model.eval() # adapt_mem relies on frozen features!
                     adapt_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=False, update_method=current_method, dry_run=args.dry_run)
                 else:
                     adapt_metrics = init_metrics
