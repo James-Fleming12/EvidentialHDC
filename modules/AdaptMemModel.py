@@ -5,49 +5,57 @@ import torch.nn.functional as F
 class AdaptiveMemoryBank(nn.Module):
     """
     Adaptive Memory Bank for Test-Time Adaptation operating natively in the HDC space.
-    First Iteration: Binary Buffer, Hamming Query, and Graph-Pruned Update.
+    Uses a class-balanced FIFO Buffer to prevent majority-class collapse.
     """
     def __init__(self, hd_dim=10000, num_classes=17, memory_capacity=10000, k=10, purity_threshold=0.8):
         super().__init__()
         self.hd_dim = hd_dim
         self.num_classes = num_classes
-        self.memory_capacity = memory_capacity
         self.k = k
         self.purity_threshold = purity_threshold
+        self.capacity_per_class = memory_capacity // num_classes
         
-        # 1-Bit Binary Buffer
-        # We store keys as float32 bipolar {-1, 1} to simulate binarization using fast PyTorch mm.
-        self.register_buffer("keys", torch.empty((0, hd_dim), dtype=torch.float32))
-        self.register_buffer("values", torch.empty((0,), dtype=torch.int64))
-        self.ptr = 0
-        self.is_full = False
+        # We store keys as float32 bipolar {-1, 1} to simulate binarization using PyTorch mm.
+        self.register_buffer("keys", torch.empty((num_classes, self.capacity_per_class, hd_dim), dtype=torch.float32))
+        self.register_buffer("class_sizes", torch.zeros(num_classes, dtype=torch.int64))
+        self.register_buffer("class_ptrs", torch.zeros(num_classes, dtype=torch.int64))
         
     def query(self, features):
         """
-        Query via Hamming Distance.
+        Query via Hamming Distance against the flat memory bank.
         """
-        if self.keys.size(0) == 0:
+        valid_keys = []
+        valid_values = []
+        for c in range(self.num_classes):
+            size = self.class_sizes[c].item()
+            if size > 0:
+                valid_keys.append(self.keys[c, :size])
+                valid_values.append(torch.full((size,), c, dtype=torch.int64, device=self.keys.device))
+                
+        if len(valid_keys) == 0:
             # Fallback if memory bank is completely empty
             return torch.zeros(features.size(0), dtype=torch.int64, device=features.device), \
                    torch.zeros(features.size(0), dtype=torch.float32, device=features.device)
                    
-        # Binarize incoming features and cast to float32
+        flat_keys = torch.cat(valid_keys, dim=0)
+        flat_values = torch.cat(valid_values, dim=0)
+        
+        # Binarize incoming query
         bin_features = torch.sign(features).to(torch.float32)
         bin_features[bin_features == 0] = 1.0 
         
-        # Convert bank to float32 for fast matmul (simulating XOR bitcount hardware)
-        k = min(self.k, self.keys.size(0))
+        k = min(self.k, flat_keys.size(0))
         predictions = []
         purity = []
         
-        # Process in chunks to avoid massive VRAM spikes
+        # Process in chunks using float16 for massive speedup
         chunk_size = 50000
         for i in range(0, bin_features.size(0), chunk_size):
             chunk = bin_features[i:i+chunk_size]
-            sims = torch.mm(chunk.half(), self.keys.t().half()).float()
+            sims = torch.mm(chunk.half(), flat_keys.t().half()).float()
             
             topk_sims, topk_idx = sims.topk(k=k, dim=1)
-            neighbor_sem = self.values[topk_idx]
+            neighbor_sem = flat_values[topk_idx]
             
             pred_chunk = torch.mode(neighbor_sem, dim=1).values
             predictions.append(pred_chunk)
@@ -62,10 +70,9 @@ class AdaptiveMemoryBank(nn.Module):
 
     def update(self, features, pseudo_labels, confidence):
         """
-        Graph-Pruned Update.
-        confidence here is the 'purity' returned from query().
+        Graph-Pruned Update with Class-Balanced FIFO.
         """
-        # Graph Pruning: Only admit points whose neighborhood graph is highly pure
+        # Graph Pruning: Only admit highly confident points
         valid_mask = confidence >= self.purity_threshold
         admission_rate = valid_mask.float().mean().item()
         
@@ -75,51 +82,41 @@ class AdaptiveMemoryBank(nn.Module):
         valid_features = features[valid_mask]
         valid_labels = pseudo_labels[valid_mask]
         
-        # Binarize before storing
         bin_features = torch.sign(valid_features).to(torch.float32)
         bin_features[bin_features == 0] = 1.0
         
-        n_incoming = valid_features.size(0)
-        
-        if self.keys.size(0) < self.memory_capacity:
-            # Still filling up
-            space_left = self.memory_capacity - self.keys.size(0)
-            if n_incoming <= space_left:
-                self.keys = torch.cat([self.keys, bin_features], dim=0)
-                self.values = torch.cat([self.values, valid_labels], dim=0)
+        cap = self.capacity_per_class
+        for c in range(self.num_classes):
+            c_mask = valid_labels == c
+            c_points = bin_features[c_mask]
+            n_in = c_points.size(0)
+            if n_in == 0:
+                continue
+                
+            ptr = self.class_ptrs[c].item()
+            
+            if n_in >= cap:
+                # Randomly sample to avoid spatial bias
+                perm = torch.randperm(n_in, device=c_points.device)[:cap]
+                self.keys[c] = c_points[perm]
+                self.class_ptrs[c] = 0
+                self.class_sizes[c] = cap
             else:
-                self.keys = torch.cat([self.keys, bin_features[:space_left]], dim=0)
-                self.values = torch.cat([self.values, valid_labels[:space_left]], dim=0)
-                self.is_full = True
-                self.ptr = 0
-                # Recursive call to handle the rest via FIFO
-                self.update(valid_features[space_left:], valid_labels[space_left:], confidence[valid_mask][space_left:])
-        else:
-            # FIFO Queue logic
-            if n_incoming >= self.memory_capacity:
-                # Randomly sample to avoid spatial bias (since LiDAR frames are flattened spatial arrays)
-                perm = torch.randperm(n_incoming, device=bin_features.device)[:self.memory_capacity]
-                self.keys[:] = bin_features[perm]
-                self.values[:] = valid_labels[perm]
-                self.ptr = 0
-            else:
-                end_idx = self.ptr + n_incoming
-                if end_idx <= self.memory_capacity:
-                    self.keys[self.ptr:end_idx] = bin_features
-                    self.values[self.ptr:end_idx] = valid_labels
-                    self.ptr = (self.ptr + n_incoming) % self.memory_capacity
+                end_idx = ptr + n_in
+                if end_idx <= cap:
+                    self.keys[c, ptr:end_idx] = c_points
+                    self.class_ptrs[c] = end_idx % cap
+                    self.class_sizes[c] = min(cap, self.class_sizes[c].item() + n_in)
                 else:
-                    overflow = end_idx - self.memory_capacity
-                    chunk1 = n_incoming - overflow
-                    self.keys[self.ptr:] = bin_features[:chunk1]
-                    self.values[self.ptr:] = valid_labels[:chunk1]
+                    overflow = end_idx - cap
+                    chunk1 = n_in - overflow
+                    self.keys[c, ptr:] = c_points[:chunk1]
+                    self.keys[c, :overflow] = c_points[chunk1:]
+                    self.class_ptrs[c] = overflow
+                    self.class_sizes[c] = cap
                     
-                    self.keys[:overflow] = bin_features[chunk1:]
-                    self.values[:overflow] = valid_labels[chunk1:]
-                    self.ptr = overflow
-        
         return admission_rate
-                    
+        
     def recover_geometry(self, features):
         pass
 

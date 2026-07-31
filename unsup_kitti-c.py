@@ -111,8 +111,15 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     from modules.AdaptMemModel import AdaptiveMemoryBank
                     if not hasattr(model, 'mem_bank'):
                         model.mem_bank = AdaptiveMemoryBank(hd_dim=10000, num_classes=num_classes, memory_capacity=10000).to(device)
+                        # Seed with 10 copies of the pre-trained prototypes to guarantee every class can survive k=10 voting!
+                        proto_weights = torch.sign(model.classify.weight.clone().detach())
+                        proto_weights[proto_weights == 0] = 1.0
+                        for c in range(num_classes):
+                            model.mem_bank.keys[c, :10] = proto_weights[c]
+                            model.mem_bank.class_sizes[c] = 10
+                            model.mem_bank.class_ptrs[c] = 10
                     
-                    if model.mem_bank.keys.size(0) == 0:
+                    if batch_idx == 0:
                         # Cold start: rely on prototype projection for the very first frame to seed the graph
                         fallback_logits = model.classify(norm_enc)
                         predictions = torch.argmax(fallback_logits, dim=1)
