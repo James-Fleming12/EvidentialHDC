@@ -21,13 +21,20 @@ model = model.cuda()
 model.eval()
 
 target_dataset = Parser(
-    root=os.path.join(args.kitti_c_dir, 'fog', 'heavy'),
-    train=False,
-    config=DATA,
-    arch=ARCH,
+    root=os.path.join(args.kitti_c_dir, 'fog', '3'),
+    train_sequences=DATA["split"]["valid"],
+    valid_sequences=DATA["split"]["valid"],
+    test_sequences=None,
+    labels=DATA["labels"],
+    color_map=DATA.get("color_map", {}),
+    learning_map=DATA["learning_map"],
+    learning_map_inv=DATA["learning_map_inv"],
+    sensor=ARCH["dataset"]["sensor"],
+    max_volume_space=ARCH["dataset"]["max_volume_space"],
+    min_volume_space=ARCH["dataset"]["min_volume_space"],
     dynamic_geom=False
 )
-loader = DataLoader(target_dataset, batch_size=1, shuffle=False)
+loader = target_dataset.get_valid_set()
 proj_in, proj_labels, _, _ = next(iter(loader))
 proj_in = proj_in.cuda()
 
