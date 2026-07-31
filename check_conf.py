@@ -43,8 +43,9 @@ target_dataset = Parser(
     shuffle_train=False
 )
 loader = target_dataset.get_valid_set()
-proj_in, proj_labels, _, _ = next(iter(loader))
-proj_in = proj_in.cuda()
+batch_data = next(iter(loader))
+proj_in = batch_data[0].cuda()
+proj_labels = batch_data[2].cuda().view(-1)
 
 with torch.no_grad():
     with torch.amp.autocast('cuda', enabled=True):
