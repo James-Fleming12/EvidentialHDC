@@ -248,181 +248,6 @@ def load_hdc_model(path, num_classes=NUM_CLASSES, mv_tta='none'):
     model.to(device)
     return model
 
-def populate_source_statistics(model, data_dir, arch_cfg, data_cfg, device, dry_run=False):
-    # print(f"Populating source statistics from {data_dir}...")
-    parser = Parser(root=data_dir,
-                    train_sequences=data_cfg["split"]["train"],
-                    valid_sequences=data_cfg["split"]["valid"],
-                    test_sequences=None,
-                    labels=data_cfg["labels"],
-                    color_map=data_cfg.get("color_map", {}),
-                    learning_map=data_cfg["learning_map"],
-                    learning_map_inv=data_cfg["learning_map_inv"],
-                    sensor=arch_cfg["dataset"]["sensor"],
-                    max_points=arch_cfg["dataset"]["max_points"],
-                    batch_size=1,
-                    workers=arch_cfg["train"]["workers"],
-                    gt=True,
-                    shuffle_train=True) 
-    
-    dataloader = DataLoader(parser.trainloader.dataset, batch_size=1, shuffle=True, num_workers=4)
-    model.eval()
-    
-    all_magnitudes = []
-    num_classes = model.num_classes
-    class_latent_sums = torch.zeros(num_classes, 128, device=device)
-    class_latent_counts = torch.zeros(num_classes, device=device)
-    
-    num_rp = 5
-    model.multi_rp_projs = []
-    model.multi_rp_prototypes = torch.zeros(num_rp, num_classes, model.hd_dim, device=device)
-    for _ in range(num_rp):
-        temp_proj = torch.randn(model.hd_dim, 128, device=device)
-        q, _ = torch.linalg.qr(temp_proj)
-        temp_proj = q * torch.sqrt(torch.tensor(model.hd_dim, dtype=torch.float32, device=device))
-        model.multi_rp_projs.append(temp_proj)
-    
-    with torch.no_grad():
-        for batch_idx, batch_data in enumerate(tqdm(dataloader, desc="Populating Source Stats")):
-            if dry_run and batch_idx > 2:
-                break
-            if batch_idx > 500: # Limit to a subset to save time
-                break
-            proj_in = batch_data[0].to(device)
-            proj_labels = batch_data[2].to(device).view(-1)
-            
-            if proj_in.shape[1] > 0:
-                with torch.amp.autocast('cuda', enabled=True):
-                    latent_x = model.net(proj_in, only_feat=True)
-                latent_x = latent_x.permute(0, 2, 3, 1).reshape(-1, 128)
-                
-                _, indices, _ = model.encode(proj_in)
-                selected_labels = proj_labels[indices]
-                valid_mask = (selected_labels >= 0) & (selected_labels < num_classes)
-                
-                if not valid_mask.any():
-                    continue
-                    
-                latent_valid = latent_x[valid_mask].float()
-                labels_valid = selected_labels[valid_mask]
-                
-                raw_magnitude = torch.norm(latent_valid, p=2, dim=1)
-                all_magnitudes.append(raw_magnitude.cpu())
-                
-                for c in range(num_classes):
-                    c_mask = labels_valid == c
-                    if c_mask.any():
-                        class_latent_sums[c] += latent_valid[c_mask].sum(dim=0)
-                        class_latent_counts[c] += c_mask.sum()
-                        
-    counts_safe = torch.clamp(class_latent_counts, min=1).unsqueeze(1)
-    model.class_latent_means = class_latent_sums / counts_safe
-    
-    # Initialize Latent Anchors for Temporal Drift tracking
-    model.drift_mu_0 = model.class_latent_means.clone()
-    
-    # Pass 2: Calculate per-class density standard deviation and cos similarity statistics
-    all_dists_per_class = {c: [] for c in range(num_classes)}
-    all_cos_per_class = {c: [] for c in range(num_classes)}
-    all_latents_per_class = {c: [] for c in range(num_classes)}
-    
-    with torch.no_grad():
-        for batch_idx, batch_data in enumerate(tqdm(dataloader, desc="Populating Source Stats")):
-            if dry_run and batch_idx > 2:
-                break
-            if batch_idx > 50:
-                break
-            proj_in = batch_data[0].to(device)
-            proj_labels = batch_data[2].to(device).view(-1)
-            
-            if proj_in.shape[1] > 0:
-                with torch.amp.autocast('cuda', enabled=True):
-                    latent_x = model.net(proj_in, only_feat=True)
-                latent_x = latent_x.permute(0, 2, 3, 1).reshape(-1, 128)
-                raw_enc, indices, _ = model.encode(proj_in)
-                selected_labels = proj_labels[indices]
-                valid_mask = (selected_labels >= 0) & (selected_labels < num_classes)
-                
-                if not valid_mask.any():
-                    continue
-                latent_valid = latent_x[valid_mask].float()
-                labels_valid = selected_labels[valid_mask]
-                
-                pred_means = model.class_latent_means[labels_valid]
-                dists = torch.norm(latent_valid - pred_means, p=2, dim=1)
-                
-                # Compute cos sims for Z-score calibration
-                norm_enc = F.normalize(raw_enc[valid_mask], dim=1).to(model.classify.weight.dtype)
-                logits = model.classify(norm_enc)
-                true_cos = logits[torch.arange(logits.size(0)), labels_valid]
-                
-                for c in range(num_classes):
-                    c_mask = labels_valid == c
-                    if c_mask.any():
-                        all_dists_per_class[c].append(dists[c_mask].cpu())
-                        all_cos_per_class[c].append(true_cos[c_mask].cpu())
-                        all_latents_per_class[c].append(latent_valid[c_mask].cpu())
-    
-    model.source_density_mean = torch.zeros(num_classes, device=device)
-    model.source_density_std = torch.zeros(num_classes, device=device)
-    model.source_mu_cos = torch.zeros(num_classes, device=device)
-    model.source_sigma_cos = torch.zeros(num_classes, device=device)
-    
-    # We need a global fallback for classes that might not have appeared
-    global_dists = []
-    global_cos = []
-    for c in range(num_classes):
-        if len(all_dists_per_class[c]) > 0:
-            c_dists = torch.cat(all_dists_per_class[c], dim=0)
-            global_dists.append(c_dists)
-        if len(all_cos_per_class[c]) > 0:
-            c_cos = torch.cat(all_cos_per_class[c], dim=0)
-            global_cos.append(c_cos)
-            
-    if len(global_dists) == 0:
-        raise ValueError("Source statistics population failed: No valid latent features found in the first 50 frames.")
-        
-    global_dist_mean = torch.cat(global_dists, dim=0).mean().item()
-    global_dist_std = torch.cat(global_dists, dim=0).std().item()
-    global_cos_tensor = torch.cat(global_cos, dim=0)
-    global_cos_mean = global_cos_tensor.mean().item()
-    global_cos_std = global_cos_tensor.std().item()
-    
-    source_bank_list = []
-    for c in range(num_classes):
-        if len(all_dists_per_class[c]) > 0:
-            c_dists = torch.cat(all_dists_per_class[c], dim=0)
-            model.source_density_mean[c] = c_dists.mean().item()
-            model.source_density_std[c] = c_dists.std().item()
-            c_cos = torch.cat(all_cos_per_class[c], dim=0)
-            model.source_mu_cos[c] = c_cos.mean().item()
-            model.source_sigma_cos[c] = c_cos.std().item()
-        else:
-            # Fallback to global statistics if class is completely missing from the first 50 frames
-            model.source_density_mean[c] = global_dist_mean
-            model.source_density_std[c] = global_dist_std
-            model.source_mu_cos[c] = global_cos_mean
-            model.source_sigma_cos[c] = global_cos_std
-        if len(all_latents_per_class[c]) > 0:
-            c_latents = torch.cat(all_latents_per_class[c], dim=0)
-            if len(c_latents) > 50:
-                perm = torch.randperm(len(c_latents))[:50]
-                source_bank_list.append(c_latents[perm])
-            else:
-                source_bank_list.append(c_latents)
-                
-    model.source_bank = torch.cat(source_bank_list, dim=0).to(device) if len(source_bank_list) > 0 else None
-    model.source_class_freq = (class_latent_counts / class_latent_counts.sum()).cpu()
-    return {
-        'source_density_mean': model.source_density_mean,
-        'source_density_std': model.source_density_std,
-        'source_mu_cos': model.source_mu_cos,
-        'source_sigma_cos': model.source_sigma_cos,
-        'drift_mu_0': model.drift_mu_0.clone().cpu(),
-        'source_class_freq': model.source_class_freq,
-        'source_bank': model.source_bank.cpu() if model.source_bank is not None else None
-    }
-
 def main():
     import random
     parser = argparse.ArgumentParser(description="Test Unsupervised Updates on KITTI-C")
@@ -567,7 +392,7 @@ def main():
         chunks.append(indices[start_idx:end_idx])
 
     base_model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES)
-    populate_source_statistics(base_model, args.kitti_dir, ARCH, DATA, device, dry_run=args.dry_run)
+    base_model.populate_source_statistics(args.kitti_dir, ARCH, DATA, device, dry_run=args.dry_run)
     
     source_stats_cache = {
         'class_latent_means': base_model.class_latent_means,
@@ -577,7 +402,9 @@ def main():
         'source_sigma_cos': getattr(base_model, 'source_sigma_cos', None),
         'drift_mu_0': getattr(base_model, 'drift_mu_0', None),
         'source_class_freq': getattr(base_model, 'source_class_freq', None),
-        'source_bank': getattr(base_model, 'source_bank', None)
+        'source_bank': getattr(base_model, 'source_bank', None),
+        'coreset_seed_keys': getattr(base_model, 'coreset_seed_keys', None),
+        'coreset_seed_values': getattr(base_model, 'coreset_seed_values', None)
     }
 
     clean_state_dict = torch.load(args.pretrained_path, map_location=device)
