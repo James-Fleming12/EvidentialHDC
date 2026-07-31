@@ -20,8 +20,14 @@ model = load_hdc_model(args.pretrained_path, num_classes=17)
 model = model.cuda()
 model.eval()
 
+corruption_root = os.path.join(args.kitti_c_dir, 'fog', 'heavy')
+seq_dir = os.path.join(corruption_root, "sequences")
+os.makedirs(seq_dir, exist_ok=True)
+if not os.path.exists(os.path.join(seq_dir, "08")):
+    os.symlink("..", os.path.join(seq_dir, "08"))
+
 target_dataset = Parser(
-    root=os.path.join(args.kitti_c_dir, 'fog', '3'),
+    root=corruption_root,
     train_sequences=DATA["split"]["valid"],
     valid_sequences=DATA["split"]["valid"],
     test_sequences=None,
