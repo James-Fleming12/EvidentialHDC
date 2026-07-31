@@ -30,9 +30,11 @@ target_dataset = Parser(
     learning_map=DATA["learning_map"],
     learning_map_inv=DATA["learning_map_inv"],
     sensor=ARCH["dataset"]["sensor"],
-    max_volume_space=ARCH["dataset"]["max_volume_space"],
-    min_volume_space=ARCH["dataset"]["min_volume_space"],
-    dynamic_geom=False
+    max_points=ARCH["dataset"]["max_points"],
+    batch_size=1,
+    workers=ARCH["train"]["workers"],
+    gt=True,
+    shuffle_train=False
 )
 loader = target_dataset.get_valid_set()
 proj_in, proj_labels, _, _ = next(iter(loader))
