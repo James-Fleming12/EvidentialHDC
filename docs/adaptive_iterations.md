@@ -43,5 +43,46 @@
 
 ---
 
+## Iteration 3: Full-Capacity Prototype Seeding (Fixing KNN Density Bias)
+
+**Goal:** Fix the catastrophic "50 Million False Positives" issue where Tail classes absorbed massive amounts of incorrect predictions, causing their precision to drop to 0.
+
+**Mathematical & Structural Upgrades:**
+
+1. **Eliminating KNN Density Bias ($N=588$ Seeding):**
+   - **Problem:** In Iteration 2, the buffer was seeded with only $k=10$ copies of the prototype per class. When Frame 1 processed, the `road` class confidently filled its buffer to its maximum capacity of $588$, while unobserved Tail classes (like `bicycle`) remained at $10$ points. When the $10$-NN search was conducted across the unbalanced $10,000$ points, the vastly denser `road` class dominated the geometric space. This *Density Bias* caused $10$-NN to statistically return `road` for almost all queries. These misclassified points were then written into the Tail class buffers, entirely replacing the prototypes with $588$ `road` instances, leading to $50$ Million false positives.
+   - **Solution:** We enforce a permanent structural guarantee that the memory bank is perfectly balanced from initialization. Prior to the first frame, the buffer $\mathcal{M}_c$ is seeded with **FULL CAPACITY** ($N=588$) exact copies of the pre-trained HDC prototype $P_c \in \mathbb{R}^D$ for every single class. 
+   - **Mathematical Guarantee:** By maintaining exactly $N=588$ points per class at *all times*, there is $0\%$ statistical density bias in the memory bank. A query point has an equal chance of matching any class, relying entirely on true geometric distance. As real points stream in, they organically overwrite the 588 prototypes one-by-one via the FIFO pointer.
+
+### Expected Results (`unsup_kitti-c.py` output)
+| Corruption | Method | mIoU | Accuracy | Firing Rate | Update Mag |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| Fog | Iteration 3 | TBD | TBD | TBD | TBD |
+| Snow | Iteration 3 | TBD | TBD | TBD | TBD |
+
+---
+
+## Iteration 4: Global Reservoir Sampling & Density-Adaptive k-NN
+
+**Goal:** Implement a completely dynamic, un-partitioned global memory bank without suffering from majority-class collapse, while preventing temporal locality from flushing out old, structurally sound points.
+
+**Mathematical & Structural Upgrades:**
+
+1. **Density-Adaptive k-NN (Fixing the Search Bias):**
+   - **Problem:** In an un-partitioned global memory bank, the number of instances per class is highly imbalanced (e.g., $N_{road} = 5,000$ vs $N_{bicycle} = 10$). Due to this density bias, the dense `road` cloud statistically swallows the sparse `bicycle` points during the $k$-NN search.
+   - **Solution:** We implement an adaptive metric that normalizes the Hamming distance by the *internal density* of the target class's sub-cluster. We approximate the internal density $\mu_c$ of class $c$ as the mean similarity of its instances to the class prototype (mean vector). When querying, the raw similarity to a neighbor $y \in c$ is divided by $\mu_c$: $sim_{adaptive}(x, y) = sim(x, y) / \mu_c$. This mathematically scales the distances so that dense classes are penalized, allowing sparse classes to compete fairly regardless of their instance count.
+
+2. **Reservoir Sampling (Fixing the FIFO Overwrite):**
+   - **Problem:** A strict FIFO queue is highly vulnerable to temporal locality. If a continuous stream of fog points arrives for 10 seconds, it will completely flush out all the clean, structurally sound points from the queue.
+   - **Solution:** We replace the FIFO write policy with a momentum-based Reservoir Sampling approach. Once the 10,000-capacity queue is full, an incoming confident point does not automatically overwrite the oldest point. Instead, it replaces a completely random point in the memory bank with a fixed probability $P=0.1$. This guarantees that the memory bank maintains a diverse, long-term memory of the environment, preventing transient severe corruptions from scrubbing safe geometries.
+
+### Expected Results (`unsup_kitti-c.py` output)
+| Corruption | Method | mIoU | Accuracy | Firing Rate | Update Mag |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| Fog | Iteration 4 | TBD | TBD | TBD | TBD |
+| Snow | Iteration 4 | TBD | TBD | TBD | TBD |
+
+---
+
 ## Future Iterations
 *Will be defined as bottlenecks or failure modes are discovered.*

@@ -90,6 +90,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
     num_classes = model.num_classes
     cumulative_confusion_matrix = torch.zeros((num_classes, num_classes), dtype=torch.int64, device=device)
     firing_rates = []
+    memory_errors = []
 
     for batch_idx, batch_data in enumerate(tqdm(target_dataloader, desc="Adapting", leave=False, miniters=50)):
         if kwargs.get('dry_run', False) and batch_idx >= 2:
@@ -111,13 +112,16 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     from modules.AdaptMemModel import AdaptiveMemoryBank
                     if not hasattr(model, 'mem_bank'):
                         model.mem_bank = AdaptiveMemoryBank(hd_dim=10000, num_classes=num_classes, memory_capacity=10000).to(device)
-                        # Seed with 10 copies of the pre-trained prototypes to guarantee every class can survive k=10 voting!
+                        
+                        # Coreset Seed: Seed with 10 copies of the pre-trained prototypes to prevent cold-start missing classes.
+                        # We must binarize it, otherwise it corrupts the Float16 dot products in query().
                         proto_weights = torch.sign(model.classify.weight.clone().detach())
                         proto_weights[proto_weights == 0] = 1.0
                         for c in range(num_classes):
-                            model.mem_bank.keys[c, :10] = proto_weights[c]
-                            model.mem_bank.class_sizes[c] = 10
-                            model.mem_bank.class_ptrs[c] = 10
+                            model.mem_bank.keys[c*10:(c+1)*10] = proto_weights[c]
+                            model.mem_bank.values[c*10:(c+1)*10] = c
+                            model.mem_bank.is_valid[c*10:(c+1)*10] = True
+                        model.mem_bank.ptr.fill_(num_classes * 10)
                     
                     if batch_idx == 0:
                         # Cold start: rely on prototype projection for the very first frame to seed the graph
@@ -126,13 +130,15 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         # We use 0.9 as a strict threshold for the initial prototype seed (scaled by 0.05 temp)
                         conf = F.softmax(fallback_logits / 0.05, dim=1).max(dim=1)[0]
                         if not eval_only:
-                            rate = model.mem_bank.update(norm_enc, predictions, (conf >= 0.9).float())
+                            rate, purity_err = model.mem_bank.update(norm_enc, predictions, (conf >= 0.9).float(), true_labels=proj_labels[indices])
                             if rate is not None: firing_rates.append(rate)
+                            if purity_err is not None and purity_err >= 0: memory_errors.append(purity_err)
                     else:
                         predictions, conf = model.mem_bank.query(norm_enc)
                         if not eval_only:
-                            rate = model.mem_bank.update(norm_enc, predictions, conf)
+                            rate, purity_err = model.mem_bank.update(norm_enc, predictions, conf, true_labels=proj_labels[indices])
                             if rate is not None: firing_rates.append(rate)
+                            if purity_err is not None and purity_err >= 0: memory_errors.append(purity_err)
                 else:
                     # Legacy frozen inference
                     logits = model.classify(norm_enc)
@@ -159,6 +165,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         model.train(model_was_training)
         
     avg_firing = sum(firing_rates) / max(1, len(firing_rates))
+    avg_mem_err = sum(memory_errors) / max(1, len(memory_errors))
         
     return {
         "mIoU": miou_history, 
@@ -168,6 +175,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         "Accuracy": acc_history, 
         "IoU_per_class": iou_per_class_history, 
         "FiringRate": avg_firing, 
+        "MemoryError": avg_mem_err,
         "UpdateMagnitude": 0.0,
         "ConfusionMatrix": cumulative_confusion_matrix.cpu().numpy().tolist()
     }

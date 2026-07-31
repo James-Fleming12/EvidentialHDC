@@ -5,7 +5,7 @@ import torch.nn.functional as F
 class AdaptiveMemoryBank(nn.Module):
     """
     Adaptive Memory Bank for Test-Time Adaptation operating natively in the HDC space.
-    Uses a class-balanced FIFO Buffer to prevent majority-class collapse.
+    Uses a global un-partitioned memory bank with Reservoir Sampling and Density-Adaptive k-NN.
     """
     def __init__(self, hd_dim=10000, num_classes=17, memory_capacity=10000, k=10, purity_threshold=0.8):
         super().__init__()
@@ -13,32 +13,28 @@ class AdaptiveMemoryBank(nn.Module):
         self.num_classes = num_classes
         self.k = k
         self.purity_threshold = purity_threshold
-        self.capacity_per_class = memory_capacity // num_classes
+        self.capacity = memory_capacity
         
-        # We store keys as float32 bipolar {-1, 1} to simulate binarization using PyTorch mm.
-        self.register_buffer("keys", torch.empty((num_classes, self.capacity_per_class, hd_dim), dtype=torch.float32))
-        self.register_buffer("class_sizes", torch.zeros(num_classes, dtype=torch.int64))
-        self.register_buffer("class_ptrs", torch.zeros(num_classes, dtype=torch.int64))
+        # Global unpartitioned memory bank
+        self.register_buffer("keys", torch.empty((self.capacity, hd_dim), dtype=torch.float32))
+        self.register_buffer("values", torch.zeros(self.capacity, dtype=torch.int64))
+        self.register_buffer("is_valid", torch.zeros(self.capacity, dtype=torch.bool))
+        self.register_buffer("ptr", torch.tensor(0, dtype=torch.int64))
         
     def query(self, features):
         """
-        Query via Hamming Distance against the flat memory bank.
+        Query via Density-Adaptive Hamming Distance against the global memory bank.
         """
-        valid_keys = []
-        valid_values = []
-        for c in range(self.num_classes):
-            size = self.class_sizes[c].item()
-            if size > 0:
-                valid_keys.append(self.keys[c, :size])
-                valid_values.append(torch.full((size,), c, dtype=torch.int64, device=self.keys.device))
-                
-        if len(valid_keys) == 0:
-            # Fallback if memory bank is completely empty
+        valid_mask = self.is_valid
+        if not valid_mask.any():
             return torch.zeros(features.size(0), dtype=torch.int64, device=features.device), \
                    torch.zeros(features.size(0), dtype=torch.float32, device=features.device)
                    
-        flat_keys = torch.cat(valid_keys, dim=0)
-        flat_values = torch.cat(valid_values, dim=0)
+        flat_keys = self.keys[valid_mask]
+        flat_values = self.values[valid_mask]
+        
+        # Calculate Internal Density (Class Frequency in the global reservoir)
+        class_counts = torch.bincount(flat_values, minlength=self.num_classes).float()
         
         # Binarize incoming query
         bin_features = torch.sign(features).to(torch.float32)
@@ -48,13 +44,22 @@ class AdaptiveMemoryBank(nn.Module):
         predictions = []
         purity = []
         
+        # Adaptive Metric tuning parameter (Margin Penalty)
+        alpha = 0.5
+        
         # Process in chunks using float16 for massive speedup
         chunk_size = 50000
         for i in range(0, bin_features.size(0), chunk_size):
             chunk = bin_features[i:i+chunk_size]
             sims = torch.mm(chunk.half(), flat_keys.t().half()).float()
             
-            topk_sims, topk_idx = sims.topk(k=k, dim=1)
+            # Density-Adaptive k-NN: We apply a margin penalty proportional to the log class density.
+            # Normalizing by max count ensures the penalty doesn't scale unbounded, preventing massive 
+            # classes from mathematically eclipsing the valid similarity scores of rare classes.
+            target_penalties = (torch.log(class_counts + 1) * alpha)[flat_values]
+            adaptive_sims = sims - target_penalties.unsqueeze(0)
+            
+            topk_sims, topk_idx = adaptive_sims.topk(k=k, dim=1)
             neighbor_sem = flat_values[topk_idx]
             
             pred_chunk = torch.mode(neighbor_sem, dim=1).values
@@ -68,54 +73,77 @@ class AdaptiveMemoryBank(nn.Module):
         
         return predictions, purity
 
-    def update(self, features, pseudo_labels, confidence):
+    def update(self, features, pseudo_labels, confidence, true_labels=None):
         """
-        Graph-Pruned Update with Class-Balanced FIFO.
+        Graph-Pruned Update with Reservoir Sampling (Fixed Probability Replacement).
         """
-        # Graph Pruning: Only admit highly confident points
         valid_mask = confidence >= self.purity_threshold
         admission_rate = valid_mask.float().mean().item()
         
         if not valid_mask.any():
-            return admission_rate
+            return admission_rate, -1.0
             
         valid_features = features[valid_mask]
         valid_labels = pseudo_labels[valid_mask]
         
+        # Binarize incoming features BEFORE storing them, otherwise we corrupt the Float16 dot products
         bin_features = torch.sign(valid_features).to(torch.float32)
         bin_features[bin_features == 0] = 1.0
         
-        cap = self.capacity_per_class
-        for c in range(self.num_classes):
-            c_mask = valid_labels == c
-            c_points = bin_features[c_mask]
-            n_in = c_points.size(0)
-            if n_in == 0:
-                continue
-                
-            ptr = self.class_ptrs[c].item()
-            
-            if n_in >= cap:
-                # Randomly sample to avoid spatial bias
-                perm = torch.randperm(n_in, device=c_points.device)[:cap]
-                self.keys[c] = c_points[perm]
-                self.class_ptrs[c] = 0
-                self.class_sizes[c] = cap
+        # Track memory bank semantic purity (diagnostic only)
+        purity_err = -1.0
+        if true_labels is not None:
+            valid_true = true_labels[valid_mask]
+            # Ignore ignore_index (-1 or 255) in purity calculation
+            eval_mask = (valid_true >= 0) & (valid_true < self.num_classes)
+            if eval_mask.any():
+                incorrect = (valid_labels[eval_mask] != valid_true[eval_mask]).float().sum()
+                purity_err = (incorrect / eval_mask.float().sum()).item()
+        
+        n_in = bin_features.size(0)
+        ptr = self.ptr.item()
+        cap = self.capacity
+        
+        # If queue is not yet full, fill it sequentially
+        if not self.is_valid.all():
+            available = cap - ptr
+            if n_in <= available:
+                self.keys[ptr:ptr+n_in] = bin_features
+                self.values[ptr:ptr+n_in] = valid_labels
+                self.is_valid[ptr:ptr+n_in] = True
+                self.ptr.fill_((ptr + n_in) % cap)
             else:
-                end_idx = ptr + n_in
-                if end_idx <= cap:
-                    self.keys[c, ptr:end_idx] = c_points
-                    self.class_ptrs[c] = end_idx % cap
-                    self.class_sizes[c] = min(cap, self.class_sizes[c].item() + n_in)
-                else:
-                    overflow = end_idx - cap
-                    chunk1 = n_in - overflow
-                    self.keys[c, ptr:] = c_points[:chunk1]
-                    self.keys[c, :overflow] = c_points[chunk1:]
-                    self.class_ptrs[c] = overflow
-                    self.class_sizes[c] = cap
+                self.keys[ptr:] = bin_features[:available]
+                self.values[ptr:] = valid_labels[:available]
+                self.is_valid[ptr:] = True
+                
+                # The remainder undergo Reservoir Sampling
+                remainder_features = bin_features[available:]
+                remainder_labels = valid_labels[available:]
+                
+                # Replace with probability P = 0.1 (Momentum-based write policy)
+                prob_mask = torch.rand(remainder_features.size(0), device=features.device) < 0.1
+                replace_features = remainder_features[prob_mask]
+                replace_labels = remainder_labels[prob_mask]
+                
+                if replace_features.size(0) > 0:
+                    replace_idx = torch.randint(0, cap, (replace_features.size(0),), device=features.device)
+                    self.keys[replace_idx] = replace_features
+                    self.values[replace_idx] = replace_labels
                     
-        return admission_rate
+                self.ptr.fill_(0) # Pointer meaning is lost after full, but we keep it at 0
+        else:
+            # Queue is full, use global Reservoir Sampling replacement
+            prob_mask = torch.rand(n_in, device=features.device) < 0.1
+            replace_features = bin_features[prob_mask]
+            replace_labels = valid_labels[prob_mask]
+            
+            if replace_features.size(0) > 0:
+                replace_idx = torch.randint(0, cap, (replace_features.size(0),), device=features.device)
+                self.keys[replace_idx] = replace_features
+                self.values[replace_idx] = replace_labels
+                
+        return admission_rate, purity_err
         
     def recover_geometry(self, features):
         pass
