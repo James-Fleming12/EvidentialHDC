@@ -40,8 +40,8 @@ class AdaptiveMemoryBank(nn.Module):
         predictions = []
         purity = []
         
-        # Process in chunks to prevent 5.2 GB VRAM spike per frame
-        chunk_size = 5000
+        # Process in chunks to avoid massive VRAM spikes
+        chunk_size = 50000
         for i in range(0, bin_features.size(0), chunk_size):
             chunk = bin_features[i:i+chunk_size]
             sims = torch.mm(chunk, self.keys.t())
@@ -97,9 +97,10 @@ class AdaptiveMemoryBank(nn.Module):
         else:
             # FIFO Queue logic
             if n_incoming >= self.memory_capacity:
-                # Completely overwrite
-                self.keys = bin_features[-self.memory_capacity:]
-                self.values = valid_labels[-self.memory_capacity:]
+                # Randomly sample to avoid spatial bias (since LiDAR frames are flattened spatial arrays)
+                perm = torch.randperm(n_incoming, device=bin_features.device)[:self.memory_capacity]
+                self.keys[:] = bin_features[perm]
+                self.values[:] = valid_labels[perm]
                 self.ptr = 0
             else:
                 end_idx = self.ptr + n_incoming

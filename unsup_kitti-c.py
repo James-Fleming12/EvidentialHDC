@@ -91,7 +91,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
     cumulative_confusion_matrix = torch.zeros((num_classes, num_classes), dtype=torch.int64, device=device)
     firing_rates = []
 
-    for batch_idx, batch_data in enumerate(tqdm(target_dataloader, desc="Adapting", leave=False)):
+    for batch_idx, batch_data in enumerate(tqdm(target_dataloader, desc="Adapting", leave=False, miniters=50)):
         if kwargs.get('dry_run', False) and batch_idx >= 2:
             break
             
@@ -118,7 +118,6 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         predictions = torch.argmax(fallback_logits, dim=1)
                         # We use 0.9 as a strict threshold for the initial prototype seed (scaled by 0.05 temp)
                         conf = F.softmax(fallback_logits / 0.05, dim=1).max(dim=1)[0]
-                        print(f"COLD START CONF: max={conf.max().item():.4f}, mean={conf.mean().item():.4f}, above 0.9={(conf >= 0.9).sum().item()}")
                         if not eval_only:
                             rate = model.mem_bank.update(norm_enc, predictions, (conf >= 0.9).float())
                             if rate is not None: firing_rates.append(rate)
@@ -695,9 +694,13 @@ def main():
                     adapt_metrics = init_metrics
                     
                 # Pass 3: True Final (Frozen on chunk using adapted weights)
-                logger.debug("  -> Pass 3: Computing True Final metrics (Frozen)")
-                eval_model.eval()
-                final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, update_method=current_method, dry_run=args.dry_run)
+                if current_method != 'adapt_mem':
+                    logger.debug("  -> Pass 3: Computing True Final metrics (Frozen)")
+                    eval_model.eval()
+                    final_metrics = evaluate_and_adapt(eval_model, target_dataloader, device, eval_only=True, update_method=current_method, dry_run=args.dry_run)
+                else:
+                    logger.debug("  -> Pass 3: Skipping True Final metrics for adapt_mem (sliding window buffer is fundamentally online-only)")
+                    final_metrics = adapt_metrics
                 
                 metrics = adapt_metrics  # Just for the trajectory json
                 if len(init_metrics["mIoU"]) > 0:
