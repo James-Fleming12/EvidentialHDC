@@ -576,6 +576,8 @@ def main():
                 firing_rate_str = ""
                 if "FiringRate" in adapt_metrics:
                     firing_rate_str = f", FiringRate={adapt_metrics['FiringRate']*100:.2f}%"
+                    if "MemoryError" in adapt_metrics and adapt_metrics['MemoryError'] >= 0:
+                        firing_rate_str += f", MemError={adapt_metrics['MemoryError']*100:.2f}%"
                     if "UpdateMagnitude" in adapt_metrics:
                         firing_rate_str += f", UpdateMag={adapt_metrics['UpdateMagnitude']:.4f}"
             except Exception as e:
