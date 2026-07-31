@@ -7,7 +7,7 @@ sys.path.append('.')
 
 from dataset.kitti.parser import Parser
 from torch.utils.data import DataLoader
-from unsup_kitti_c import load_hdc_model
+load_hdc_model = __import__("unsup_kitti-c").load_hdc_model
 import yaml
 
 args = argparse.Namespace(pretrained_path='saved_models/HDC_10000D/best_hdc.pth', kitti_c_dir='/mnt/alpha/jmfleming/KITTI-C', tau=0.0)
