@@ -44,7 +44,7 @@ class AdaptiveMemoryBank(nn.Module):
         chunk_size = 50000
         for i in range(0, bin_features.size(0), chunk_size):
             chunk = bin_features[i:i+chunk_size]
-            sims = torch.mm(chunk, self.keys.t())
+            sims = torch.mm(chunk.half(), self.keys.t().half()).float()
             
             topk_sims, topk_idx = sims.topk(k=k, dim=1)
             neighbor_sem = self.values[topk_idx]
