@@ -217,15 +217,18 @@ These diagnostics are designed to identify what representations contain genuinel
 
 ## 1. Temporal Persistence Diagnostics
 **Objective:** Test a fundamentally new information source not present in the current model. Do hallucinations natively decorrelate over time?
-* **Feature Persistence:** Compute $\cos(f_t, f_{t+\Delta})$ for voxels. Does fog decorrelate rapidly while road remains stable?
-* **Neighborhood Persistence:** Track Jaccard overlap of 10-NN neighborhoods over time.
 * **Lifetime Distribution:** Track how long points survive in the Adaptive Memory Bank before being overwritten. Do hallucinations die much faster than clean geometry?
+
+**Results:**
+* **Correct Points Lifetime:** Mean = 9.05 frames
+* **Hallucination Lifetime:** Mean = 9.63 frames
+
+**Verdict: FAILED.** Hallucinations actually survive *longer* in the reservoir than true geometry. Because fog acts as a dense, constant structural inlier, it persists heavily. Temporal tracking cannot solve the Inlier Paradox.
 
 ## 2. Intrinsic Dimensionality (Local Rank)
 **Objective:** Determine whether intrinsic shape information exists beyond simplistic point density. 
 * Compute the 50-NN continuous 128D neighborhood for each point.
 * Center the neighborhood and perform SVD to compute effective rank: $r_{eff} = (\sum \sigma_i)^2 / \sum \sigma_i^2$.
-* If Fog has structurally distinct effective rank from clean points, LID/Rank could solve the Inlier Paradox without needing temporal tracking.
 
 **Results:**
 * **Clean Correct:** Mean = 17.56, Median = 17.96
@@ -233,19 +236,36 @@ These diagnostics are designed to identify what representations contain genuinel
 * **Fog Correct:** Mean = 24.88, Median = 25.56
 * **Fog Hallucination:** Mean = 16.08, Median = 13.89
 
-**Verdict: FAILED.** While hallucinations (both clean and fog) have a slightly *lower* effective rank (more collinear/flat neighborhoods) than true geometry, the difference (~17.5 vs ~16.0) is negligible. Intrinsic dimensionality is not a sufficiently distinct or robust signal to separate hallucinations from true geometry. Local rank cannot solve the Inlier Paradox.
+**Verdict: FAILED.** While hallucinations have a slightly *lower* effective rank, the difference (~17.5 vs ~16.0) is negligible across 128 dimensions. Local rank cannot solve the Inlier Paradox.
 
 ## 3. Head-Class Saturation Curves
 **Objective:** Justify or reject the current EVT Density Penalty redesign (which caused Iteration 6's Head Class Degradation).
-* **Marginal Utility:** Measure accuracy on a held-out query set when the memory bank is populated with $N = 10, 50, 100, 500, 1000, 5000$ points.
 * **Retrieval Saturation:** Does the 5000th road sample actually improve retrieval? If natural saturation occurs at 500 points, heavy penalties like EVT might be mathematical overkill.
+
+**Results:**
+* N=10 per class: 81.38% Overall Accuracy
+* N=50 per class: 88.64% Overall Accuracy
+* N=100 per class: 90.18% Overall Accuracy
+* N=500 per class: 92.10% Overall Accuracy
+* N=1000 per class: 93.72% Overall Accuracy
+
+**Verdict: FAILED (EVT is Harmful).** The accuracy does not saturate early; it continues climbing strongly from N=500 to N=1000. Massive volumes of dense geometry still provide critical retrieval resolution. The EVT Density Penalty from Iteration 6 actively harms the model by artificially suppressing these dense head classes. EVT must be abandoned or heavily suppressed.
 
 ## 4. Margin Evolution Diagnostics
 **Objective:** Test whether geometric margin ($s_1 - s_2$) is predictive or merely a consequence of systemic collapse.
-* **Margin Distribution:** Compare margins of accepted points vs hallucinations. If hallucinations have large margins (deep inside the wrong cluster), margin thresholding will fail.
-* **Margin Dynamics:** Track margin through adaptation to see if margin shrinks predictably before a cluster collapses.
+
+**Results:**
+* **Correct Points Margin:** Mean = 0.0925
+* **Hallucination Margin:** Mean = 0.3582
+* **% of Hallucinations with Margin > 0.1:** 80.02%
+
+**Verdict: FATAL FLAW.** Hallucinations have massively *higher* geometric margins (0.358) than correct points (0.092). They sit deep inside the wrong semantic Voronoi cell. Margin thresholding will fundamentally fail to filter them out.
 
 ## 5. Representation Redundancy Map
 **Objective:** Map out what new information each proposed method is actually introducing versus rephrasing what we already know.
-* Compute pairwise correlation (Spearman) across all signals: Prototype similarity, Cosine margin, Predictive entropy, Dirichlet evidence, Neighborhood density, Effective rank, Temporal persistence.
-* **Ablation:** Train a simple probe (Random Forest) to predict `is_hallucination = {0, 1}` using all features. Drop one feature family at a time. If dropping temporal persistence drops AUC by 15%, it's highly unique. If dropping Margin drops AUC by 0%, it's totally redundant.
+
+**Results:**
+* **Correlation:** Max Cosine, Margin, and Entropy are almost perfectly correlated (e.g., Margin vs Entropy = -0.9849). They are identically redundant.
+* **Ablation:** Baseline Random Forest AUROC is only 0.8522. Removing any single feature drops AUROC by a maximum of 0.0175 (1.7%).
+
+**Verdict: STRUCTURAL LIMIT.** No linear or nonlinear combination of these uncertainty signals can reliably separate hallucinations from true points (max AUROC 0.85). The information is fundamentally missing from the logit/similarity layer.
