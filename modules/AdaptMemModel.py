@@ -89,11 +89,11 @@ class AdaptiveMemoryBank(nn.Module):
         predictions = []
         purity = []
         
-        # Process in chunks using float16 for massive speedup
+        # Process in chunks using float32 to prevent Float16 precision loss (which caused massive ties)
         chunk_size = 50000
         for i in range(0, bin_features.size(0), chunk_size):
             chunk = bin_features[i:i+chunk_size]
-            sims = torch.mm(chunk.half(), flat_keys.t().half()).float()
+            sims = torch.mm(chunk, flat_keys.t())
             
             # Raw geometric similarity without EVT
             topk_sims, topk_idx = sims.topk(k=k, dim=1)
