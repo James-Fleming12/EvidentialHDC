@@ -136,22 +136,23 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             model.mem_bank.reserved_slots.fill_(num_classes * 10)
                             model.mem_bank.ptr.fill_(num_classes * 10)
                     
+                    # Binarize incoming features for HDC operations
+                    bin_enc = torch.sign(norm_enc).to(torch.float32)
+                    bin_enc[bin_enc == 0] = 1.0
+                    
                     # --- Memory Bank Forward Pass ---
-                    predictions, _ = model.mem_bank.query(norm_enc)
+                    predictions, _ = model.mem_bank.query(bin_enc)
                     
                     if not eval_only:
                         # --- Iteration 7: Manifold Denoiser Gating ---
                         with torch.no_grad():
-                            # The Denoiser was trained on binarized coreset_seed_keys, so we must binarize here!
-                            bin_enc = torch.sign(norm_enc).to(torch.float32)
-                            bin_enc[bin_enc == 0] = 1.0
                             recon = model.denoiser(bin_enc)
                             recon_error = 1.0 - torch.cosine_similarity(bin_enc, recon, dim=1)
                         
-                        # Use inverse error as purity (threshold is 0.8 in mem_bank.update, meaning error < 0.20)
+                        # Use inverse error as purity (threshold is 0.48 in mem_bank.update)
                         mem_purity = 1.0 - recon_error
                         
-                        rate, purity_err = model.mem_bank.update(norm_enc, predictions, mem_purity, true_labels=proj_labels[indices])
+                        rate, purity_err = model.mem_bank.update(bin_enc, predictions, mem_purity, true_labels=proj_labels[indices])
                         
                         if rate is not None and len(firing_rates) % 200 == 0:
                             print(f"\n[DEBUG] Error: {recon_error.mean().item():.4f}, Purity: {mem_purity.mean().item():.4f}, Threshold: {model.mem_bank.purity_threshold:.4f}, Rate: {rate:.4f}")
