@@ -24,23 +24,52 @@ class HDCDenoiser(nn.Module):
 class AdaptiveMemoryBank(nn.Module):
     """
     Adaptive Memory Bank for Test-Time Adaptation operating natively in the HDC space.
-    Uses a global un-partitioned memory bank with Reservoir Sampling and Density-Adaptive k-NN.
+    Uses a CLASS-PARTITIONED memory bank with Reservoir Sampling to guarantee perfectly balanced retrieval.
     """
-    def __init__(self, hd_dim=10000, num_classes=17, memory_capacity=10000, k=10, purity_threshold=0.8):
+    def __init__(self, hd_dim=10000, num_classes=17, memory_capacity=20000, k=10, purity_threshold=0.48):
         super().__init__()
         self.hd_dim = hd_dim
         self.num_classes = num_classes
         self.k = k
         self.purity_threshold = purity_threshold
-        self.capacity = memory_capacity
         
-        # Global unpartitioned memory bank
-        self.register_buffer("keys", torch.empty((self.capacity, hd_dim), dtype=torch.float32))
-        self.register_buffer("values", torch.zeros(self.capacity, dtype=torch.int64))
-        self.register_buffer("is_valid", torch.zeros(self.capacity, dtype=torch.bool))
-        self.register_buffer("ptr", torch.tensor(0, dtype=torch.int64))
-        self.register_buffer("reserved_slots", torch.tensor(0, dtype=torch.int64))
+        # Partition the total capacity equally among all classes
+        self.capacity_per_class = memory_capacity // num_classes
+        self.total_capacity = self.capacity_per_class * num_classes
         
+        # Global unpartitioned memory bank structure, but logically partitioned
+        self.register_buffer("keys", torch.empty((self.total_capacity, hd_dim), dtype=torch.float32))
+        self.register_buffer("values", torch.zeros(self.total_capacity, dtype=torch.int64))
+        self.register_buffer("is_valid", torch.zeros(self.total_capacity, dtype=torch.bool))
+        
+        # Tracking pointers per class
+        self.register_buffer("ptr", torch.zeros(num_classes, dtype=torch.int64))
+        self.register_buffer("reserved_slots", torch.zeros(num_classes, dtype=torch.int64))
+        self.register_buffer("is_full", torch.zeros(num_classes, dtype=torch.bool))
+
+    def initialize_coreset(self, coreset_keys, coreset_values):
+        """
+        Seed the memory bank with the offline extracted coresets and lock them in reserved_slots.
+        """
+        for c in range(self.num_classes):
+            c_mask = coreset_values == c
+            if c_mask.any():
+                c_keys = coreset_keys[c_mask]
+                c_vals = coreset_values[c_mask]
+                
+                # Truncate if somehow the coreset is larger than capacity_per_class
+                n_pts = min(c_keys.size(0), self.capacity_per_class)
+                
+                start_idx = c * self.capacity_per_class
+                self.keys[start_idx : start_idx + n_pts] = c_keys[:n_pts]
+                self.values[start_idx : start_idx + n_pts] = c_vals[:n_pts]
+                self.is_valid[start_idx : start_idx + n_pts] = True
+                
+                self.reserved_slots[c] = n_pts
+                self.ptr[c] = n_pts
+                if n_pts == self.capacity_per_class:
+                    self.is_full[c] = True
+
     def query(self, features):
         """
         Query via Density-Adaptive Hamming Distance against the global memory bank.
@@ -53,18 +82,12 @@ class AdaptiveMemoryBank(nn.Module):
         flat_keys = self.keys[valid_mask]
         flat_values = self.values[valid_mask]
         
-        # Calculate Internal Density (Class Frequency in the global reservoir)
-        class_counts = torch.bincount(flat_values, minlength=self.num_classes).float()
-        
-        # Binarize incoming query
         bin_features = torch.sign(features).to(torch.float32)
         bin_features[bin_features == 0] = 1.0 
         
         k = min(self.k, flat_keys.size(0))
         predictions = []
         purity = []
-        
-        # Removed EVT Density Penalty (Iteration 7)
         
         # Process in chunks using float16 for massive speedup
         chunk_size = 50000
@@ -78,7 +101,6 @@ class AdaptiveMemoryBank(nn.Module):
             
             pred_chunk = torch.mode(neighbor_sem, dim=1).values
             predictions.append(pred_chunk)
-            # Iteration 7: Cohesion removed, relying strictly on Manifold Denoiser
             
         predictions = torch.cat(predictions, dim=0)
         purity = None
@@ -87,7 +109,7 @@ class AdaptiveMemoryBank(nn.Module):
 
     def update(self, features, pseudo_labels, confidence, true_labels=None):
         """
-        Graph-Pruned Update with Reservoir Sampling (Fixed Probability Replacement).
+        Class-Partitioned Update with Reservoir Sampling (Fixed Probability Replacement).
         """
         valid_mask = confidence >= self.purity_threshold
         admission_rate = valid_mask.float().mean().item()
@@ -98,7 +120,7 @@ class AdaptiveMemoryBank(nn.Module):
         valid_features = features[valid_mask]
         valid_labels = pseudo_labels[valid_mask]
         
-        # Binarize incoming features BEFORE storing them, otherwise we corrupt the Float16 dot products
+        # Binarize incoming features BEFORE storing them
         bin_features = torch.sign(valid_features).to(torch.float32)
         bin_features[bin_features == 0] = 1.0
         
@@ -106,56 +128,70 @@ class AdaptiveMemoryBank(nn.Module):
         purity_err = -1.0
         if true_labels is not None:
             valid_true = true_labels[valid_mask]
-            # Ignore ignore_index (-1 or 255) in purity calculation
             eval_mask = (valid_true >= 0) & (valid_true < self.num_classes)
             if eval_mask.any():
                 incorrect = (valid_labels[eval_mask] != valid_true[eval_mask]).float().sum()
                 purity_err = (incorrect / eval_mask.float().sum()).item()
         
-        n_in = bin_features.size(0)
-        ptr = self.ptr.item()
-        cap = self.capacity
-        
-        # If queue is not yet full, fill it sequentially
-        if not self.is_valid.all():
-            available = cap - ptr
-            if n_in <= available:
-                self.keys[ptr:ptr+n_in] = bin_features
-                self.values[ptr:ptr+n_in] = valid_labels
-                self.is_valid[ptr:ptr+n_in] = True
-                self.ptr.fill_((ptr + n_in) % cap)
-            else:
-                self.keys[ptr:] = bin_features[:available]
-                self.values[ptr:] = valid_labels[:available]
-                self.is_valid[ptr:] = True
+        # Class-partitioned updates
+        for c in range(self.num_classes):
+            c_mask = valid_labels == c
+            if not c_mask.any():
+                continue
                 
-                # The remainder undergo Reservoir Sampling in the non-reserved space
-                remainder_features = bin_features[available:]
-                remainder_labels = valid_labels[available:]
-                
-                # Replace with probability P = 0.01 (Slower Momentum-based write policy to prevent rapid flushing)
-                prob_mask = torch.rand(remainder_features.size(0), device=features.device) < 0.01
-                replace_features = remainder_features[prob_mask]
-                replace_labels = remainder_labels[prob_mask]
-                
-                if replace_features.size(0) > 0:
-                    replace_idx = torch.randint(self.reserved_slots.item(), cap, (replace_features.size(0),), device=features.device)
-                    self.keys[replace_idx] = replace_features
-                    self.values[replace_idx] = replace_labels
-                    
-                self.ptr.fill_(0) # Pointer meaning is lost after full, but we keep it at 0
-        else:
-            # Queue is full, use global Reservoir Sampling replacement in non-reserved space
-            # Using P = 0.01 to prevent rapid flushing of the memory bank
-            prob_mask = torch.rand(n_in, device=features.device) < 0.01
-            replace_features = bin_features[prob_mask]
-            replace_labels = valid_labels[prob_mask]
+            c_features = bin_features[c_mask]
+            c_labels = valid_labels[c_mask]
+            n_in = c_features.size(0)
             
-            if replace_features.size(0) > 0:
-                replace_idx = torch.randint(self.reserved_slots.item(), cap, (replace_features.size(0),), device=features.device)
-                self.keys[replace_idx] = replace_features
-                self.values[replace_idx] = replace_labels
+            cap = self.capacity_per_class
+            ptr = self.ptr[c].item()
+            start_idx = c * cap
+            reserved = self.reserved_slots[c].item()
+            
+            if not self.is_full[c]:
+                available = cap - ptr
+                if n_in <= available:
+                    self.keys[start_idx + ptr : start_idx + ptr + n_in] = c_features
+                    self.values[start_idx + ptr : start_idx + ptr + n_in] = c_labels
+                    self.is_valid[start_idx + ptr : start_idx + ptr + n_in] = True
+                    self.ptr[c] = ptr + n_in
+                    if self.ptr[c] == cap:
+                        self.is_full[c] = True
+                else:
+                    self.keys[start_idx + ptr : start_idx + cap] = c_features[:available]
+                    self.values[start_idx + ptr : start_idx + cap] = c_labels[:available]
+                    self.is_valid[start_idx + ptr : start_idx + cap] = True
+                    self.is_full[c] = True
+                    
+                    # Remainder undergo Reservoir Sampling
+                    rem_feats = c_features[available:]
+                    rem_lbls = c_labels[available:]
+                    
+                    # P = 0.01 replacement
+                    prob_mask = torch.rand(rem_feats.size(0), device=features.device) < 0.01
+                    rep_feats = rem_feats[prob_mask]
+                    rep_lbls = rem_lbls[prob_mask]
+                    
+                    if rep_feats.size(0) > 0:
+                        # Replace only in non-reserved dynamic slots
+                        if cap > reserved:
+                            replace_offsets = torch.randint(reserved, cap, (rep_feats.size(0),), device=features.device)
+                            replace_idx = start_idx + replace_offsets
+                            self.keys[replace_idx] = rep_feats
+                            self.values[replace_idx] = rep_lbls
+            else:
+                # Queue is full, use global Reservoir Sampling replacement in non-reserved space
+                prob_mask = torch.rand(n_in, device=features.device) < 0.01
+                rep_feats = c_features[prob_mask]
+                rep_lbls = c_labels[prob_mask]
                 
+                if rep_feats.size(0) > 0:
+                    if cap > reserved:
+                        replace_offsets = torch.randint(reserved, cap, (rep_feats.size(0),), device=features.device)
+                        replace_idx = start_idx + replace_offsets
+                        self.keys[replace_idx] = rep_feats
+                        self.values[replace_idx] = rep_lbls
+                        
         return admission_rate, purity_err
         
     def recover_geometry(self, features):

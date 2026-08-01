@@ -165,3 +165,34 @@
 - **Domain Mismatch & Binarization:** Initially, the autoencoder was trained offline using `coreset_seed_keys` (which are strict $\{-1, 1\}^{10000}$ binary vectors). However, during TTA, continuous L2-normalized vectors were being passed into the autoencoder, causing massive domain mismatch (reconstruction errors of 1.0 / completely orthogonal outputs). We resolved this by explicitly binarizing incoming TTA vectors before passing them through the denoiser.
 - **Threshold Calibration:** Once binarized, we mapped the true reconstruction errors (via `test_denoiser_b.py`) and found the generative separation maintained a strong AUROC of 0.9266 even on the quantized binary data. Correct geometry averaged an error of 0.43, while hallucinations averaged 0.60.
 - We set the optimal error threshold right down the middle at 0.52 (yielding a `mem_purity` threshold of `0.48`), which successfully broke the 100% lockout and allowed sensible firing rates (e.g. 16% on Fog, 95% on Motion Blur) while keeping memory contamination strictly bounded.
+
+### Expected Results (`unsup_kitti-c.py` output)
+| Corruption | Method | mIoU (Initial ➔ Final) | Firing Rate | MemError |
+| :--- | :--- | :--- | :--- | :--- |
+| Fog | Iteration 7 | 0.0652 ➔ 0.0217 | 26.91% | 59.82% |
+| Snow | Iteration 7 | 0.4308 ➔ 0.4848 | 98.81% | 15.45% |
+| Wet Ground | Iteration 7 | 0.4387 ➔ 0.4445 | 98.45% | 12.73% |
+| Motion Blur| Iteration 7 | 0.4219 ➔ 0.4005 | 98.83% | 16.74% |
+| Beam Missing | Iteration 7 | 0.3927 ➔ 0.3813 | 98.86% | 10.70% |
+| Crosstalk | Iteration 7 | 0.0737 ➔ 0.0540 | 42.00% | 53.70% |
+| Incomplete Echo | Iteration 7 | 0.3884 ➔ 0.3237 | 98.93% | 18.68% |
+| Cross Sensor | Iteration 7 | 0.2705 ➔ 0.1844 | 98.45% | 6.26% |
+
+### Critical Failure Modes Diagnosed:
+1. **Class Imbalance Collapse:** While the Generative Gating successfully solved the Inlier Paradox (dropping Fog firing rates from 100% to 26%), the global performance actually *degraded* relative to Iteration 6. 
+   - Without the EVT Density Penalty (which artificially punished dense clusters), Head classes (which make up 90% of the data stream) completely overwhelmed the global Reservoir Sampling. 
+   - The 10,000 dynamic memory slots became ~90% filled with Head classes. 
+   - Consequently, the 10-NN search overwhelmingly returned Head classes for everything, destroying the Head mIoU (e.g., Cross Sensor Head dropped from 0.4679 ➔ 0.2481) due to massive False Positives, and artificially inflating Tail mIoU by collapsing Tail False Positives to near-zero (e.g. Tail FP dropped from 1.5M ➔ 63k).
+
+---
+
+## Iteration 8: Class-Partitioned Reservoir Sampling
+
+**Goal:** Mathematically guarantee perfect class balance in the memory bank natively, eliminating the need for complex density penalties like EVT.
+
+**Mathematical & Structural Upgrades:**
+
+1. **Native Class Partitioning:**
+   - **Problem:** A global, un-partitioned memory bank updated via Reservoir Sampling will inevitably mirror the extreme class imbalance of the incoming data stream, leading to Class Imbalance Collapse during $k$-NN retrieval.
+   - **Solution:** We strictly partitioned the 20,000 capacity memory bank equally across all 19 classes (1,052 slots per class). Each class now manages its own independent pointer and reservoir.
+   - **Impact:** Head classes can physically never exceed 1,052 slots, preventing them from flooding the bank. Tail classes are guaranteed equal representation during the 10-NN search. This perfectly balances the HDC geometry without requiring external density penalties, allowing us to safely exploit the raw distance metric.

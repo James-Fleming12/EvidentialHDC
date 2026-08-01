@@ -117,24 +117,13 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         
                         # Coreset Seed: Seed with the offline extracted coresets and lock them in reserved_slots!
                         if hasattr(model, 'coreset_seed_keys') and model.coreset_seed_keys is not None:
-                            num_coreset_pts = model.coreset_seed_keys.size(0)
-                            model.mem_bank.keys[:num_coreset_pts] = model.coreset_seed_keys
-                            model.mem_bank.values[:num_coreset_pts] = model.coreset_seed_values
-                            model.mem_bank.is_valid[:num_coreset_pts] = True
-                            
-                            # Lock these points from being overwritten
-                            model.mem_bank.reserved_slots.fill_(num_coreset_pts)
-                            model.mem_bank.ptr.fill_(num_coreset_pts)
+                            model.mem_bank.initialize_coreset(model.coreset_seed_keys, model.coreset_seed_values)
                         else:
                             # Fallback just in case
                             proto_weights = torch.sign(model.classify.weight.clone().detach())
                             proto_weights[proto_weights == 0] = 1.0
-                            for c in range(num_classes):
-                                model.mem_bank.keys[c*10:(c+1)*10] = proto_weights[c]
-                                model.mem_bank.values[c*10:(c+1)*10] = c
-                                model.mem_bank.is_valid[c*10:(c+1)*10] = True
-                            model.mem_bank.reserved_slots.fill_(num_classes * 10)
-                            model.mem_bank.ptr.fill_(num_classes * 10)
+                            proto_values = torch.arange(num_classes, dtype=torch.int64, device=device)
+                            model.mem_bank.initialize_coreset(proto_weights, proto_values)
                     
                     # Binarize incoming features for HDC operations
                     bin_enc = torch.sign(norm_enc).to(torch.float32)
