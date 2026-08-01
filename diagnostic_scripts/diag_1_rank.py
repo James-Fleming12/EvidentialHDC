@@ -46,7 +46,7 @@ def main():
     # Load Fog dataset
     print("Loading Fog dataset...")
     fog_parser = Parser(
-        root="/mnt/alpha/jmfleming/KITTI/kitti_c/fog/heavy",
+        root="/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C/fog/heavy",
         train_sequences=["08"],
         valid_sequences=["08"],
         test_sequences=["08"],
