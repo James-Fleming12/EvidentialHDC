@@ -77,12 +77,16 @@ class AdaptiveMemoryBank(nn.Module):
             avg_internal_sim = (internal_sim_sum - k * 10000.0) / (k * (k - 1) + 1e-8)
             D_int = 1.0 - (avg_internal_sim / 10000.0)
             
+            # Structural Variance Prior (prevent division by zero from exact duplicates)
+            # A typical clean cluster in HDC space has ~0.15 variance.
+            D_int_clamped = torch.clamp(D_int, min=0.15)
+            
             # Average query-to-neighbor distance
             q_sim = (chunk.float() * S).sum(dim=1)
             D_q = 1.0 - (q_sim / (k * 10000.0))
             
             # Cohesion Ratio (D_q / D_int)
-            cohesion_ratio = D_q / (D_int + 1e-8)
+            cohesion_ratio = D_q / (D_int_clamped + 1e-8)
             
             # Convert to confidence score (1.0 = perfect fit, < 0.8 = outlier)
             cohesion_conf = 1.0 / (cohesion_ratio + 1e-8)
