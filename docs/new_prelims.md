@@ -206,3 +206,38 @@ Moving forward, we are transitioning from individual diagnostics into a structur
 By deeply evaluating the Information, Geometry, Dynamics, Stability, and Recoverability of the representations, architecture design becomes a mathematical consequence of empirical findings.
 
 The full 6-phase master framework for this research program is formally outlined in [The Representation and Adaptation Characterization Framework](./research_program.md).
+
+---
+
+# Preliminary Diagnostics (Between Iteration 6 and Iteration 7)
+
+Following the discovery of the **Inlier Paradox** and **Head Class Degradation** in Iteration 6 of the Adaptive Memory Bank (see `adaptive_iterations.md`), we pause to run five foundational diagnostics before jumping into Iteration 7 architecture changes.
+
+These diagnostics are designed to identify what representations contain genuinely new information and isolate whether we should move toward temporal tracking, intrinsic geometry tracking, or memory bank calibration.
+
+## 1. Temporal Persistence Diagnostics
+**Objective:** Test a fundamentally new information source not present in the current model. Do hallucinations natively decorrelate over time?
+* **Feature Persistence:** Compute $\cos(f_t, f_{t+\Delta})$ for voxels. Does fog decorrelate rapidly while road remains stable?
+* **Neighborhood Persistence:** Track Jaccard overlap of 10-NN neighborhoods over time.
+* **Lifetime Distribution:** Track how long points survive in the Adaptive Memory Bank before being overwritten. Do hallucinations die much faster than clean geometry?
+
+## 2. Intrinsic Dimensionality (Local Rank)
+**Objective:** Determine whether intrinsic shape information exists beyond simplistic point density. 
+* Compute the 50-NN continuous 128D neighborhood for each point.
+* Center the neighborhood and perform SVD to compute effective rank: $r_{eff} = (\sum \sigma_i)^2 / \sum \sigma_i^2$.
+* If Fog has structurally distinct effective rank from clean points, LID/Rank could solve the Inlier Paradox without needing temporal tracking.
+
+## 3. Head-Class Saturation Curves
+**Objective:** Justify or reject the current EVT Density Penalty redesign (which caused Iteration 6's Head Class Degradation).
+* **Marginal Utility:** Measure accuracy on a held-out query set when the memory bank is populated with $N = 10, 50, 100, 500, 1000, 5000$ points.
+* **Retrieval Saturation:** Does the 5000th road sample actually improve retrieval? If natural saturation occurs at 500 points, heavy penalties like EVT might be mathematical overkill.
+
+## 4. Margin Evolution Diagnostics
+**Objective:** Test whether geometric margin ($s_1 - s_2$) is predictive or merely a consequence of systemic collapse.
+* **Margin Distribution:** Compare margins of accepted points vs hallucinations. If hallucinations have large margins (deep inside the wrong cluster), margin thresholding will fail.
+* **Margin Dynamics:** Track margin through adaptation to see if margin shrinks predictably before a cluster collapses.
+
+## 5. Representation Redundancy Map
+**Objective:** Map out what new information each proposed method is actually introducing versus rephrasing what we already know.
+* Compute pairwise correlation (Spearman) across all signals: Prototype similarity, Cosine margin, Predictive entropy, Dirichlet evidence, Neighborhood density, Effective rank, Temporal persistence.
+* **Ablation:** Train a simple probe (Random Forest) to predict `is_hallucination = {0, 1}` using all features. Drop one feature family at a time. If dropping temporal persistence drops AUC by 15%, it's highly unique. If dropping Margin drops AUC by 0%, it's totally redundant.
