@@ -85,13 +85,13 @@ def extract_features(model, dataloader, num_frames, device):
     all_pseudo = []
     all_true = []
     
-    for i, (proj_in, proj_mask, _, _, path_seq, path_name, _, _, proj_labels, _, _, _, _, _, _) in enumerate(dataloader):
+    for i, batch_data in enumerate(dataloader):
         if i >= num_frames:
             break
             
-        proj_in = proj_in.to(device)
-        proj_mask = proj_mask.to(device)
-        proj_labels = proj_labels.to(device)
+        proj_in = batch_data[0].to(device)
+        proj_mask = batch_data[1].to(device) if len(batch_data) > 1 else None
+        proj_labels = batch_data[2].to(device)
         
         with torch.amp.autocast('cuda', enabled=True):
             latent_x = model.net(proj_in, only_feat=True)
