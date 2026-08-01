@@ -66,9 +66,27 @@ class AdaptiveMemoryBank(nn.Module):
             
             pred_chunk = torch.mode(neighbor_sem, dim=1).values
             predictions.append(pred_chunk)
+            # Calculate Relative Manifold Cohesion natively in 10,000D space
+            # S is the sum vector of the k nearest neighbors
+            S = torch.zeros((chunk.size(0), self.hd_dim), device=chunk.device, dtype=torch.float32)
+            for j in range(k):
+                S += flat_keys[topk_idx[:, j]]
+                
+            # Average internal neighbor distance
+            internal_sim_sum = (S * S).sum(dim=1)
+            avg_internal_sim = (internal_sim_sum - k * 10000.0) / (k * (k - 1) + 1e-8)
+            D_int = 1.0 - (avg_internal_sim / 10000.0)
             
-            agreements = (neighbor_sem == pred_chunk.unsqueeze(1)).float()
-            purity.append(agreements.mean(dim=1))
+            # Average query-to-neighbor distance
+            q_sim = (chunk.float() * S).sum(dim=1)
+            D_q = 1.0 - (q_sim / (k * 10000.0))
+            
+            # Cohesion Ratio (D_q / D_int)
+            cohesion_ratio = D_q / (D_int + 1e-8)
+            
+            # Convert to confidence score (1.0 = perfect fit, < 0.8 = outlier)
+            cohesion_conf = 1.0 / (cohesion_ratio + 1e-8)
+            purity.append(cohesion_conf)
             
         predictions = torch.cat(predictions, dim=0)
         purity = torch.cat(purity, dim=0)

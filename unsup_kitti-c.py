@@ -135,32 +135,15 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             model.mem_bank.reserved_slots.fill_(num_classes * 10)
                             model.mem_bank.ptr.fill_(num_classes * 10)
                     
-                    # --- 1. Neural Network Forward Pass ---
-                    # We compute the NN logits to extract the Soft Dual Weight (Epistemic Uncertainty)
-                    nn_logits = model.classify(norm_enc)
-                    nn_preds = torch.argmax(nn_logits, dim=1)
-                    
-                    # Compute NN Epistemic Confidence (Dirichlet Evidence Decay)
-                    nn_uncertainty = model._get_epistemic_uncertainty(norm_enc, logits=nn_logits)
-                    
-                    # --- 2. Memory Bank Forward Pass ---
-                    # The Memory Bank acts as the dynamic, adapted geometric manifold
-                    mem_preds, mem_purity = model.mem_bank.query(norm_enc)
-                    
-                    # For inference, we use the Memory Bank's prediction (as it contains the adapted state).
-                    # If the memory bank is completely uncertain, we fallback to the Neural Network.
-                    predictions = torch.where(mem_purity >= 0.3, mem_preds, nn_preds)
+                    # --- Memory Bank Forward Pass (Native 10,000D Cohesion) ---
+                    # mem_purity is now the inverse Cohesion Ratio (1.0 / Cohesion)
+                    predictions, mem_purity = model.mem_bank.query(norm_enc)
                     
                     if not eval_only:
-                        # --- 3. Consensus Gating (Breaking the Echo Chamber) ---
-                        # We only admit pseudo-labels into the memory bank if BOTH modalities agree:
-                        # a) The Neural Network must agree with the Memory Bank's geometric nearest-neighbor
-                        # b) The point acts as a hard-example (high epistemic uncertainty nn_uncertainty >= 0.8 is admitted by mem_bank)
-                        agree_mask = (nn_preds == mem_preds)
-                        
-                        valid_gate = agree_mask.float() * nn_uncertainty
-                        
-                        rate, purity_err = model.mem_bank.update(norm_enc, predictions, valid_gate, true_labels=proj_labels[indices])
+                        # --- Cohesion Gating ---
+                        # We admit pseudo-labels if they fit naturally into the local geometry.
+                        # If mem_purity >= 0.8 (meaning Cohesion Ratio <= 1.25), it's admitted.
+                        rate, purity_err = model.mem_bank.update(norm_enc, predictions, mem_purity, true_labels=proj_labels[indices])
                         if rate is not None: firing_rates.append(rate)
                         if purity_err is not None and purity_err >= 0: memory_errors.append(purity_err)
                 else:
