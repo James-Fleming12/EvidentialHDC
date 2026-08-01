@@ -154,12 +154,11 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     if not eval_only:
                         # --- 3. Consensus Gating (Breaking the Echo Chamber) ---
                         # We only admit pseudo-labels into the memory bank if BOTH modalities agree:
-                        # a) The Neural Network must be epistemically confident (nn_uncertainty <= 0.5)
-                        # b) The Neural Network must agree with the Memory Bank's geometric nearest-neighbor
+                        # a) The Neural Network must agree with the Memory Bank's geometric nearest-neighbor
+                        # b) The point acts as a hard-example (high epistemic uncertainty nn_uncertainty >= 0.8 is admitted by mem_bank)
                         agree_mask = (nn_preds == mem_preds)
-                        conf_mask = (nn_uncertainty <= 0.5)
                         
-                        valid_gate = (agree_mask & conf_mask).float()
+                        valid_gate = agree_mask.float() * nn_uncertainty
                         
                         rate, purity_err = model.mem_bank.update(norm_enc, predictions, valid_gate, true_labels=proj_labels[indices])
                         if rate is not None: firing_rates.append(rate)
