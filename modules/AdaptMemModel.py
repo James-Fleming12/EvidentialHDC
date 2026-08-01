@@ -2,6 +2,25 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class HDCDenoiser(nn.Module):
+    """
+    Manifold Denoiser (Generative Reconstruction Gate) for HDC.
+    Learns the 10,000D clean source geometric rules. Hallucinations in 
+    out-of-distribution fog/noise regions fail to reconstruct.
+    """
+    def __init__(self, hd_dim=10000, hidden_dim=256):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(hd_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU()
+        )
+        self.decoder = nn.Linear(hidden_dim, hd_dim)
+        
+    def forward(self, x):
+        z = self.encoder(x)
+        return self.decoder(z)
+
 class AdaptiveMemoryBank(nn.Module):
     """
     Adaptive Memory Bank for Test-Time Adaptation operating natively in the HDC space.
@@ -45,13 +64,7 @@ class AdaptiveMemoryBank(nn.Module):
         predictions = []
         purity = []
         
-        # Adaptive Metric tuning parameter (Margin Penalty)
-        # Using Extreme Value Theory (EVT) for the max of N Gaussian variables.
-        # The dot product of two random 10,000D bipolar vectors is Gaussian with sigma = 100.
-        # The expected maximum of N such variables grows as sigma * sqrt(2 * ln(N)).
-        # We subtract this exact statistical advantage to make the similarity density-blind.
-        target_penalties = 100.0 * torch.sqrt(2.0 * torch.log(class_counts + 1.0))
-        target_penalties = target_penalties[flat_values]
+        # Removed EVT Density Penalty (Iteration 7)
         
         # Process in chunks using float16 for massive speedup
         chunk_size = 50000
@@ -59,41 +72,16 @@ class AdaptiveMemoryBank(nn.Module):
             chunk = bin_features[i:i+chunk_size]
             sims = torch.mm(chunk.half(), flat_keys.t().half()).float()
             
-            adaptive_sims = sims - target_penalties.unsqueeze(0)
-            
-            topk_sims, topk_idx = adaptive_sims.topk(k=k, dim=1)
+            # Raw geometric similarity without EVT
+            topk_sims, topk_idx = sims.topk(k=k, dim=1)
             neighbor_sem = flat_values[topk_idx]
             
             pred_chunk = torch.mode(neighbor_sem, dim=1).values
             predictions.append(pred_chunk)
-            # Calculate Relative Manifold Cohesion natively in 10,000D space
-            # S is the sum vector of the k nearest neighbors
-            S = torch.zeros((chunk.size(0), self.hd_dim), device=chunk.device, dtype=torch.float32)
-            for j in range(k):
-                S += flat_keys[topk_idx[:, j]]
-                
-            # Average internal neighbor distance
-            internal_sim_sum = (S * S).sum(dim=1)
-            avg_internal_sim = (internal_sim_sum - k * 10000.0) / (k * (k - 1) + 1e-8)
-            D_int = 1.0 - (avg_internal_sim / 10000.0)
-            
-            # Structural Variance Prior (prevent division by zero from exact duplicates)
-            # A typical clean cluster in real LiDAR HDC space has ~0.45 variance (cos sim 0.55).
-            D_int_clamped = torch.clamp(D_int, min=0.45)
-            
-            # Average query-to-neighbor distance
-            q_sim = (chunk.float() * S).sum(dim=1)
-            D_q = 1.0 - (q_sim / (k * 10000.0))
-            
-            # Cohesion Ratio (D_q / D_int)
-            cohesion_ratio = D_q / (D_int_clamped + 1e-8)
-            
-            # Convert to confidence score (1.0 = perfect fit, < 0.8 = outlier)
-            cohesion_conf = 1.0 / (cohesion_ratio + 1e-8)
-            purity.append(cohesion_conf)
+            # Iteration 7: Cohesion removed, relying strictly on Manifold Denoiser
             
         predictions = torch.cat(predictions, dim=0)
-        purity = torch.cat(purity, dim=0)
+        purity = None
         
         return predictions, purity
 
