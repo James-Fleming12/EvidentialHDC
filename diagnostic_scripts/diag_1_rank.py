@@ -22,7 +22,7 @@ def main():
     # Actually just taking the baseline dataloader
     print("Loading baseline dataset...")
     baseline_parser = Parser(
-        root="/mnt/alpha/jmfleming/KITTI/dataset",
+        root="/mnt/alpha/jmfleming/KITTI",
         train_sequences=["08"],
         valid_sequences=["08"],
         test_sequences=["08"],
@@ -45,7 +45,7 @@ def main():
     # Load Fog dataset
     print("Loading Fog dataset...")
     fog_parser = Parser(
-        root="/mnt/alpha/jmfleming/KITTI/kitti_c/fog/severe",
+        root="/mnt/alpha/jmfleming/KITTI/kitti_c/fog/heavy",
         train_sequences=["08"],
         valid_sequences=["08"],
         test_sequences=["08"],
