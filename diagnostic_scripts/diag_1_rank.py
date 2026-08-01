@@ -139,7 +139,7 @@ def compute_local_rank(features, pseudo, true, k=50, num_samples=2000):
     r_eff_halluc = []
     
     for i in range(feats_sub.size(0)):
-        neighborhood = features[topk_idx[i]] # (k, 128)
+        neighborhood = features[topk_idx[i]].float() # (k, 128)
         
         # Center the neighborhood
         neighborhood = neighborhood - neighborhood.mean(dim=0, keepdim=True)
