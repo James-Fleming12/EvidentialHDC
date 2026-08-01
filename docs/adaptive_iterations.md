@@ -114,3 +114,32 @@
 | Motion Blur| Iteration 5 | 0.3178 | 0.7600 | 80.84% | 16.28% |
 
 ---
+
+## Iteration 6: Native Relative Manifold Cohesion (Pure HDC Gating)
+
+**Goal:** Decouple the memory bank entirely from the Neural Network's uncertainty measurements by gating incoming points based purely on their structural fit within the 10,000D manifold.
+
+**Mathematical & Structural Upgrades:**
+
+1. **Relative Manifold Cohesion Gating:**
+   - **Problem:** The Epistemic Consensus Gating (Iteration 5) still suffered from systemic failures (like Fog) because it relied on the neural network. If the neural network confidently hallucinated geometry, the memory bank was poisoned.
+   - **Solution:** We introduced a native 10,000D structural integrity gate. For an incoming query point, we calculate the average distance to its $k$ nearest neighbors ($D_q$). We then compare this to the average pairwise distance between those exact $k$ neighbors themselves ($D_{int}$). The point is only admitted if $D_q / \max(D_{int}, 0.45) \le 1.25$. This dynamically scales the admission boundary based on the natural geometric spread of the class.
+2. **True Coreset Seed Variance:**
+   - **Problem:** Coreset seeding previously forced exactly 588 points per class by artificially duplicating latent vectors. This caused the internal variance ($D_{int}$) of clusters to collapse exactly to 0.00, breaking the cohesion metric.
+   - **Solution:** We removed artificial duplication. The memory bank is seeded only with the true, unique geometric seeds available from the offline frames. The EVT Density Penalty mathematically handles the resulting imbalance.
+
+### Expected Results (`unsup_kitti-c.py` output)
+| Corruption | Method | mIoU | Accuracy | Firing Rate | MemError |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| Fog | Iteration 6 | 0.0292 | 0.2146 | 100.00% | 89.22% |
+| Snow | Iteration 6 | 0.5175 | 0.8403 | 99.99% | 14.73% |
+| Wet Ground | Iteration 6 | 0.4886 | 0.8598 | 99.99% | 9.30% |
+| Motion Blur| Iteration 6 | 0.4827 | 0.8269 | 99.99% | 10.81% |
+| Beam Missing | Iteration 6 | 0.4059 | 0.7590 | 99.99% | 9.79% |
+| Crosstalk | Iteration 6 | 0.0760 | 0.4659 | 99.99% | 61.92% |
+| Incomplete Echo | Iteration 6 | 0.3806 | 0.8399 | 99.99% | 12.30% |
+| Cross Sensor | Iteration 6 | 0.2361 | 0.5653 | 100.00% | 5.41% |
+
+### Critical Failure Modes Diagnosed:
+1. **The Inlier Paradox (Unstructured Noise Admission):** Severe unstructured noise like Fog and Crosstalk fundamentally fools purely geometric distance gating. Because the HDC encoder collapses random noise into highly dense "background" vectors near the origin, Fog points actually have a *lower* query distance ($D_q \approx 0.43$) to the seeds than clean geometry ($D_q \approx 0.52$). Relative Manifold Cohesion assumes noise will be an outlier, but the data proves it acts as an ultra-dense inlier. As a result, Fog is fully admitted (`FiringRate = 100%`), causing catastrophic memory corruption (`MemError = 89.22%`).
+2. **Head Class Degradation (EVT Density Trade-off):** While the EVT Density Penalty beautifully recovers the Tail classes (e.g., Snow Tail jumps from 16.89% to 39.06%), it penalizes the Head classes too aggressively during 10-NN retrieval. This causes Head mIoU to drop consistently (e.g., Cross Sensor Head drops from 46.79% to 31.96%), which drags down the global Accuracy metric. The penalty function is over-correcting.
