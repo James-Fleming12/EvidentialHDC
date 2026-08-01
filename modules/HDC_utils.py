@@ -1116,20 +1116,21 @@ class DualGateModel(nn.Module):
                     perm = torch.randperm(len(c_raw))[:n_needed]
                     coreset = c_raw[perm]
                 else:
-                    # Oversample if we have at least 1 point but fewer than n_needed
-                    perm = torch.randint(0, len(c_raw), (n_needed,))
-                    coreset = c_raw[perm]
+                    # Do not oversample (which creates exact duplicates and breaks D_int).
+                    # Just use the unique points we have. The EVT Density Penalty will protect them.
+                    coreset = c_raw
                 
                 # Ensure it is properly binarized
                 coreset = torch.sign(coreset).to(torch.float32)
                 coreset[coreset == 0] = 1.0
             else:
                 # Fallback to prototype for completely missing rare classes (Cold-Start Missing Class Guarantee)
-                coreset = torch.sign(self.classify.weight[c]).clone().detach().unsqueeze(0).expand(n_needed, -1).cpu()
+                # Just insert ONE prototype so it exists and can be retrieved, EVT will protect it.
+                coreset = torch.sign(self.classify.weight[c]).clone().detach().unsqueeze(0).cpu()
                 coreset[coreset == 0] = 1.0
                 
             coreset_keys_list.append(coreset)
-            coreset_values_list.append(torch.full((n_needed,), c, dtype=torch.int64))
+            coreset_values_list.append(torch.full((len(coreset),), c, dtype=torch.int64))
             
         self.coreset_seed_keys = torch.cat(coreset_keys_list, dim=0).to(device)
         self.coreset_seed_values = torch.cat(coreset_values_list, dim=0).to(device)
