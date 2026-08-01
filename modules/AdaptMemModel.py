@@ -78,8 +78,8 @@ class AdaptiveMemoryBank(nn.Module):
             D_int = 1.0 - (avg_internal_sim / 10000.0)
             
             # Structural Variance Prior (prevent division by zero from exact duplicates)
-            # A typical clean cluster in HDC space has ~0.15 variance.
-            D_int_clamped = torch.clamp(D_int, min=0.15)
+            # A typical clean cluster in HDC space has ~0.05 variance (cos sim 0.9).
+            D_int_clamped = torch.clamp(D_int, min=0.05)
             
             # Average query-to-neighbor distance
             q_sim = (chunk.float() * S).sum(dim=1)
