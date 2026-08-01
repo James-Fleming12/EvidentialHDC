@@ -15,7 +15,7 @@ def main():
     DATA = yaml.safe_load(open("config/labels/semantic-kitti-all.yaml", 'r'))
     
     # Load model
-    model = set_uq_model(method='rp', arch=ARCH, data=DATA, save_dir='logs/kitti_pretrain', device=device)
+    model = set_uq_model(ARCH, 'logs/kitti_pretrain', 'rp', 0, 0, 17, device)
     model.eval()
 
     # Load small subset of data (just sequence 08, first 5 frames)
