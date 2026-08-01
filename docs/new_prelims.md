@@ -227,6 +227,14 @@ These diagnostics are designed to identify what representations contain genuinel
 * Center the neighborhood and perform SVD to compute effective rank: $r_{eff} = (\sum \sigma_i)^2 / \sum \sigma_i^2$.
 * If Fog has structurally distinct effective rank from clean points, LID/Rank could solve the Inlier Paradox without needing temporal tracking.
 
+**Results:**
+* **Clean Correct:** Mean = 17.56, Median = 17.96
+* **Clean Hallucination:** Mean = 15.47, Median = 14.79
+* **Fog Correct:** Mean = 24.88, Median = 25.56
+* **Fog Hallucination:** Mean = 16.08, Median = 13.89
+
+**Verdict: FAILED.** While hallucinations (both clean and fog) have a slightly *lower* effective rank (more collinear/flat neighborhoods) than true geometry, the difference (~17.5 vs ~16.0) is negligible. Intrinsic dimensionality is not a sufficiently distinct or robust signal to separate hallucinations from true geometry. Local rank cannot solve the Inlier Paradox.
+
 ## 3. Head-Class Saturation Curves
 **Objective:** Justify or reject the current EVT Density Penalty redesign (which caused Iteration 6's Head Class Degradation).
 * **Marginal Utility:** Measure accuracy on a held-out query set when the memory bank is populated with $N = 10, 50, 100, 500, 1000, 5000$ points.
