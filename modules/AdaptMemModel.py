@@ -100,11 +100,6 @@ class AdaptiveMemoryBank(nn.Module):
             predictions.append(pred_chunk)
             
         predictions = torch.cat(predictions, dim=0)
-        
-        # DEBUG
-        if True:
-            print(f"[DEBUG] query preds: {predictions.unique(return_counts=True)}")
-            
         purity = None
         
         return predictions, purity
