@@ -152,6 +152,9 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         mem_purity = 1.0 - recon_error
                         
                         rate, purity_err = model.mem_bank.update(norm_enc, predictions, mem_purity, true_labels=proj_labels[indices])
+                        
+                        if rate is not None and len(firing_rates) % 200 == 0:
+                            print(f"\n[DEBUG] Error: {recon_error.mean().item():.4f}, Purity: {mem_purity.mean().item():.4f}, Threshold: {model.mem_bank.purity_threshold:.4f}, Rate: {rate:.4f}")
                         if rate is not None: firing_rates.append(rate)
                         if purity_err is not None and purity_err >= 0: memory_errors.append(purity_err)
                 else:
