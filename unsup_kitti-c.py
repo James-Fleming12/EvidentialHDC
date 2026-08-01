@@ -140,8 +140,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     nn_logits = model.classify(norm_enc)
                     nn_preds = torch.argmax(nn_logits, dim=1)
                     
-                    # Compute NN Epistemic Confidence (using the dual-gate log-space metric)
-                    _, nn_uncertainty, _ = model.get_confidence(norm_enc, nn_preds, method='soft_dual_weight', logits=nn_logits)
+                    # Compute NN Epistemic Confidence (Dirichlet Evidence Decay)
+                    nn_uncertainty = model._get_epistemic_uncertainty(norm_enc, logits=nn_logits)
                     
                     # --- 2. Memory Bank Forward Pass ---
                     # The Memory Bank acts as the dynamic, adapted geometric manifold
