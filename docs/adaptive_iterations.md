@@ -129,16 +129,16 @@
    - **Solution:** We removed artificial duplication. The memory bank is seeded only with the true, unique geometric seeds available from the offline frames. The EVT Density Penalty mathematically handles the resulting imbalance.
 
 ### Expected Results (`unsup_kitti-c.py` output)
-| Corruption | Method | mIoU | Accuracy | Firing Rate | MemError |
+| Corruption | Method | mIoU (Initial ➔ Final) | Accuracy (Initial ➔ Final) | Firing Rate | MemError |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| Fog | Iteration 6 | 0.0292 | 0.2146 | 100.00% | 89.22% |
-| Snow | Iteration 6 | 0.5175 | 0.8403 | 99.99% | 14.73% |
-| Wet Ground | Iteration 6 | 0.4886 | 0.8598 | 99.99% | 9.30% |
-| Motion Blur| Iteration 6 | 0.4827 | 0.8269 | 99.99% | 10.81% |
-| Beam Missing | Iteration 6 | 0.4059 | 0.7590 | 99.99% | 9.79% |
-| Crosstalk | Iteration 6 | 0.0760 | 0.4659 | 99.99% | 61.92% |
-| Incomplete Echo | Iteration 6 | 0.3806 | 0.8399 | 99.99% | 12.30% |
-| Cross Sensor | Iteration 6 | 0.2361 | 0.5653 | 100.00% | 5.41% |
+| Fog | Iteration 6 | 0.0652 ➔ 0.0292 | 0.1736 ➔ 0.2146 | 100.00% | 89.22% |
+| Snow | Iteration 6 | 0.4308 ➔ 0.5175 | 0.8664 ➔ 0.8403 | 99.99% | 14.73% |
+| Wet Ground | Iteration 6 | 0.4387 ➔ 0.4886 | 0.9081 ➔ 0.8598 | 99.99% | 9.30% |
+| Motion Blur| Iteration 6 | 0.4219 ➔ 0.4827 | 0.8447 ➔ 0.8269 | 99.99% | 10.81% |
+| Beam Missing | Iteration 6 | 0.3927 ➔ 0.4059 | 0.8369 ➔ 0.7590 | 99.99% | 9.79% |
+| Crosstalk | Iteration 6 | 0.0737 ➔ 0.0760 | 0.2165 ➔ 0.4659 | 99.99% | 61.92% |
+| Incomplete Echo | Iteration 6 | 0.3884 ➔ 0.3806 | 0.9057 ➔ 0.8399 | 99.99% | 12.30% |
+| Cross Sensor | Iteration 6 | 0.2705 ➔ 0.2361 | 0.6213 ➔ 0.5653 | 100.00% | 5.41% |
 
 ### Critical Failure Modes Diagnosed:
 1. **The Inlier Paradox (Unstructured Noise Admission):** Severe unstructured noise like Fog and Crosstalk fundamentally fools purely geometric distance gating. Because the HDC encoder collapses random noise into highly dense "background" vectors near the origin, Fog points actually have a *lower* query distance ($D_q \approx 0.43$) to the seeds than clean geometry ($D_q \approx 0.52$). Relative Manifold Cohesion assumes noise will be an outlier, but the data proves it acts as an ultra-dense inlier. As a result, Fog is fully admitted (`FiringRate = 100%`), causing catastrophic memory corruption (`MemError = 89.22%`).
