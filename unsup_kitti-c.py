@@ -113,6 +113,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     if not hasattr(model, 'mem_bank'):
                         # Capacity 20,000 allows for 9996 frozen Coreset Seed points + 10,004 dynamic online points
                         model.mem_bank = AdaptiveMemoryBank(hd_dim=10000, num_classes=num_classes, memory_capacity=20000).to(device)
+                        model.mem_bank.purity_threshold = 0.15
                         
                         # Coreset Seed: Seed with the offline extracted coresets and lock them in reserved_slots!
                         if hasattr(model, 'coreset_seed_keys') and model.coreset_seed_keys is not None:
@@ -469,10 +470,7 @@ def main():
             model.denoiser.load_state_dict({k: v.to(device) for k, v in source_stats_cache['denoiser_state_dict'].items()})
         model.denoiser.eval()
         
-        # Iteration 7: Set the denoiser threshold (replaces old 0.8 cohesion threshold)
-        # Average Fog Correct error is ~0.77. Average Fog Halluc error is ~0.93.
-        # We set error threshold to 0.85 (which means mem_purity > 0.15)
-        model.mem_bank.purity_threshold = 0.15
+
 
     for current_method, full_method_name in zip(methods_to_run, full_method_names):
         logger.info("=========================================")
