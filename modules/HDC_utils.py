@@ -1142,23 +1142,25 @@ class DualGateModel(nn.Module):
         import torch.nn as nn
         import torch.optim as optim
         print("Training HDC Manifold Denoiser on Source Bank...")
-        self.denoiser = HDCDenoiser(hd_dim=self.hd_dim, hidden_dim=256).to(device)
-        self.denoiser.train()
-        optimizer = optim.Adam(self.denoiser.parameters(), lr=1e-3)
-        criterion = nn.MSELoss()
         
-        # Use the coreset_seed_keys as our clean source bank (already binarized and balanced)
-        train_bank = self.coreset_seed_keys.clone().float()
-        batch_size = 1000
-        for epoch in range(15):
-            for i in range(0, train_bank.size(0), batch_size):
-                batch = train_bank[i:i+batch_size]
-                optimizer.zero_grad()
-                recon = self.denoiser(batch)
-                loss = criterion(recon, batch)
-                loss.backward()
-                optimizer.step()
-                
+        with torch.enable_grad():
+            self.denoiser = HDCDenoiser(hd_dim=self.hd_dim, hidden_dim=256).to(device)
+            self.denoiser.train()
+            optimizer = optim.Adam(self.denoiser.parameters(), lr=1e-3)
+            criterion = nn.MSELoss()
+            
+            # Use the coreset_seed_keys as our clean source bank (already binarized and balanced)
+            train_bank = self.coreset_seed_keys.clone().float()
+            batch_size = 1000
+            for epoch in range(15):
+                for i in range(0, train_bank.size(0), batch_size):
+                    batch = train_bank[i:i+batch_size]
+                    optimizer.zero_grad()
+                    recon = self.denoiser(batch)
+                    loss = criterion(recon, batch)
+                    loss.backward()
+                    optimizer.step()
+                    
         self.denoiser.eval()
         
         return {
