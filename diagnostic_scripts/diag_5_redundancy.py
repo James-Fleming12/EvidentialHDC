@@ -18,6 +18,7 @@ def main():
     ARCH = yaml.safe_load(open("config/arch/senet-2048p.yml", 'r'))
     
     model = set_uq_model(ARCH, 'logs/kitti_pretrain', 'rp', 0, 0, 17, device)
+    model.load_state_dict(torch.load('logs/kitti_pretrain/hdc_sub.pth', map_location=device), strict=False)
     model.to(device)
     model.eval()
 
