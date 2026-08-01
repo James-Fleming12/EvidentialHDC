@@ -468,6 +468,11 @@ def main():
         if source_stats_cache.get('denoiser_state_dict') is not None:
             model.denoiser.load_state_dict({k: v.to(device) for k, v in source_stats_cache['denoiser_state_dict'].items()})
         model.denoiser.eval()
+        
+        # Iteration 7: Set the denoiser threshold (replaces old 0.8 cohesion threshold)
+        # Average Fog Correct error is ~0.77. Average Fog Halluc error is ~0.93.
+        # We set error threshold to 0.85 (which means mem_purity > 0.15)
+        model.mem_bank.purity_threshold = 0.15
 
     for current_method, full_method_name in zip(methods_to_run, full_method_names):
         logger.info("=========================================")
