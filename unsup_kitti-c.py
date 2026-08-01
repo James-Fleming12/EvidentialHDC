@@ -142,8 +142,11 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     if not eval_only:
                         # --- Iteration 7: Manifold Denoiser Gating ---
                         with torch.no_grad():
-                            recon = model.denoiser(norm_enc)
-                            recon_error = 1.0 - torch.cosine_similarity(norm_enc, recon, dim=1)
+                            # The Denoiser was trained on binarized coreset_seed_keys, so we must binarize here!
+                            bin_enc = torch.sign(norm_enc).to(torch.float32)
+                            bin_enc[bin_enc == 0] = 1.0
+                            recon = model.denoiser(bin_enc)
+                            recon_error = 1.0 - torch.cosine_similarity(bin_enc, recon, dim=1)
                         
                         # Use inverse error as purity (threshold is 0.8 in mem_bank.update, meaning error < 0.20)
                         mem_purity = 1.0 - recon_error
