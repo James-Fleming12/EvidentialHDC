@@ -143,3 +143,20 @@
 ### Critical Failure Modes Diagnosed:
 1. **The Inlier Paradox (Unstructured Noise Admission):** Severe unstructured noise like Fog and Crosstalk fundamentally fools purely geometric distance gating. Because the HDC encoder collapses random noise into highly dense "background" vectors near the origin, Fog points actually have a *lower* query distance ($D_q \approx 0.43$) to the seeds than clean geometry ($D_q \approx 0.52$). Relative Manifold Cohesion assumes noise will be an outlier, but the data proves it acts as an ultra-dense inlier. As a result, Fog is fully admitted (`FiringRate = 100%`), causing catastrophic memory corruption (`MemError = 89.22%`).
 2. **Head Class Degradation (EVT Density Trade-off):** While the EVT Density Penalty beautifully recovers the Tail classes (e.g., Snow Tail jumps from 16.89% to 39.06%), it penalizes the Head classes too aggressively during 10-NN retrieval. This causes Head mIoU to drop consistently (e.g., Cross Sensor Head drops from 46.79% to 31.96%), which drags down the global Accuracy metric. The penalty function is over-correcting.
+
+---
+
+## Iteration 7: The Manifold Denoiser (Generative Reconstruction Gate)
+
+**Goal:** Bypass the structural failures of local density and logit margins by using generative reconstruction error on the global HDC manifold to identify deep geometric outliers (hallucinations).
+
+**Mathematical & Structural Upgrades:**
+
+1. **The HDC Manifold Denoiser (Generative Gating):**
+   - **Problem:** Diagnostics proved the Inlier Paradox: fog and noise are incredibly dense relative to themselves ($k$-NN cohesion fails), and they sit deep inside the wrong semantic Voronoi cells (Margin thresholding fails). However, they exist in completely different regions of the 10,000D hyperspace than the clean source data (Diagnostic M).
+   - **Solution:** We trained a lightweight Autoencoder (The Manifold Denoiser) explicitly on the clean source 10,000D geometry. Incoming points are first passed through this Autoencoder. If a point is true geometry, the AE easily reconstructs it because it obeys clean geometric rules. If the point is fog, it is an out-of-distribution anomaly relative to the *clean* source (despite being a local inlier), causing massive reconstruction error. Points are admitted into the Memory Bank *only* if their reconstruction error is below a threshold.
+2. **Reversal of the EVT Density Penalty:**
+   - **Problem:** Diagnostic 3 proved that memory bank accuracy scales monotonically up to $N=1000$ points per class without early saturation. The EVT Density Penalty from Iteration 6 actively punished large, information-rich clusters, causing catastrophic Head-Class degradation.
+   - **Solution:** We formally abandoned the EVT density penalty, returning the $k$-NN search strictly to geometric distance, allowing Head classes to retain their mass and accuracy.
+3. **Abandonment of Extraneous Constraints:**
+   - Diagnostics 2, 4, and 5 empirically disproved the viability of Temporal Lifetimes, Intrinsic Dimensionality (Local Rank), and Logit Margins. They were fully stripped from the architectural pipeline, ensuring we operate strictly on the raw AUROC 1.0000 discriminative power of the HDC topology.
