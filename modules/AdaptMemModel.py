@@ -82,17 +82,14 @@ class AdaptiveMemoryBank(nn.Module):
         flat_keys = self.keys[valid_mask]
         flat_values = self.values[valid_mask]
         
-        bin_features = torch.sign(features).to(torch.float32)
-        bin_features[bin_features == 0] = 1.0 
-        
         k = min(self.k, flat_keys.size(0))
         predictions = []
         purity = []
         
-        # Process in chunks using float32 to prevent Float16 precision loss (which caused massive ties)
+        # Process in chunks using float32
         chunk_size = 50000
-        for i in range(0, bin_features.size(0), chunk_size):
-            chunk = bin_features[i:i+chunk_size]
+        for i in range(0, features.size(0), chunk_size):
+            chunk = features[i:i+chunk_size]
             sims = torch.mm(chunk, flat_keys.t())
             
             # Raw geometric similarity without EVT

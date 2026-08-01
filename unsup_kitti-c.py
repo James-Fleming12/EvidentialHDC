@@ -130,7 +130,7 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     bin_enc[bin_enc == 0] = 1.0
                     
                     # --- Memory Bank Forward Pass ---
-                    predictions, _ = model.mem_bank.query(bin_enc)
+                    predictions, _ = model.mem_bank.query(norm_enc)
                     
                     if not eval_only:
                         # --- Iteration 7: Manifold Denoiser Gating ---
