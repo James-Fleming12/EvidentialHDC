@@ -85,6 +85,9 @@ class AdaptiveMemoryBank(nn.Module):
             q_sim = (chunk.float() * S).sum(dim=1)
             D_q = 1.0 - (q_sim / (k * 10000.0))
             
+            if i == 0:
+                print(f"DEBUG: D_q mean = {D_q.mean().item():.4f}, D_int mean = {D_int.mean().item():.4f}, D_int_clamped mean = {D_int_clamped.mean().item():.4f}, Ratio mean = {(D_q / (D_int_clamped + 1e-8)).mean().item():.4f}")
+            
             # Cohesion Ratio (D_q / D_int)
             cohesion_ratio = D_q / (D_int_clamped + 1e-8)
             
