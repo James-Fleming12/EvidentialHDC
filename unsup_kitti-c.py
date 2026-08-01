@@ -135,14 +135,18 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             model.mem_bank.reserved_slots.fill_(num_classes * 10)
                             model.mem_bank.ptr.fill_(num_classes * 10)
                     
-                    # --- Memory Bank Forward Pass (Native 10,000D Cohesion) ---
-                    # mem_purity is now the inverse Cohesion Ratio (1.0 / Cohesion)
-                    predictions, mem_purity = model.mem_bank.query(norm_enc)
+                    # --- Memory Bank Forward Pass ---
+                    predictions, _ = model.mem_bank.query(norm_enc)
                     
                     if not eval_only:
-                        # --- Cohesion Gating ---
-                        # We admit pseudo-labels if they fit naturally into the local geometry.
-                        # If mem_purity >= 0.8 (meaning Cohesion Ratio <= 1.25), it's admitted.
+                        # --- Iteration 7: Manifold Denoiser Gating ---
+                        with torch.no_grad():
+                            recon = model.denoiser(norm_enc)
+                            recon_error = 1.0 - torch.cosine_similarity(norm_enc, recon, dim=1)
+                        
+                        # Use inverse error as purity (threshold is 0.8 in mem_bank.update, meaning error < 0.20)
+                        mem_purity = 1.0 - recon_error
+                        
                         rate, purity_err = model.mem_bank.update(norm_enc, predictions, mem_purity, true_labels=proj_labels[indices])
                         if rate is not None: firing_rates.append(rate)
                         if purity_err is not None and purity_err >= 0: memory_errors.append(purity_err)
@@ -411,7 +415,8 @@ def main():
         'source_class_freq': getattr(base_model, 'source_class_freq', None),
         'source_bank': getattr(base_model, 'source_bank', None),
         'coreset_seed_keys': getattr(base_model, 'coreset_seed_keys', None),
-        'coreset_seed_values': getattr(base_model, 'coreset_seed_values', None)
+        'coreset_seed_values': getattr(base_model, 'coreset_seed_values', None),
+        'denoiser_state_dict': getattr(base_model, 'denoiser_state_dict', None)
     }
 
     clean_state_dict = torch.load(args.pretrained_path, map_location=device)
@@ -456,6 +461,13 @@ def main():
         model.drift_mu_0 = source_stats_cache['drift_mu_0'].to(device) if source_stats_cache['drift_mu_0'] is not None else None
         model.source_class_freq = source_stats_cache['source_class_freq'].to(device) if source_stats_cache['source_class_freq'] is not None else None
         model.source_bank = source_stats_cache['source_bank'].to(device) if source_stats_cache.get('source_bank') is not None else None
+        
+        # Load the pre-trained Manifold Denoiser
+        from modules.AdaptMemModel import HDCDenoiser
+        model.denoiser = HDCDenoiser(hd_dim=10000, hidden_dim=256).to(device)
+        if source_stats_cache.get('denoiser_state_dict') is not None:
+            model.denoiser.load_state_dict({k: v.to(device) for k, v in source_stats_cache['denoiser_state_dict'].items()})
+        model.denoiser.eval()
 
     for current_method, full_method_name in zip(methods_to_run, full_method_names):
         logger.info("=========================================")

@@ -1136,6 +1136,31 @@ class DualGateModel(nn.Module):
         self.coreset_seed_values = torch.cat(coreset_values_list, dim=0).to(device)
         
         self.source_class_freq = (class_latent_counts / class_latent_counts.sum()).cpu()
+        
+        # Iteration 7: Train HDCDenoiser on the Source Bank
+        from modules.AdaptMemModel import HDCDenoiser
+        import torch.nn as nn
+        import torch.optim as optim
+        print("Training HDC Manifold Denoiser on Source Bank...")
+        self.denoiser = HDCDenoiser(hd_dim=self.hd_dim, hidden_dim=256).to(device)
+        self.denoiser.train()
+        optimizer = optim.Adam(self.denoiser.parameters(), lr=1e-3)
+        criterion = nn.MSELoss()
+        
+        # Use the coreset_seed_keys as our clean source bank (already binarized and balanced)
+        train_bank = self.coreset_seed_keys.clone().float()
+        batch_size = 1000
+        for epoch in range(15):
+            for i in range(0, train_bank.size(0), batch_size):
+                batch = train_bank[i:i+batch_size]
+                optimizer.zero_grad()
+                recon = self.denoiser(batch)
+                loss = criterion(recon, batch)
+                loss.backward()
+                optimizer.step()
+                
+        self.denoiser.eval()
+        
         return {
             'source_density_mean': self.source_density_mean,
             'source_density_std': self.source_density_std,
@@ -1145,7 +1170,8 @@ class DualGateModel(nn.Module):
             'source_class_freq': self.source_class_freq,
             'source_bank': self.source_bank.cpu() if self.source_bank is not None else None,
             'coreset_seed_keys': self.coreset_seed_keys.cpu(),
-            'coreset_seed_values': self.coreset_seed_values.cpu()
+            'coreset_seed_values': self.coreset_seed_values.cpu(),
+            'denoiser_state_dict': {k: v.cpu() for k, v in self.denoiser.state_dict().items()}
         }
 
     def _fuse_uncertainties(self, epistemic, consistency, geometric,
