@@ -135,22 +135,35 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             model.mem_bank.reserved_slots.fill_(num_classes * 10)
                             model.mem_bank.ptr.fill_(num_classes * 10)
                     
-                    if batch_idx == 0:
-                        # Cold start: rely on prototype projection for the very first frame to seed the graph
-                        fallback_logits = model.classify(norm_enc)
-                        predictions = torch.argmax(fallback_logits, dim=1)
-                        # We use 0.9 as a strict threshold for the initial prototype seed (scaled by 0.05 temp)
-                        conf = F.softmax(fallback_logits / 0.05, dim=1).max(dim=1)[0]
-                        if not eval_only:
-                            rate, purity_err = model.mem_bank.update(norm_enc, predictions, (conf >= 0.9).float(), true_labels=proj_labels[indices])
-                            if rate is not None: firing_rates.append(rate)
-                            if purity_err is not None and purity_err >= 0: memory_errors.append(purity_err)
-                    else:
-                        predictions, conf = model.mem_bank.query(norm_enc)
-                        if not eval_only:
-                            rate, purity_err = model.mem_bank.update(norm_enc, predictions, conf, true_labels=proj_labels[indices])
-                            if rate is not None: firing_rates.append(rate)
-                            if purity_err is not None and purity_err >= 0: memory_errors.append(purity_err)
+                    # --- 1. Neural Network Forward Pass ---
+                    # We compute the NN logits to extract the Soft Dual Weight (Epistemic Uncertainty)
+                    nn_logits = model.classify(norm_enc)
+                    nn_preds = torch.argmax(nn_logits, dim=1)
+                    
+                    # Compute NN Epistemic Confidence (using the dual-gate log-space metric)
+                    _, nn_uncertainty, _ = model.get_confidence(norm_enc, nn_preds, method='soft_dual_weight', logits=nn_logits)
+                    
+                    # --- 2. Memory Bank Forward Pass ---
+                    # The Memory Bank acts as the dynamic, adapted geometric manifold
+                    mem_preds, mem_purity = model.mem_bank.query(norm_enc)
+                    
+                    # For inference, we use the Memory Bank's prediction (as it contains the adapted state).
+                    # If the memory bank is completely uncertain, we fallback to the Neural Network.
+                    predictions = torch.where(mem_purity >= 0.3, mem_preds, nn_preds)
+                    
+                    if not eval_only:
+                        # --- 3. Consensus Gating (Breaking the Echo Chamber) ---
+                        # We only admit pseudo-labels into the memory bank if BOTH modalities agree:
+                        # a) The Neural Network must be epistemically confident (nn_uncertainty <= 0.5)
+                        # b) The Neural Network must agree with the Memory Bank's geometric nearest-neighbor
+                        agree_mask = (nn_preds == mem_preds)
+                        conf_mask = (nn_uncertainty <= 0.5)
+                        
+                        valid_gate = (agree_mask & conf_mask).float()
+                        
+                        rate, purity_err = model.mem_bank.update(norm_enc, predictions, valid_gate, true_labels=proj_labels[indices])
+                        if rate is not None: firing_rates.append(rate)
+                        if purity_err is not None and purity_err >= 0: memory_errors.append(purity_err)
                 else:
                     # Legacy frozen inference
                     logits = model.classify(norm_enc)
