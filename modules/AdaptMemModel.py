@@ -78,15 +78,12 @@ class AdaptiveMemoryBank(nn.Module):
             D_int = 1.0 - (avg_internal_sim / 10000.0)
             
             # Structural Variance Prior (prevent division by zero from exact duplicates)
-            # A typical clean cluster in HDC space has ~0.05 variance (cos sim 0.9).
-            D_int_clamped = torch.clamp(D_int, min=0.05)
+            # A typical clean cluster in real LiDAR HDC space has ~0.45 variance (cos sim 0.55).
+            D_int_clamped = torch.clamp(D_int, min=0.45)
             
             # Average query-to-neighbor distance
             q_sim = (chunk.float() * S).sum(dim=1)
             D_q = 1.0 - (q_sim / (k * 10000.0))
-            
-            if i == 0:
-                print(f"DEBUG: D_q mean = {D_q.mean().item():.4f}, D_int mean = {D_int.mean().item():.4f}, D_int_clamped mean = {D_int_clamped.mean().item():.4f}, Ratio mean = {(D_q / (D_int_clamped + 1e-8)).mean().item():.4f}")
             
             # Cohesion Ratio (D_q / D_int)
             cohesion_ratio = D_q / (D_int_clamped + 1e-8)
