@@ -160,3 +160,8 @@
    - **Solution:** We formally abandoned the EVT density penalty, returning the $k$-NN search strictly to geometric distance, allowing Head classes to retain their mass and accuracy.
 3. **Abandonment of Extraneous Constraints:**
    - Diagnostics 2, 4, and 5 empirically disproved the viability of Temporal Lifetimes, Intrinsic Dimensionality (Local Rank), and Logit Margins. They were fully stripped from the architectural pipeline, ensuring we operate strictly on the raw AUROC 1.0000 discriminative power of the HDC topology.
+
+**Implementation & Calibration Fixes:**
+- **Domain Mismatch & Binarization:** Initially, the autoencoder was trained offline using `coreset_seed_keys` (which are strict $\{-1, 1\}^{10000}$ binary vectors). However, during TTA, continuous L2-normalized vectors were being passed into the autoencoder, causing massive domain mismatch (reconstruction errors of 1.0 / completely orthogonal outputs). We resolved this by explicitly binarizing incoming TTA vectors before passing them through the denoiser.
+- **Threshold Calibration:** Once binarized, we mapped the true reconstruction errors (via `test_denoiser_b.py`) and found the generative separation maintained a strong AUROC of 0.9266 even on the quantized binary data. Correct geometry averaged an error of 0.43, while hallucinations averaged 0.60.
+- We set the optimal error threshold right down the middle at 0.52 (yielding a `mem_purity` threshold of `0.48`), which successfully broke the 100% lockout and allowed sensible firing rates (e.g. 16% on Fog, 95% on Motion Blur) while keeping memory contamination strictly bounded.
