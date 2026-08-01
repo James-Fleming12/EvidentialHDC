@@ -16,6 +16,7 @@ def main():
     
     # Load model
     model = set_uq_model(ARCH, 'logs/kitti_pretrain', 'rp', 0, 0, 17, device)
+    model.to(device)
     model.eval()
 
     # Load small subset of data (just sequence 08, first 5 frames)
