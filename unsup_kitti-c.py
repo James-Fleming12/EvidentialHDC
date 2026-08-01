@@ -410,7 +410,7 @@ def main():
         chunks.append(indices[start_idx:end_idx])
 
     base_model = load_hdc_model(args.pretrained_path, num_classes=NUM_CLASSES)
-    base_model.populate_source_statistics(args.kitti_dir, ARCH, DATA, device, dry_run=args.dry_run)
+    returned_cache = base_model.populate_source_statistics(args.kitti_dir, ARCH, DATA, device, dry_run=args.dry_run)
     
     source_stats_cache = {
         'class_latent_means': base_model.class_latent_means,
@@ -423,7 +423,7 @@ def main():
         'source_bank': getattr(base_model, 'source_bank', None),
         'coreset_seed_keys': getattr(base_model, 'coreset_seed_keys', None),
         'coreset_seed_values': getattr(base_model, 'coreset_seed_values', None),
-        'denoiser_state_dict': getattr(base_model, 'denoiser_state_dict', None)
+        'denoiser_state_dict': returned_cache.get('denoiser_state_dict') if returned_cache else None
     }
 
     clean_state_dict = torch.load(args.pretrained_path, map_location=device)

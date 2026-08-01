@@ -43,11 +43,14 @@ def main():
     )
     
     errors = []
+    labels = []
+    pseudos = []
     with torch.no_grad():
         for i, batch_data in enumerate(fog_parser.get_valid_set()):
-            if i >= 5: break
+            if i >= 10: break
             proj_in = batch_data[0].to(device)
             mask = (batch_data[1].to(device).reshape(-1) > 0)
+            proj_labels = batch_data[2].to(device).view(-1)[mask]
             
             raw_enc = model.encode(proj_in)[0].reshape(-1, 10000)[mask]
             norm_enc = torch.nn.functional.normalize(raw_enc, dim=1).to(torch.float32)
@@ -59,10 +62,22 @@ def main():
             err = 1.0 - torch.cosine_similarity(bin_enc, recon, dim=1)
             errors.append(err.cpu())
             
+            logits = model.classify(norm_enc)
+            pred = torch.argmax(logits, dim=1)
+            pseudos.append(pred.cpu())
+            labels.append(proj_labels.cpu())
+            
     all_err = torch.cat(errors)
+    is_correct = (torch.cat(pseudos) == torch.cat(labels)).numpy()
+    is_halluc = ~is_correct
+    
+    from sklearn.metrics import roc_auc_score
+    auroc = roc_auc_score(is_halluc, all_err.numpy())
+    
     print(f"Binarized Fog Mean Error: {all_err.mean():.4f}")
-    print(f"Binarized Fog Min Error: {all_err.min():.4f}")
-    print(f"Binarized Fog Max Error: {all_err.max():.4f}")
+    print(f"Fog Correct Mean Error: {all_err[is_correct].mean():.4f}")
+    print(f"Fog Halluc Mean Error: {all_err[is_halluc].mean():.4f}")
+    print(f"AUROC: {auroc:.4f}")
 
 if __name__ == '__main__':
     main()
