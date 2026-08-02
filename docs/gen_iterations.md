@@ -60,3 +60,52 @@ The script will automatically evaluate the raw 128D geometry of the Fog frames a
    - *Winning Criteria: Pushes 1-NN purity back up to >90% (Baseline is ~75%).*
 3. **Magnitude Segregation (Artifact Isolation):** Measure the average $L_2$ norm of correctly classified points vs. semantic hallucinations. 
    - *Winning Criteria: Maximizes the magnitude gap (e.g., Clean points > 5.0, Noise points < 1.0), allowing a trivial pre-HDC threshold gate to veto unrecoverable points.*
+
+---
+
+## Phase 4: Micro-Pretraining Results (5 Epochs, 10% Data)
+
+The `micro_pretrain_eval.py` script was executed to benchmark the architectures against Heavy Fog domain shifts. The raw 128D features yielded the following metrics:
+
+| Metric | Baseline | Unnormalized SupCon | VIB | Local Smoothness |
+| :--- | :--- | :--- | :--- | :--- |
+| **Cosine Shift (Angular Drift)** | 0.587 | **0.238** | 0.593 | 0.726 |
+| **Euclidean Shift (Absolute Drift)** | 6.453 | 7.697 | 4.465 | **3.717** |
+| **Target Neighborhood Purity (1-NN)** | **0.696** | 0.613 | 0.685 | 0.665 |
+| **Average L2 Norm (Clean)** | 8.485 | 11.200 | 5.341 | 3.679 |
+| **Average L2 Norm (Fog)** | 7.387 | 7.748 | 4.733 | 3.918 |
+
+### Diagnostic Analysis & Conclusion
+1. **The Angular Victory (SupCon):** SupCon achieved a massive breakthrough in angular geometric preservation. The Cosine Shift dropped from `0.587` (Baseline) to an incredible `0.238`. This proves that the InfoNCE loss successfully maps the corrupted points to the correct angular trajectories.
+2. **The Missing Magnitude Collapse (VIB & SupCon):** Neither SupCon nor VIB successfully collapsed the unrecoverable Fog noise toward the origin ($L_2 \approx 0.0$). Fog magnitudes remained extremely high (4.7 to 7.7). 
+
+**The Verdict:** 
+The failure to achieve Magnitude Segregation is a direct artifact of the "micro-pretraining" constraints. 5 epochs on 10% of the dataset equates to **0.5 epochs of total gradient steps**. KL-Divergence penalties (VIB) and unnormalized contrastive margins (SupCon) are notoriously slow to converge, requiring tens of thousands of steps to structurally reorganize absolute magnitudes in a 128D hyperspace. The fact that SupCon already improved Cosine Shift by over 60% in just half an epoch proves the mathematical viability of the strategy.
+
+**Next Steps:** We must commit to a full-length pre-training run (e.g., 20+ epochs on 100% of the dataset) using **Unnormalized SupCon** (to leverage its incredible angular alignment) and **VIB** (to aggressively force the magnitude collapse over time) to allow the structural reorganization to fully manifest.
+
+---
+
+## Phase 5: Implementation Audit & Epistemic Pivot
+
+A critical audit of the Phase 4 methodology and results revealed fatal flaws in both the experimental design and the codebase implementation.
+
+### The Epistemic Crisis
+1. **Selective Interpretation:** The core objective of the pre-training is to correctly map corrupted points to clean semantic manifolds, which is directly measured by **1-NN Purity**. In Phase 4, *every single method* regressed 1-NN Purity relative to the Baseline (0.696), yet the conclusion selectively elevated Cosine Shift as a "victory" and waved away the purity drop. 
+2. **Mathematical Tension:** The "Magnitude Segregation" thesis demands that dead Fog points collapse to the origin ($L_2 \approx 0$). However, a point at the origin has no well-defined angle. Optimizing for Cosine Shift (angular alignment) while simultaneously crushing the magnitude to zero via VIB are fundamentally contradictory goals for a single representation.
+3. **Circular Metrics:** SupCon directly optimizes angular margins (Cosine Shift), and VIB directly penalizes magnitude. Scoring them on the exact axes they optimize without calibrating against downstream mIoU or 1-NN Purity is a circular, uncalibrated comparison.
+
+### Implementation Fixes Applied for Scale-Up
+To ensure the next scale-up is mathematically robust, the following fixes were pushed to `modules/gen_trainers.py` and the evaluation scripts:
+* **The Scheduler Bug:** Truncating dataset epochs (`max_steps`) was breaking the LR scheduler, which expects to traverse the full dataset length. Cutoffs were removed entirely. `med_pretrain_eval.py` now runs 3 full epochs on 100% data (which fits the 24-hour compute budget and guarantees scheduler convergence).
+* **VIB Clean Pathway:** VIB pressure was previously only applied to the augmented view. The KL-divergence and bottleneck sampling are now applied to **both** the clean and augmented pathways.
+* **Tau Scaling:** Unnormalized SupCon features regularly reach magnitudes of 8–11. Applying `tau=0.1` was mathematically exploding the softmax. Unnormalized SupCon now uses `tau=1.0`.
+* **Density Subsampling:** Added a 20% random drop mask to `get_augmented_view` to correctly simulate LiDAR sparsity.
+* **Architecture Agnostic:** `logvar_head` is now lazily initialized to support backbone bottleneck changes.
+
+### The New Protocol: The Strictly Calibrated Medium-Scale Run
+Because the original hypothesis (Magnitude Segregation via unnormalized features) has epistemic tension, the upcoming 24-hour run (`med_pretrain_eval.py`) is no longer just a scale-up of a "winning" method. It is a strictly controlled falsification test.
+
+**Protocol:** 
+Run 4 methods (`baseline`, `vib`, `supcon`, `supcon_vib`) for 3 full epochs (100% dataset) each. 
+*If, after a fully converged run, the Baseline continues to beat the generalized models on **1-NN Purity**, the Magnitude Segregation thesis will be officially falsified.* We will then pivot HDC architecture to explicitly handle uncertainty rather than forcing the backbone to implicitly model physics noise via geometry.

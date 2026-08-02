@@ -9,17 +9,15 @@ from modules.trainer import Trainer
 from common.avgmeter import AverageMeter
 
 class GenTrainer(Trainer):
-    def __init__(self, ARCH, DATA, datadir, logdir, path=None, method='baseline'):
+    def __init__(self, ARCH, DATA, datadir, logdir, path=None, method='baseline', cutoff_percent=1.0):
         super().__init__(ARCH, DATA, datadir, logdir, path)
         self.method = method
+        self.cutoff_percent = cutoff_percent
         
-        # If VIB, we need an extra projection to get logvar
-        if self.method == 'vib':
-            # HarDNet / ResNet z8 bottleneck is usually 128 channels before final classification
-            # Let's dynamically add a variance head
-            self.logvar_head = nn.Conv2d(128, 128, kernel_size=1).to(self.device)
-            # Add to optimizer
-            self.optimizer.add_param_group({'params': self.logvar_head.parameters()})
+        # If VIB or SupCon+VIB, we need an extra projection to get logvar
+        if self.method in ['vib', 'supcon_vib']:
+            # We initialize dynamically in the first forward pass to avoid hardcoding channels
+            self.logvar_head = None
 
     def beam_drop(self, in_vol, p=0.5):
         """ Voxel Dropout (Sparsity) """
@@ -41,9 +39,15 @@ class GenTrainer(Trainer):
         return result
 
     def get_augmented_view(self, in_vol):
-        # Compose dropout and jitter
+        # Compose dropout, jitter, and density subsampling
         out = self.beam_drop(in_vol)
         out = self.z_jitter(out)
+        
+        # Density Subsampling (Randomly drop 20% of points to simulate lidar sparsity)
+        # We mask out the entire point (all channels) across the spatial dimensions
+        mask = (torch.rand_like(out[:, :1, :, :]) > 0.2).float()
+        out = out * mask
+        
         return out
 
     def train_epoch(self, train_loader, model, criterion, optimizer, epoch, evaluator, scheduler, color_fn, report=10, show_scans=False):
@@ -58,11 +62,12 @@ class GenTrainer(Trainer):
         model.train()
         
         scaler = torch.amp.GradScaler('cuda')
+        max_steps = int(len(train_loader) * self.cutoff_percent)
 
-        for i, (in_vol, proj_mask, proj_labels, _, path_seq, path_name, _, _, _, _, _, _, _, _, _) in tqdm(enumerate(train_loader), total=int(len(train_loader)*0.1)):
-            if i > len(train_loader) * 0.1: 
+        for i, (in_vol, proj_mask, proj_labels, _, path_seq, path_name, _, _, _, _, _, _, _, _, _) in tqdm(enumerate(train_loader), total=max_steps):
+            if i >= max_steps:
                 break
-
+            
             if self.gpu:
                 in_vol, proj_labels = in_vol.cuda(), proj_labels.cuda().long()
 
@@ -100,7 +105,9 @@ class GenTrainer(Trainer):
                         z_c, z_a, lbl = z_c[idx], z_a[idx], lbl[idx]
                     
                     if len(lbl) > 0:
-                        tau = 0.1
+                        # Since features are unnormalized with magnitude 5-11, tau=0.1 blows up. 
+                        # Unnormalized contrastive should use tau=1.0 or adaptive scaling.
+                        tau = 1.0
                         sim_matrix = torch.matmul(z_c, z_a.T) / tau
                         lbl_matrix = lbl.unsqueeze(0) == lbl.unsqueeze(1)
                         
@@ -113,29 +120,114 @@ class GenTrainer(Trainer):
                         loss_total = loss_total + 0.1 * loss_supcon
 
                 elif self.method == 'vib':
-                    # Variational Information Bottleneck
-                    mu = z8_aug
-                    logvar = self.logvar_head(z8_aug)
+                    # Variational Information Bottleneck for BOTH clean and augmented
+                    if self.logvar_head is None:
+                        self.logvar_head = nn.Conv2d(z8_aug.shape[1], z8_aug.shape[1], kernel_size=1).to(self.device)
+                        self.optimizer.add_param_group({'params': self.logvar_head.parameters()})
+
+                    mu_aug = z8_aug
+                    logvar_aug = self.logvar_head(z8_aug)
+                    loss_kl_aug = -0.5 * torch.sum(1 + logvar_aug - mu_aug.pow(2) - logvar_aug.exp(), dim=1).mean()
                     
-                    # KL Divergence to N(0, I)
-                    loss_kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1).mean()
+                    mu_clean = z8
+                    logvar_clean = self.logvar_head(z8)
+                    loss_kl_clean = -0.5 * torch.sum(1 + logvar_clean - mu_clean.pow(2) - logvar_clean.exp(), dim=1).mean()
+                    
+                    loss_kl = (loss_kl_clean + loss_kl_aug) / 2.0
                     
                     # We sample for the classification pass
-                    std = torch.exp(0.5 * logvar)
-                    eps = torch.randn_like(std)
-                    z_sampled = mu + eps * std
+                    std_aug = torch.exp(0.5 * logvar_aug)
+                    eps_aug = torch.randn_like(std_aug)
+                    z_sampled_aug = mu_aug + eps_aug * std_aug
+                    
+                    std_clean = torch.exp(0.5 * logvar_clean)
+                    eps_clean = torch.randn_like(std_clean)
+                    z_sampled_clean = mu_clean + eps_clean * std_clean
                     
                     # Route through the classification head to enforce the bottleneck
                     if hasattr(model, 'module'):
-                        logits_sampled = model.module.semantic_output(z_sampled)
+                        logits_sampled_aug = model.module.semantic_output(z_sampled_aug)
+                        logits_sampled_clean = model.module.semantic_output(z_sampled_clean)
                     else:
-                        logits_sampled = model.semantic_output(z_sampled)
-                    pred_sampled = F.softmax(logits_sampled, dim=1)
+                        logits_sampled_aug = model.semantic_output(z_sampled_aug)
+                        logits_sampled_clean = model.semantic_output(z_sampled_clean)
+                        
+                    pred_sampled_aug = F.softmax(logits_sampled_aug, dim=1)
+                    pred_sampled_clean = F.softmax(logits_sampled_clean, dim=1)
                     
-                    loss_ce_aug = criterion(torch.log(pred_sampled.clamp(min=1e-8)), proj_labels)
-                    loss_sem = (loss_ce + loss_ce_aug) / 2.0
+                    loss_ce_aug = criterion(torch.log(pred_sampled_aug.clamp(min=1e-8)), proj_labels)
+                    loss_ce_clean = criterion(torch.log(pred_sampled_clean.clamp(min=1e-8)), proj_labels)
                     
+                    loss_sem = (loss_ce_clean + loss_ce_aug) / 2.0
                     loss_total = loss_sem + 0.01 * loss_kl
+
+                elif self.method == 'supcon_vib':
+                    # Decoupled SupCon + VIB
+                    # 1. VIB Magnitude Bottleneck (Absolute Space)
+                    if self.logvar_head is None:
+                        self.logvar_head = nn.Conv2d(z8_aug.shape[1], z8_aug.shape[1], kernel_size=1).to(self.device)
+                        self.optimizer.add_param_group({'params': self.logvar_head.parameters()})
+
+                    mu_aug = z8_aug
+                    logvar_aug = self.logvar_head(z8_aug)
+                    loss_kl_aug = -0.5 * torch.sum(1 + logvar_aug - mu_aug.pow(2) - logvar_aug.exp(), dim=1).mean()
+                    
+                    mu_clean = z8
+                    logvar_clean = self.logvar_head(z8)
+                    loss_kl_clean = -0.5 * torch.sum(1 + logvar_clean - mu_clean.pow(2) - logvar_clean.exp(), dim=1).mean()
+                    
+                    loss_kl = (loss_kl_clean + loss_kl_aug) / 2.0
+                    
+                    std_aug = torch.exp(0.5 * logvar_aug)
+                    eps_aug = torch.randn_like(std_aug)
+                    z_sampled_aug = mu_aug + eps_aug * std_aug
+                    
+                    std_clean = torch.exp(0.5 * logvar_clean)
+                    eps_clean = torch.randn_like(std_clean)
+                    z_sampled_clean = mu_clean + eps_clean * std_clean
+                    
+                    if hasattr(model, 'module'):
+                        logits_sampled_aug = model.module.semantic_output(z_sampled_aug)
+                        logits_sampled_clean = model.module.semantic_output(z_sampled_clean)
+                    else:
+                        logits_sampled_aug = model.semantic_output(z_sampled_aug)
+                        logits_sampled_clean = model.semantic_output(z_sampled_clean)
+                        
+                    pred_sampled_aug = F.softmax(logits_sampled_aug, dim=1)
+                    pred_sampled_clean = F.softmax(logits_sampled_clean, dim=1)
+                    
+                    loss_ce_aug = criterion(torch.log(pred_sampled_aug.clamp(min=1e-8)), proj_labels)
+                    loss_ce_clean = criterion(torch.log(pred_sampled_clean.clamp(min=1e-8)), proj_labels)
+                    
+                    loss_sem = (loss_ce_clean + loss_ce_aug) / 2.0
+                    
+                    # 2. SupCon Angular Margins (Normalized Space)
+                    mask = proj_labels > 0
+                    z_c = mu_clean.permute(0, 2, 3, 1)[mask]
+                    z_a = mu_aug.permute(0, 2, 3, 1)[mask]
+                    lbl = proj_labels[mask]
+                    
+                    loss_supcon = torch.tensor(0.0, device=z8.device)
+                    if len(lbl) > 2000:
+                        idx = torch.randperm(len(lbl))[:2000]
+                        z_c, z_a, lbl = z_c[idx], z_a[idx], lbl[idx]
+                        
+                    if len(lbl) > 0:
+                        # CRITICAL FIX: L2 Normalize features for SupCon to prevent gradient tug-of-war with VIB
+                        z_c_norm = F.normalize(z_c, p=2, dim=1)
+                        z_a_norm = F.normalize(z_a, p=2, dim=1)
+                        
+                        tau = 0.1
+                        sim_matrix = torch.matmul(z_c_norm, z_a_norm.T) / tau
+                        lbl_matrix = lbl.unsqueeze(0) == lbl.unsqueeze(1)
+                        
+                        max_sim, _ = torch.max(sim_matrix, dim=1, keepdim=True)
+                        exp_sim = torch.exp(sim_matrix - max_sim.detach())
+                        pos_sum = (exp_sim * lbl_matrix).sum(dim=1)
+                        all_sum = exp_sim.sum(dim=1)
+                        loss_supcon = -torch.log(pos_sum / (all_sum + 1e-8)).mean()
+                        
+                    loss_total = loss_sem + 0.01 * loss_kl + 0.1 * loss_supcon
 
                 elif self.method == 'smoothness':
                     # Local Smoothness (Dirichlet Energy)
