@@ -27,12 +27,12 @@ CORRUPTIONS = [
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Corruption Robustness Atlas")
-    parser.add_argument("--kitti_dir", type=str, default="/home/james/Research/SEE/dataset", help="Clean KITTI data")
-    parser.add_argument("--kittic_dir", type=str, default="/home/james/Research/SEE/dataset/SemanticKITTI-C", help="KITTI-C data")
-    parser.add_argument("--pretrained_path", type=str, default="/home/james/Research/SEE/Logs/kitti_pretrain/hdc_sub.pth", help="HDC model")
+    parser.add_argument("--kitti_dir", type=str, default="/mnt/alpha/jmfleming/KITTI", help="Clean KITTI data")
+    parser.add_argument("--kittic_dir", type=str, default="/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C", help="KITTI-C data")
+    parser.add_argument("--pretrained_path", type=str, default="logs/kitti_pretrain/hdc_sub.pth", help="HDC model")
     parser.add_argument("--config", type=str, default="config/semantic-kitti.yaml")
     parser.add_argument("--arch", type=str, default="config/squeezesegv3.yaml")
-    parser.add_argument("--out_dir", type=str, default="/home/james/Research/SEE/Logs/atlas", help="Output dir")
+    parser.add_argument("--out_dir", type=str, default="logs/atlas", help="Output dir")
     return parser.parse_args()
 
 def get_parser(root, data_cfg, arch_cfg):
