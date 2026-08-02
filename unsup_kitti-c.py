@@ -487,6 +487,10 @@ def main():
         model.source_class_freq = source_stats_cache['source_class_freq'].to(device) if source_stats_cache['source_class_freq'] is not None else None
         model.source_bank = source_stats_cache['source_bank'].to(device) if source_stats_cache.get('source_bank') is not None else None
         
+        # Iteration 8: Crucial Coreset Seed Keys required for Memory Bank
+        model.coreset_seed_keys = source_stats_cache['coreset_seed_keys'].to(device) if source_stats_cache.get('coreset_seed_keys') is not None else None
+        model.coreset_seed_values = source_stats_cache['coreset_seed_values'].to(device) if source_stats_cache.get('coreset_seed_values') is not None else None
+        
         # Load the pre-trained Manifold Denoiser
         from modules.AdaptMemModel import HDCDenoiser
         model.denoiser = HDCDenoiser(hd_dim=10000, hidden_dim=256).to(device)
