@@ -30,8 +30,8 @@ def parse_args():
     parser.add_argument("--kitti_dir", type=str, default="/mnt/alpha/jmfleming/KITTI", help="Clean KITTI data")
     parser.add_argument("--kittic_dir", type=str, default="/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C", help="KITTI-C data")
     parser.add_argument("--pretrained_path", type=str, default="logs/kitti_pretrain/hdc_sub.pth", help="HDC model")
-    parser.add_argument("--config", type=str, default="config/semantic-kitti.yaml")
-    parser.add_argument("--arch", type=str, default="config/squeezesegv3.yaml")
+    parser.add_argument("--config", type=str, default="config/labels/semantic-kitti-all.yaml")
+    parser.add_argument("--arch", type=str, default="config/arch/senet-2048p.yml")
     parser.add_argument("--out_dir", type=str, default="logs/atlas", help="Output dir")
     return parser.parse_args()
 
