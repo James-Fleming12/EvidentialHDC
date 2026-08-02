@@ -1007,97 +1007,14 @@ class DualGateModel(nn.Module):
         # Initialize Latent Anchors for Temporal Drift tracking
         self.drift_mu_0 = self.class_latent_means.clone()
         
-        # Pass 2: Calculate per-class density standard deviation and cos similarity statistics
-        all_dists_per_class = {c: [] for c in range(num_classes)}
-        all_cos_per_class = {c: [] for c in range(num_classes)}
-        all_latents_per_class = {c: [] for c in range(num_classes)}
-        all_raw_enc_per_class = {c: [] for c in range(num_classes)}
-        
-        with torch.no_grad():
-            for batch_idx, batch_data in enumerate(tqdm(dataloader, desc="Populating Source Stats 2")):
-                if dry_run and batch_idx > 2:
-                    break
-                proj_in = batch_data[0].to(device)
-                proj_labels = batch_data[2].to(device).view(-1)
-                
-                if proj_in.shape[1] > 0:
-                    with torch.amp.autocast('cuda', enabled=True):
-                        latent_x = self.net(proj_in, only_feat=True)
-                    latent_x = latent_x.permute(0, 2, 3, 1).reshape(-1, 128)
-                    raw_enc, indices, _ = self.encode(proj_in)
-                    selected_labels = proj_labels[indices]
-                    valid_mask = (selected_labels >= 0) & (selected_labels < num_classes)
-                    
-                    if not valid_mask.any():
-                        continue
-                    latent_valid = latent_x[valid_mask].float()
-                    labels_valid = selected_labels[valid_mask]
-                    
-                    pred_means = self.class_latent_means[labels_valid]
-                    dists = torch.norm(latent_valid - pred_means, p=2, dim=1)
-                    
-                    # Compute cos sims for Z-score calibration
-                    norm_enc = F.normalize(raw_enc[valid_mask], dim=1).to(self.classify.weight.dtype)
-                    logits = self.classify(norm_enc)
-                    true_cos = logits[torch.arange(logits.size(0)), labels_valid]
-                    
-                    for c in range(num_classes):
-                        c_mask = labels_valid == c
-                        if c_mask.any():
-                            all_dists_per_class[c].append(dists[c_mask].cpu())
-                            all_cos_per_class[c].append(true_cos[c_mask].cpu())
-                            all_latents_per_class[c].append(latent_valid[c_mask].cpu())
-                            all_raw_enc_per_class[c].append(raw_enc[valid_mask][c_mask].cpu())
-        
+        # --- PASS 2 REMOVED ---
+        # EVT Density Penalties were removed in Iteration 7. We no longer need to calculate
+        # source_density_std, source_sigma_cos, or the global source_bank.
         self.source_density_mean = torch.zeros(num_classes, device=device)
         self.source_density_std = torch.zeros(num_classes, device=device)
         self.source_mu_cos = torch.zeros(num_classes, device=device)
         self.source_sigma_cos = torch.zeros(num_classes, device=device)
-        
-        # We need a global fallback for classes that might not have appeared
-        global_dists = []
-        global_cos = []
-        for c in range(num_classes):
-            if len(all_dists_per_class[c]) > 0:
-                c_dists = torch.cat(all_dists_per_class[c], dim=0)
-                global_dists.append(c_dists)
-            if len(all_cos_per_class[c]) > 0:
-                c_cos = torch.cat(all_cos_per_class[c], dim=0)
-                global_cos.append(c_cos)
-                
-        if len(global_dists) == 0:
-            raise ValueError("Source statistics population failed: No valid latent features found in the first 50 frames.")
-            
-        global_dist_mean = torch.cat(global_dists, dim=0).mean().item()
-        global_dist_std = torch.cat(global_dists, dim=0).std().item()
-        global_cos_tensor = torch.cat(global_cos, dim=0)
-        global_cos_mean = global_cos_tensor.mean().item()
-        global_cos_std = global_cos_tensor.std().item()
-        
-        source_bank_list = []
-        for c in range(num_classes):
-            if len(all_dists_per_class[c]) > 0:
-                c_dists = torch.cat(all_dists_per_class[c], dim=0)
-                self.source_density_mean[c] = c_dists.mean().item()
-                self.source_density_std[c] = c_dists.std().item()
-                c_cos = torch.cat(all_cos_per_class[c], dim=0)
-                self.source_mu_cos[c] = c_cos.mean().item()
-                self.source_sigma_cos[c] = c_cos.std().item()
-            else:
-                # Fallback to global statistics if class is completely missing from the first 50 frames
-                self.source_density_mean[c] = global_dist_mean
-                self.source_density_std[c] = global_dist_std
-                self.source_mu_cos[c] = global_cos_mean
-                self.source_sigma_cos[c] = global_cos_std
-            if len(all_latents_per_class[c]) > 0:
-                c_latents = torch.cat(all_latents_per_class[c], dim=0)
-                if len(c_latents) > 50:
-                    perm = torch.randperm(len(c_latents))[:50]
-                    source_bank_list.append(c_latents[perm])
-                else:
-                    source_bank_list.append(c_latents)
-                    
-        self.source_bank = torch.cat(source_bank_list, dim=0).to(device) if len(source_bank_list) > 0 else None
+        self.source_bank = None
         
         # Coreset Seed Generation: Temporal Stratification + HDC Random Baseline
         coreset_keys_list = []

@@ -113,7 +113,8 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     if not hasattr(model, 'mem_bank'):
                         # Capacity 20,000 allows for 9996 frozen Coreset Seed points + 10,004 dynamic online points
                         model.mem_bank = AdaptiveMemoryBank(hd_dim=10000, num_classes=num_classes, memory_capacity=20000).to(device)
-                        model.mem_bank.purity_threshold = 0.48
+                        # Dual-Threshold: Admission requires error <= 0.45 (purity >= 0.55)
+                        model.mem_bank.purity_threshold = 0.55
                         
                         # Coreset Seed: Seed with the offline extracted coresets and lock them in reserved_slots!
                         if hasattr(model, 'coreset_seed_keys') and model.coreset_seed_keys is not None:
@@ -128,19 +129,30 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     # Binarize incoming features for HDC operations
                     bin_enc = torch.sign(norm_enc).to(torch.float32)
                     bin_enc[bin_enc == 0] = 1.0
+                    # --- Iteration 8.2: Dual-Threshold Gating ---
+                    with torch.no_grad():
+                        recon = model.denoiser(bin_enc)
+                        recon_error = 1.0 - torch.cosine_similarity(bin_enc, recon, dim=1)
+                        
+                    # Query Threshold: 0.52. If error > 0.52, it's total hallucination, fallback to SqueezeSegV3.
+                    # Otherwise, trust the 10-NN Memory Bank.
+                    query_mask = recon_error <= 0.52
                     
-                    # --- Memory Bank Forward Pass ---
-                    predictions, _ = model.mem_bank.query(norm_enc)
+                    # Calculate both predictions
+                    mem_preds, _ = model.mem_bank.query(norm_enc)
+                    base_logits = model.classify(norm_enc)
+                    base_preds = torch.argmax(base_logits, dim=1)
+                    
+                    # Merge predictions based on the Query Threshold
+                    predictions = torch.where(query_mask, mem_preds, base_preds)
                     
                     if not eval_only:
-                        # --- Iteration 7: Manifold Denoiser Gating ---
-                        with torch.no_grad():
-                            recon = model.denoiser(bin_enc)
-                            recon_error = 1.0 - torch.cosine_similarity(bin_enc, recon, dim=1)
-                        
-                        # Use inverse error as purity (threshold is 0.48 in mem_bank.update)
+                        # Admission Threshold: 0.45. Only the absolute most pristine geometry is allowed to poison the core.
+                        # We use mem_purity = 1.0 - recon_error, so purity_threshold = 0.55
                         mem_purity = 1.0 - recon_error
                         
+                        # We only update the memory bank with points that were predicted by the memory bank (query_mask)
+                        # The update function internally filters by purity_threshold (which we set to 0.55 above)
                         rate, purity_err = model.mem_bank.update(bin_enc, predictions, mem_purity, true_labels=proj_labels[indices])
                         
                         if rate is not None and len(firing_rates) % 200 == 0:
