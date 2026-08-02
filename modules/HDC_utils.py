@@ -1006,34 +1006,34 @@ class DualGateModel(nn.Module):
                             class_latent_counts[c] += c_mask.sum()
                             
                             # Reservoir Sampling for Coreset (collect 588 points per class uniformly over the whole dataset)
-                            c_enc = raw_enc[valid_mask][c_mask].cpu().float()
+                            c_enc = raw_enc[valid_mask][c_mask] # leave on GPU to avoid PCIe bottleneck
                             n_in = c_enc.size(0)
                             ptr = coreset_counts[c].item()
                             
                             if ptr < n_needed:
                                 available = n_needed - ptr
                                 take = min(n_in, available)
-                                coreset_keys_res[c, ptr : ptr + take] = c_enc[:take]
+                                coreset_keys_res[c, ptr : ptr + take] = c_enc[:take].cpu().float()
                                 coreset_counts[c] += take
                                 
                                 if n_in > available:
                                     rest = n_in - available
-                                    r = torch.rand(rest)
-                                    prob = n_needed / (coreset_counts[c].item() + torch.arange(1, rest + 1))
+                                    r = torch.rand(rest, device=c_enc.device)
+                                    prob = n_needed / (coreset_counts[c].item() + torch.arange(1, rest + 1, device=c_enc.device))
                                     replace = r < prob
                                     
                                     if replace.any():
                                         replace_idx = torch.randint(0, n_needed, (replace.sum().item(),))
-                                        coreset_keys_res[c, replace_idx] = c_enc[available:][replace]
+                                        coreset_keys_res[c, replace_idx] = c_enc[available:][replace].cpu().float()
                                     coreset_counts[c] += rest
                             else:
-                                r = torch.rand(n_in)
-                                prob = n_needed / (coreset_counts[c].item() + torch.arange(1, n_in + 1))
+                                r = torch.rand(n_in, device=c_enc.device)
+                                prob = n_needed / (coreset_counts[c].item() + torch.arange(1, n_in + 1, device=c_enc.device))
                                 replace = r < prob
                                 
                                 if replace.any():
                                     replace_idx = torch.randint(0, n_needed, (replace.sum().item(),))
-                                    coreset_keys_res[c, replace_idx] = c_enc[replace]
+                                    coreset_keys_res[c, replace_idx] = c_enc[replace].cpu().float()
                                 coreset_counts[c] += n_in
                             
         counts_safe = torch.clamp(class_latent_counts, min=1).unsqueeze(1)
