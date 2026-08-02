@@ -961,6 +961,10 @@ class DualGateModel(nn.Module):
         class_latent_sums = torch.zeros(num_classes, 128, device=device)
         class_latent_counts = torch.zeros(num_classes, device=device)
         
+        n_needed = 588
+        coreset_keys_res = torch.zeros((num_classes, n_needed, self.hd_dim), dtype=torch.float32)
+        coreset_counts = torch.zeros(num_classes, dtype=torch.int64)
+        
         num_rp = 5
         self.multi_rp_projs = []
         self.multi_rp_prototypes = torch.zeros(num_rp, num_classes, self.hd_dim, device=device)
@@ -982,7 +986,7 @@ class DualGateModel(nn.Module):
                         latent_x = self.net(proj_in, only_feat=True)
                     latent_x = latent_x.permute(0, 2, 3, 1).reshape(-1, 128)
                     
-                    _, indices, _ = self.encode(proj_in)
+                    raw_enc, indices, _ = self.encode(proj_in)
                     selected_labels = proj_labels[indices]
                     valid_mask = (selected_labels >= 0) & (selected_labels < num_classes)
                     
@@ -1000,6 +1004,37 @@ class DualGateModel(nn.Module):
                         if c_mask.any():
                             class_latent_sums[c] += latent_valid[c_mask].sum(dim=0)
                             class_latent_counts[c] += c_mask.sum()
+                            
+                            # Reservoir Sampling for Coreset (collect 588 points per class uniformly over the whole dataset)
+                            c_enc = raw_enc[valid_mask][c_mask].cpu()
+                            n_in = c_enc.size(0)
+                            ptr = coreset_counts[c].item()
+                            
+                            if ptr < n_needed:
+                                available = n_needed - ptr
+                                take = min(n_in, available)
+                                coreset_keys_res[c, ptr : ptr + take] = c_enc[:take]
+                                coreset_counts[c] += take
+                                
+                                if n_in > available:
+                                    rest = n_in - available
+                                    r = torch.rand(rest)
+                                    prob = n_needed / (coreset_counts[c].item() + torch.arange(1, rest + 1))
+                                    replace = r < prob
+                                    
+                                    if replace.any():
+                                        replace_idx = torch.randint(0, n_needed, (replace.sum().item(),))
+                                        coreset_keys_res[c, replace_idx] = c_enc[available:][replace]
+                                    coreset_counts[c] += rest
+                            else:
+                                r = torch.rand(n_in)
+                                prob = n_needed / (coreset_counts[c].item() + torch.arange(1, n_in + 1))
+                                replace = r < prob
+                                
+                                if replace.any():
+                                    replace_idx = torch.randint(0, n_needed, (replace.sum().item(),))
+                                    coreset_keys_res[c, replace_idx] = c_enc[replace]
+                                coreset_counts[c] += n_in
                             
         counts_safe = torch.clamp(class_latent_counts, min=1).unsqueeze(1)
         self.class_latent_means = class_latent_sums / counts_safe
@@ -1019,27 +1054,25 @@ class DualGateModel(nn.Module):
         # Coreset Seed Generation: Temporal Stratification + HDC Random Baseline
         coreset_keys_list = []
         coreset_values_list = []
-        n_needed = 588 # 10000 / 17
         
         for c in range(num_classes):
-            if len(all_raw_enc_per_class[c]) > 0:
-                c_raw = torch.cat(all_raw_enc_per_class[c], dim=0)
-                # Uniform Random Sampling (HDC Random Baseline)
-                if len(c_raw) >= n_needed:
-                    perm = torch.randperm(len(c_raw))[:n_needed]
-                    coreset = c_raw[perm]
-                else:
-                    # Do not oversample (which creates exact duplicates and breaks D_int).
-                    # Just use the unique points we have. The EVT Density Penalty will protect them.
-                    coreset = c_raw
+            num_collected = coreset_counts[c].item()
+            if num_collected > 0:
+                c_raw = coreset_keys_res[c, :min(num_collected, n_needed)]
                 
+                # CONCEPTUAL FIX: If a rare class collected fewer than k points (e.g. 3 points),
+                # it mathematically CANNOT win a 10-NN vote (max 3 votes vs 7 for another class).
+                # We MUST oversample it to n_needed to ensure a fair voting geometry.
+                if len(c_raw) < n_needed:
+                    repeats = (n_needed // len(c_raw)) + 1
+                    c_raw = c_raw.repeat(repeats, 1)[:n_needed]
+                    
                 # Ensure it is properly binarized
-                coreset = torch.sign(coreset).to(torch.float32)
+                coreset = torch.sign(c_raw).to(torch.float32)
                 coreset[coreset == 0] = 1.0
             else:
                 # Fallback to prototype for completely missing rare classes (Cold-Start Missing Class Guarantee)
-                # Just insert ONE prototype so it exists and can be retrieved, EVT will protect it.
-                coreset = torch.sign(self.classify.weight[c]).clone().detach().unsqueeze(0).cpu()
+                coreset = torch.sign(self.classify.weight[c]).clone().detach().unsqueeze(0).expand(n_needed, -1).cpu()
                 coreset[coreset == 0] = 1.0
                 
             coreset_keys_list.append(coreset)
