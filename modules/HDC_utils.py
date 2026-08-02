@@ -974,8 +974,6 @@ class DualGateModel(nn.Module):
             for batch_idx, batch_data in enumerate(tqdm(dataloader, desc="Populating Source Stats")):
                 if dry_run and batch_idx > 2:
                     break
-                if batch_idx > 500: # Limit to a subset to save time
-                    break
                 proj_in = batch_data[0].to(device)
                 proj_labels = batch_data[2].to(device).view(-1)
                 
@@ -1018,8 +1016,6 @@ class DualGateModel(nn.Module):
         with torch.no_grad():
             for batch_idx, batch_data in enumerate(tqdm(dataloader, desc="Populating Source Stats 2")):
                 if dry_run and batch_idx > 2:
-                    break
-                if batch_idx > 50:
                     break
                 proj_in = batch_data[0].to(device)
                 proj_labels = batch_data[2].to(device).view(-1)
