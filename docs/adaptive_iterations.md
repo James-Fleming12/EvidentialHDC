@@ -252,3 +252,37 @@
    - **Problem:** When random noise queries the uniform bank, it finds a "best" match with very low similarity and makes a random guess.
    - **Solution:** Implement a hard safety check where if the highest absolute cosine similarity among the top-$k$ retrieved neighbors is below a safe geometric baseline (e.g., `< 0.60`), the system automatically vetoes the $k$-NN and falls back to SqueezeSegV3, preventing uniform guessing on noisy vectors.
 
+---
+
+## The Corruption Robustness Atlas (Diagnostic Pivot)
+
+**Goal:** Rather than blindly applying an algorithmic fix to test its effect on mIoU, we transition from "Method Development" to "Corruption Characterization." By building a rigorous diagnostic suite (`corruption_atlas.py`), we explicitly map *why* adaptation succeeds or fails on specific corruptions.
+
+### Phase 1 & 3: Representation Sensitivity & Feature Drift
+Instead of simply asking "What is the prediction?", we explicitly measure $\Delta f = f_{clean} - f_{corrupt}$. We analyze:
+- **Cosine / Euclidean Shift:** Does the corruption actually move the features geometrically, or does it simply flatten them (destroy confidence without changing class topology)?
+- **Prototype Drift:** What is the angle between the clean Coreset prototypes and the "Oracle" corrupted prototypes?
+- **Effective Rank & Local Density:** Does the corruption cause dimensional collapse, forcing all features into a narrow geometric cone?
+
+### Phase 6 & 8: The Oracle Family Comparison (Recovery Potential)
+Instead of testing our fragile algorithms, we simulate perfect bounds to locate algorithmic headroom:
+- **Oracle Memory:** $k$-NN against the exact true label (simulating a perfect memory bank).
+- **Oracle Prototype:** Prototype classification using ground-truth labeled corrupted prototypes.
+- **Oracle Diffusion/Input:** The ultimate baseline: perfectly inverting the corruption and passing $f_{clean}$ directly to the classifier.
+
+### Phase 10: The Architecture Decision Matrix
+Once the `Corruption Atlas` is populated, the architecture will mathematically dictate itself based on measured properties rather than analogies:
+
+| Observation | Implication |
+| :--- | :--- |
+| Neighborhoods preserved | Memory methods justified |
+| Rank differs | LID justified |
+| Temporal persistence separates corruption | Temporal gating justified |
+| Prototype drift dominates | Bound prototype motion |
+| Head classes saturate | Compress head memory |
+| Oracle graph > oracle prototype | Graph adaptation preferred |
+| Oracle diffusion dominates | Input alignment preferred |
+
+*This shift marks the transition from engineering patches to a comprehensive scientific evaluation of domain shift mechanics in HDC spaces.*
+
+
