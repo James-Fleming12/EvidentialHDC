@@ -12,7 +12,7 @@ from tqdm import tqdm
 from dataset.kitti.parser import Parser
 from modules.HDC_utils import set_uq_model
 
-NUM_CLASSES = 19
+NUM_CLASSES = 17
 SEVERITY_MAP = {1: 'light', 2: 'moderate', 3: 'heavy'}
 CORRUPTIONS = [
     'fog',
