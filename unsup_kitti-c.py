@@ -116,12 +116,31 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                         # Coreset Seed: Seed with the offline extracted coresets and lock them in reserved_slots!
                         if hasattr(model, 'coreset_seed_keys') and model.coreset_seed_keys is not None:
                             model.mem_bank.initialize_coreset(model.coreset_seed_keys, model.coreset_seed_values)
+                            
+                            # --- Dynamic Threshold Calibration ---
+                            # Because the denoiser is now trained on 19,000 frames instead of 500, it is much stronger.
+                            # We dynamically calibrate the thresholds based on the clean manifold reconstruction.
+                            with torch.no_grad():
+                                with torch.amp.autocast('cuda', enabled=True):
+                                    clean_keys = model.coreset_seed_keys.to(device).float()
+                                    clean_recon = model.denoiser(clean_keys)
+                                    clean_error = 1.0 - torch.cosine_similarity(clean_keys, clean_recon.float(), dim=1)
+                                    clean_mean = clean_error.mean().item()
+                                    clean_std = clean_error.std().item()
+                                    
+                            model.query_thresh = clean_mean + 3.0 * clean_std
+                            # Admission threshold is stricter (mean + 1.0 * std)
+                            admission_thresh = clean_mean + 1.0 * clean_std
+                            model.mem_bank.purity_threshold = 1.0 - admission_thresh
+                            print(f"\n[CALIBRATION] Clean Error: {clean_mean:.4f} +/- {clean_std:.4f} -> Query: {model.query_thresh:.4f}, Admission: {admission_thresh:.4f}")
                         else:
                             # Fallback just in case
                             proto_weights = torch.sign(model.classify.weight.clone().detach())
                             proto_weights[proto_weights == 0] = 1.0
                             proto_values = torch.arange(num_classes, dtype=torch.int64, device=device)
                             model.mem_bank.initialize_coreset(proto_weights, proto_values)
+                            model.query_thresh = 0.52
+                            model.mem_bank.purity_threshold = 0.55
                     
                     # Binarize incoming features for HDC operations
                     bin_enc = torch.sign(norm_enc).to(torch.float32)
@@ -132,9 +151,9 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                             recon = model.denoiser(bin_enc)
                             recon_error = 1.0 - torch.cosine_similarity(bin_enc, recon.float(), dim=1)
                         
-                    # Query Threshold: 0.52. If error > 0.52, it's total hallucination, fallback to SqueezeSegV3.
+                    # Dynamically computed Query Threshold. If error > thresh, it's total hallucination, fallback to SqueezeSegV3.
                     # Otherwise, trust the 10-NN Memory Bank.
-                    query_mask = recon_error <= 0.52
+                    query_mask = recon_error <= model.query_thresh
                     
                     # Calculate both predictions
                     mem_preds, _ = model.mem_bank.query(norm_enc)
@@ -145,12 +164,11 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     predictions = torch.where(query_mask, mem_preds, base_preds)
                     
                     if not eval_only:
-                        # Admission Threshold: 0.45. Only the absolute most pristine geometry is allowed to poison the core.
-                        # We use mem_purity = 1.0 - recon_error, so purity_threshold = 0.55
+                        # We use mem_purity = 1.0 - recon_error, the update function checks against model.mem_bank.purity_threshold
                         mem_purity = 1.0 - recon_error
                         
                         # We only update the memory bank with points that were predicted by the memory bank (query_mask)
-                        # The update function internally filters by purity_threshold (which we set to 0.55 above)
+                        # The update function internally filters by dynamically calibrated purity_threshold
                         rate, purity_err = model.mem_bank.update(bin_enc, predictions, mem_purity, true_labels=proj_labels[indices])
                         
                         if rate is not None and len(firing_rates) % 200 == 0:

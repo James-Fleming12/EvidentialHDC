@@ -86,12 +86,17 @@ class AdaptiveMemoryBank(nn.Module):
         predictions = []
         purity = []
         
-        # Process in chunks using float32
+        # Pre-cast to half precision for Tensor Cores outside the chunk loop
+        # This saves massive memory bandwidth overhead inside the loop
+        flat_keys_half = flat_keys.half()
+        features_half = features.half()
+        
+        # Process in chunks
         chunk_size = 50000
         for i in range(0, features.size(0), chunk_size):
-            chunk = features[i:i+chunk_size]
+            chunk = features_half[i:i+chunk_size]
             with torch.amp.autocast('cuda', enabled=True):
-                sims = torch.mm(chunk, flat_keys.t()).float()
+                sims = torch.mm(chunk, flat_keys_half.t()).float()
             
             # Raw geometric similarity
             topk_sims, topk_idx = sims.topk(k=k, dim=1)
