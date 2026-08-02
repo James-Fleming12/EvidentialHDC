@@ -214,3 +214,41 @@
 5. **The $k$-NN Under-Voting Mathematical Trap & The Exact Tie Bug:**
    - **Problem:** If an extremely rare class (like 'Motorcyclist') only physically appeared 3 times in the offline training set, placing those 3 points in a `10-NN` memory bank makes it mathematically incapable of winning a majority vote (max 3 votes vs 7 for competing classes). However, solving this by aggressively repeating the 3 points to fill 588 slots resurrects the fatal **Exact Tie Bug**. Injecting identical continuous vectors into the memory bank causes identically tied cosine similarities during queries, forcing the `topk` algorithm to break ties by memory index order and completely destroying variance.
    - **Solution (Distance-Weighted $k$-NN):** Rather than generating synthetic points via Latent Gaussian Perturbation (which could structurally compromise the clean HDC topology) or copying exact points (which causes exact tie collapse), we fundamentally altered the voting mechanism itself. In `AdaptiveMemoryBank`, we replaced the simple majority vote with an exponentially scaled **Distance-Weighted $k$-NN** ($w = e^{(sim - 1.0) / \tau}$). This elegantly allows sparse tail classes with $< k$ points to instantly overpower a majority of slightly more distant points, natively preserving the clean memory geometry while successfully breaking the mathematical constraints of under-voting.
+
+### Expected Results (`unsup_kitti-c.py` output)
+| Corruption | Method | Baseline mIoU | Adapted mIoU | Baseline Acc | Adapted Acc | Firing Rate |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| Fog | Iteration 8 | 0.0714 | **0.0601** | 19.15% | 21.66% | 53.51% |
+| Snow | Iteration 8 | 0.4025 | **0.2452** | 83.67% | 51.12% | 53.20% |
+| Wet Ground | Iteration 8 | 0.3946 | **0.1617** | 87.57% | 38.72% | 36.49% |
+| Motion Blur| Iteration 8 | 0.3830 | **0.2401** | 81.62% | 49.40% | 41.45% |
+| Beam Missing | Iteration 8 | 0.3653 | **0.2455** | 80.58% | 52.73% | 34.09% |
+| Crosstalk | Iteration 8 | 0.0806 | **0.0883** | 23.24% | 22.91% | 52.50% |
+| Incomplete Echo | Iteration 8 | 0.3705 | **0.1881** | 87.88% | 46.62% | 58.34% |
+| Cross Sensor | Iteration 8 | 0.2681 | **0.1144** | 60.18% | 36.08% | 14.81% |
+
+### Critical Failure Modes Diagnosed:
+1. **The Distance-Weighted $k$-NN Flat Softmax Trap:** By taking an unscaled `softmax` over cosine similarities (which are strictly bounded between `[-1, 1]`), we generated an extremely flat, near-uniform weight distribution. A mathematically perfect match (`1.0`) only held `~23%` voting power against 9 terrible matches (`0.0`). This inadvertently caused the algorithm to act exactly like a strict majority vote, completely nullifying the intended benefits and leaving rare classes suppressed.
+2. **Loose Dynamic Calibration:** The query threshold multiplier of $\mu + 3\sigma$ proved too generous (allowing queries with similarities as low as ~`0.487`), resulting in massive Firing Rates (e.g. 58% on Incomplete Echo). Millions of corrupted "random noise" points were erroneously queried against the Memory Bank.
+3. **Tail FP Explosion via Class-Partitioning:** Because the Memory Bank enforces perfectly uniform capacity across all 19 classes, whenever a "random noise" point slips past the loose query gate, its nearest neighbors are a completely random, uniform mix of classes. Combined with the flat softmax vote, the $k$-NN outputs a purely random guess. Across 400M points, this random uniform guessing resulted in ~20 Million False Positives being forced into every single Tail class, instantly tanking the mIoU.
+
+---
+
+## Iteration 9: Softmax Scaling & Absolute Geometry Veto
+
+**Goal:** Resolve the massive accuracy drop introduced in Iteration 8 by tightening the Firing Rate and correcting the math behind the Distance-Weighted $k$-NN vote.
+
+**Mathematical & Structural Upgrades:**
+
+1. **Temperature-Scaled Softmax:**
+   - **Problem:** Unscaled softmax over `[-1, 1]` cosine similarities acts as a strict majority vote, nullifying the distance weighting.
+   - **Solution:** Apply a strict temperature scaling (`tau = 0.05` or smaller) before the softmax operation to exponentially prioritize tight geometric matches, or utilize an unnormalized exponential weight `weights = torch.exp(topk_sims / tau)`.
+   
+2. **Tightened Calibrated Thresholds:**
+   - **Problem:** $\mu + 3\sigma$ let in too much noise, allowing 50%+ firing rates.
+   - **Solution:** Retract the query gate multiplier to a much stricter $\mu + 1.0\sigma$ or $\mu + 1.5\sigma$ to suppress the processing of random noise.
+   
+3. **Absolute Veto Fallback:**
+   - **Problem:** When random noise queries the uniform bank, it finds a "best" match with very low similarity and makes a random guess.
+   - **Solution:** Implement a hard safety check where if the highest absolute cosine similarity among the top-$k$ retrieved neighbors is below a safe geometric baseline (e.g., `< 0.60`), the system automatically vetoes the $k$-NN and falls back to SqueezeSegV3, preventing uniform guessing on noisy vectors.
+
