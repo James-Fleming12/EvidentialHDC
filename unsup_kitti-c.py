@@ -102,9 +102,6 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
         if proj_in.shape[1] > 0:
             model.eval()
             with torch.no_grad():
-                with torch.amp.autocast('cuda', enabled=True):
-                    latent_x = model.net(proj_in, only_feat=True)
-                
                 raw_enc, indices, _ = model.encode(proj_in)
                 norm_enc = F.normalize(raw_enc, dim=1).to(device).to(model.classify.weight.dtype)
                 
@@ -131,8 +128,9 @@ def evaluate_and_adapt(model, target_dataloader, device, eval_only=False, update
                     bin_enc[bin_enc == 0] = 1.0
                     # --- Iteration 8.2: Dual-Threshold Gating ---
                     with torch.no_grad():
-                        recon = model.denoiser(bin_enc)
-                        recon_error = 1.0 - torch.cosine_similarity(bin_enc, recon, dim=1)
+                        with torch.amp.autocast('cuda', enabled=True):
+                            recon = model.denoiser(bin_enc)
+                            recon_error = 1.0 - torch.cosine_similarity(bin_enc, recon.float(), dim=1)
                         
                     # Query Threshold: 0.52. If error > 0.52, it's total hallucination, fallback to SqueezeSegV3.
                     # Otherwise, trust the 10-NN Memory Bank.
