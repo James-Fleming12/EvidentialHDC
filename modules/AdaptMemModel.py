@@ -92,11 +92,25 @@ class AdaptiveMemoryBank(nn.Module):
             chunk = features[i:i+chunk_size]
             sims = torch.mm(chunk, flat_keys.t())
             
-            # Raw geometric similarity without EVT
+            # Raw geometric similarity
             topk_sims, topk_idx = sims.topk(k=k, dim=1)
             neighbor_sem = flat_values[topk_idx]
             
-            pred_chunk = torch.mode(neighbor_sem, dim=1).values
+            # --- Distance-Weighted k-NN ---
+            # Instead of a pure majority vote (which fails if a class has < k points),
+            # weight each vote exponentially by its cosine similarity.
+            # tau = 0.1 controls how aggressively close neighbors overpower distant ones.
+            tau = 0.1
+            weights = torch.exp((topk_sims - 1.0) / tau) # Max sim is 1.0 (or close to it)
+            
+            # Aggregate weights per class for each query in the chunk
+            # Output shape: [chunk_size, num_classes]
+            vote_scores = torch.zeros(chunk.size(0), self.num_classes, device=features.device)
+            vote_scores.scatter_add_(1, neighbor_sem, weights)
+            
+            # The predicted class is the one with the highest total weight
+            pred_chunk = torch.argmax(vote_scores, dim=1)
+            
             predictions.append(pred_chunk)
             
         predictions = torch.cat(predictions, dim=0)

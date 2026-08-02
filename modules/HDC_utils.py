@@ -1006,7 +1006,7 @@ class DualGateModel(nn.Module):
                             class_latent_counts[c] += c_mask.sum()
                             
                             # Reservoir Sampling for Coreset (collect 588 points per class uniformly over the whole dataset)
-                            c_enc = raw_enc[valid_mask][c_mask].cpu()
+                            c_enc = raw_enc[valid_mask][c_mask].cpu().float()
                             n_in = c_enc.size(0)
                             ptr = coreset_counts[c].item()
                             
@@ -1058,21 +1058,16 @@ class DualGateModel(nn.Module):
         for c in range(num_classes):
             num_collected = coreset_counts[c].item()
             if num_collected > 0:
+                # We do not oversample rare classes anymore because Distance-Weighted k-NN
+                # natively allows classes with < k points to win the vote based on raw geometric proximity.
                 c_raw = coreset_keys_res[c, :min(num_collected, n_needed)]
                 
-                # CONCEPTUAL FIX: If a rare class collected fewer than k points (e.g. 3 points),
-                # it mathematically CANNOT win a 10-NN vote (max 3 votes vs 7 for another class).
-                # We MUST oversample it to n_needed to ensure a fair voting geometry.
-                if len(c_raw) < n_needed:
-                    repeats = (n_needed // len(c_raw)) + 1
-                    c_raw = c_raw.repeat(repeats, 1)[:n_needed]
-                    
                 # Ensure it is properly binarized
                 coreset = torch.sign(c_raw).to(torch.float32)
                 coreset[coreset == 0] = 1.0
             else:
                 # Fallback to prototype for completely missing rare classes (Cold-Start Missing Class Guarantee)
-                coreset = torch.sign(self.classify.weight[c]).clone().detach().unsqueeze(0).expand(n_needed, -1).cpu()
+                coreset = torch.sign(self.classify.weight[c]).clone().detach().unsqueeze(0).cpu()
                 coreset[coreset == 0] = 1.0
                 
             coreset_keys_list.append(coreset)
