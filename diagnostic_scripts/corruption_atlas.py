@@ -131,14 +131,14 @@ def main():
             with torch.no_grad():
                 # Extract clean features and predictions
                 c_feat, _, _ = model.encode(clean_in)
-                c_feat = c_feat[clean_mask]
+                c_feat = c_feat[clean_mask].to(model.classify.weight.dtype)
                 
                 c_logits = model.classify(c_feat)
                 c_preds = torch.argmax(c_logits, dim=1).cpu().numpy()
                 
                 # Extract corrupted features and predictions
                 x_feat, _, _ = model.encode(corr_in)
-                x_feat = x_feat[clean_mask]
+                x_feat = x_feat[clean_mask].to(model.classify.weight.dtype)
                 
                 x_logits = model.classify(x_feat)
                 x_preds = torch.argmax(x_logits, dim=1).cpu().numpy()
