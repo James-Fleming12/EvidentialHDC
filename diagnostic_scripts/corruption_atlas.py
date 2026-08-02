@@ -37,9 +37,9 @@ def parse_args():
 
 def get_parser(root, data_cfg, arch_cfg):
     return Parser(root=root,
-                  train_sequences=[],
+                  train_sequences=['08'],
                   valid_sequences=['08'],
-                  test_sequences=None,
+                  test_sequences=['08'],
                   labels=data_cfg["labels"],
                   color_map=data_cfg["color_map"],
                   learning_map=data_cfg["learning_map"],
