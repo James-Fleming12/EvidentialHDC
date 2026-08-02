@@ -98,10 +98,10 @@ class AdaptiveMemoryBank(nn.Module):
             
             # --- Distance-Weighted k-NN ---
             # Instead of a pure majority vote (which fails if a class has < k points),
-            # weight each vote exponentially by its cosine similarity.
-            # tau = 0.1 controls how aggressively close neighbors overpower distant ones.
-            tau = 0.1
-            weights = torch.exp((topk_sims - 1.0) / tau) # Max sim is 1.0 (or close to it)
+            # weight each vote exponentially by its geometric similarity.
+            # Using softmax prevents torch.exp() overflow since topk_sims are unnormalized dot products (~50-100).
+            # The implicit tau=1.0 provides very sharp distance weighting.
+            weights = torch.softmax(topk_sims, dim=1)
             
             # Aggregate weights per class for each query in the chunk
             # Output shape: [chunk_size, num_classes]
