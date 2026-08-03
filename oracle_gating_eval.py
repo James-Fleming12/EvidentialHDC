@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 import argparse
 import json
+import random
 from tqdm import tqdm
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
@@ -114,17 +115,25 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
     corrupt_pseudo_lbls = torch.tensor(corrupt_probs.argmax(axis=1)).to(device)
     corrupt_confidences = torch.tensor(corrupt_probs.max(axis=1)).to(device)
     
-    # Extract sets to avoid OOM
-    # Pool = adaptation points for the EMA tests. Val = evaluation points
+    # Extract sets to avoid OOM.
+    # FIX (Phase 13): pool = first 20k points and val = last 100k points were ~98
+    # frames apart (different scenes), so even the ground-truth oracle LOST to
+    # zero-shot on every corruption. Both sets now come from one seeded uniform
+    # permutation over all points, so adaptation and evaluation share the same
+    # frame distribution. The whole pipeline is seeded in main() for reproducibility.
     val_size = 100000
+    torch.manual_seed(42)
+    perm = torch.randperm(len(corrupt_feats))
+    pool_idx = perm[:pool_size]
+    val_idx = perm[-val_size:]
     
-    pool_f_128 = corrupt_feats[:pool_size].to(device)
-    pool_lbls = c_lbl[:pool_size]
-    pool_pseudo = corrupt_pseudo_lbls[:pool_size]
-    pool_conf = corrupt_confidences[:pool_size]
+    pool_f_128 = corrupt_feats[pool_idx].to(device)
+    pool_lbls = c_lbl[pool_idx]
+    pool_pseudo = corrupt_pseudo_lbls[pool_idx]
+    pool_conf = corrupt_confidences[pool_idx]
     
-    val_f_128 = corrupt_feats[-val_size:].to(device)
-    val_lbls = c_lbl[-val_size:]
+    val_f_128 = corrupt_feats[val_idx].to(device)
+    val_lbls = c_lbl[val_idx]
     
     print("      -> Projecting Validation Set to 10kD HDC...")
     val_feats = torch.sign(torch.matmul(val_f_128, proj))
@@ -302,6 +311,12 @@ def main():
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}")
+    
+    # Seed the full pipeline (extraction workers, point subsampling) so feature
+    # extraction and the pool/val split are reproducible across runs.
+    torch.manual_seed(42)
+    np.random.seed(42)
+    random.seed(42)
     
     method = args.method
     load_path = args.load_path

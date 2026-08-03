@@ -374,3 +374,48 @@ Before committing to the medium-scale run, the offline EMA-adaptation simulator 
 2. **Run the remaining 7 corruptions** with the same ladder (the JSON currently contains Fog only), with special attention to Crosstalk AUROC (the mem-method thread's known failure case).
 3. **Recalibrate the joint gate on the re-tested signals** (c_z + n_z if the inversion holds; c_z − n_z otherwise) and re-run the ladder on Fog + Crosstalk.
 4. **Commit the medium-scale run** (plain `supcon_vib`, seeded) once the gate direction is settled — the naive EMA baseline (18.34%, Fog) becomes the accuracy floor the converged encoder must beat.
+
+---
+
+## Phase 13: The Full 8-Corruption Panel and the Pool/Val Mismatch Confound
+
+The full panel ran with the gate-fault diagnostics (clean-data control, per-gate-mode AUROC, threshold envelope sweeps) — and immediately exposed a **harness bug** that invalidates every absolute number in the panel, while still yielding decisive negative results about the shipped gates.
+
+### The Gated EMA Ladder (10kD HDC, pool = 20k pts, val = 100k pts, α = 0.01)
+
+| Corruption | ZeroShot | Naive EMA | Top50 Conf | Epistemic | Geometric | SDW | AND | Joint Flip | SDW* (sweep) | Perfect Oracle |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Fog** | **21.8%** | 15.4% | **4.2%** | 14.3% | 14.5% | 12.9% | 14.3% | 11.7% | 15.4% | 19.7% |
+| **Snow** | **66.8%** | 60.7% | 62.7% | 60.8% | 60.7% | 60.7% | 60.7% | 60.7% | 60.7% | 62.1% |
+| **Wet Ground** | **79.3%** | 74.7% | 78.1% | 74.6% | 74.7% | 74.6% | 74.6% | 74.7% | 74.7% | 76.7% |
+| **Incomplete Echo** | **76.8%** | 75.5% | 75.8% | 75.6% | 75.5% | 75.6% | 75.6% | 75.5% | 75.7% | 75.0% |
+| **Crosstalk** | **24.2%** | 21.0% | 23.1% | 21.1% | 21.1% | 21.1% | 21.1% | 21.0% | 21.1% | **7.8%** |
+| **Beam Missing** | **72.3%** | 68.6% | 68.6% | 68.6% | 68.6% | 68.6% | 68.6% | 68.4% | 68.6% | 70.9% |
+| **Motion Blur** | **50.9%** | 46.0% | 50.0% | 46.2% | 45.4% | 45.4% | 45.4% | 45.3% | 47.0% | 49.2% |
+| **Cross Sensor** | **53.2%** | 52.1% | 52.8% | 52.1% | 52.1% | 52.1% | 52.1% | 52.1% | 52.1% | 52.7% |
+| **Clean Control** | **78.8%** | 76.1% | 76.7% | 76.1% | 76.1% | 76.1% | 76.1% | 76.1% | 76.1% | 77.1% |
+
+### The Critical Discovery: The Pool/Val Mismatch Confound
+
+**The ground-truth Perfect Oracle loses to zero-shot on every single corruption** (Fog −2.1, Crosstalk −16.4) — **and even on the Clean Control (−1.65)**. A perfect-label oracle can only *hurt* if it is adapting to a distribution different from the one it is evaluated on. The cause is structural: the adaptation pool was the first 20k points of the stream (≈¼ of the first frame) and the validation set was the last 100k points (≈1.2 of the last frame) — **~98 frames apart, entirely different scenes**. This is why leave-one-out also reported near-zero Helpful updates on several corruptions (Incomplete Echo: 0 Helpful / 1246 Harmful): "helpful vs harmful" was measuring "does adapting toward scene A help classify scene B", which is almost always no.
+
+The confound was always present in the harness — the Phase 9-era encoder masked it, because on that encoder *any* movement toward the fog distribution improved the late-frame validation. The robust encoder's quality (clean prototypes already close to the fog geometry) makes the mismatch visible: adaptation now has to be *correct*, not just *closer*.
+
+### Secondary Findings (valid despite the confound)
+
+1. **The fog confidence inversion is confirmed — and catastrophic in action.** Conf AUROC 0.17 (anti-predictive); `top50_conf` crashes Fog to **4.2%** (from 15.4% naive) because the top-50% most-confident fog points are the most harmful (Harmful Conf 0.77 vs Helpful 0.54). The shipped gates' "harmful = low confidence" assumption is sign-reversed on Fog.
+2. **No single signal or gate is universally selective.** Norm AUROC is strong on the Type C's and Wet Ground (Fog 0.70, Crosstalk 0.85, Wet Ground 0.93) but **inverted on Snow (0.08)**; confidence is only sane on Motion Blur (0.86). The **logistic combination of conf + norm is the only universally strong selector (0.86–0.95)** — supporting a learned/calibrated joint gate over any fixed hand-designed mode.
+3. **Gate-mode AUROC confirms the shipped modes are old-space artifacts.** On Fog only `joint_flip` (veto high-confidence AND high-norm) is selective (0.82); `soft_dual_weight` and `and_gate` are *anti*-selective (0.41–0.42). On Snow every mode except `epistemic` is anti-selective (0.12–0.14). The diagnostics did their job: they caught the gates being wrong *before* we committed compute to them.
+4. **Threshold sweeps cannot rescue the shipped gates.** Best-case `soft_dual_weight` (`sdw_best`) ≈ naive everywhere (best margin: Motion Blur +1.0). Under the confound this is not yet conclusive, but combined with finding 3 it strongly suggests the SDW family should not be reused.
+5. **Run-to-run variance is large.** Fog zero-shot swung 12.7% ↔ 21.8% between two runs of the *same* checkpoint and projection seed — the data pipeline (point subsampling in extraction workers) is unseeded.
+
+### Harness Fixes Applied
+
+1. **Pool/val now share one seeded uniform permutation** over all extracted points (pool = first 20k, val = next 100k of the permutation), so adaptation and evaluation cover the same frame distribution.
+2. **The whole pipeline is seeded** (`torch.manual_seed(42)`, `np.random.seed(42)`, `random.seed(42)`) before loader creation, making extraction and splits reproducible.
+
+### Next Steps
+
+1. **Re-run the 8-corruption panel** on the fixed harness — the oracle must now land *at or above* zero-shot on every corruption; if it still loses on any corruption, that corruption is genuinely un-adaptable and we want to know that too.
+2. **Treat the gate-fault results as binding**: drop the shipped `soft_dual_weight`/`and_gate`/`ellipsoid_gate` modes for the new space; build the gate from the two bare signals (confidence, feature norm) with per-corruption direction calibration (the LR combination is the reference: 0.86–0.95 AUROC).
+3. **Commit the medium-scale run** (plain `supcon_vib`, seeded) in parallel — the encoder is not in question; the harness and gate questions are independent of it.
