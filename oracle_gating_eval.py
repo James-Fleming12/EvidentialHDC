@@ -405,7 +405,7 @@ def main():
     
     # Train Linear Probe on 128D (to use as our confidence oracle)
     print("-> Training Linear Probe Oracle (128D on 100k points)...")
-    clf = LogisticRegression(max_iter=1000, n_jobs=-1)
+    clf = LogisticRegression(max_iter=1000)
     train_size = min(100000, len(clean_feats))
     clf.fit(clean_feats[:train_size].numpy(), clean_lbls[:train_size].numpy())
     

@@ -115,7 +115,7 @@ def evaluate_headroom(model, clean_loader, corrupt_loader, device, num_frames=50
     X_test = fog_feats[:50000].numpy()
     y_test = fog_lbls[:50000].numpy()
     
-    clf = LogisticRegression(max_iter=1000, n_jobs=-1).fit(X_train, y_train)
+    clf = LogisticRegression(max_iter=1000).fit(X_train, y_train)
     probe_clean_acc = clf.score(X_train, y_train)
     probe_fog_acc = clf.score(X_test, y_test)
     
