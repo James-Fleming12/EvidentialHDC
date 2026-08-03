@@ -268,30 +268,65 @@ To ensure this wasn't an isolated anomaly, we executed a full 8-condition sweep 
 
 ## Phase 10: The Post-Hoc Remediation Shootout (Additive / SOR / Global Pooling)
 
-While the gating diagnostics validated the *adaptive* path, we still owed the Type C corruptions (Fog, Crosstalk) a direct *input/feature-space* countermeasure. The `micro_pretrain_eval.py` script was re-run (5 epochs, 10% data, Heavy Fog) pitting three cheap remediation strategies against the canonical `supcon_vib` representation:
+While the gating diagnostics validated the *adaptive* path, we still owed the Type C corruptions (Fog, Crosstalk) a direct *input/feature-space* countermeasure. The `micro_pretrain_eval.py` script was run twice (5 epochs, 10% data, Heavy Fog), pitting three cheap remediation strategies against the canonical `supcon_vib` representation:
 
 1. **`supcon_vib_additive`:** The physics augmentation pipeline is enriched with **volumetric noise injection** (fake geometric returns scattered into empty space, simulating fog droplets) so the encoder sees additive hallucinations during training.
 2. **`supcon_vib_sor`:** A **pre-network Statistical Outlier Removal** filter (3×3 neighbor-count gate, keep points with $\geq$ 1 neighbor) that physically deletes isolated scattering noise from the range image *before* the encoder sees it.
 3. **`supcon_vib_global`:** **Expanded Spatial Pooling** — a 3×3 average pool applied to the 128D latent itself (Global Anchoring), smoothing each feature with its spatial neighbors at evaluation time.
 
-> **Methodology Note:** The Additive/SOR/Global variants in this run train through the plain symmetric-CE objective (only the canonical `supcon_vib` activates the decoupled SupCon+VIB loss terms in `gen_trainers.py`). This is deliberate: it isolates the *pure* effect of each remediation from the representation losses. A direct consequence is that these variants lose VIB's magnitude cap (their $L_2$ norms inflate toward 8+), which is exactly what the data below shows.
+> **Methodology Note:** In the first run, the Additive/SOR/Global variants inadvertently trained through the plain symmetric-CE objective — the loss branch in `gen_trainers.py` matched only the exact method string `supcon_vib`, so the variant names silently bypassed the SupCon+VIB terms. This *did* isolate the pure effect of each remediation (their $L_2$ norms inflated toward 8+, exactly what the first table below shows), but it was not the intended "full method + remediation" test. Before the second run the routing was fixed (`startswith('supcon_vib')`), so every variant now trains with the full decoupled SupCon+VIB objective, and `supcon_vib_sor` additionally applies the SOR pre-filter to both clean and augmented inputs during training to match its evaluation-time filtering.
 
-### Headroom Metrics (Heavy Fog, Frozen Features)
+### Headroom Metrics (Heavy Fog, Frozen Features) — Old CE-Only Run → New Full-Loss Run
 
 | Metric | SupCon + VIB | + Additive Volumetric | + SOR Pre-Filter | + Global Pooling |
 | :--- | :--- | :--- | :--- | :--- |
-| **HDC Prototype Accuracy (Fog)** | **10.9%** | 6.6% | 9.1% | **10.9%** |
-| **Linear Probe (Fog)** | 9.5% | 15.3% | **27.4%** | 7.8% |
-| **Cross-Domain Retrieval** | 35.1% | 32.1% | **44.6%** | 31.7% |
-| **Avg Cosine Shift** | 0.551 | 0.617 | **0.434** | 0.555 |
-| **Avg L2 Norm (Clean $\rightarrow$ Fog)** | **5.46 $\rightarrow$ 5.37** | 8.40 $\rightarrow$ 7.97 | 6.18 $\rightarrow$ 5.64 | 8.38 $\rightarrow$ 7.41 |
+| **HDC Prototype Accuracy (Fog)** | 10.9% → **20.1%** | 6.6% → 12.4% | 9.1% → 9.0% | 4.1% → **14.4%** |
+| **Linear Probe (Fog)** | 9.5% → 11.1% | 15.3% → 13.3% | 27.4% → **14.0%** | 7.8% → 10.3% |
+| **Cross-Domain Retrieval** | 35.1% → 26.4% | 32.1% → 30.2% | 44.6% → **31.1%** | 31.7% → 29.7% |
+| **Avg Cosine Shift** | 0.551 → 0.583 | 0.617 → **0.532** | 0.434 → 0.730 | 0.555 → 0.626 |
+| **Avg L2 Norm (Clean $\rightarrow$ Fog)** | 5.46→5.37 → **5.62→4.55** | 8.40→7.97 → 5.37→4.41 | 6.18→5.64 → 5.62→5.23 | 8.38→7.41 → 5.51→4.75 |
 
-### Diagnostic Analysis
+### Diagnostic Analysis (the Validation Run)
 
-1. **SOR Pre-Filtering is the Sleeping Giant:** A zero-parameter geometric gate — deleting isolated points from the input before the encoder — delivered the single largest robustness jump of the entire project: Linear Probe (Fog) nearly **tripled** (9.5% → 27.4%), Cross-Domain Retrieval jumped to a new best (44.6%), and Angular Drift hit a new floor (0.434). This confirms the Corruption Atlas finding in reverse: a large fraction of Fog damage is *geometrically identifiable before the network* as scattered isolated returns, and removing them pre-network recovers most of the linear separability.
-2. **SOR Does Not Rescue Naive HDC (Yet):** Despite the linear-probe explosion, HDC Prototype Accuracy stayed flat (10.9% → 9.1%). The surviving fog volume (dense hallucinated deposits that *do* have local neighbors) still poisons the Euclidean centroids. SOR gates out the sparse noise but leaves the dense hallucinations — precisely the population that needs *uncertainty gating inside the memory bank*, not just at the input.
-3. **Additive Augmentation Trades Magnitude for Linearity:** Injecting volumetric noise into training modestly lifted Fog probe accuracy (9.5% → 15.3%) but inflated the absolute feature envelope (5.46 → 8.40), which is precisely the VIB magnitude collapse the architecture exists to maintain. Without the VIB term holding magnitudes down, the learned representation happily maps hallucinated deposits into high-magnitude, Euclidean-poisoning features — HDC Prototype Accuracy fell to its worst value (6.6%).
-4. **Global Pooling is Mathematically Counterproductive:** Averaging the 128D latent over a 3×3 window *destroyed* Fog linear separability (7.8%, worst) while leaving Cosine Shift unchanged. The 1×1 projection head has already collapsed the semantics to point-scale discriminative features; blurring them post-hoc removes exactly the structure the classes are separated on.
+1. **The Full Method is the HDC Winner (20.1%):** With all variants on the full objective, the canonical `supcon_vib` posted the best HDC Prototype Accuracy ever measured in this project (20.1%, previous best 15.8% in Phase 6). Every variant's $L_2$ envelope also returned to the VIB-capped 5.4–5.6 range, confirming the full loss is genuinely active across all four methods.
+2. **The SOR Stack Did Not Validate:** The CE-only SOR advantage (27.4% LP Fog, 0.434 shift, 44.6% retrieval) evaporated once SOR entered the full-loss training loop: LP (Fog) fell to 14.0%, retrieval to 31.1%, and Cosine Shift worsened to its worst value (0.730). The likely culprit is the interaction between the SOR filter and the augmentation pipeline: beam-drop zeroes 50% of scan rows, after which SOR deletes the legitimate neighbors of the dropped beams, corrupting both the CE supervision and the contrastive pair structure the full loss depends on. The "Sleeping Giant" finding is therefore an artifact of the CE-only setting, not a general property of SOR.
+3. **Global Pooling Was Redeemed by the Full Loss:** With VIB magnitudes intact, the 3×3 latent smoothing no longer collapses the geometry — HDC jumped from 4.1% to 14.4% (second best). Global pooling is now a plausible cheap auxiliary, though LP (Fog) remains the weakest (10.3%).
+4. **Additive Remains a Middle Ground:** Second-best LP (Fog) (13.3%), best angular stability (0.532), HDC 12.4% — but nothing beats the plain method on the HDC axis that matters most for the gated EMA prototype pipeline.
+
+### Reproducibility Note: Why the Baseline Moved
+The canonical `supcon_vib` baseline itself shifted between runs (HDC 10.9% → 20.1%, Retrieval 35.1% → 26.4%) despite an unchanged code path. This is **not** a random projection matrix: the micro evaluation contains no random projection (the 10,000D HDC projection in `HDC_utils.set_uq_model` is imported but never called — prototype accuracy here uses raw 128D class-mean centroids and `torch.cdist`). The movement is pure stochasticity: `micro_pretrain_eval.py` never sets a seed, so each run re-initializes the SENet weights from scratch (`path=None`) and re-rolls the entire stochastic stack — beam-drop rows (`np.random.choice`), depth jitter, density masks, SupCon point subsampling (`randperm`), VIB reparameterization noise, and shuffled DataLoader workers. With only 5 epochs on 10% data and 50 evaluation frames, these unseeded draws dominate the final weights. For comparability, the medium-scale run should adopt the seeding already used by `med_pretrain_eval.py` (per-method `torch.manual_seed`) or `train.py`'s `--seed` argument.
 
 **The Verdict:**
-The cheap, physics-inspired **SOR pre-filter** is the strongest post-hoc intervention tested to date and is fully orthogonal to the neural representation — it can be stacked on top of *any* encoder, including the gated EMA prototype pipeline. The dense-hallucination remainder it cannot remove is exactly what the Phase 9 uncertainty gate is designed to veto.
+The full-loss shootout does not support stacking SOR (or any other remediation) on top of the canonical representation: plain `supcon_vib` wins the HDC axis outright (20.1%), and its $L_2$ envelope (5.62 → 4.55) retains the VIB magnitude isolation the gated EMA pipeline depends on. The remediation variants add nothing over the full method in this micro setting, and their apparent CE-only advantages did not survive contact with the real objective. The medium-scale commit should therefore proceed with **plain `supcon_vib`**, seeded for reproducibility.
+
+---
+
+## Phase 11: The Pivot to Uncertainty-Gated TTA (Design & Next Steps)
+
+### Validation of the Pivot Decision
+
+1. **SOR-in-the-loop is a dead end; the fix is not more training.** The full-loss SOR run regressed on every axis (LP Fog 27.4% → 14.0%, Retrieval 44.6% → 31.1%, Cosine Shift 0.434 → 0.730) relative to the CE-only run, and its best HDC Prototype Accuracy (9.1%) is less than half of plain `supcon_vib`'s (20.1%). The mechanism is structural: the SOR filter runs *after* beam-drop augmentation (which zeroes 50% of scan rows), so it deletes the legitimate neighbors of dropped beams **every iteration**. This corrupts the contrastive pair structure the SupCon loss depends on, and longer training would *reinforce* — not heal — the corrupted geometry. Spending medium-scale compute on SOR variants is therefore not justified.
+2. **The representation is the solved part.** Phase 8 proved the `supcon_vib` 128D space is highly separable under Heavy Fog (49.4% Linear Probe) and that this information mathematically survives random projection and sign-binarization (49.0% / 47.8%). The residual HDC collapse (8.2% → 20.1% across runs) is exclusively a naive-decoder problem: indiscriminate EMA updates absorb the impossible Fog/Crosstalk artifacts and poison the Euclidean centroids. Crucially, the old feature space was so degraded that it forced exotic decoder machinery (the `AdaptiveMemoryBank`'s density-adaptive Hamming query, reservoir sampling, and purity thresholds were all built to survive a space that collapsed into isotropic noise). The entire premise of the pretraining investment is that the robust encoder makes this unnecessary: a plain EMA prototype update plus standard confidence gating should now suffice.
+3. **Uncertainty gating is the proven remediation.** Phase 9's oracle tests showed that filtering the bottom 50% of updates by confidence reaches 20.63% — 89% of the Perfect Oracle ceiling (23.32%) vs 16.36% for naive adaptation — and profiled the Harmful-update signature: lower confidence (0.62 vs 0.92) and larger feature norms (6.42 vs 5.28).
+4. **Honest caveats before committing.** (a) Eval-time-only SOR — a frozen full-loss encoder + SOR input pre-filter, *without* SOR in training — was never tested; that recipe was the biggest CE-only win (27.4%) and remains a cheap, orthogonal input-stage candidate for the TTA pipeline. (b) Earlier research threads (`docs/mem_method/new_prelims.md`) found no signal combination that separates hallucinations on Crosstalk in the *old* encoder setup (max AUROC 0.642), and documented AND-gate starvation / OR-gate flooding. Phase 9's universal matrix shows the confidence/norm signature survives on the new encoder (Crosstalk: 0.79 vs 0.61 confidence), but the gate must be re-validated per-corruption before it is trusted universally.
+
+### The Gating Function: Combining Confidence and Feature Norm
+
+The two Phase 9 signals live on incompatible scales (confidence $c \in [0,1]$, norm $\Vert z \Vert \approx 5.5$ under the VIB cap), so they are standardized with streaming statistics (per-frame or per-class EMA of mean/std):
+
+$$c_z = \frac{c - \mu_c}{\sigma_c}, \qquad n_z = \frac{\Vert z \Vert - \mu_n}{\sigma_n}$$
+
+The unified gate weight is a soft, multiplicative decay — the same algebra already implemented in `fuse_uncertainties("soft_dual_weight")`, with the Phase 9-validated signals substituted for the current (Dirichlet uncertainty, distance z-score) pair:
+
+$$w(x) = \exp\big(-\lambda_1 \cdot \text{relu}(\tau_c - c)\big) \cdot \exp\big(-\lambda_2 \cdot \text{relu}(n_z - \tau_n)\big)$$
+
+The EMA prototype update becomes $c \leftarrow c + \eta \cdot w(x) \cdot z$. Calibration anchors come directly from Phase 9: $\tau_c \approx 0.75$ (midpoint of 0.62/0.92), $\tau_n \approx 5.9$ (midpoint of 6.42/5.28), with $\lambda_1, \lambda_2$ swept. This form preserves the soft-weighting regime proven in the geometric-method thread (avoiding both AND-gate starvation and OR-gate flooding) while keying on the exact signature the oracle validated.
+
+### Next Steps
+
+1. **Re-validate the Harmful-update signature on the new encoder:** rerun the `oracle_gating_eval.py` leave-one-update-out protocol (already seeded) on the 20.1%-HDC `supcon_vib` features, per-corruption (Fog, Crosstalk, plus the geometric panel) — confirming confidence/norm still separate Helpful from Harmful updates before building on it.
+2. **Implement the gate as a new `fuse_uncertainties` mode** (e.g. `norm_confidence_gate`) using the weight above, so it is directly ablative against the existing `epistemic` / `geometric` / `soft_dual_weight` modes.
+3. **Sweep $(\tau_c, \tau_n, \lambda_1, \lambda_2)$** on Fog and Crosstalk through the standard EMA prototype update on the frozen encoder — the `fuse_uncertainties` gate feeding the plain prototype update, deliberately *without* any of the old `AdaptiveMemoryBank` machinery (density-adaptive Hamming, reservoir sampling). Acceptance criteria: beat the naive EMA baseline (16.36%) and approach the oracle ceiling (23.32%), and outperform the single-signal gates (confidence-only, norm-only) to justify the joint combination.
+4. **Commit the medium-scale run:** plain `supcon_vib` on 100% data (seeded per `med_pretrain_eval.py` convention) to obtain the converged encoder, then run the gated TTA end-to-end on top of it.
+
+**Contingency (deferred, not deleted):** SOR — whether as an eval-time input pre-filter on the frozen encoder or in any future augmentation variant — is parked. Its best ever HDC Prototype Accuracy (9.1%) is less than half of what the plain encoder already achieves (20.1%), so it does not justify proactive compute. Only revisit input-space remediation or richer physics augmentation if the gated TTA underperforms the naive EMA baseline.
