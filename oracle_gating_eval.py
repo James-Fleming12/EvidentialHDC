@@ -66,8 +66,9 @@ def evaluate_oracle_gating(clean_feats, clean_lbls, fog_feats, fog_lbls, device=
     
     sims = torch.matmul(F.normalize(val_feats, p=2, dim=1), base_protos.T)
     base_preds = proto_lbls[sims.argmax(dim=1)]
-    zero_shot_acc = (base_preds == val_labels).float().mean().item()
-    print(f"   Zero-Shot Accuracy: {zero_shot_acc:.4f}")
+    zero_shot_correct = (base_preds == val_labels).sum().item()
+    zero_shot_acc = zero_shot_correct / len(val_labels)
+    print(f"   Zero-Shot Accuracy: {zero_shot_acc:.4f} ({zero_shot_correct}/{len(val_labels)})")
     
     # Candidate pool for adaptation (first 10k points)
     pool_feats = h_fog[:10000]
@@ -83,7 +84,7 @@ def evaluate_oracle_gating(clean_feats, clean_lbls, fog_feats, fog_lbls, device=
     print("\n--- Diagnostic 1: Oracle Gating ---")
     def run_adaptation(mask, name):
         adapted_protos = base_protos.clone()
-        alpha = 0.05
+        alpha = 0.01  # Smaller alpha so 10k updates don't completely overwrite
         updates_applied = 0
         for i in range(len(pool_feats)):
             if mask[i]:
@@ -125,7 +126,7 @@ def evaluate_oracle_gating(clean_feats, clean_lbls, fog_feats, fog_lbls, device=
     # DIAGNOSTIC 2: LEAVE-ONE-UPDATE-OUT
     print("\n--- Diagnostic 2: Leave-One-Update-Out ---")
     helpful, neutral, harmful = [], [], []
-    alpha = 0.05
+    alpha = 0.05 # For a single point update, 5% is good to force a measurable boundary shift
     
     # Limit to 2000 points to keep runtime manageable
     eval_pool_size = min(2000, len(pool_feats))
@@ -143,9 +144,9 @@ def evaluate_oracle_gating(clean_feats, clean_lbls, fog_feats, fog_lbls, device=
         
         sims = torch.matmul(F.normalize(val_feats, p=2, dim=1), new_protos.T)
         preds = proto_lbls[sims.argmax(dim=1)]
-        new_acc = (preds == val_labels).float().mean().item()
+        new_correct = (preds == val_labels).sum().item()
         
-        delta = new_acc - zero_shot_acc
+        delta = new_correct - zero_shot_correct
         
         meta = {
             'conf': pool_conf[i].item(),
