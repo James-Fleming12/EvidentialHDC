@@ -181,17 +181,18 @@ def evaluate_oracle_gating(clean_feats, clean_lbls, fog_feats, fog_lbls, device=
 
 def main():
     parser = argparse.ArgumentParser("./oracle_gating_eval.py")
-    parser.add_argument('--kitti_dir', '-d', type=str, default='/home/james/Research/SEE/dataset/', help='Dataset path')
+    parser.add_argument("--kitti_dir", type=str, default="/mnt/alpha/jmfleming/KITTI")
+    parser.add_argument("--kittic_dir", type=str, default="/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C")
+    parser.add_argument("--config", type=str, default="config/labels/semantic-kitti-all.yaml")
+    parser.add_argument("--arch", type=str, default="config/arch/senet-2048p.yml")
     args, _ = parser.parse_known_args()
     
-    cfg_file = "config/kitti_gen.yaml"
-    DATA = yaml.safe_load(open(cfg_file, 'r'))
-    ARCH = yaml.safe_load(open("config/SENet_VIB.yaml", 'r'))
+    DATA = yaml.safe_load(open(args.config, 'r'))
+    ARCH = yaml.safe_load(open(args.arch, 'r'))
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}")
     
-    # We will just load the SupCon+VIB model
     method = 'supcon_vib'
     load_path = f"logs/med_pretrain_{method}"
     
@@ -204,12 +205,27 @@ def main():
     model = trainer.model
     model.eval()
     
-    clean_loader = trainer.parser.get_train_set()
+    fog_dir = os.path.join(args.kittic_dir, 'fog', 'heavy')
+    if not os.path.exists(fog_dir):
+        fog_dir = os.path.join(args.kittic_dir, 'fog', 'moderate')
+        
+    clean_parser = Parser(root=args.kitti_dir, train_sequences=['08'], valid_sequences=['08'], test_sequences=None,
+                          labels=DATA["labels"], color_map=DATA["color_map"], learning_map=DATA["learning_map"],
+                          learning_map_inv=DATA["learning_map_inv"], sensor=ARCH["dataset"]["sensor"],
+                          max_points=ARCH["dataset"]["max_points"], batch_size=6, workers=4, gt=True, shuffle_train=False)
+                          
+    fog_parser = Parser(root=fog_dir, train_sequences=['08'], valid_sequences=['08'], test_sequences=None,
+                        labels=DATA["labels"], color_map=DATA["color_map"], learning_map=DATA["learning_map"],
+                        learning_map_inv=DATA["learning_map_inv"], sensor=ARCH["dataset"]["sensor"],
+                        max_points=ARCH["dataset"]["max_points"], batch_size=6, workers=4, gt=True, shuffle_train=False)
+    
+    clean_loader = clean_parser.get_train_set()
+    fog_loader = fog_parser.get_train_set()
     
     clean_feats, clean_lbls = [], []
     fog_feats, fog_lbls = [], []
     
-    # We'll extract 10 batches of clean and fog (for ~60,000 points per domain)
+    # Extract 10 batches (with batch_size 6, that's 60 frames = ~600,000 points)
     NUM_BATCHES = 10
     
     print("-> Extracting Clean Latents...")
@@ -231,12 +247,10 @@ def main():
             
     print("-> Extracting Fog Latents...")
     with torch.no_grad():
-        for i, batch in enumerate(tqdm(clean_loader, total=NUM_BATCHES)):
+        for i, batch in enumerate(tqdm(fog_loader, total=NUM_BATCHES)):
             if i >= NUM_BATCHES: break
             in_vol, _, labels, _ = batch
             in_vol = in_vol.to(device)
-            # Add fog augmentation
-            in_vol = trainer.get_augmented_view(in_vol)
             
             mask = labels > 0 
             out_tuple = model(in_vol)
