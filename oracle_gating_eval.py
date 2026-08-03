@@ -4,11 +4,14 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import argparse
+import json
 from tqdm import tqdm
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
 
 from dataset.kitti.parser import Parser
 from modules.gen_trainers import GenTrainer
+from modules.HDC_utils import fuse_uncertainties, GATE_CFG
 
 CORRUPTIONS = [
     'fog', 'snow', 'wet_ground', 'incomplete_echo', 
@@ -47,7 +50,62 @@ def build_hdc_prototypes(feats_128, lbls, proj, num_classes=17, device='cuda', c
     valid_mask = counts > 0
     return base_protos[valid_mask], proto_lbls[valid_mask]
 
-def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj, device='cuda'):
+def run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, weights, alpha):
+    """One pass of EMA prototype updates, each scaled by its gate weight w in [0,1].
+
+    w = 1 reproduces the naive (unweighted) EMA; w < 1 soft-mutes the update
+    (momentum modulation), w = 0 fully vetoes it. Mirrors the production
+    soft_dual_weight regime from the geometric-method thread.
+    """
+    adapted = base_protos.clone()
+    for i in range(len(pool_feats)):
+        w = weights[i]
+        if w <= 0:
+            continue
+        pl = pool_pseudo[i]
+        idx = (proto_lbls == pl).nonzero(as_tuple=True)[0]
+        if len(idx) == 0:
+            continue
+        idx = idx[0]
+        aw = alpha * w
+        adapted[idx] = adapted[idx] * (1 - aw) + pool_feats[i] * aw
+        adapted[idx] = F.normalize(adapted[idx], p=2, dim=0)
+    return adapted
+
+
+def eval_protos(protos, proto_lbls, val_feats, val_lbls):
+    sims = torch.matmul(F.normalize(val_feats, p=2, dim=1), protos.T)
+    preds = proto_lbls[sims.argmax(dim=1)]
+    return (preds == val_lbls).float().mean().item()
+
+
+def compute_signal_aurocs(meta_list):
+    """AUROC of each gate signal for separating Helpful (delta > 0) from Harmful (delta < 0) updates."""
+    if len(meta_list) < 10:
+        return {}
+    confs = np.array([m['conf'] for m in meta_list], dtype=np.float64)
+    norms = np.array([m['norm'] for m in meta_list], dtype=np.float64)
+    deltas = np.array([m['delta'] for m in meta_list])
+    y = (deltas > 0).astype(int)
+    if len(np.unique(y)) < 2:
+        return {}
+    c_z = (confs - confs.mean()) / (confs.std() + 1e-8)
+    n_z = (norms - norms.mean()) / (norms.std() + 1e-8)
+    aucs = {
+        'conf': roc_auc_score(y, confs),
+        'norm': roc_auc_score(y, -n_z),          # higher norm -> harmful
+        'joint_z': roc_auc_score(y, c_z - n_z),  # Phase 11 proposal
+    }
+    try:
+        lr = LogisticRegression(max_iter=1000).fit(np.stack([confs, norms], axis=1), y)
+        aucs['lr'] = roc_auc_score(y, lr.decision_function(np.stack([confs, norms], axis=1)))
+    except Exception:
+        aucs['lr'] = None
+    return aucs
+
+
+def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,
+                           device='cuda', pool_size=20000, alpha=0.01, gate_cfg=None):
     c_lbl = corrupt_lbls.to(device)
     
     # Get pseudo-labels and confidence for Fog points (in 128D)
@@ -57,8 +115,7 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
     corrupt_confidences = torch.tensor(corrupt_probs.max(axis=1)).to(device)
     
     # Extract sets to avoid OOM
-    # Pool = 20k points for adaptation tests. Val = 100k points for evaluation
-    pool_size = 20000
+    # Pool = adaptation points for the EMA tests. Val = evaluation points
     val_size = 100000
     
     pool_f_128 = corrupt_feats[:pool_size].to(device)
@@ -85,7 +142,6 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
     print("      -> Running Perfect Oracle Test...")
     mask_perfect = pool_pseudo == pool_lbls
     adapted_protos = base_protos.clone()
-    alpha = 0.01
     for i in range(len(pool_feats)):
         if mask_perfect[i]:
             pl = pool_pseudo[i]
@@ -94,14 +150,11 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
                 idx = idx[0]
                 adapted_protos[idx] = adapted_protos[idx] * (1 - alpha) + pool_feats[i] * alpha
                 adapted_protos[idx] = F.normalize(adapted_protos[idx], p=2, dim=0)
-                
-    sims = torch.matmul(F.normalize(val_feats, p=2, dim=1), adapted_protos.T)
-    preds = proto_lbls[sims.argmax(dim=1)]
-    perfect_acc = (preds == val_lbls).float().mean().item()
+    perfect_acc = eval_protos(adapted_protos, proto_lbls, val_feats, val_lbls)
     
-    # Leave-One-Update-Out
+    # Leave-One-Update-Out (also collects per-update metadata for the AUROC diagnostic)
     print("      -> Running Leave-One-Update-Out Test...")
-    helpful, neutral, harmful = [], [], []
+    helpful, neutral, harmful, all_meta = [], [], [], []
     alpha_single = 0.05 
     eval_pool_size = min(5000, len(pool_feats)) # 5000 updates tested
     
@@ -127,6 +180,7 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
             'norm': torch.norm(pool_f_128[i]).item(),
             'delta': delta
         }
+        all_meta.append(meta)
         
         if delta > 0:
             helpful.append(meta)
@@ -134,10 +188,37 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
             harmful.append(meta)
         else:
             neutral.append(meta)
-            
+    
+    # Diagnostic 1: Gated EMA Ladder (real fuse_uncertainties modes, soft-weighted updates)
+    print("      -> Running Gated EMA Ladder...")
+    pool_norm = torch.norm(pool_f_128, p=2, dim=1)
+    n_z = (pool_norm - pool_norm.mean()) / (pool_norm.std() + 1e-8)
+    u_epi = 1.0 - pool_conf.clamp(0.0, 1.0)  # epistemic proxy in (0,1], higher = worse
+    
+    gated = {'zero_shot': zero_shot_acc, 'perfect_oracle': perfect_acc}
+    
+    w_uniform = torch.ones_like(pool_conf)
+    gated['naive_ema'] = eval_protos(
+        run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w_uniform, alpha),
+        proto_lbls, val_feats, val_lbls)
+    
+    w_top50 = torch.zeros_like(pool_conf)
+    w_top50[torch.topk(pool_conf, pool_size // 2).indices] = 1.0
+    gated['top50_conf'] = eval_protos(
+        run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w_top50, alpha),
+        proto_lbls, val_feats, val_lbls)
+    
+    for mode in ['epistemic', 'geometric', 'soft_dual_weight', 'and_gate', 'ellipsoid_gate']:
+        w = fuse_uncertainties(u_epi, n_z, method=mode, cfg=gate_cfg)
+        gated[mode] = eval_protos(
+            run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w, alpha),
+            proto_lbls, val_feats, val_lbls)
+    
     res = {
         'zero_shot': zero_shot_acc,
         'perfect_acc': perfect_acc,
+        'gated': gated,
+        'auroc': compute_signal_aurocs(all_meta),
         'h_conf': np.mean([m['conf'] for m in helpful]) if helpful else 0.0,
         'hm_conf': np.mean([m['conf'] for m in harmful]) if harmful else 0.0,
         'h_norm': np.mean([m['norm'] for m in helpful]) if helpful else 0.0,
@@ -153,6 +234,18 @@ def main():
     parser.add_argument("--kittic_dir", type=str, default="/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C")
     parser.add_argument("--config", type=str, default="config/labels/semantic-kitti-all.yaml")
     parser.add_argument("--arch", type=str, default="config/arch/senet-2048p.yml")
+    parser.add_argument("--load_path", type=str, default="logs/med_pretrain_supcon_vib",
+                        help="Dir containing a trained GenTrainer checkpoint (e.g. logs/micro_pretrain/supcon_vib)")
+    parser.add_argument("--method", type=str, default="supcon_vib")
+    parser.add_argument("--num_batches", type=int, default=100)
+    parser.add_argument("--pool_size", type=int, default=20000)
+    parser.add_argument("--alpha", type=float, default=0.01)
+    parser.add_argument("--u_th", type=float, default=GATE_CFG["u_th"])
+    parser.add_argument("--u_coef", type=float, default=GATE_CFG["u_coef"])
+    parser.add_argument("--z_th", type=float, default=GATE_CFG["z_th"])
+    parser.add_argument("--z_coef", type=float, default=GATE_CFG["z_coef"])
+    parser.add_argument("--corruptions", type=str, default="",
+                        help="Comma-separated subset of the 8 corruptions (default: all)")
     args, _ = parser.parse_known_args()
     
     DATA = yaml.safe_load(open(args.config, 'r'))
@@ -161,14 +254,17 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}")
     
-    method = 'supcon_vib'
-    load_path = f"logs/med_pretrain_{method}"
+    method = args.method
+    load_path = args.load_path
     
     if not os.path.exists(load_path):
         print(f"Error: {load_path} not found.")
         return
         
-    print(f"\nLoading Model: {method}")
+    gate_cfg = {"u_th": args.u_th, "u_coef": args.u_coef,
+                "z_th": args.z_th, "z_coef": args.z_coef}
+    
+    print(f"\nLoading Model: {method} from {load_path}")
     trainer = GenTrainer(ARCH, DATA, args.kitti_dir, load_path, path=load_path, method=method)
     model = trainer.model
     model.eval()
@@ -181,7 +277,7 @@ def main():
     clean_loader = clean_parser.get_train_set()
     
     clean_feats, clean_lbls = [], []
-    NUM_BATCHES = 100
+    NUM_BATCHES = args.num_batches
     
     print("-> Extracting Clean Latents (100 Frames)...")
     with torch.no_grad():
@@ -222,9 +318,10 @@ def main():
     del clean_feats
     del clean_lbls
     
+    corruptions = CORRUPTIONS if not args.corruptions else [c.strip() for c in args.corruptions.split(',')]
     all_results = {}
     
-    for corruption in CORRUPTIONS:
+    for corruption in corruptions:
         print(f"\n{'='*60}")
         print(f"Evaluating Corruption: {corruption.upper()}")
         print(f"{'='*60}")
@@ -264,24 +361,42 @@ def main():
         probe_corrupt_acc = clf.score(corrupt_feats[:train_size].numpy(), corrupt_lbls[:train_size].numpy())
         print(f"   -> 128D Linear Probe Accuracy: {probe_corrupt_acc:.4f}")
         
-        res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj, device)
+        res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,
+                                     device, pool_size=args.pool_size, alpha=args.alpha, gate_cfg=gate_cfg)
         res['probe_acc'] = probe_corrupt_acc
         all_results[corruption] = res
         
         print(f"   -> Perfect Oracle HDC Acc: {res['perfect_acc']:.4f} (Zero-Shot: {res['zero_shot']:.4f})")
+        print("   -> Gated EMA Ladder:")
+        for k, v in res['gated'].items():
+            print(f"      {k:<16}: {v:.4f}")
+        a = res.get('auroc', {})
+        if a:
+            print(f"   -> Signal AUROC (Helpful vs Harmful): "
+                  f"conf {a.get('conf', 0):.3f} | norm {a.get('norm', 0):.3f} | "
+                  f"joint_z {a.get('joint_z', 0):.3f} | lr {a.get('lr', 0):.3f}")
         print(f"   -> Leave-One-Out (5k tests): {res['h_count']} Helpful, {res['hm_count']} Harmful")
         if res['hm_count'] > 0:
             print(f"      Helpful Conf: {res['h_conf']:.4f} | Harmful Conf: {res['hm_conf']:.4f}")
             print(f"      Helpful Norm: {res['h_norm']:.4f} | Harmful Norm: {res['hm_norm']:.4f}")
-
-    print("\n\n" + "="*80)
-    print(" UNIVERSAL ORACLE GATING RESULTS ")
-    print("="*80)
-    print(f"| {'Corruption':<16} | {'Probe Acc':<9} | {'Perf. Oracle':<12} | {'Helpful Conf':<12} | {'Harmful Conf':<12} |")
-    print("|" + "-"*18 + "|" + "-"*11 + "|" + "-"*14 + "|" + "-"*14 + "|" + "-"*14 + "|")
+    
+    print("\n\n" + "="*100)
+    print(" GATED EMA LADDER (all corruptions)")
+    print("="*100)
+    header = f"| {'Corruption':<16} | {'ZeroShot':<8} | {'Naive':<7} | {'Top50':<7} | {'Epi':<7} | {'Geom':<7} | {'SDW':<7} | {'AND':<7} | {'Elli':<7} | {'Oracle':<8} |"
+    print(header)
+    print("|" + "-"*17 + "|" + "-"*9 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*9 + "|")
     for corruption, res in all_results.items():
-        print(f"| {corruption:<16} | {res['probe_acc']:<9.4f} | {res['perfect_acc']:<12.4f} | {res['h_conf']:<12.4f} | {res['hm_conf']:<12.4f} |")
-    print("="*80 + "\n")
+        g = res['gated']
+        print(f"| {corruption:<16} | {g['zero_shot']:<8.4f} | {g['naive_ema']:<7.4f} | {g['top50_conf']:<7.4f} | "
+              f"{g.get('epistemic', 0):<7.4f} | {g.get('geometric', 0):<7.4f} | {g.get('soft_dual_weight', 0):<7.4f} | "
+              f"{g.get('and_gate', 0):<7.4f} | {g.get('ellipsoid_gate', 0):<7.4f} | {res['perfect_acc']:<8.4f} |")
+    print("="*100 + "\n")
+    
+    out_path = os.path.join(load_path, "oracle_gating_results.json")
+    with open(out_path, 'w') as f:
+        json.dump(all_results, f, indent=4)
+    print(f"Saved Oracle Gating Results to {out_path}")
 
 if __name__ == '__main__':
     main()
