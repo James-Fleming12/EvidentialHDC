@@ -51,38 +51,39 @@ def build_hdc_prototypes(feats_128, lbls, proj, num_classes=17, device='cuda', c
     valid_mask = counts > 0
     return base_protos[valid_mask], proto_lbls[valid_mask]
 
-def run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, weights, alpha,
-                     max_updates_per_class=50):
-    """One pass of EMA prototype updates, each scaled by its gate weight w in [0,1].
+def weighted_mean_update(base_protos, proto_lbls, pool_f_128, pool_pseudo, weights, proj,
+                         device, mask=None, chunk_size=50000):
+    """Chunked weighted class-mean prototype update (vectorized).
 
-    w = 1 reproduces the naive (unweighted) EMA; w < 1 soft-mutes the update
-    (momentum modulation), w = 0 fully vetoes it. Mirrors the production
-    soft_dual_weight regime from the geometric-method thread.
+    Prototype_c = normalize( sum over pool points with pseudo-label c of w_i * sign(z_i @ proj) )
 
-    max_updates_per_class caps how many updates a prototype may absorb.
-    Phase 13 showed that with alpha=0.01 and an unbounded 20k pool, each
-    prototype's final state is dominated by its last ~1/alpha updates: the base
-    prototype (estimated from millions of points) is erased and re-estimated
-    from ~100 random points, destroying accuracy even with perfect labels.
+    Replaces the sequential EMA ladder: Phase 13 showed that with a small pool and
+    constant alpha, prototypes get erased/re-estimated from ~1/alpha points, and
+    that a 20k-point pool is far too small to refine 10kD prototypes whose base
+    estimates come from millions of points. A large-pool weighted mean is the
+    statistically honest adaptation operator, and chunked index_add keeps it fast.
+    Classes with no pool support keep the base prototype.
     """
-    adapted = base_protos.clone()
-    counts = torch.zeros(len(proto_lbls), device=base_protos.device)
-    for i in range(len(pool_feats)):
-        w = weights[i]
-        if w <= 0:
-            continue
-        pl = pool_pseudo[i]
-        idx = (proto_lbls == pl).nonzero(as_tuple=True)[0]
-        if len(idx) == 0:
-            continue
-        idx = idx[0]
-        if counts[idx] >= max_updates_per_class:
-            continue
-        counts[idx] += 1
-        aw = alpha * w
-        adapted[idx] = adapted[idx] * (1 - aw) + pool_feats[i] * aw
-        adapted[idx] = F.normalize(adapted[idx], p=2, dim=0)
-    return adapted
+    num_proto = len(proto_lbls)
+    D = proj.shape[1]
+    S = torch.zeros(num_proto, D, device=device)
+    W = torch.zeros(num_proto, device=device)
+    for start in range(0, len(pool_f_128), chunk_size):
+        end = min(start + chunk_size, len(pool_f_128))
+        chunk = pool_f_128[start:end].to(device)
+        pl = pool_pseudo[start:end]
+        cw = weights[start:end].to(device)
+        if mask is not None:
+            cw = cw * mask[start:end].to(device)
+        h = torch.sign(torch.matmul(chunk, proj))  # [B, 10000]
+        valid = torch.isin(pl, proto_lbls)
+        idx = torch.searchsorted(proto_lbls, pl)
+        S.index_add_(0, idx[valid], (cw[valid].unsqueeze(1) * h[valid]).float())
+        W.index_add_(0, idx[valid], cw[valid].float())
+    empty = W <= 0
+    S = F.normalize(S, p=2, dim=1)
+    S[empty] = F.normalize(base_protos[empty], p=2, dim=1)
+    return S
 
 
 def eval_protos(protos, proto_lbls, val_feats, val_lbls):
@@ -117,8 +118,7 @@ def compute_signal_aurocs(meta_list):
 
 
 def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,
-                           device='cuda', pool_size=20000, alpha=0.01, gate_cfg=None,
-                           max_updates_per_class=50):
+                           device='cuda', pool_size=1000000, gate_cfg=None):
     c_lbl = corrupt_lbls.to(device)
     
     # Get pseudo-labels and confidence for Fog points (in 128D)
@@ -150,8 +150,11 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
     print("      -> Projecting Validation Set to 10kD HDC...")
     val_feats = torch.sign(torch.matmul(val_f_128, proj))
     
-    print("      -> Projecting Adaptation Pool to 10kD HDC...")
-    pool_feats = torch.sign(torch.matmul(pool_f_128, proj))
+    # Project only the leave-one-out subset (5k) to 10kD; the ladder projects its
+    # large pool chunk-by-chunk inside weighted_mean_update to bound GPU memory.
+    print("      -> Projecting Leave-One-Out Pool (5k) to 10kD HDC...")
+    lou_size = min(5000, len(pool_f_128))
+    pool_feats = torch.sign(torch.matmul(pool_f_128[:lou_size], proj))
     
     # Gate signals (z-scored over the pool) + all gate-mode weights up front
     pool_norm = torch.norm(pool_f_128, p=2, dim=1)
@@ -162,7 +165,7 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
     w_modes = {}
     for mode in ['epistemic', 'geometric', 'soft_dual_weight', 'and_gate', 'ellipsoid_gate']:
         w_modes[mode] = fuse_uncertainties(u_epi, n_z, method=mode, cfg=gate_cfg)
-    # Flipped joint (Phase 12 hypothesis): harmful = HIGH confidence AND HIGH norm
+    # Flipped joint (Phase 13 hypothesis): harmful = HIGH confidence AND HIGH norm
     w_modes['joint_flip'] = torch.exp(-torch.relu(c_z)) * torch.exp(-torch.relu(n_z))
     
     # Base accuracy on validation set
@@ -171,23 +174,12 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
     zero_shot_correct = (base_preds == val_lbls).sum().item()
     zero_shot_acc = zero_shot_correct / len(val_lbls)
     
-    # Perfect Oracle test (same per-class update cap as the ladder modes)
+    # Perfect Oracle test: weighted class-mean update restricted to true-label points
     print("      -> Running Perfect Oracle Test...")
-    mask_perfect = pool_pseudo == pool_lbls
-    adapted_protos = base_protos.clone()
-    oracle_counts = torch.zeros(len(proto_lbls), device=device)
-    for i in range(len(pool_feats)):
-        if mask_perfect[i]:
-            pl = pool_pseudo[i]
-            idx = (proto_lbls == pl).nonzero(as_tuple=True)[0]
-            if len(idx) == 0:
-                continue
-            idx = idx[0]
-            if oracle_counts[idx] >= max_updates_per_class:
-                continue
-            oracle_counts[idx] += 1
-            adapted_protos[idx] = adapted_protos[idx] * (1 - alpha) + pool_feats[i] * alpha
-            adapted_protos[idx] = F.normalize(adapted_protos[idx], p=2, dim=0)
+    mask_perfect = (pool_pseudo == pool_lbls).float()
+    w_one = torch.ones_like(pool_conf)
+    adapted_protos = weighted_mean_update(base_protos, proto_lbls, pool_f_128,
+                                          pool_pseudo, w_one, proj, device, mask=mask_perfect)
     perfect_acc = eval_protos(adapted_protos, proto_lbls, val_feats, val_lbls)
     
     # Leave-One-Update-Out (also collects per-update metadata for the AUROC diagnostics)
@@ -250,28 +242,25 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
             'frac_zero': float((wv <= 1e-6).mean()),   # saturated veto
         }
     
-    # Diagnostic 1: Gated EMA Ladder (real fuse_uncertainties modes, soft-weighted updates)
+    # Diagnostic 1: Gated EMA Ladder (weighted class-mean updates)
     print("      -> Running Gated EMA Ladder...")
     
     gated = {'zero_shot': zero_shot_acc, 'perfect_oracle': perfect_acc}
     
     w_uniform = torch.ones_like(pool_conf)
     gated['naive_ema'] = eval_protos(
-        run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w_uniform, alpha,
-                         max_updates_per_class=max_updates_per_class),
+        weighted_mean_update(base_protos, proto_lbls, pool_f_128, pool_pseudo, w_uniform, proj, device),
         proto_lbls, val_feats, val_lbls)
     
     w_top50 = torch.zeros_like(pool_conf)
     w_top50[torch.topk(pool_conf, pool_size // 2).indices] = 1.0
     gated['top50_conf'] = eval_protos(
-        run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w_top50, alpha,
-                         max_updates_per_class=max_updates_per_class),
+        weighted_mean_update(base_protos, proto_lbls, pool_f_128, pool_pseudo, w_top50, proj, device),
         proto_lbls, val_feats, val_lbls)
     
     for mode in ['epistemic', 'geometric', 'soft_dual_weight', 'and_gate', 'ellipsoid_gate', 'joint_flip']:
         gated[mode] = eval_protos(
-            run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w_modes[mode], alpha,
-                             max_updates_per_class=max_updates_per_class),
+            weighted_mean_update(base_protos, proto_lbls, pool_f_128, pool_pseudo, w_modes[mode], proj, device),
             proto_lbls, val_feats, val_lbls)
     
     # Threshold envelope sweep: best-case soft_dual_weight / geometric over a small grid.
@@ -284,8 +273,8 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
             w = fuse_uncertainties(u_epi, n_z, method='soft_dual_weight',
                                    cfg={"u_th": u_th, "u_coef": gate_cfg.get("u_coef", 1.5),
                                         "z_th": z_th, "z_coef": gate_cfg.get("z_coef", 1.0)})
-            acc = eval_protos(run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w, alpha,
-                                               max_updates_per_class=max_updates_per_class),
+            acc = eval_protos(weighted_mean_update(base_protos, proto_lbls, pool_f_128,
+                                                   pool_pseudo, w, proj, device),
                               proto_lbls, val_feats, val_lbls)
             if acc > best_sdw:
                 best_sdw, best_sdw_cfg = acc, [u_th, z_th]
@@ -296,8 +285,8 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
     for z_th in [-0.5, 0.0, 0.5, 1.0]:
         w = fuse_uncertainties(u_epi, n_z, method='geometric',
                                cfg={"z_th": z_th, "z_coef": gate_cfg.get("z_coef", 1.0)})
-        acc = eval_protos(run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w, alpha,
-                                           max_updates_per_class=max_updates_per_class),
+        acc = eval_protos(weighted_mean_update(base_protos, proto_lbls, pool_f_128,
+                                               pool_pseudo, w, proj, device),
                           proto_lbls, val_feats, val_lbls)
         if acc > best_geom:
             best_geom, best_geom_cfg = acc, [z_th]
@@ -330,13 +319,11 @@ def main():
                         help="Dir containing a trained GenTrainer checkpoint (e.g. logs/micro_pretrain/supcon_vib)")
     parser.add_argument("--method", type=str, default="supcon_vib")
     parser.add_argument("--num_batches", type=int, default=100)
-    parser.add_argument("--pool_size", type=int, default=20000)
-    parser.add_argument("--alpha", type=float, default=0.01)
-    parser.add_argument("--max_updates_per_class", type=int, default=50,
-                        help="Cap on EMA updates per prototype, so the base estimate "
-                             "(built from millions of points) is not erased by the pool "
-                             "(Phase 13: base-erasure destroyed clean accuracy even with "
-                             "perfect labels). Applied to oracle and all gate modes.")
+    parser.add_argument("--pool_size", type=int, default=1000000,
+                        help="Adaptation pool size (seeded uniform sample over all frames). "
+                             "Must be large (Phase 13: a 20k pool is ~250x too small to "
+                             "refine 10kD prototypes whose base comes from millions of points; "
+                             "the update is a vectorized weighted class-mean, so large pools are cheap).")
     parser.add_argument("--u_th", type=float, default=GATE_CFG["u_th"])
     parser.add_argument("--u_coef", type=float, default=GATE_CFG["u_coef"])
     parser.add_argument("--z_th", type=float, default=GATE_CFG["z_th"])
@@ -426,9 +413,7 @@ def main():
                                                clean_feats[:args.pool_size + 100000],
                                                clean_lbls[:args.pool_size + 100000],
                                                clf, proj, device,
-                                               pool_size=args.pool_size, alpha=args.alpha,
-                                               gate_cfg=gate_cfg,
-                                               max_updates_per_class=args.max_updates_per_class)
+                                               pool_size=args.pool_size, gate_cfg=gate_cfg)
         print("   -> Clean Ladder (gate should ~= naive_ema):")
         for k, v in clean_control['gated'].items():
             if not k.endswith('_cfg'):
@@ -490,8 +475,7 @@ def main():
         print(f"   -> 128D Linear Probe Accuracy: {probe_corrupt_acc:.4f}")
         
         res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,
-                                     device, pool_size=args.pool_size, alpha=args.alpha, gate_cfg=gate_cfg,
-                                     max_updates_per_class=args.max_updates_per_class)
+                                     device, pool_size=args.pool_size, gate_cfg=gate_cfg)
         res['probe_acc'] = probe_corrupt_acc
         all_results[corruption] = res
         
