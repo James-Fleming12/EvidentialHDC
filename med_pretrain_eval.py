@@ -124,6 +124,74 @@ def evaluate_headroom(model, clean_loader, corrupt_loader, device, num_frames=50
     clean_mag = torch.norm(clean_feats, p=2, dim=1).mean().item()
     fog_mag = torch.norm(fog_feats, p=2, dim=1).mean().item()
     
+    # 5. HDC Hyperspace Degradation Pipeline
+    print("  -> Checking HDC Hyperspace Degradation...")
+    from sklearn.linear_model import RidgeClassifier
+    
+    # Subsample to 10k to allow fast Logistic/Ridge regression and cdist
+    sub_c_feat = clean_feats[:10000].to(device)
+    sub_c_lbl_np = clean_lbls[:10000].numpy()
+    sub_c_lbl_pt = clean_lbls[:10000].to(device)
+    
+    sub_f_feat = fog_feats[:10000].to(device)
+    sub_f_lbl_np = fog_lbls[:10000].numpy()
+    sub_f_lbl_pt = fog_lbls[:10000].to(device)
+    
+    HD_DIMS = [1000, 10000]
+    NUM_SEEDS = 3
+    
+    degradation_results = {}
+    
+    for hd_dim in HD_DIMS:
+        for stage in ['Continuous', 'Binarized']:
+            lin_accs, proto_accs, ret_accs = [], [], []
+            for seed in range(NUM_SEEDS):
+                torch.manual_seed(seed)
+                # Bipolar random projection (-1, 1)
+                proj = (torch.rand(sub_c_feat.shape[1], hd_dim) > 0.5).float() * 2 - 1
+                proj = proj.to(device)
+                
+                h_c = torch.matmul(sub_c_feat, proj)
+                h_f = torch.matmul(sub_f_feat, proj)
+                
+                if stage == 'Binarized':
+                    h_c = torch.sign(h_c)
+                    h_f = torch.sign(h_f)
+                    
+                # 1. Linear Probe (Ridge is extremely fast for high-dim and gives comparable separability metrics)
+                clf = RidgeClassifier().fit(h_c.cpu().numpy(), sub_c_lbl_np)
+                lin_acc = clf.score(h_f.cpu().numpy(), sub_f_lbl_np)
+                
+                # 2. Prototype Accuracy (Cosine)
+                h_protos, h_proto_lbls = [], []
+                for c in range(NUM_CLASSES):
+                    mask = sub_c_lbl_pt == c
+                    if mask.sum() > 0:
+                        h_protos.append(h_c[mask].mean(dim=0))
+                        h_proto_lbls.append(c)
+                        
+                h_protos = F.normalize(torch.stack(h_protos), p=2, dim=1)
+                h_proto_lbls = torch.tensor(h_proto_lbls).to(device)
+                h_f_norm = F.normalize(h_f, p=2, dim=1)
+                
+                sims = torch.matmul(h_f_norm, h_protos.T)
+                proto_preds = h_proto_lbls[sims.argmax(dim=1)]
+                proto_acc = (proto_preds == sub_f_lbl_pt).float().mean().item()
+                
+                # 3. Cross-Domain Retrieval (1-NN)
+                # Euclidean distance is fine here, or Cosine. We'll use cdist (Euclidean)
+                dists = torch.cdist(h_f, h_c)
+                ret_preds = sub_c_lbl_pt[dists.argmin(dim=1)]
+                ret_acc = (ret_preds == sub_f_lbl_pt).float().mean().item()
+                
+                lin_accs.append(lin_acc)
+                proto_accs.append(proto_acc)
+                ret_accs.append(ret_acc)
+                
+            degradation_results[f"HD_{hd_dim}_{stage}_Linear"] = float(np.mean(lin_accs))
+            degradation_results[f"HD_{hd_dim}_{stage}_Proto"] = float(np.mean(proto_accs))
+            degradation_results[f"HD_{hd_dim}_{stage}_Retrieval"] = float(np.mean(ret_accs))
+            
     res = {
         "Avg Cosine Shift": avg_cosine_shift,
         "Cross-Domain Retrieval": cross_domain_retrieval,
@@ -132,7 +200,8 @@ def evaluate_headroom(model, clean_loader, corrupt_loader, device, num_frames=50
         "Linear Probe (Fog)": probe_fog_acc,
         "Linear Robustness Gap": probe_clean_acc - probe_fog_acc,
         "Average L2 Norm (Clean)": clean_mag,
-        "Average L2 Norm (Fog)": fog_mag
+        "Average L2 Norm (Fog)": fog_mag,
+        **degradation_results
     }
     
     # Add per-class shifts

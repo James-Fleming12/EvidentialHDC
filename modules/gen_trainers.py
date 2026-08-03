@@ -10,14 +10,34 @@ from common.avgmeter import AverageMeter
 
 class GenTrainer(Trainer):
     def __init__(self, ARCH, DATA, datadir, logdir, path=None, method='baseline', cutoff_percent=1.0):
-        super().__init__(ARCH, DATA, datadir, logdir, path)
         self.method = method
         self.cutoff_percent = cutoff_percent
         
-        # If VIB or SupCon+VIB, we need an extra projection to get logvar
+        # Call super with path=None to prevent it from immediately loading the checkpoint
+        super().__init__(ARCH, DATA, datadir, logdir, None)
+        
+        # If VIB or SupCon+VIB, initialize logvar_head and add to optimizer BEFORE loading checkpoint
         if self.method in ['vib', 'supcon_vib']:
-            # We initialize dynamically in the first forward pass to avoid hardcoding channels
+            self.logvar_head = nn.Conv2d(128, 128, kernel_size=1).to(self.device)
+            # Add to optimizer so it has 2 param groups (matching the saved checkpoint)
+            self.optimizer.add_param_group({'params': self.logvar_head.parameters()})
+        else:
             self.logvar_head = None
+            
+        # Now manually load the checkpoint
+        self.path = path
+        if self.path is not None:
+            torch.nn.Module.dump_patches = True
+            w_dict = torch.load(self.path + "/SENet", map_location=lambda storage, loc: storage)
+            # strict=False because logvar_head was not saved in the backbone state_dict
+            self.model.load_state_dict(w_dict['state_dict'], strict=False)
+            self.optimizer.load_state_dict(w_dict['optimizer'])
+            self.epoch = w_dict['epoch'] + 1
+            if 'scheduler' in w_dict:
+                self.scheduler.load_state_dict(w_dict['scheduler'])
+            print("dict epoch:", w_dict['epoch'])
+            print("info", w_dict['info'])
+            self.info = w_dict['info']
 
     def beam_drop(self, in_vol, p=0.5):
         """ Voxel Dropout (Sparsity) """
