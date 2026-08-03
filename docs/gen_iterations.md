@@ -206,3 +206,46 @@ A 3-stage degradation pipeline was added to `med_pretrain_eval.py` to test the S
 The failure mode is cleanly isolated. The **HDC Encoding Strategy** (Random Projection + Sign) is mathematically sound and perfectly preserves the robust semantic information. The bottleneck is strictly the **HDC Decoding Strategy** (Naive Nearest Prototype). 
 
 Because the information mathematically survives the projection, we do not need to redesign the encoder, the projection matrix, or the binarization strategy. We simply need to fix the prototype adaptation algorithm (via Uncertainty-Gating or Iterative Retraining) to allow the HDC memory bank to exploit the linearly separable space.
+
+---
+
+## Phase 9: Validation of Harmful Updates (Oracle Gating)
+
+Before designing a complex neural uncertainty gate, we must validate the fundamental assumption of our proposed TTA method: **Do harmful prototype updates exist as a distinct, identifiable population, and does removing them mathematically improve test-time adaptation?**
+
+To de-risk the entire Test-Time Adaptation algorithm, we designed a diagnostic script (`oracle_gating_eval.py`) to run two definitive experiments on the frozen SupCon+VIB features.
+
+### Diagnostic 1: Oracle Gating (Upper Bound)
+Instead of using a learned gate, we use simple statistical Oracles (e.g., Linear Probe Confidence, Prototype Distance) to artificially filter out the most "abnormal" points during a simulated online HDC Prototype EMA adaptation. 
+
+**Hypothesis:** Indiscriminate adaptation (100% of points) will collapse the prototypes, while aggressive gating (e.g., removing the bottom 50% of confident points) will restore the prototypes and dramatically improve mIoU.
+
+| Adaptation Strategy | HDC Prototype Accuracy | Prototype Drift (L2) |
+| :--- | :--- | :--- |
+| Zero-Shot (No Adaptation) | TODO | TODO |
+| 100% Updates (No Gate) | TODO | TODO |
+| Keep Top 90% (Probe Confidence) | TODO | TODO |
+| Keep Top 75% (Probe Confidence) | TODO | TODO |
+| Keep Top 50% (Probe Confidence) | TODO | TODO |
+| Keep Top 50% (Prototype Distance) | TODO | TODO |
+| **Perfect Oracle (True Labels Only)** | TODO | TODO |
+
+*Interpretation:* The "Perfect Oracle" establishes the absolute mathematical upper bound of what our prototype adaptation can achieve. If the simple statistical gates (Probe Confidence) trend toward this upper bound, the gating hypothesis is fully validated.
+
+### Diagnostic 2: Leave-One-Update-Out (Influence Profiling)
+To prove that harmful updates are mathematically identifiable, we evaluate the isolated effect of *every single target point*. 
+For 5,000 individual candidate points:
+1. Apply the point to the EMA Prototype using its pseudo-label.
+2. Measure the exact $\Delta$ Accuracy on a fixed evaluation set.
+3. Label the point as **Helpful** ($\Delta > 0$), **Neutral** ($\Delta = 0$), or **Harmful** ($\Delta < 0$).
+
+We then correlate these labels with observable point statistics to determine which heuristic best predicts a Harmful update.
+
+| Metric | Helpful Points | Harmful Points | Correlation to Harmful |
+| :--- | :--- | :--- | :--- |
+| **Mean Probe Confidence** | TODO | TODO | TODO |
+| **Mean Prototype Distance** | TODO | TODO | TODO |
+| **Mean Feature Norm** | TODO | TODO | TODO |
+
+**Next Steps:**
+If Diagnostic 1 proves that filtering improves the memory bank, and Diagnostic 2 proves that harmful points are highly correlated with low confidence or high distance, we will have conclusively proven that an Uncertainty-Gated EMA Prototype Memory Bank is the optimal Test-Time Adaptation strategy.
