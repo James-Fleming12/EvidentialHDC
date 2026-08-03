@@ -290,7 +290,10 @@ class GenTrainer(Trainer):
                         all_sum = exp_sim.sum(dim=1)
                         loss_supcon = -torch.log(pos_sum / (all_sum + 1e-8)).mean()
                         
-                    loss_total = loss_sem + 0.01 * loss_kl + 0.1 * loss_supcon
+                    # supcon_vib_strongvib: 5x VIB pressure to aggressively force
+                    # magnitude isolation / tighter class manifolds (Phase 14 failure modes)
+                    kl_weight = 0.05 if self.method == 'supcon_vib_strongvib' else 0.01
+                    loss_total = loss_sem + kl_weight * loss_kl + 0.1 * loss_supcon
 
                 elif self.method == 'smoothness':
                     # Local Smoothness (Dirichlet Energy)

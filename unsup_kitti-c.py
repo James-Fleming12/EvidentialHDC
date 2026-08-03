@@ -499,7 +499,6 @@ def main():
         model.denoiser.eval()
         
 
-
     for current_method, full_method_name in zip(methods_to_run, full_method_names):
         logger.info("=========================================")
         logger.info(f"Starting Evaluation for Method: {full_method_name}")

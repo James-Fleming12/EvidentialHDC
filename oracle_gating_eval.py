@@ -85,12 +85,10 @@ def weighted_mean_update(base_protos, proto_lbls, pool_f_128, pool_pseudo, weigh
     S[empty] = F.normalize(base_protos[empty], p=2, dim=1)
     return S
 
-
 def eval_protos(protos, proto_lbls, val_feats, val_lbls):
     sims = torch.matmul(F.normalize(val_feats, p=2, dim=1), protos.T)
     preds = proto_lbls[sims.argmax(dim=1)]
     return (preds == val_lbls).float().mean().item()
-
 
 def compute_signal_aurocs(meta_list):
     """AUROC of each gate signal for separating Helpful (delta > 0) from Harmful (delta < 0) updates."""
@@ -115,7 +113,6 @@ def compute_signal_aurocs(meta_list):
     except Exception:
         aucs['lr'] = None
     return aucs
-
 
 def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,
                            device='cuda', pool_size=1000000, gate_cfg=None):

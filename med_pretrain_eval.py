@@ -10,6 +10,7 @@ from sklearn.linear_model import LogisticRegression
 
 from dataset.kitti.parser import Parser
 from modules.gen_trainers import GenTrainer
+from modules.headroom_diag import deep_headroom_diagnostics, print_deep_summary
 
 NUM_CLASSES = 17
 
@@ -207,6 +208,13 @@ def evaluate_headroom(model, clean_loader, corrupt_loader, device, num_frames=50
     # Add per-class shifts
     for k, v in shifts.items():
         res[f"Cosine_Shift_{k}"] = v
+    
+    # Deep feature-space diagnostics (class-mean quality, magnitude segregation,
+    # query-gate feasibility, anisotropy)
+    print("  -> Running Deep Feature-Space Diagnostics...")
+    deep = deep_headroom_diagnostics(clean_feats, clean_lbls, fog_feats, fog_lbls, device)
+    print_deep_summary(deep)
+    res["Deep"] = deep
         
     return res
 
@@ -274,7 +282,10 @@ def main():
         results[method] = metrics
         
         for k, v in metrics.items():
-            print(f"  {k}: {v:.4f}")
+            if isinstance(v, dict):
+                print(f"  {k}: (nested diagnostics, see JSON)")
+            else:
+                print(f"  {k}: {v:.4f}")
             
     out_path = os.path.join(args.log_dir, "med_pretrain_results.json")
     with open(out_path, 'w') as f:

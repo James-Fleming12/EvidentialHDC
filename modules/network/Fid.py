@@ -200,7 +200,6 @@ class ResNet_34(nn.Module):
         else:
             return out
 
-
 if __name__ == "__main__":
 
     import time

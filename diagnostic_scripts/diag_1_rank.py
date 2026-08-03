@@ -80,7 +80,6 @@ def main():
     if len(r_eff_fog_halluc) > 0:
         print(f"Fog Hallucination   : mean={np.mean(r_eff_fog_halluc):.2f}, median={np.median(r_eff_fog_halluc):.2f}")
 
-
 def extract_features(model, dataloader, num_frames, device):
     all_features = []
     all_pseudo = []
@@ -116,7 +115,6 @@ def extract_features(model, dataloader, num_frames, device):
         all_true.append(true_valid.cpu())
         
     return torch.cat(all_features, dim=0), torch.cat(all_pseudo, dim=0), torch.cat(all_true, dim=0)
-
 
 def compute_local_rank(features, pseudo, true, k=50, num_samples=2000):
     # Subsample for speed

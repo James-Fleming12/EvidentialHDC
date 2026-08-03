@@ -97,7 +97,6 @@ def fit_classifier(X, y, model_type="logistic", epochs=1000, lr=0.01):
         auroc = compute_auroc(probs, y)
     return auroc
 
-
 def run_prototype_recovery():
     print("Initializing model...")
     ckpt_path = "logs/kitti_pretrain/hdc_sub.pth"

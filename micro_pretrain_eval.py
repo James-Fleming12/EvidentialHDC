@@ -12,6 +12,7 @@ from sklearn.linear_model import LogisticRegression
 from dataset.kitti.parser import Parser
 from modules.gen_trainers import GenTrainer
 from modules.HDC_utils import set_uq_model
+from modules.headroom_diag import deep_headroom_diagnostics, print_deep_summary
 
 NUM_CLASSES = 17
 
@@ -182,6 +183,13 @@ def evaluate_headroom(model, clean_loader, corrupt_loader, device, num_frames=50
     # Add per-class shifts
     for k, v in shifts.items():
         res[f"Cosine_Shift_{k}"] = v
+    
+    # Deep feature-space diagnostics (class-mean quality, magnitude segregation,
+    # query-gate feasibility, anisotropy)
+    print("  -> Running Deep Feature-Space Diagnostics...")
+    deep = deep_headroom_diagnostics(clean_feats, clean_lbls, fog_feats, fog_lbls, device)
+    print_deep_summary(deep)
+    res["Deep"] = deep
         
     return res
 
@@ -193,6 +201,11 @@ def main():
     parser.add_argument("--arch", type=str, default="config/arch/senet-2048p.yml")
     parser.add_argument("--out_dir", type=str, default="logs/micro_pretrain")
     parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--cutoff", type=float, default=0.1,
+                        help="Fraction of each epoch to train (0.1 = micro default; raise for larger scale)")
+    parser.add_argument("--methods", type=str,
+                        default="supcon_vib,supcon_vib_additive,supcon_vib_sor,supcon_vib_global",
+                        help="Comma-separated subset of methods to run")
     args = parser.parse_args()
     
     with open(args.config, 'r') as f:
@@ -203,7 +216,7 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using {device}")
     
-    methods = ['supcon_vib', 'supcon_vib_additive', 'supcon_vib_sor', 'supcon_vib_global']
+    methods = [m.strip() for m in args.methods.split(',') if m.strip()]
     
     results = {}
     
@@ -231,7 +244,7 @@ def main():
         os.makedirs(log_dir, exist_ok=True)
         
         # Instantiate GenTrainer
-        trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, path=None, method=method, cutoff_percent=0.1)
+        trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, path=None, method=method, cutoff_percent=args.cutoff)
         
         # Micro-training for 5 epochs
         # We manually truncate train_epoch in GenTrainer or just run normal train
@@ -248,7 +261,10 @@ def main():
         results[method] = metrics
         
         for k, v in metrics.items():
-            print(f"  {k}: {v:.4f}")
+            if isinstance(v, dict):
+                print(f"  {k}: (nested diagnostics, see JSON)")
+            else:
+                print(f"  {k}: {v:.4f}")
             
     out_path = os.path.join(args.out_dir, "micro_pretrain_results.json")
     with open(out_path, 'w') as f:
