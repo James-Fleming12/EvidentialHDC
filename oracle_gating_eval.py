@@ -132,6 +132,18 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
     print("      -> Projecting Adaptation Pool to 10kD HDC...")
     pool_feats = torch.sign(torch.matmul(pool_f_128, proj))
     
+    # Gate signals (z-scored over the pool) + all gate-mode weights up front
+    pool_norm = torch.norm(pool_f_128, p=2, dim=1)
+    n_z = (pool_norm - pool_norm.mean()) / (pool_norm.std() + 1e-8)
+    c_z = (pool_conf - pool_conf.mean()) / (pool_conf.std() + 1e-8)
+    u_epi = 1.0 - pool_conf.clamp(0.0, 1.0)  # epistemic proxy in (0,1], higher = worse
+    
+    w_modes = {}
+    for mode in ['epistemic', 'geometric', 'soft_dual_weight', 'and_gate', 'ellipsoid_gate']:
+        w_modes[mode] = fuse_uncertainties(u_epi, n_z, method=mode, cfg=gate_cfg)
+    # Flipped joint (Phase 12 hypothesis): harmful = HIGH confidence AND HIGH norm
+    w_modes['joint_flip'] = torch.exp(-torch.relu(c_z)) * torch.exp(-torch.relu(n_z))
+    
     # Base accuracy on validation set
     sims = torch.matmul(F.normalize(val_feats, p=2, dim=1), base_protos.T)
     base_preds = proto_lbls[sims.argmax(dim=1)]
@@ -152,7 +164,7 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
                 adapted_protos[idx] = F.normalize(adapted_protos[idx], p=2, dim=0)
     perfect_acc = eval_protos(adapted_protos, proto_lbls, val_feats, val_lbls)
     
-    # Leave-One-Update-Out (also collects per-update metadata for the AUROC diagnostic)
+    # Leave-One-Update-Out (also collects per-update metadata for the AUROC diagnostics)
     print("      -> Running Leave-One-Update-Out Test...")
     helpful, neutral, harmful, all_meta = [], [], [], []
     alpha_single = 0.05 
@@ -177,9 +189,11 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
         
         meta = {
             'conf': pool_conf[i].item(),
-            'norm': torch.norm(pool_f_128[i]).item(),
-            'delta': delta
+            'norm': pool_norm[i].item(),
+            'delta': delta,
         }
+        for mode, w in w_modes.items():
+            meta[f'w_{mode}'] = w[i].item()
         all_meta.append(meta)
         
         if delta > 0:
@@ -189,11 +203,18 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
         else:
             neutral.append(meta)
     
+    # Gate-mode selectivity: AUROC of each gate's own weight for Helpful vs Harmful updates.
+    # AUC > 0.5 = the gate score is selective in this space; AUC < 0.5 = it admits poison.
+    y_lou = np.array([m['delta'] > 0 for m in all_meta]).astype(int)
+    mode_auroc = {}
+    if len(np.unique(y_lou)) >= 2:
+        for mode in w_modes:
+            wv = np.array([m[f'w_{mode}'] for m in all_meta], dtype=np.float64)
+            if wv.std() > 0:
+                mode_auroc[mode] = roc_auc_score(y_lou, wv)
+    
     # Diagnostic 1: Gated EMA Ladder (real fuse_uncertainties modes, soft-weighted updates)
     print("      -> Running Gated EMA Ladder...")
-    pool_norm = torch.norm(pool_f_128, p=2, dim=1)
-    n_z = (pool_norm - pool_norm.mean()) / (pool_norm.std() + 1e-8)
-    u_epi = 1.0 - pool_conf.clamp(0.0, 1.0)  # epistemic proxy in (0,1], higher = worse
     
     gated = {'zero_shot': zero_shot_acc, 'perfect_oracle': perfect_acc}
     
@@ -208,17 +229,45 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
         run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w_top50, alpha),
         proto_lbls, val_feats, val_lbls)
     
-    for mode in ['epistemic', 'geometric', 'soft_dual_weight', 'and_gate', 'ellipsoid_gate']:
-        w = fuse_uncertainties(u_epi, n_z, method=mode, cfg=gate_cfg)
+    for mode in ['epistemic', 'geometric', 'soft_dual_weight', 'and_gate', 'ellipsoid_gate', 'joint_flip']:
         gated[mode] = eval_protos(
-            run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w, alpha),
+            run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w_modes[mode], alpha),
             proto_lbls, val_feats, val_lbls)
+    
+    # Threshold envelope sweep: best-case soft_dual_weight / geometric over a small grid.
+    # If even the best config cannot beat naive EMA, the gate family is dead in this space;
+    # if it can, the shipped defaults were simply old-space calibration.
+    print("      -> Sweeping Gate Thresholds (soft_dual_weight, geometric)...")
+    best_sdw, best_sdw_cfg = -1.0, None
+    for u_th in [0.25, 0.5, 0.75]:
+        for z_th in [0.0, 0.5, 1.0]:
+            w = fuse_uncertainties(u_epi, n_z, method='soft_dual_weight',
+                                   cfg={"u_th": u_th, "u_coef": gate_cfg.get("u_coef", 1.5),
+                                        "z_th": z_th, "z_coef": gate_cfg.get("z_coef", 1.0)})
+            acc = eval_protos(run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w, alpha),
+                              proto_lbls, val_feats, val_lbls)
+            if acc > best_sdw:
+                best_sdw, best_sdw_cfg = acc, [u_th, z_th]
+    gated['sdw_best'] = best_sdw
+    gated['sdw_best_cfg'] = best_sdw_cfg
+    
+    best_geom, best_geom_cfg = -1.0, None
+    for z_th in [-0.5, 0.0, 0.5, 1.0]:
+        w = fuse_uncertainties(u_epi, n_z, method='geometric',
+                               cfg={"z_th": z_th, "z_coef": gate_cfg.get("z_coef", 1.0)})
+        acc = eval_protos(run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w, alpha),
+                          proto_lbls, val_feats, val_lbls)
+        if acc > best_geom:
+            best_geom, best_geom_cfg = acc, [z_th]
+    gated['geom_best'] = best_geom
+    gated['geom_best_cfg'] = best_geom_cfg
     
     res = {
         'zero_shot': zero_shot_acc,
         'perfect_acc': perfect_acc,
         'gated': gated,
         'auroc': compute_signal_aurocs(all_meta),
+        'mode_auroc': mode_auroc,
         'h_conf': np.mean([m['conf'] for m in helpful]) if helpful else 0.0,
         'hm_conf': np.mean([m['conf'] for m in harmful]) if harmful else 0.0,
         'h_norm': np.mean([m['norm'] for m in helpful]) if helpful else 0.0,
@@ -314,6 +363,21 @@ def main():
     proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
     base_protos, proto_lbls = build_hdc_prototypes(clean_feats, clean_lbls, proj, device=device)
     
+    # Clean-data control: adapting clean -> clean, no poison exists. A good gate must
+    # stay ~= naive EMA here; any large degradation is over-gating (a gate fault).
+    clean_control = None
+    if len(clean_feats) >= args.pool_size + 100000:
+        print("\n-> Running Clean-Data Gate Control (adapt clean -> clean, no poison)...")
+        clean_control = evaluate_oracle_gating(base_protos, proto_lbls,
+                                               clean_feats[:args.pool_size + 100000],
+                                               clean_lbls[:args.pool_size + 100000],
+                                               clf, proj, device,
+                                               pool_size=args.pool_size, alpha=args.alpha, gate_cfg=gate_cfg)
+        print("   -> Clean Ladder (gate should ~= naive_ema):")
+        for k, v in clean_control['gated'].items():
+            if not k.endswith('_cfg'):
+                print(f"      {k:<16}: {v:.4f}")
+    
     # We no longer need the massive clean_feats tensor
     del clean_feats
     del clean_lbls
@@ -377,29 +441,45 @@ def main():
         print(f"   -> Perfect Oracle HDC Acc: {res['perfect_acc']:.4f} (Zero-Shot: {res['zero_shot']:.4f})")
         print("   -> Gated EMA Ladder:")
         for k, v in res['gated'].items():
-            print(f"      {k:<16}: {v:.4f}")
+            if not k.endswith('_cfg'):
+                print(f"      {k:<16}: {v:.4f}")
+        if res['gated'].get('sdw_best_cfg'):
+            print(f"      [sdw_best at u_th={res['gated']['sdw_best_cfg'][0]}, z_th={res['gated']['sdw_best_cfg'][1]}]")
+        if res['gated'].get('geom_best_cfg'):
+            print(f"      [geom_best at z_th={res['gated']['geom_best_cfg'][0]}]")
         a = res.get('auroc', {})
         if a:
             print(f"   -> Signal AUROC (Helpful vs Harmful): "
                   f"conf {a.get('conf', 0):.3f} | norm {a.get('norm', 0):.3f} | "
                   f"joint_z {a.get('joint_z', 0):.3f} | lr {a.get('lr', 0):.3f}")
+        ma = res.get('mode_auroc', {})
+        if ma:
+            print("   -> Gate-Mode AUROC (gate's own weight selectivity): "
+                  + " | ".join(f"{k} {v:.3f}" for k, v in ma.items()))
         print(f"   -> Leave-One-Out (5k tests): {res['h_count']} Helpful, {res['hm_count']} Harmful")
         if res['hm_count'] > 0:
             print(f"      Helpful Conf: {res['h_conf']:.4f} | Harmful Conf: {res['hm_conf']:.4f}")
             print(f"      Helpful Norm: {res['h_norm']:.4f} | Harmful Norm: {res['hm_norm']:.4f}")
     
-    print("\n\n" + "="*100)
+    if clean_control is not None:
+        all_results['clean_control'] = clean_control
+    
+    print("\n\n" + "="*110)
     print(" GATED EMA LADDER (all corruptions)")
-    print("="*100)
-    header = f"| {'Corruption':<16} | {'ZeroShot':<8} | {'Naive':<7} | {'Top50':<7} | {'Epi':<7} | {'Geom':<7} | {'SDW':<7} | {'AND':<7} | {'Elli':<7} | {'Oracle':<8} |"
+    print("="*110)
+    header = (f"| {'Corruption':<16} | {'ZeroShot':<8} | {'Naive':<7} | {'Top50':<7} | {'Epi':<7} | "
+              f"{'Geom':<7} | {'SDW':<7} | {'AND':<7} | {'Flip':<7} | {'SDW*':<7} | {'Geom*':<7} | {'Oracle':<8} |")
     print(header)
-    print("|" + "-"*17 + "|" + "-"*9 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*9 + "|")
+    print("|" + "-"*17 + "|" + "-"*9 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*9 + "|")
     for corruption, res in all_results.items():
+        if corruption == 'clean_control':
+            continue
         g = res['gated']
         print(f"| {corruption:<16} | {g['zero_shot']:<8.4f} | {g['naive_ema']:<7.4f} | {g['top50_conf']:<7.4f} | "
               f"{g.get('epistemic', 0):<7.4f} | {g.get('geometric', 0):<7.4f} | {g.get('soft_dual_weight', 0):<7.4f} | "
-              f"{g.get('and_gate', 0):<7.4f} | {g.get('ellipsoid_gate', 0):<7.4f} | {res['perfect_acc']:<8.4f} |")
-    print("="*100 + "\n")
+              f"{g.get('and_gate', 0):<7.4f} | {g.get('joint_flip', 0):<7.4f} | {g.get('sdw_best', 0):<7.4f} | "
+              f"{g.get('geom_best', 0):<7.4f} | {res['perfect_acc']:<8.4f} |")
+    print("="*110 + "\n")
     
     with open(out_path, 'w') as f:
         json.dump(all_results, f, indent=4)
