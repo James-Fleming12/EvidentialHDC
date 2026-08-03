@@ -7,7 +7,7 @@ import argparse
 from tqdm import tqdm
 from sklearn.linear_model import LogisticRegression
 
-from common.parser import Parser
+from dataset.kitti.parser import Parser
 from modules.trainer import Trainer
 from modules.gen_trainers import GenTrainer
 
