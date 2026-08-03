@@ -382,3 +382,37 @@ The confound was always present in the harness — the Phase 9-era encoder maske
 2. **Fix the linear-probe sampling** (uniform subsample across all 100 frames, not the first 100k points) — the probe that supplies the confidence signal still trains on ~1–2 frames' worth of points, which may explain the fog confidence inversion and must be resolved before the gate is calibrated on confidence.
 3. **Treat the gate-fault results as binding**: drop the shipped `soft_dual_weight`/`and_gate`/`ellipsoid_gate` modes for the new space; build the gate from the two bare signals (confidence, feature norm) with **per-corruption direction calibration** — finding 9 shows the norm direction is pool-dependent, so a fixed "harmful = high norm" prior cannot be trusted (the LR combination is the reference: 0.86–0.95 AUROC when computed).
 4. **Commit the medium-scale run** (plain `supcon_vib`, seeded) in parallel — the encoder is not in question; the harness and gate questions are independent of it.
+
+---
+
+## Phase 14: Prototype-Level TTA Is Falsified on the Robust Encoder
+
+The v4 harness (seeded pool/val permutation + 1M-point weighted class-mean ladder) passed its own sanity checks and delivered a decisive negative result. **The clean-data control now validates the operator** (oracle 0.7601 ≈ zero-shot 0.7608): same-distribution re-estimation is an identity, so the harness is statistically honest.
+
+### The Ladder (10kD HDC, 1M-point pool, weighted class-mean update)
+
+| Corruption | ZeroShot | Naive EMA | Top50 | Joint Flip | Best Sweep | **Perfect Oracle** | Δ Oracle |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Fog** | **25.0%** | 5.7% | 5.4% | 5.8% | 5.8% | 9.5% | **−15.5** |
+| **Crosstalk** | **35.4%** | 8.1% | 8.0% | 8.9% | 8.5% | 13.9% | **−21.5** |
+| **Snow** | **63.8%** | 50.7% | 46.0% | 53.7% | 50.8% | 62.8% | −1.0 |
+| **Wet Ground** | **64.3%** | 54.9% | 54.1% | 55.7% | 55.6% | 63.5% | −0.8 |
+| **Beam Missing** | **71.4%** | 52.7% | 49.3% | 56.7% | 54.2% | 68.7% | −2.7 |
+| **Motion Blur** | **66.1%** | 50.0% | 51.5% | 53.6% | 50.9% | 65.0% | −1.0 |
+| **Cross Sensor** | **57.5%** | 34.2% | 33.8% | 38.6% | 36.0% | 56.3% | −1.2 |
+| **Incomplete Echo** | **73.6%** | 52.6% | 55.2% | 62.9% | 59.4% | 73.4% | ≈ 0 |
+| **Clean Control** | 76.1% | 63.6% | 63.1% | 69.8% | 63.7% | 76.0% | ≈ 0 ✓ |
+
+### The Verdict
+
+1. **The oracle headroom is gone.** Even with ground-truth labels and a 1M-point pool, re-estimating prototypes from the corrupted features *loses* to the frozen clean prototypes on every corruption — catastrophically on the Type C's (Fog −15.5, Crosstalk −21.5) and mildly (−0.8 to −2.7) on the geometric corruptions. The Phase 9-era headroom (+2.73, 23.32% oracle) was an artifact of the old encoder and the frame-mismatched harness; it does not reproduce here.
+2. **The mechanism is feature collapse in sign space.** On Fog/Crosstalk the features are so degraded that their binarized class means are near-random directions — target-domain prototypes are garbage, and any movement away from the clean anchors can only hurt. Even on mild corruptions, the drifted target means lose a point or two to the clean means (the Phase 7 prototype-quality variance, now measured end-to-end).
+3. **Pseudo-label adaptation is catastrophic everywhere** (Naive: −10 to −19 points), because re-estimation replaces the prototype set wholesale with 10–80%-wrong means. Gating rescues a fraction of that crash (`joint_flip` is consistently the best, recovering up to 10 points on Incomplete Echo) but **no gate reaches zero-shot** — with harmful updates outnumbering helpful ~45:1 on Crosstalk (leave-one-out: 42 helpful / 4337 harmful), freezing is the optimal policy.
+4. **Adapting the prototypes is not the lever.** The information is in the features (49.4% linear probe; 20–25% HDC zero-shot from *clean* prototypes) — but it cannot be harvested by centroid movement, because the corrupted centroids are worse than the clean ones.
+
+### Revised Next Steps
+
+1. **Move the gate from the UPDATE to the QUERY.** With prototypes frozen, the remaining lever is deciding *which points to trust at inference* — vetoing collapsed/hallucinated points (the Phase 4 magnitude-segregation idea: near-origin features are noise) before prototype classification. This is cheap to test: threshold the query points by norm/confidence on the frozen-prototype classifier and measure accuracy vs point-retention on the corrupted val.
+2. **Test feature-level adaptation** (e.g., test-time batch-norm / feature whitening alignment) as the alternative to prototype movement — the 49.4% linear separability proves the headroom exists in the feature space; the question is whether unsupervised alignment can capture it without labels.
+3. **One final prototype-adaptation check**: severity-split sequential adaptation (adapt on moderate Fog frames, evaluate on Heavy Fog frames) — the only regime where target-mean re-estimation could plausibly still help, since the mild-corruption means are less collapsed. If this also shows no headroom, prototype TTA is closed entirely.
+4. **The medium-scale run still pays**: its value is now the *frozen* representation (higher zero-shot HDC at convergence) plus query-side gating at scale, not gated prototype updates.
