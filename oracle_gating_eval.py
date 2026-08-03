@@ -232,9 +232,9 @@ def main():
     with torch.no_grad():
         for i, batch in enumerate(tqdm(clean_loader, total=NUM_BATCHES)):
             if i >= NUM_BATCHES: break
-            in_vol, _, labels, _ = batch
-            in_vol = in_vol.to(device)
-            mask = labels > 0 
+            in_vol = batch[0].to(device)
+            labels = batch[2].to(device).view(-1)
+            mask = (batch[1].to(device) > 0).view(-1)
             
             out_tuple = model(in_vol)
             if len(out_tuple) == 3:
@@ -249,10 +249,10 @@ def main():
     with torch.no_grad():
         for i, batch in enumerate(tqdm(fog_loader, total=NUM_BATCHES)):
             if i >= NUM_BATCHES: break
-            in_vol, _, labels, _ = batch
-            in_vol = in_vol.to(device)
+            in_vol = batch[0].to(device)
+            labels = batch[2].to(device).view(-1)
+            mask = (batch[1].to(device) > 0).view(-1)
             
-            mask = labels > 0 
             out_tuple = model(in_vol)
             if len(out_tuple) == 3:
                 _, _, z8 = out_tuple
