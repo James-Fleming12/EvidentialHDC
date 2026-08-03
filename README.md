@@ -201,58 +201,84 @@ available, multi-view agreement raises macro precision at higher cost."*
 
 ---
 
-## 7. Extensive Reading List
+## 7. Previous and Current Results
 
-The following literature provides the theoretical foundation and the exact
-mechanisms needed for the three pillars.
+### 7.1 Problem setting
 
-### 1. Robust Feature Extraction & Magnitude-Based OOD Detection (Pillar 1)
-The pretraining objective relies on the feature space being distance-aware and
-magnitude-informative. These papers justify and refine that foundation.
+| Component | Configuration |
+|---|---|
+| **Source data (pretraining)** | SemanticKITTI training split (sequence 08), clean range-image projections, 17 classes (16 evaluated) |
+| **Target data (evaluation)** | SemanticKITTI-C, heavy severity, 8 conditions: fog, snow, wet_ground, motion_blur, beam_missing, crosstalk, incomplete_echo, cross_sensor |
+| **Backbone** | SENet-2048p → 128D continuous features (the representation both methods act on) |
+| **Pretraining objective (Pillar 1)** | Decoupled supervised contrastive (SupCon, L2-normalized, τ = 0.1) + Variational Information Bottleneck (KL → 𝒩(0, I), weight 0.01, applied to clean *and* augmented pathways) + CE, with physics-based augmentations only (voxelized beam dropout, ray-axis jitter, density subsampling) |
+| **HDC encoding** | Seeded random bipolar projection 128D → 10,000D + sign binarization (information-preserving: 49.4% → 49.0% → 47.8% linear) |
+| **Prototypes** | Per-class means of the binarized clean features (frozen) |
+| **Adaptation (Pillar 2)** | Prototype updates gated by uncertainty signals (confidence + feature norm) — *currently being redesigned: Phase 14 showed prototype-level TTA has no headroom on the robust encoder; the gate is moving to the query side* |
+| **Balance (Pillar 3)** | Headroom-based update allocation (inter-class: freeze saturated majority classes; intra-class: bounded per-subcluster counts) — planned |
 
-| Paper | The Concept | How to Use It |
-|---|---|---|
-| [**Evidential Deep Learning**](https://scholar.google.com/scholar?q=Evidential+Deep+Learning+Sensoy)<br>*(Sensoy et al., NeurIPS 2018)* | Formulates learning as evidence acquisition using Subjective Logic. Places a Dirichlet distribution over class probabilities, allowing explicit "I don't know" outputs independent of prototype distance. | (Used for pre-training/formulation reference) |
-| [**SNGP**](https://scholar.google.com/scholar?q=Simple+and+Principled+Uncertainty+Estimation+with+Deterministic+Deep+Learning+via+Distance+Awareness)<br>*(Liu et al., NeurIPS 2020)* | Spectral-normalized Neural Gaussian Processes force the latent space to be "distance-aware," providing high-quality epistemic uncertainty in a single pass. | (Used for pre-training/formulation reference) |
-| [**Prior Networks**](https://scholar.google.com/scholar?q=Predictive+Uncertainty+Estimation+via+Prior+Networks)<br>*(Malinin & Gales, NeurIPS 2018)* | Introduces Dirichlet Prior Networks to model distributional uncertainty directly. Targets the requirement to identify points far from the source distribution. | (Used for pre-training/formulation reference) |
-| [**DUQ**](https://scholar.google.com/scholar?q=Deterministic+Neural+Networks+with+Appropriate+Inductive+Biases+Capture+Epistemic+Uncertainty)<br>*(van Amersfoort et al., ICML 2020)* | Uses a two-sided gradient penalty to enforce "distance awareness." | Proves you can extract a mathematically rigorous epistemic uncertainty score directly from the feature vector's magnitude. |
-| [**Feature Space Singularity**](https://scholar.google.com/scholar?q=Feature+Space+Singularity+for+Out-of-Distribution+Detection)<br>*(Huang et al., NeurIPS 2021)* | Demonstrates the raw L2 norm (magnitude) of the latent vector is a highly effective, zero-cost metric for OOD detection. | Justifies the feature-norm term of the gate (Phase 12: norm AUROC 0.94). |
-| [**React**](https://scholar.google.com/scholar?q=React+Out-of-distribution+Detection+With+Rectified+Activations)<br>*(Sun et al., NeurIPS 2021)* | Shows OOD data causes massive activation spikes in penultimate layers. Clamping these makes uncertainty metrics vastly more reliable. | Monitor pre-projection features for activation spikes as an immediate indicator of epistemic failure (e.g., fog artifacts). |
-| [**Laplace Redux**](https://scholar.google.com/scholar?q=Laplace+Redux+Effortless+Bayesian+Deep+Learning)<br>*(Daxberger et al., NeurIPS 2021)* | Applies a post-hoc Laplace approximation to the last layer, yielding a closed-form, single-pass epistemic uncertainty without altering weights. | Fit this approximation to the source data once; evaluate target data against it at test-time for a pure epistemic signal. |
+### 7.2 Previous performance: the original model per condition
 
-### 2. Uncertainty Gating and Label Selection (Pillar 2)
-Consistency and confidence signals must act as a **veto on the label/update**, not a smoother of the score.
+The Corruption Atlas measured the *original* (un-pretrained) model on each condition. Some conditions are nearly untouched; others collapse to the point where even an **oracle prototype** (perfect-label prototype updates) can barely classify anything — the feature space itself is gone, so no decoder can recover it.
 
-| Paper | The Concept | How to Use It |
-|---|---|---|
-| [**Temporal Ensembling**](https://scholar.google.com/scholar?q=Temporal+Ensembling+for+Semi-Supervised+Learning)<br>*(Laine & Aila, ICLR 2017)* | The foundational text on using moving averages of network predictions over time to stabilize pseudo-labels. | Maps perfectly to consecutive LiDAR frames for defining temporal vetoes. |
-| [**FixMatch**](https://scholar.google.com/scholar?q=FixMatch+Simplifying+Semi-Supervised+Learning+with+Consistency+and+Confidence)<br>*(Sohn et al., NeurIPS 2020)* | Enforces that weak and strong predictions must strictly agree before retaining a label. | The theoretical basis for a "hard veto" argument over "soft smoothing." |
-| [**ST3D**](https://scholar.google.com/scholar?q=ST3D+Self-training+for+Unsupervised+Domain+Adaptation+on+3D+Object+Detection)<br>*(Yang et al., CVPR 2021)* | State-of-the-art for 3D LiDAR UDA, heavily utilizing spatial/temporal consistency to filter pseudo-labels. | Read to see exactly what baselines your consistency veto must outperform. |
-| [**TENT**](https://scholar.google.com/scholar?q=TENT+Fully+Test-Time+Adaptation+by+Entropy+Minimization)<br>*(Wang et al., ICLR 2021)* | The baseline for entropy minimization based TTA. | Cite as the counter-example: TENT's soft smoothing causes semantic poisoning. Contrast with a boolean temporal veto. |
-| [**PointTTA**](https://scholar.google.com/scholar?q=PointTTA+Test-Time+Adaptation+for+Point+Cloud+Processing)<br>*(Metzger et al., 2023)* | A direct TTA framework for 3D point clouds relying on spatial transformations and self-supervision. | Compare their soft-consistency loss to your hard-veto logic to define valid "spatial neighborhoods." |
-| [**Ada3D**](https://scholar.google.com/scholar?q=Ada3D+Adaptive+3D+Object+Detection)<br>*(Recent CVPR/ICCV)* | Focuses on aligning local spatial contexts under domain shifts, assuming adjacent points share semantic identity. | Formalize the spatial veto: if cosine similarity says Pedestrian, but k geometric neighbors are Road, the label is vetoed. |
+| Condition | Cosine Shift | Baseline mIoU (corrupted) | Oracle Prototype (perfect graph) | Corrupted 1-NN Purity |
+| :--- | :--- | :--- | :--- | :--- |
+| **Incomplete Echo** | 0.070 | **25.5%** | **32.1%** | 95.4% |
+| **Snow** | 0.395 | 20.6% | 25.0% | 91.5% |
+| **Wet Ground** | 0.557 | 18.8% | 28.1% | 95.6% |
+| **Beam Missing** | 0.513 | 15.2% | 25.0% | 92.3% |
+| **Motion Blur** | 0.524 | 14.8% | 22.6% | 88.8% |
+| **Cross Sensor** | 0.715 | 4.4% | 22.6% | 89.8% |
+| **Crosstalk** | 0.767 | 4.7% | 13.3% | 86.6% |
+| **Fog** | 0.885 | **1.8%** | **8.7%** | 75.1% |
 
-### 3. Balanced / Headroom-Based Allocation (Pillar 3)
-These papers tackle gating updates based on representation saturation and non-i.i.d. target streams, aligning perfectly with the subcluster ledger.
+*The drop is bimodal: five conditions keep ≥ 88% neighborhood purity and ≥ 14.8% mIoU, while Fog, Crosstalk and Cross Sensor collapse — Fog's perfect-graph oracle ceiling is 8.7% mIoU, proving the collapse is in the representation, not the decoder. (Metrics: mIoU for the two Oracle Family columns; point-wise 1-NN purity otherwise.)*
 
-| Paper | The Concept | How to Use It |
-|---|---|---|
-| [**RoTTA**](https://scholar.google.com/scholar?q=RoTTA+Robust+Test-Time+Adaptation+in+Dynamic+Scenarios)<br>*(Yuan et al., CVPR 2023)* | Maintains a category-balanced memory bank for temporally correlated streams. | Mandatory reading. Differentiate your approach: your ledger never touches inference, preventing Voronoi-shattering. |
-| [**Class-Balanced Loss**](https://scholar.google.com/scholar?q=Class-Balanced+Loss+Based+on+Effective+Number+of+Samples)<br>*(Cui et al., CVPR 2019)* | Formally defines class saturation (effective number of samples), proving exponentially diminishing returns. | Provides mathematical justification for the headroom-budgeting ledger. |
-| [**DELTA**](https://scholar.google.com/scholar?q=DELTA+Degradation-Free+Fully+Test-Time+Adaptation)<br>*(Zhao et al., ICLR 2023)* | Explores how unconstrained TTA destroys majority classes. Uses class-aware balancing. | Compare your ledger against their balancing mechanism. |
-| [**NOTE**](https://scholar.google.com/scholar?q=NOTE+Robust+Continual+Test-time+Adaptation+Against+Temporal+Correlation)<br>*(Gong et al., NeurIPS 2022)* | Tackles the "fog bank" problem where temporally correlated TTA streams cause batch-norm/memory collapse. | Direct theoretical precedent. They balance memory to prevent temporal collapse; you balance subclusters to equalize headroom. |
-| [**LAME**](https://scholar.google.com/scholar?q=LAME+Latent-Space+Marginalization+for+Blind+Action)<br>*(Boudiaf et al., CVPR 2022)* | Performs TTA without updating weights, strictly updating latent space assignments via Laplacian smoothing on affinity matrix. | Massive structural citation. Contrast their affinity-matrix approach with your O(K) budgeted subcluster approach. |
-| [**AdaContrast**](https://scholar.google.com/scholar?q=AdaContrast+Contrastive+Test-Time+Adaptation)<br>*(Chen et al., CVPR 2022)* | Utilizes a pseudo-label queue to track class frequencies and reject over-represented classes. | Validates that updating saturated classes hurts. Defends why your ledger freezes saturated subclusters. |
-| [**Practical Coresets for Online ML**](https://scholar.google.com/scholar?q=Practical+Coresets+for+Online+Machine+Learning)<br>*(Feldman 2020)* | Focuses on selecting the smallest possible subset of streaming data to represent the full distribution. | Rigorous framing: your ledger maintains an online coreset of the target domain. Tracking K subclusters equalizes learning potential. |
+#### The previous best method still showed the same bimodal gap
 
-### 4. Multi-View Test-Time Augmentation (variant)
-If including the TTA variant for compute-scaling, ground it in literature treating augmentation as a reliability signal.
+The best pre-pretraining method (`DualGateModel`, `docs/geometric_method/method_details.md`) improved every condition — roughly doubling the collapsed ones — yet the bimodal structure persisted exactly: five conditions at 80–90% point accuracy, Fog and Crosstalk still barely classifiable.
 
-| Paper | The Concept | How to Use It |
-|---|---|---|
-| [**Learning to Trust**](https://scholar.google.com/scholar?q=Learning+to+Trust+Test-Time+Augmentation+for+Epistemic+Uncertainty+Estimation)<br>*(Ayhan & Berens, 2018)* | Seminal paper establishing variance across TTAs as a valid proxy for epistemic uncertainty. | Foundations for TTA reliability. |
-| [**Uncertainty-guided TTA**](https://scholar.google.com/scholar?q=Uncertainty-guided+Test-Time+Augmentation)<br>*(Shanmugam et al., 2021)* | Standard TTA applies all augmentations equally. This paper learns which augmentations to trust. | Maps well to your "cross-view soft agreement" signal. |
-| [**PointContrast**](https://scholar.google.com/scholar?q=PointContrast+Unsupervised+Pre-training+for+3D+Point+Cloud+Understanding)<br>*(Xie et al., ECCV 2020)* | Focuses on cross-view consistency in 3D point clouds. | Provides the exact geometric augmentations (yaw, roll, scale) statistically valid for 3D LiDAR TTA. |
+| Condition | Frozen (no TTA) | DualGateModel (previous best) |
+| :--- | :--- | :--- |
+| **Incomplete Echo** | 88.2% | 87.7% |
+| **Wet Ground** | 89.6% | **90.5%** |
+| **Snow** | 86.4% | 87.1% |
+| **Motion Blur** | 84.1% | 86.6% |
+| **Beam Missing** | 80.0% | 86.0% |
+| **Cross Sensor** | 56.6% | 62.2% |
+| **Crosstalk** | 22.1% | 53.7% |
+| **Fog** | **13.2%** | **31.9%** |
+| **Mean** | 65.0% | 73.2% |
+
+*And the memory-bank era showed *why* the gap is structural (Iteration 6, `docs/mem_method/adaptive_iterations.md`): prototype adaptation *improved* the survivable conditions (Snow +8.7 mIoU, Motion Blur +6.1) while *collapsing* Fog further (0.065 → 0.029 mIoU, 89% memory error) — the Inlier Paradox: fog noise sits *closer* to the seed centroids than real geometry, so geometric gates admit it at 100% firing rate. Adaptation helps exactly where the representation survives and poisons exactly where it doesn't.*
+
+### 7.3 Current performance: what the new methods change
+
+Representation-level gains (Linear Probe — how separable the 128D space is under corruption) and decode-level gains (HDC prototype accuracy from frozen clean prototypes, Phase 14 v4 harness — 1M-point pool, oracle-calibrated). The medium-pretrained `supcon_vib` encoder (Phase 7) roughly doubled Fog linear separability (23.6% → 49.4% Linear Probe), and the robust micro encoder lifted Fog zero-shot HDC classification from 1.8% mIoU to **25.0%** point accuracy.
+
+| Condition | Old baseline mIoU | New Linear Probe (robust encoder) | New zero-shot HDC (robust encoder) | New perfect-oracle HDC |
+| :--- | :--- | :--- | :--- | :--- |
+| **Incomplete Echo** | 25.5% | **92.8%** | **73.6%** | 73.4% |
+| **Snow** | 20.6% | 82.0% | 63.8% | 62.8% |
+| **Wet Ground** | 18.8% | 77.0% | 64.3% | 63.5% |
+| **Beam Missing** | 15.2% | 87.2% | 71.4% | 68.7% |
+| **Motion Blur** | 14.8% | 74.6% | 66.1% | 65.0% |
+| **Cross Sensor** | 4.4% | 73.8% | 57.5% | 56.3% |
+| **Crosstalk** | 4.7% | 23.6% | 35.4% | 13.9% |
+| **Fog** | **1.8%** | **41.2%** | **25.0%** | 9.5% |
+
+*Three stories in one table: (1) near-SOTA conditions stay near-SOTA (Incomplete Echo: 92.8% linear probe); (2) the collapsed conditions gain 10–20× (Fog 1.8% → 25.0% zero-shot, Crosstalk 4.7% → 35.4%); (3) the perfect-oracle column now sits *below* zero-shot on every condition — the robust encoder's clean prototypes are already the best prototypes available, and prototype-level adaptation has no headroom (Phase 14). Metric families differ across columns (mIoU vs point accuracy vs linear probe), and the Linear Probe column is from the medium-pretrained encoder while the HDC columns are from the micro-pretrained encoder; the within-column comparisons are the meaningful ones.*
+
+### 7.4 Why the decoder, not the encoder, is the current bottleneck
+
+The HDC degradation pipeline (Phase 8, med-pretrained `supcon_vib`, D = 1000) showed the semantic information survives every stage of the HDC encoding losslessly — only the naive nearest-prototype decoder wastes it:
+
+| Representation stage | Linear Probe Accuracy | Prototype Accuracy |
+| :--- | :--- | :--- |
+| Raw 128D encoder | **49.4%** | 8.2% |
+| Random projection (continuous) | **49.0%** | 31.7% |
+| Sign binarization (HDC) | **47.8%** | 24.1% |
+
+*The encoder + projection + binarization preserve ~100% of the linear separability; the centroid classifier leaves ~20 points on the table even after the projection "isotropic smoothing" effect. The next stage of the project targets this decode gap (query-side gating on the frozen prototypes).*
 
 ---
 
