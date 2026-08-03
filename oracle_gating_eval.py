@@ -220,12 +220,12 @@ def main():
     clean_parser = Parser(root=args.kitti_dir, train_sequences=['08'], valid_sequences=['08'], test_sequences=None,
                           labels=DATA["labels"], color_map=DATA["color_map"], learning_map=DATA["learning_map"],
                           learning_map_inv=DATA["learning_map_inv"], sensor=ARCH["dataset"]["sensor"],
-                          max_points=ARCH["dataset"]["max_points"], batch_size=6, workers=4, gt=True, shuffle_train=False)
+                          max_points=ARCH["dataset"]["max_points"], batch_size=1, workers=4, gt=True, shuffle_train=False)
                           
     fog_parser = Parser(root=fog_dir, train_sequences=['08'], valid_sequences=['08'], test_sequences=None,
                         labels=DATA["labels"], color_map=DATA["color_map"], learning_map=DATA["learning_map"],
                         learning_map_inv=DATA["learning_map_inv"], sensor=ARCH["dataset"]["sensor"],
-                        max_points=ARCH["dataset"]["max_points"], batch_size=6, workers=4, gt=True, shuffle_train=False)
+                        max_points=ARCH["dataset"]["max_points"], batch_size=1, workers=4, gt=True, shuffle_train=False)
     
     clean_loader = clean_parser.get_train_set()
     fog_loader = fog_parser.get_train_set()
@@ -233,7 +233,7 @@ def main():
     clean_feats, clean_lbls = [], []
     fog_feats, fog_lbls = [], []
     
-    # Extract 10 batches (with batch_size 6, that's 60 frames = ~600,000 points)
+    # Extract 10 batches (with batch_size 1, that's 10 frames = ~1,000,000 points)
     NUM_BATCHES = 10
     
     print("-> Extracting Clean Latents...")
@@ -270,10 +270,10 @@ def main():
             fog_feats.append(z_flat.cpu())
             fog_lbls.append(labels[mask].cpu())
             
-    clean_feats = torch.cat(clean_feats, dim=0)
-    clean_lbls = torch.cat(clean_lbls, dim=0)
-    fog_feats = torch.cat(fog_feats, dim=0)
-    fog_lbls = torch.cat(fog_lbls, dim=0)
+    clean_feats = torch.cat(clean_feats, dim=0)[:60000]
+    clean_lbls = torch.cat(clean_lbls, dim=0)[:60000]
+    fog_feats = torch.cat(fog_feats, dim=0)[:60000]
+    fog_lbls = torch.cat(fog_lbls, dim=0)[:60000]
     
     evaluate_oracle_gating(clean_feats, clean_lbls, fog_feats, fog_lbls, device)
 
