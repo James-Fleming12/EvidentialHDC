@@ -16,8 +16,8 @@ def evaluate_oracle_gating(clean_feats, clean_lbls, fog_feats, fog_lbls, device=
     print("--- Phase 9: Oracle Gating Validation ---")
     print("="*60)
     
-    # 1. Project to HDC Space (D=1000)
-    HD_DIM = 1000
+    # 1. Project to HDC Space (D=10000)
+    HD_DIM = 10000
     torch.manual_seed(42)
     proj = (torch.rand(clean_feats.shape[1], HD_DIM) > 0.5).float() * 2 - 1
     proj = proj.to(device)
@@ -35,8 +35,16 @@ def evaluate_oracle_gating(clean_feats, clean_lbls, fog_feats, fog_lbls, device=
     
     # Train Linear Probe on 128D (to use as our confidence oracle)
     print("-> Training Linear Probe Oracle (128D)...")
-    clf = LogisticRegression(max_iter=1000)
-    clf.fit(clean_feats[:20000].numpy(), clean_lbls[:20000].numpy())
+    clf = LogisticRegression(max_iter=1000, n_jobs=-1)
+    
+    # Use first 50k for training probe to match med_pretrain_eval
+    train_size = min(50000, len(clean_feats))
+    clf.fit(clean_feats[:train_size].numpy(), clean_lbls[:train_size].numpy())
+    
+    probe_clean_acc = clf.score(clean_feats[:train_size].numpy(), clean_lbls[:train_size].numpy())
+    probe_fog_acc = clf.score(fog_feats[:train_size].numpy(), fog_lbls[:train_size].numpy())
+    print(f"   [Sanity Check] Linear Probe Accuracy (Clean): {probe_clean_acc:.4f}")
+    print(f"   [Sanity Check] Linear Probe Accuracy (Fog):   {probe_fog_acc:.4f}")
     
     # Get pseudo-labels and confidence for Fog points
     print("-> Generating Oracle metrics for candidate pool...")
