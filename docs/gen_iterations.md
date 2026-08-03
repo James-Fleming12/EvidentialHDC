@@ -330,3 +330,47 @@ The EMA prototype update becomes $c \leftarrow c + \eta \cdot w(x) \cdot z$. Cal
 4. **Commit the medium-scale run:** plain `supcon_vib` on 100% data (seeded per `med_pretrain_eval.py` convention) to obtain the converged encoder, then run the gated TTA end-to-end on top of it.
 
 **Contingency (deferred, not deleted):** SOR — whether as an eval-time input pre-filter on the frozen encoder or in any future augmentation variant — is parked. Its best ever HDC Prototype Accuracy (9.1%) is less than half of what the plain encoder already achieves (20.1%), so it does not justify proactive compute. Only revisit input-space remediation or richer physics augmentation if the gated TTA underperforms the naive EMA baseline.
+
+---
+
+## Phase 12: The Naive Gated-EMA Diagnostic on the New Encoder (Fog)
+
+Before committing to the medium-scale run, the offline EMA-adaptation simulator (`oracle_gating_eval.py`, seeded 10kD projection) was pointed at the fresh micro-trained `supcon_vib` encoder (`logs/micro_pretrain/supcon_vib`) to measure how much accuracy the *naive* implementation — current `fuse_uncertainties` gating + current robust encoder — actually gains under Heavy Fog, and to profile whether the Phase 9 gate signals still discriminate.
+
+### The Gated EMA Ladder (Fog, 10kD HDC space, pool = 20k points, α = 0.01)
+
+| Strategy | HDC Prototype Accuracy |
+| :--- | :--- |
+| Zero-Shot (No Adaptation) | 12.74% |
+| **Naive EMA (No Gate)** | **18.34%** |
+| Top-50% Confidence (Phase 9 gate) | 18.52% |
+| Epistemic Gate | 17.70% |
+| Geometric Gate (norm z-score) | **18.62%** |
+| Soft Dual Weight | 17.94% |
+| AND Gate | 17.91% |
+| Ellipsoid Gate | 18.34% |
+| **Perfect Oracle (True Labels)** | 19.54% |
+
+### The Signal Profiling (Leave-One-Update-Out, 5k updates: 165 Helpful, 227 Harmful)
+
+| Signal | Helpful Mean | Harmful Mean | AUROC (Helpful vs Harmful) |
+| :--- | :--- | :--- | :--- |
+| Probe Confidence | 0.255 | 0.338 | **0.154 (inverted!)** |
+| Feature Norm (L2) | 0.039 | 0.057 | **0.942** |
+| Joint z-score (c − n) | — | — | 0.673 |
+| Logistic Combination | — | — | 0.855 |
+
+### Diagnostic Analysis
+
+1. **The naive EMA already harvests ~82% of the oracle headroom.** Zero-shot 12.74% → naive EMA 18.34% (+5.6 of the +6.8 oracle ceiling). On Fog, the robust representation has largely *solved* the poisoning problem at the source: indiscriminate adaptation now mostly helps, leaving only ~1.2 points of gate-able headroom. This is the exact opposite of the Phase 9-era regime (naive captured only 45% of headroom on the old encoder).
+2. **Feature norm is the dominant signal (AUROC 0.94).** The adaptation pool is dominated by near-origin, VIB-collapsed noise points (norms 0.04–0.06 vs the ~5.6 class geometry average): the collapsed points are *benign* (tiny updates, no drift), while the few points that escaped collapse (higher norm) are the poison. This is a direct empirical vindication of the Phase 4 **Magnitude Segregation** thesis.
+3. **Probe confidence is ANTI-predictive (AUROC 0.154)** — harmful updates carry *higher* confidence (0.34 vs 0.26), the "confident hallucination" signature previously documented in the mem-method thread. **Caveat:** the linear probe here is trained on only the first 100k points (~1–2 frames of sequence 08, vs 50k points spread over 50 frames in the micro eval), so the probe may have collapsed to majority-class prediction (clean probe acc 52% here vs 88% there). The inversion may be a probe-sampling artifact — must be re-tested with a uniformly sampled probe before being trusted.
+4. **The gates barely beat naive (best: geometric +0.28).** With headroom above naive so small, no gate can add much; and because the confidence term is anti-predictive in this regime, the joint gates (`soft_dual_weight` 17.94%, `and_gate` 17.91%) are *dragged below* naive. The LR combination (0.855 AUROC) proves the signals are complementary — the Phase 11 joint direction (c_z − n_z) is likely *wrong* for this encoder; if the inversion survives re-testing, the correct joint is c_z + n_z (veto high-confidence AND high-norm).
+5. **Zero-shot dropped from 20.1% (128D Euclidean) to 12.7% (10kD sign-binarized)** — the HDC binarization still costs points on this encoder, consistent with the Phase 8 degradation findings.
+
+### Next Steps
+
+1. **Fix the probe sampling** (uniform subsample across all 100 frames, not the first 100k points) and re-run the Fog diagnostic — determines whether the confidence inversion is real or an artifact.
+2. **Run the remaining 7 corruptions** with the same ladder (the JSON currently contains Fog only), with special attention to Crosstalk AUROC (the mem-method thread's known failure case).
+3. **Recalibrate the joint gate on the re-tested signals** (c_z + n_z if the inversion holds; c_z − n_z otherwise) and re-run the ladder on Fog + Crosstalk.
+4. **Commit the medium-scale run** (plain `supcon_vib`, seeded) once the gate direction is settled — the naive EMA baseline (18.34%, Fog) becomes the accuracy floor the converged encoder must beat.

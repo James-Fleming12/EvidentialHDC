@@ -320,6 +320,14 @@ def main():
     
     corruptions = CORRUPTIONS if not args.corruptions else [c.strip() for c in args.corruptions.split(',')]
     all_results = {}
+    out_path = os.path.join(load_path, "oracle_gating_results.json")
+    if os.path.exists(out_path):
+        try:
+            with open(out_path, 'r') as f:
+                all_results = json.load(f)
+            print(f"Loaded {len(all_results)} existing corruption results from {out_path} (results will be merged)")
+        except Exception:
+            print("Warning: could not parse existing results file; starting fresh.")
     
     for corruption in corruptions:
         print(f"\n{'='*60}")
@@ -393,10 +401,9 @@ def main():
               f"{g.get('and_gate', 0):<7.4f} | {g.get('ellipsoid_gate', 0):<7.4f} | {res['perfect_acc']:<8.4f} |")
     print("="*100 + "\n")
     
-    out_path = os.path.join(load_path, "oracle_gating_results.json")
     with open(out_path, 'w') as f:
         json.dump(all_results, f, indent=4)
-    print(f"Saved Oracle Gating Results to {out_path}")
+    print(f"Saved Oracle Gating Results ({len(all_results)} corruptions) to {out_path}")
 
 if __name__ == '__main__':
     main()
