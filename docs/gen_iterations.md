@@ -333,50 +333,6 @@ The EMA prototype update becomes $c \leftarrow c + \eta \cdot w(x) \cdot z$. Cal
 
 ---
 
-## Phase 12: The Naive Gated-EMA Diagnostic on the New Encoder (Fog)
-
-Before committing to the medium-scale run, the offline EMA-adaptation simulator (`oracle_gating_eval.py`, seeded 10kD projection) was pointed at the fresh micro-trained `supcon_vib` encoder (`logs/micro_pretrain/supcon_vib`) to measure how much accuracy the *naive* implementation — current `fuse_uncertainties` gating + current robust encoder — actually gains under Heavy Fog, and to profile whether the Phase 9 gate signals still discriminate.
-
-### The Gated EMA Ladder (Fog, 10kD HDC space, pool = 20k points, α = 0.01)
-
-| Strategy | HDC Prototype Accuracy |
-| :--- | :--- |
-| Zero-Shot (No Adaptation) | 12.74% |
-| **Naive EMA (No Gate)** | **18.34%** |
-| Top-50% Confidence (Phase 9 gate) | 18.52% |
-| Epistemic Gate | 17.70% |
-| Geometric Gate (norm z-score) | **18.62%** |
-| Soft Dual Weight | 17.94% |
-| AND Gate | 17.91% |
-| Ellipsoid Gate | 18.34% |
-| **Perfect Oracle (True Labels)** | 19.54% |
-
-### The Signal Profiling (Leave-One-Update-Out, 5k updates: 165 Helpful, 227 Harmful)
-
-| Signal | Helpful Mean | Harmful Mean | AUROC (Helpful vs Harmful) |
-| :--- | :--- | :--- | :--- |
-| Probe Confidence | 0.255 | 0.338 | **0.154 (inverted!)** |
-| Feature Norm (L2) | 0.039 | 0.057 | **0.942** |
-| Joint z-score (c − n) | — | — | 0.673 |
-| Logistic Combination | — | — | 0.855 |
-
-### Diagnostic Analysis
-
-1. **The naive EMA already harvests ~82% of the oracle headroom.** Zero-shot 12.74% → naive EMA 18.34% (+5.6 of the +6.8 oracle ceiling). On Fog, the robust representation has largely *solved* the poisoning problem at the source: indiscriminate adaptation now mostly helps, leaving only ~1.2 points of gate-able headroom. This is the exact opposite of the Phase 9-era regime (naive captured only 45% of headroom on the old encoder).
-2. **Feature norm is the dominant signal (AUROC 0.94).** The adaptation pool is dominated by near-origin, VIB-collapsed noise points (norms 0.04–0.06 vs the ~5.6 class geometry average): the collapsed points are *benign* (tiny updates, no drift), while the few points that escaped collapse (higher norm) are the poison. This is a direct empirical vindication of the Phase 4 **Magnitude Segregation** thesis.
-3. **Probe confidence is ANTI-predictive (AUROC 0.154)** — harmful updates carry *higher* confidence (0.34 vs 0.26), the "confident hallucination" signature previously documented in the mem-method thread. **Caveat:** the linear probe here is trained on only the first 100k points (~1–2 frames of sequence 08, vs 50k points spread over 50 frames in the micro eval), so the probe may have collapsed to majority-class prediction (clean probe acc 52% here vs 88% there). The inversion may be a probe-sampling artifact — must be re-tested with a uniformly sampled probe before being trusted.
-4. **The gates barely beat naive (best: geometric +0.28).** With headroom above naive so small, no gate can add much; and because the confidence term is anti-predictive in this regime, the joint gates (`soft_dual_weight` 17.94%, `and_gate` 17.91%) are *dragged below* naive. The LR combination (0.855 AUROC) proves the signals are complementary — the Phase 11 joint direction (c_z − n_z) is likely *wrong* for this encoder; if the inversion survives re-testing, the correct joint is c_z + n_z (veto high-confidence AND high-norm).
-5. **Zero-shot dropped from 20.1% (128D Euclidean) to 12.7% (10kD sign-binarized)** — the HDC binarization still costs points on this encoder, consistent with the Phase 8 degradation findings.
-
-### Next Steps
-
-1. **Fix the probe sampling** (uniform subsample across all 100 frames, not the first 100k points) and re-run the Fog diagnostic — determines whether the confidence inversion is real or an artifact.
-2. **Run the remaining 7 corruptions** with the same ladder (the JSON currently contains Fog only), with special attention to Crosstalk AUROC (the mem-method thread's known failure case).
-3. **Recalibrate the joint gate on the re-tested signals** (c_z + n_z if the inversion holds; c_z − n_z otherwise) and re-run the ladder on Fog + Crosstalk.
-4. **Commit the medium-scale run** (plain `supcon_vib`, seeded) once the gate direction is settled — the naive EMA baseline (18.34%, Fog) becomes the accuracy floor the converged encoder must beat.
-
----
-
 ## Phase 13: The Full 8-Corruption Panel and the Pool/Val Mismatch Confound
 
 The full panel ran with the gate-fault diagnostics (clean-data control, per-gate-mode AUROC, threshold envelope sweeps) — and immediately exposed a **harness bug** that invalidates every absolute number in the panel, while still yielding decisive negative results about the shipped gates.
@@ -408,14 +364,19 @@ The confound was always present in the harness — the Phase 9-era encoder maske
 3. **Gate-mode AUROC confirms the shipped modes are old-space artifacts.** On Fog only `joint_flip` (veto high-confidence AND high-norm) is selective (0.82); `soft_dual_weight` and `and_gate` are *anti*-selective (0.41–0.42). On Snow every mode except `epistemic` is anti-selective (0.12–0.14). The diagnostics did their job: they caught the gates being wrong *before* we committed compute to them.
 4. **Threshold sweeps cannot rescue the shipped gates.** Best-case `soft_dual_weight` (`sdw_best`) ≈ naive everywhere (best margin: Motion Blur +1.0). Under the confound this is not yet conclusive, but combined with finding 3 it strongly suggests the SDW family should not be reused.
 5. **Run-to-run variance is large.** Fog zero-shot swung 12.7% ↔ 21.8% between two runs of the *same* checkpoint and projection seed — the data pipeline (point subsampling in extraction workers) is unseeded.
+6. **The shipped gates are degenerate on the new space (the bit-identical rows).** On the VIB-capped space, clean feature norms have near-zero variance, so the geometric z-scores explode to ±hundreds and every exponential decay saturates (weight ≈ 0 for z > 0.5, ≈ 1 for z ≤ 0.5). With probe confidence ≥ 0.5 everywhere, the epistemic factor also saturates at 1 — so `geometric`, `soft_dual_weight`, `and_gate`, and `ellipsoid_gate` all reduce to the *same binary "keep low-norm" gate* and report bit-identical accuracy (0.6867 on the clean control). The old space had norm ranges of 3–12 where these decays were meaningful; the new space has none. Gate weight statistics (mean / %saturated-admit / %saturated-veto) are now reported per mode to make this degeneracy visible instead of silent.
+7. **The clean control exposed EMA base-erasure.** Even after the pool/val fix, the ground-truth oracle still lost on clean data (−0.8) and naive EMA crashed (−8.6). With α = 0.01 and an unbounded 20k-point pool, each prototype's final state is dominated by its last ~1/α ≈ 100 updates: the base prototype (estimated from millions of clean points) is erased and re-estimated from ~100 random points. Re-estimation noise hurts even perfect-label updates; the ~8% wrong pseudo-labels amplify it. The Phase 9-era encoder masked this because domain shift dominated the re-estimation noise; the robust encoder exposes it.
 
 ### Harness Fixes Applied
 
 1. **Pool/val now share one seeded uniform permutation** over all extracted points (pool = first 20k, val = next 100k of the permutation), so adaptation and evaluation cover the same frame distribution.
 2. **The whole pipeline is seeded** (`torch.manual_seed(42)`, `np.random.seed(42)`, `random.seed(42)`) before loader creation, making extraction and splits reproducible.
+3. **Per-class EMA update cap** (default 50, `--max_updates_per_class`), applied to the oracle *and* every ladder mode, so the base prototype estimate survives the pool pass instead of being erased (finding 7).
+4. **Per-mode gate weight statistics** reported in the ladder, so saturated/degenerate gates are visible rather than silently producing identical rows (finding 6).
 
 ### Next Steps
 
-1. **Re-run the 8-corruption panel** on the fixed harness — the oracle must now land *at or above* zero-shot on every corruption; if it still loses on any corruption, that corruption is genuinely un-adaptable and we want to know that too.
-2. **Treat the gate-fault results as binding**: drop the shipped `soft_dual_weight`/`and_gate`/`ellipsoid_gate` modes for the new space; build the gate from the two bare signals (confidence, feature norm) with per-corruption direction calibration (the LR combination is the reference: 0.86–0.95 AUROC).
-3. **Commit the medium-scale run** (plain `supcon_vib`, seeded) in parallel — the encoder is not in question; the harness and gate questions are independent of it.
+1. **Re-run the 8-corruption panel** on the fully fixed harness (pool/val permutation + per-class update cap) — the oracle must now land *at or above* zero-shot on every corruption, and the clean control must show gates ≈ naive ≈ zero-shot (no adaptation should help or hurt when nothing is wrong); the weight-stats rows should now show non-saturated gate behavior where the signals carry information.
+2. **Fix the linear-probe sampling** (uniform subsample across all 100 frames, not the first 100k points) — the probe that supplies the confidence signal still trains on ~1–2 frames' worth of points, which may explain the fog confidence inversion and must be resolved before the gate is calibrated on confidence.
+3. **Treat the gate-fault results as binding**: drop the shipped `soft_dual_weight`/`and_gate`/`ellipsoid_gate` modes for the new space; build the gate from the two bare signals (confidence, feature norm) with per-corruption direction calibration (the LR combination is the reference: 0.86–0.95 AUROC).
+4. **Commit the medium-scale run** (plain `supcon_vib`, seeded) in parallel — the encoder is not in question; the harness and gate questions are independent of it.

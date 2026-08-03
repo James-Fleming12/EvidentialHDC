@@ -51,14 +51,22 @@ def build_hdc_prototypes(feats_128, lbls, proj, num_classes=17, device='cuda', c
     valid_mask = counts > 0
     return base_protos[valid_mask], proto_lbls[valid_mask]
 
-def run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, weights, alpha):
+def run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, weights, alpha,
+                     max_updates_per_class=50):
     """One pass of EMA prototype updates, each scaled by its gate weight w in [0,1].
 
     w = 1 reproduces the naive (unweighted) EMA; w < 1 soft-mutes the update
     (momentum modulation), w = 0 fully vetoes it. Mirrors the production
     soft_dual_weight regime from the geometric-method thread.
+
+    max_updates_per_class caps how many updates a prototype may absorb.
+    Phase 13 showed that with alpha=0.01 and an unbounded 20k pool, each
+    prototype's final state is dominated by its last ~1/alpha updates: the base
+    prototype (estimated from millions of points) is erased and re-estimated
+    from ~100 random points, destroying accuracy even with perfect labels.
     """
     adapted = base_protos.clone()
+    counts = torch.zeros(len(proto_lbls), device=base_protos.device)
     for i in range(len(pool_feats)):
         w = weights[i]
         if w <= 0:
@@ -68,6 +76,9 @@ def run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, weights, 
         if len(idx) == 0:
             continue
         idx = idx[0]
+        if counts[idx] >= max_updates_per_class:
+            continue
+        counts[idx] += 1
         aw = alpha * w
         adapted[idx] = adapted[idx] * (1 - aw) + pool_feats[i] * aw
         adapted[idx] = F.normalize(adapted[idx], p=2, dim=0)
@@ -106,7 +117,8 @@ def compute_signal_aurocs(meta_list):
 
 
 def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,
-                           device='cuda', pool_size=20000, alpha=0.01, gate_cfg=None):
+                           device='cuda', pool_size=20000, alpha=0.01, gate_cfg=None,
+                           max_updates_per_class=50):
     c_lbl = corrupt_lbls.to(device)
     
     # Get pseudo-labels and confidence for Fog points (in 128D)
@@ -159,18 +171,23 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
     zero_shot_correct = (base_preds == val_lbls).sum().item()
     zero_shot_acc = zero_shot_correct / len(val_lbls)
     
-    # Perfect Oracle test
+    # Perfect Oracle test (same per-class update cap as the ladder modes)
     print("      -> Running Perfect Oracle Test...")
     mask_perfect = pool_pseudo == pool_lbls
     adapted_protos = base_protos.clone()
+    oracle_counts = torch.zeros(len(proto_lbls), device=device)
     for i in range(len(pool_feats)):
         if mask_perfect[i]:
             pl = pool_pseudo[i]
             idx = (proto_lbls == pl).nonzero(as_tuple=True)[0]
-            if len(idx) > 0:
-                idx = idx[0]
-                adapted_protos[idx] = adapted_protos[idx] * (1 - alpha) + pool_feats[i] * alpha
-                adapted_protos[idx] = F.normalize(adapted_protos[idx], p=2, dim=0)
+            if len(idx) == 0:
+                continue
+            idx = idx[0]
+            if oracle_counts[idx] >= max_updates_per_class:
+                continue
+            oracle_counts[idx] += 1
+            adapted_protos[idx] = adapted_protos[idx] * (1 - alpha) + pool_feats[i] * alpha
+            adapted_protos[idx] = F.normalize(adapted_protos[idx], p=2, dim=0)
     perfect_acc = eval_protos(adapted_protos, proto_lbls, val_feats, val_lbls)
     
     # Leave-One-Update-Out (also collects per-update metadata for the AUROC diagnostics)
@@ -222,6 +239,17 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
             if wv.std() > 0:
                 mode_auroc[mode] = roc_auc_score(y_lou, wv)
     
+    # Gate weight statistics: expose degeneracy (Phase 13: on the VIB-capped space,
+    # all shipped modes collapse into one binary norm gate because z-scores saturate)
+    weight_stats = {}
+    for mode, w in w_modes.items():
+        wv = w.detach().cpu().numpy()
+        weight_stats[mode] = {
+            'mean': float(wv.mean()),
+            'frac_one': float((wv >= 0.999).mean()),   # saturated admit
+            'frac_zero': float((wv <= 1e-6).mean()),   # saturated veto
+        }
+    
     # Diagnostic 1: Gated EMA Ladder (real fuse_uncertainties modes, soft-weighted updates)
     print("      -> Running Gated EMA Ladder...")
     
@@ -229,18 +257,21 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
     
     w_uniform = torch.ones_like(pool_conf)
     gated['naive_ema'] = eval_protos(
-        run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w_uniform, alpha),
+        run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w_uniform, alpha,
+                         max_updates_per_class=max_updates_per_class),
         proto_lbls, val_feats, val_lbls)
     
     w_top50 = torch.zeros_like(pool_conf)
     w_top50[torch.topk(pool_conf, pool_size // 2).indices] = 1.0
     gated['top50_conf'] = eval_protos(
-        run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w_top50, alpha),
+        run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w_top50, alpha,
+                         max_updates_per_class=max_updates_per_class),
         proto_lbls, val_feats, val_lbls)
     
     for mode in ['epistemic', 'geometric', 'soft_dual_weight', 'and_gate', 'ellipsoid_gate', 'joint_flip']:
         gated[mode] = eval_protos(
-            run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w_modes[mode], alpha),
+            run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w_modes[mode], alpha,
+                             max_updates_per_class=max_updates_per_class),
             proto_lbls, val_feats, val_lbls)
     
     # Threshold envelope sweep: best-case soft_dual_weight / geometric over a small grid.
@@ -253,7 +284,8 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
             w = fuse_uncertainties(u_epi, n_z, method='soft_dual_weight',
                                    cfg={"u_th": u_th, "u_coef": gate_cfg.get("u_coef", 1.5),
                                         "z_th": z_th, "z_coef": gate_cfg.get("z_coef", 1.0)})
-            acc = eval_protos(run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w, alpha),
+            acc = eval_protos(run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w, alpha,
+                                               max_updates_per_class=max_updates_per_class),
                               proto_lbls, val_feats, val_lbls)
             if acc > best_sdw:
                 best_sdw, best_sdw_cfg = acc, [u_th, z_th]
@@ -264,7 +296,8 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
     for z_th in [-0.5, 0.0, 0.5, 1.0]:
         w = fuse_uncertainties(u_epi, n_z, method='geometric',
                                cfg={"z_th": z_th, "z_coef": gate_cfg.get("z_coef", 1.0)})
-        acc = eval_protos(run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w, alpha),
+        acc = eval_protos(run_weighted_ema(base_protos, proto_lbls, pool_feats, pool_pseudo, w, alpha,
+                                           max_updates_per_class=max_updates_per_class),
                           proto_lbls, val_feats, val_lbls)
         if acc > best_geom:
             best_geom, best_geom_cfg = acc, [z_th]
@@ -277,6 +310,7 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
         'gated': gated,
         'auroc': compute_signal_aurocs(all_meta),
         'mode_auroc': mode_auroc,
+        'weight_stats': weight_stats,
         'h_conf': np.mean([m['conf'] for m in helpful]) if helpful else 0.0,
         'hm_conf': np.mean([m['conf'] for m in harmful]) if harmful else 0.0,
         'h_norm': np.mean([m['norm'] for m in helpful]) if helpful else 0.0,
@@ -298,6 +332,11 @@ def main():
     parser.add_argument("--num_batches", type=int, default=100)
     parser.add_argument("--pool_size", type=int, default=20000)
     parser.add_argument("--alpha", type=float, default=0.01)
+    parser.add_argument("--max_updates_per_class", type=int, default=50,
+                        help="Cap on EMA updates per prototype, so the base estimate "
+                             "(built from millions of points) is not erased by the pool "
+                             "(Phase 13: base-erasure destroyed clean accuracy even with "
+                             "perfect labels). Applied to oracle and all gate modes.")
     parser.add_argument("--u_th", type=float, default=GATE_CFG["u_th"])
     parser.add_argument("--u_coef", type=float, default=GATE_CFG["u_coef"])
     parser.add_argument("--z_th", type=float, default=GATE_CFG["z_th"])
@@ -387,7 +426,9 @@ def main():
                                                clean_feats[:args.pool_size + 100000],
                                                clean_lbls[:args.pool_size + 100000],
                                                clf, proj, device,
-                                               pool_size=args.pool_size, alpha=args.alpha, gate_cfg=gate_cfg)
+                                               pool_size=args.pool_size, alpha=args.alpha,
+                                               gate_cfg=gate_cfg,
+                                               max_updates_per_class=args.max_updates_per_class)
         print("   -> Clean Ladder (gate should ~= naive_ema):")
         for k, v in clean_control['gated'].items():
             if not k.endswith('_cfg'):
@@ -449,7 +490,8 @@ def main():
         print(f"   -> 128D Linear Probe Accuracy: {probe_corrupt_acc:.4f}")
         
         res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,
-                                     device, pool_size=args.pool_size, alpha=args.alpha, gate_cfg=gate_cfg)
+                                     device, pool_size=args.pool_size, alpha=args.alpha, gate_cfg=gate_cfg,
+                                     max_updates_per_class=args.max_updates_per_class)
         res['probe_acc'] = probe_corrupt_acc
         all_results[corruption] = res
         
@@ -471,6 +513,11 @@ def main():
         if ma:
             print("   -> Gate-Mode AUROC (gate's own weight selectivity): "
                   + " | ".join(f"{k} {v:.3f}" for k, v in ma.items()))
+        ws = res.get('weight_stats', {})
+        if ws:
+            print("   -> Gate Weight Stats (mean | %w~1 | %w~0):")
+            for k, v in ws.items():
+                print(f"      {k:<16}: {v['mean']:.3f} | {v['frac_one']*100:.0f}% | {v['frac_zero']*100:.0f}%")
         print(f"   -> Leave-One-Out (5k tests): {res['h_count']} Helpful, {res['hm_count']} Harmful")
         if res['hm_count'] > 0:
             print(f"      Helpful Conf: {res['h_conf']:.4f} | Harmful Conf: {res['hm_conf']:.4f}")
