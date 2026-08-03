@@ -57,6 +57,42 @@ class GenTrainer(Trainer):
         noise = torch.randn_like(result[:, 0, :, :]) * std
         result[:, 0, :, :] += (noise * mask.float())
         return result
+        
+    def volumetric_noise_injection(self, in_vol, density=0.05):
+        """ Additive Augmentation: Inject fake geometric returns into empty space """
+        result = in_vol.clone()
+        # Find empty space (where depth is 0)
+        empty_mask = result[:, 0, :, :] == 0
+        # Randomly select a percentage of empty space
+        inject_mask = (torch.rand_like(empty_mask.float()) < density) & empty_mask
+        
+        # Inject uniformly distributed depth noise (e.g., between 0 and 50)
+        # Assuming channel 0 is depth, which usually scales between 0 and some max.
+        # We can just sample from uniform [0, 1] if it's normalized, or use random non-empty depths.
+        noise = torch.rand_like(result[:, 0, :, :])
+        
+        # Broadcast inject mask across channels
+        inject_mask_expanded = inject_mask.unsqueeze(1).expand_as(result)
+        noise_expanded = torch.rand_like(result) * 2 - 1 # Random features for XYZ and remission
+        noise_expanded[:, 0, :, :] = noise # Depth channel is strictly positive
+        
+        result[inject_mask_expanded] = noise_expanded[inject_mask_expanded]
+        return result
+
+    def sor_filter(self, in_vol):
+        """ Pre-Network Spatial Filtering: Approximation of Radius Outlier Removal using 2D Pooling """
+        valid = (in_vol[:, 0:1, :, :] > 0).float()
+        # Count neighbors in 3x3 grid
+        kernel = torch.ones(1, 1, 3, 3, device=in_vol.device)
+        kernel[0, 0, 1, 1] = 0 # Don't count self
+        
+        # We use F.conv2d to count neighbors
+        with torch.no_grad():
+            neighbors = F.conv2d(valid, kernel, padding=1)
+            
+        # Keep points that have at least 1 neighbor
+        keep = (neighbors >= 1).float()
+        return in_vol * keep
 
     def get_augmented_view(self, in_vol):
         # Compose dropout, jitter, and density subsampling
@@ -64,10 +100,12 @@ class GenTrainer(Trainer):
         out = self.z_jitter(out)
         
         # Density Subsampling (Randomly drop 20% of points to simulate lidar sparsity)
-        # We mask out the entire point (all channels) across the spatial dimensions
         mask = (torch.rand_like(out[:, :1, :, :]) > 0.2).float()
         out = out * mask
         
+        if self.method == 'supcon_vib_additive':
+            out = self.volumetric_noise_injection(out, density=0.05)
+            
         return out
 
     def train_epoch(self, train_loader, model, criterion, optimizer, epoch, evaluator, scheduler, color_fn, report=10, show_scans=False):

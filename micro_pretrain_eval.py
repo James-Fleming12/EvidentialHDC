@@ -25,7 +25,7 @@ def calculate_iou(hist):
     iou[np.isnan(iou)] = 0.0
     return iou
 
-def evaluate_headroom(model, clean_loader, corrupt_loader, device, num_frames=50):
+def evaluate_headroom(model, clean_loader, corrupt_loader, device, num_frames=50, method='supcon_vib'):
     model.eval()
     
     clean_feats = []
@@ -39,6 +39,18 @@ def evaluate_headroom(model, clean_loader, corrupt_loader, device, num_frames=50
         if i >= num_frames: break
         in_vol = batch[0].to(device)
         labels = batch[2].to(device).view(-1)
+        
+        # Apply pre-network SOR filtering for evaluation if method is sor
+        if method == 'supcon_vib_sor':
+            # Create a simple 3x3 neighbor count mask
+            valid = (in_vol[:, 0:1, :, :] > 0).float()
+            kernel = torch.ones(1, 1, 3, 3, device=device)
+            kernel[0, 0, 1, 1] = 0
+            with torch.no_grad():
+                neighbors = F.conv2d(valid, kernel, padding=1)
+            keep = (neighbors >= 1).float()
+            in_vol = in_vol * keep
+            
         mask = (batch[1].to(device) > 0).view(-1)
         with torch.no_grad():
             out_tuple = model(in_vol)
@@ -46,6 +58,11 @@ def evaluate_headroom(model, clean_loader, corrupt_loader, device, num_frames=50
                 _, _, z8 = out_tuple
             else:
                 _, z8 = out_tuple
+                
+            # Apply Expanded Spatial Pooling (Global Anchoring)
+            if method == 'supcon_vib_global':
+                z8 = F.avg_pool2d(z8, kernel_size=3, stride=1, padding=1)
+                
             z_flat = z8.permute(0, 2, 3, 1).reshape(-1, z8.shape[1])[mask]
             clean_feats.append(z_flat.cpu())
             clean_lbls.append(labels[mask].cpu())
@@ -55,6 +72,16 @@ def evaluate_headroom(model, clean_loader, corrupt_loader, device, num_frames=50
         if i >= num_frames: break
         in_vol = batch[0].to(device)
         labels = batch[2].to(device).view(-1)
+        
+        if method == 'supcon_vib_sor':
+            valid = (in_vol[:, 0:1, :, :] > 0).float()
+            kernel = torch.ones(1, 1, 3, 3, device=device)
+            kernel[0, 0, 1, 1] = 0
+            with torch.no_grad():
+                neighbors = F.conv2d(valid, kernel, padding=1)
+            keep = (neighbors >= 1).float()
+            in_vol = in_vol * keep
+            
         mask = (batch[1].to(device) > 0).view(-1)
         with torch.no_grad():
             out_tuple = model(in_vol)
@@ -62,6 +89,10 @@ def evaluate_headroom(model, clean_loader, corrupt_loader, device, num_frames=50
                 _, _, z8 = out_tuple
             else:
                 _, z8 = out_tuple
+                
+            if method == 'supcon_vib_global':
+                z8 = F.avg_pool2d(z8, kernel_size=3, stride=1, padding=1)
+                
             z_flat = z8.permute(0, 2, 3, 1).reshape(-1, z8.shape[1])[mask]
             fog_feats.append(z_flat.cpu())
             fog_lbls.append(labels[mask].cpu())
@@ -171,7 +202,8 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using {device}")
     
-    methods = ['baseline', 'supcon', 'vib', 'supcon_vib', 'smoothness']
+    methods = ['supcon_vib', 'supcon_vib_additive', 'supcon_vib_sor', 'supcon_vib_global']
+    
     results = {}
     
     # We need a validation parser for Fog-3
@@ -206,9 +238,11 @@ def main():
         # Note: We will modify GenTrainer to only train 10% of the epoch to speed it up.
         trainer.train(epochs=args.epochs)
         
+        print(f"Finished {method}. Weights saved to: {log_dir}")
+        
         # Extract features and calculate headroom metrics
         print(f"\n--- Evaluating Headroom for {method.upper()} ---")
-        metrics = evaluate_headroom(trainer.model, clean_parser.validloader, fog_parser.validloader, device, num_frames=50)
+        metrics = evaluate_headroom(trainer.model, clean_parser.validloader, fog_parser.validloader, device, num_frames=50, method=method)
         
         results[method] = metrics
         
