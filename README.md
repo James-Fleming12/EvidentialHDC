@@ -1,11 +1,11 @@
-# Beyond Geometric Confidence: Multi-Source Uncertainty and Balanced Allocation for Backpropagation-Free LiDAR Test-Time Adaptation
+# Robust Feature Pretraining and Uncertainty-Gated Hyperdimensional Prototypes for Backpropagation-Free LiDAR Test-Time Adaptation
 
 ---
 
-## 1. What we established (and why it forced this pivot)
+## 1. What we established (and why the method looks the way it does)
 
 This project began by trying to build a better *geometric* confidence gate in
-hyperdimensional space. That line of work is now closed, and its failure is
+hyperdimensional space. That line of work is closed, and its failure is
 well-characterized. The following are **measured results**, not intuitions:
 
 | Finding | Evidence |
@@ -14,106 +14,201 @@ well-characterized. The following are **measured results**, not intuitions:
 | **The reason is `n ≪ d`.** ~5k samples/class in 10k dimensions. A mean is estimable; a covariance is not. Every second-order score is noise-dominated by construction. | spectrum diagnostic; monotone AUROC decline as more eigen-directions are used |
 | **Set-valued conformal prediction is vacuous in HDC.** `E[\|C(x)\|] = 0.58` — prediction sets are always empty or singleton, never ambiguous, because HDC preserves inter-class separation. | calibration-drift run |
 | **AUROC is the wrong metric for a gate.** k-NN had far higher AUROC (0.939 vs 0.81) yet *lost* on precision-at-coverage, which is what a gate actually uses. | knn_sweep vs precision_coverage |
-| **THE DECISIVE ONE: no pseudo-label gate recovers any of the available headroom.** | overnight run, below |
+| **No pseudo-label gate recovers any of the available headroom.** Oracle gate (ground-truth labels) +2.73 mIoU; best pseudo-label gate ~0.00 — the wrong 18% of pseudo-labels exactly cancel the right 82%. | overnight decision experiment |
 
-### The overnight decision experiment
+The decisive discovery came from the Corruption Atlas diagnostics, and it
+changed the direction of the project entirely:
 
-```
-frozen (11 live classes)  47.93
-oracle gate (GT labels)   50.47   (+2.73)      <- headroom EXISTS
-supervised ceiling        59.03   (+11.10)     <- (with Bayesian shrinkage prior)
-measurement noise (std)    1.00
+| Finding | Evidence |
+|---|---|
+| **Type C corruptions (Fog, Crosstalk) destroy linear separability.** The 128D feature manifold collapses into isotropic noise. A purely mathematical TTA technique (memory banks, prototype shifts) is powerless because the underlying feature space is gone. | Corruption Atlas diagnostics |
+| **The fix must happen before HDC projection.** The backbone itself has to be trained to map physical noise to clean semantic manifolds (or isolate it), so the HDC space has real geometry to work with. | micro/medium pretraining runs |
+| **A decoupled SupCon+VIB pretraining makes the encoder robust.** Linear Probe on Fog reached 49.4% vs 23.6% baseline (2.1×), and the semantic information mathematically survives random projection and sign binarization (49.4% → 49.0% → 47.8%). | Phase 7/8 headroom diagnostics |
+| **The remaining bottleneck is the naive decoder.** Indiscriminate EMA prototype updates absorb impossible Fog/Crosstalk artifacts, poisoning the Euclidean centroids: 8.2% prototype accuracy despite 49.4% linear separability. | Phase 8 degradation pipeline |
+| **Harmful updates are identifiable by a universal signature.** They carry significantly lower confidence (0.61 vs 0.91) and significantly larger feature norms (6.41 vs 5.27) — consistent across all 8 corruptions. | Phase 9 universal oracle matrix |
+| **Gating by confidence recovers most of the oracle headroom.** Top-50% confidence gate: 20.63% vs perfect oracle 23.32% vs naive EMA 16.36%. | Phase 9 oracle gating |
+| **Input-space remediation is a dead end.** SOR pre-filtering (in the training loop), additive noise augmentation, and global latent pooling all fail to beat the plain robust encoder on HDC Prototype Accuracy (9.1% / 12.4% / 14.4% vs 20.1%). | Phase 10 remediation shootout |
+| **On the robust encoder, adaptation is nearly solved.** Naive EMA already harvests ~82% of the oracle headroom on Fog (18.34% vs 19.54%); feature norm is the dominant gate signal (AUROC 0.94), while probe confidence is currently anti-predictive (AUROC 0.15 — under re-test with corrected sampling). | Phase 12 gated-EMA diagnostic |
 
-best pseudo-label gate    ~47.98  (~0.00)      <- NONE of it is recoverable
-   (macro-precision stalls at ~82%, zeroing the gain)
-```
+**Therefore, the method rests on three pillars**, each attacking one of the
+measured failure modes:
 
-**There is massive headroom (up to +41 on some rare classes), and thresholding cannot reach any of it.**
-
-### The diagnosis: a precision wall
-
-The oracle and the best pseudo-gate move the prototypes by *comparable amounts* (drift ~0.71). Same update rule, same learning rate, similar magnitude of movement — and yet **+2.73 versus +0.00**. The only material difference is precision.
-
-**At ~82% macro precision, the wrong 18% exactly cancel the right 82%.** The errors are not symmetric: a wrong pseudo-label drags a prototype toward *another class's* region — a far larger displacement than the small refinement a correct label buys.
-
-And this is specifically a **rare-class** problem. *Pooled* precision at 10% coverage is 99.2%; **macro** precision at the same coverage is 81%. The megaclasses are easy and already correct. The classes mIoU actually weights are the ones the geometric gate cannot label reliably **at any threshold**.
-
-> **Therefore: the bottleneck is pseudo-label QUALITY, not pseudo-label SELECTION — specifically for rare classes. No amount of clever filtering fixes a label that is wrong. We must make the labels better.**
-
-Every design decision below follows from this.
+1. **Robust feature extractor pretraining (SupCon + VIB)** — make the 128D
+   space robust enough that HDC prototypes have a meaningful manifold to live on.
+2. **Uncertainty-gated prototype updates** — stop the EMA memory from overfitting
+   to corruption artifacts, using standard confidence/uncertainty metrics.
+3. **Balanced update allocation** — ensure majority classes and dense feature
+   modes are not overrepresented in the adaptation budget.
 
 ---
 
-## 2. The precision-requirement curve
+## 2. Why gating alone could not win (the precision wall)
 
-We took the oracle gate and injected label noise at controlled rates to find the precision at which the gain disappears. Crucially, the injected noise mirrored the model's actual confusion matrix (e.g., adjacent class bleeding) rather than uniform random flips, perfectly simulating the systematic damage a real gate would permit.
+We took the oracle gate and injected label noise at controlled rates to find
+the precision at which the gain disappears. The injected noise mirrored the
+model's actual confusion matrix rather than uniform random flips:
 
 ```
 oracle @ 100% target precision -> +2.73 mIoU
-        @  98%                 -> +2.28
         @  95%                 -> +2.22
         @  90%                 -> +1.70
         @  85%                 -> +1.38
-        @  82%                 -> +1.27
         @  80%                 -> +1.20
-        @  75%                 -> +1.07
         @  70%                 -> +1.00    (hits the 2*noise floor)
 ```
 
-This curve converts *"we need better pseudo-labels"* into a **concrete engineering target**. 
-The result is highly encouraging: the wall is a gentle slope. We do not need a mythical 98% precision. If our uncertainty fusion can achieve just **85-90% pooled precision** (which corresponds to ~71-76% macro precision), we will comfortably capture measurable, statistically significant gains (+1.38 to +1.70 mIoU).
+This is why Pillar 1 exists: **at ~82% macro precision, the wrong 18% of
+pseudo-labels exactly cancel the right 82%** — and this is specifically a
+rare-class problem (pooled precision 99.2% vs macro precision 81% at 10%
+coverage). No amount of clever filtering fixes a label that is wrong, and no
+gate can recover a feature space that has collapsed into isotropic noise. The
+pretrained encoder attacks the problem at the source; gating then only needs to
+veto the residual artifacts.
 
 ---
 
-## 3. Contribution 1 — Multi-source uncertainty fusion
-
-Every confidence signal used so far has been *geometric*: distance or similarity in HD space. That is demonstrably insufficient. Classes 0, 7, and 2 have terrible frozen IoUs, meaning their pre-trained prototypes are physically located in the wrong quadrant of hyperspace. **If the prototype is in the wrong place, a geometric gate measuring distance to that prototype is also wrong.**
-
-We must fuse independent sources of uncertainty whose failure modes are uncorrelated with geometric distance.
-
-**(a) Geometric uncertainty (HD space).** Prototype cosine similarity. Cheap, `O(K)`. Answers *"is this point near the current class manifold?"*
-
-**(b) Epistemic uncertainty (the network).** Measured **without** the softmax.
-- **Multi-RP ensemble** — project the same feature through several independent random projections.
-- **Evidential Deep Learning / Feature-space density** in the *backbone's* latent space.
-
-**(c) Spatial / temporal consistency.** A point whose neighbours and previous-frame correspondent agree with its label is far more likely correct. This acts as a **vote / veto on the LABEL**, not a smoother of the score. (Prior graph-Laplacian smoothing blurred errors across objects; consistency must act as a hard veto to reject errors, not smear them).
-
----
-
-## 4. Contribution 2 — Balanced update allocation (Budgeting by Headroom)
+## 3. Pillar 1 — Robust Feature Extractor Pretraining (SupCon + VIB)
 
 ### The problem, measured
 
-A frequency-proportional update budget spends almost all of its capacity on classes that cannot improve. 
-In our supervised ceiling tests, Class 11 (Road) had millions of points but **negative headroom (-0.57)**. Updating it actually hurts the model because it is already saturated. Meanwhile, Class 0 (Car) had only 98k points but **+41.07 headroom**. 
+Type C corruptions (Fog, Crosstalk) mathematically destroy the linear
+separability of the geometric manifolds. Prototype drift and memory-bank
+methods are powerless because the underlying 128D space has collapsed — the
+noise points are no longer separable from the semantic points by any
+threshold.
+
+### The mechanism
+
+Train the 128D backbone with a **decoupled** objective before the HDC
+projection layer:
+
+- **SupCon (angular alignment).** Supervised contrastive loss on
+  L2-normalized features pulls augmented views of the same class together and
+  pushes different classes apart. LiDAR segmentation is dense, so a single
+  batch provides millions of positive/negative pairs natively.
+- **VIB (magnitude isolation).** A KL-divergence penalty
+  ($\mathrm{KL}[q(z|x) \| \mathcal{N}(0, I)]$) on both the clean *and*
+  augmented pathways forces the latent magnitudes down: complex, high-entropy
+  spatial noise (Fog/Crosstalk) is expensive to memorize, so it collapses
+  toward the origin ($\Vert z \Vert_2 \approx 0$) while semantic geometry keeps
+  bounded, spherical, dense clusters.
+- **Physics-based augmentation only.** Voxelized beam dropout (sparsity),
+  anisotropic ray-axis jitter (sensor noise), and density subsampling
+  (attenuation) — explicitly *not* KITTI-C's ray-tracing algorithms, to avoid
+  overfitting the augmentation to the corruption pipeline.
+
+### Measured effect
+
+- Linear Probe on Fog: **49.4%** vs 23.6% baseline (2.1×).
+- Feature magnitudes bounded to ~4.6–5.6 (vs 8+ without VIB); the representation
+  supports the Euclidean nearest-prototype geometry HDC relies on.
+- The information survives the HDC encoding losslessly: 49.4% linear →
+  49.0% after random projection → 47.8% after sign binarization.
+- Best HDC Prototype Accuracy from the naive decoder: **20.1%** (vs 5.3% for
+  the untrained baseline in the same protocol).
+- Post-hoc remediation on top of the robust encoder (SOR pre-filtering,
+  additive noise augmentation, global pooling) does not help — the extractor
+  is "solved enough"; further investment belongs in the decoder.
+
+---
+
+## 4. Pillar 2 — Uncertainty-Gated HDC Prototype Updates
+
+### The problem, measured
+
+With the robust encoder in place, the remaining failure is the naive decoder:
+a memory bank or EMA prototype that updates indiscriminately absorbs the
+impossible Fog/Crosstalk artifacts, poisoning the zero-shot Euclidean
+centroid (8.2% prototype accuracy despite 49.4% linear separability).
+
+### The signature of poison
+
+Phase 9's leave-one-update-out profiling proved that harmful updates form a
+statistically identifiable population with a **universal signature** across
+all 8 corruptions: lower confidence and larger feature norms than helpful
+updates.
+
+### The mechanism
+
+Place a **gate before the memory update**. The two standard signals are
+z-scored with streaming statistics and combined into a soft multiplicative
+weight (the same algebra used by the production uncertainty fusion):
+
+$$w(x) = \exp\big(-\lambda_1 \cdot \text{relu}(\tau_c - c)\big) \cdot \exp\big(-\lambda_2 \cdot \text{relu}(n_z - \tau_n)\big)$$
+
+and the prototype update becomes $c \leftarrow c + \eta \cdot w(x) \cdot z$ —
+a soft veto that down-weights artifacts without starving adaptation
+(avoiding the hard AND-gate starvation and OR-gate flooding documented in the
+earlier geometric-method threads).
+
+### Measured effect
+
+- On the pre-robust encoder: top-50% confidence gate reached **20.63%** vs
+  16.36% naive — 89% of the perfect-oracle ceiling (23.32%).
+- On the robust encoder (Phase 12, Fog): naive EMA already reaches 18.34% of
+  the 19.54% oracle ceiling — the gate's remaining job is closing that gap and
+  preventing drift over long streams.
+
+### Gate-fault verification (do not trust old calibration)
+
+The shipped gates (`soft_dual_weight`, `and_gate`, `ellipsoid_gate`,
+`rescue_gate`) were tuned on the *collapsed* feature space and can embed
+old-space assumptions (e.g., "harmful = low confidence", which inverts on the
+new encoder). Before trusting a gate, the diagnostic harness runs:
+a **clean-data control** (gates must not degrade adaptation when no poison
+exists), **per-gate-mode AUROC** (is the gate's own score selective?),
+**sign-corrected joint gates**, and **threshold envelope sweeps** (best-case
+config vs shipped defaults).
+
+---
+
+## 5. Pillar 3 — Balanced Update Allocation (Intra/Inter-Class Balance)
+
+### The problem, measured
+
+A frequency-proportional update budget spends almost all of its capacity on
+classes that cannot improve. Class 11 (Road) had millions of points but
+**negative headroom (-0.57)** — updating it hurts the model because it is
+already saturated. Meanwhile Class 0 (Car) had only 98k points but
+**+41.07 headroom**.
 
 ### The mechanism: a subcluster update ledger
 
-We must allocate the adaptation budget by **headroom**, not by frequency.
-- Maintain **K representative subclusters per class**, initialized from source.
-- Route each admitted point to its nearest subcluster.
-- **A subcluster contributes to the prototype update only if its update count is within a bounded range of its siblings'.** 
+Allocate the adaptation budget by **headroom**, not frequency, at two levels:
 
-This equalizes adaptation signal *within* a class (no single dense mode dominates) and *across* classes (freezing saturated dense classes like Road, and funneling the update budget exclusively to high-headroom regions like Car/Motorcycle).
+- **Inter-class balance:** freeze saturated majority classes (Road) and funnel
+  the update budget to high-headroom classes (Car, Motorcycle). This directly
+  prevents the majority classes' massive point counts from drowning out the
+  classes mIoU actually weights.
+- **Intra-class balance:** maintain K representative subclusters per class
+  (initialized from source); a subcluster contributes to the prototype update
+  only if its update count is within a bounded range of its siblings'. This
+  prevents a single dense feature mode within a class from dominating the
+  prototype's motion.
 
-Crucially, **the subclusters only track updates; they never touch inference.** This prevents the Voronoi-shattering failure that destroyed previous subcluster-gating attempts.
+Crucially, the subclusters only track updates; they never touch inference.
+This prevents the Voronoi-shattering failure that destroyed previous
+subcluster-gating attempts.
 
 ---
 
-## 5. Contribution 3 (variant) — Multi-view test-time augmentation
+## 6. Multi-View Test-Time Augmentation (variant)
 
-Generate augmented views (yaw roll, scale, dropout), bundle the resulting hypervectors, use cross-view soft agreement as a reliability signal. 
-Positioned as a compute-scaling variant: *"when additional compute is available, multi-view agreement raises macro precision by X at Y× cost."*
+Generate augmented views (yaw roll, scale, dropout), bundle the resulting
+hypervectors, and use cross-view soft agreement as a reliability signal.
+Positioned as a compute-scaling variant: *"when additional compute is
+available, multi-view agreement raises macro precision at higher cost."*
 
 ---
 
-## 6. Extensive Reading List
+## 7. Extensive Reading List
 
-To execute this pivot seamlessly, the following literature provides the theoretical foundation and the exact mechanisms needed for the implementation of the three pillars.
+The following literature provides the theoretical foundation and the exact
+mechanisms needed for the three pillars.
 
-### 1. Efficient Single-Pass Epistemic Uncertainty (Contribution 1b)
-These papers explore how to extract robust uncertainty directly from the backbone's latent space without requiring deep ensembles, multiple forward passes, or distance metrics that duplicate your HDC cosine similarity.
+### 1. Robust Feature Extraction & Magnitude-Based OOD Detection (Pillar 1)
+The pretraining objective relies on the feature space being distance-aware and
+magnitude-informative. These papers justify and refine that foundation.
 
 | Paper | The Concept | How to Use It |
 |---|---|---|
@@ -121,25 +216,24 @@ These papers explore how to extract robust uncertainty directly from the backbon
 | [**SNGP**](https://scholar.google.com/scholar?q=Simple+and+Principled+Uncertainty+Estimation+with+Deterministic+Deep+Learning+via+Distance+Awareness)<br>*(Liu et al., NeurIPS 2020)* | Spectral-normalized Neural Gaussian Processes force the latent space to be "distance-aware," providing high-quality epistemic uncertainty in a single pass. | (Used for pre-training/formulation reference) |
 | [**Prior Networks**](https://scholar.google.com/scholar?q=Predictive+Uncertainty+Estimation+via+Prior+Networks)<br>*(Malinin & Gales, NeurIPS 2018)* | Introduces Dirichlet Prior Networks to model distributional uncertainty directly. Targets the requirement to identify points far from the source distribution. | (Used for pre-training/formulation reference) |
 | [**DUQ**](https://scholar.google.com/scholar?q=Deterministic+Neural+Networks+with+Appropriate+Inductive+Biases+Capture+Epistemic+Uncertainty)<br>*(van Amersfoort et al., ICML 2020)* | Uses a two-sided gradient penalty to enforce "distance awareness." | Proves you can extract a mathematically rigorous epistemic uncertainty score directly from the feature vector's magnitude. |
-| [**Laplace Redux**](https://scholar.google.com/scholar?q=Laplace+Redux+Effortless+Bayesian+Deep+Learning)<br>*(Daxberger et al., NeurIPS 2021)* | Applies a post-hoc Laplace approximation to the last layer, yielding a closed-form, single-pass epistemic uncertainty without altering weights. | Fit this approximation to the source data once; evaluate target data against it at test-time for a pure epistemic signal. |
-| [**Feature Space Singularity**](https://scholar.google.com/scholar?q=Feature+Space+Singularity+for+Out-of-Distribution+Detection)<br>*(Huang et al., NeurIPS 2021)* | Demonstrates the raw L2 norm (magnitude) of the latent vector is a highly effective, zero-cost metric for OOD detection. | Since HDC requires L2-normalized vectors, the magnitude is usually thrown away. Use the pre-normalization magnitude as the epistemic veto! |
+| [**Feature Space Singularity**](https://scholar.google.com/scholar?q=Feature+Space+Singularity+for+Out-of-Distribution+Detection)<br>*(Huang et al., NeurIPS 2021)* | Demonstrates the raw L2 norm (magnitude) of the latent vector is a highly effective, zero-cost metric for OOD detection. | Justifies the feature-norm term of the gate (Phase 12: norm AUROC 0.94). |
 | [**React**](https://scholar.google.com/scholar?q=React+Out-of-distribution+Detection+With+Rectified+Activations)<br>*(Sun et al., NeurIPS 2021)* | Shows OOD data causes massive activation spikes in penultimate layers. Clamping these makes uncertainty metrics vastly more reliable. | Monitor pre-projection features for activation spikes as an immediate indicator of epistemic failure (e.g., fog artifacts). |
+| [**Laplace Redux**](https://scholar.google.com/scholar?q=Laplace+Redux+Effortless+Bayesian+Deep+Learning)<br>*(Daxberger et al., NeurIPS 2021)* | Applies a post-hoc Laplace approximation to the last layer, yielding a closed-form, single-pass epistemic uncertainty without altering weights. | Fit this approximation to the source data once; evaluate target data against it at test-time for a pure epistemic signal. |
 
-### 2. Spatial/Temporal Consistency as a Hard Veto (Contribution 1c)
-Consistency cannot just smooth scores; it must actively reject geometrically plausible but temporally/spatially isolated errors.
+### 2. Uncertainty Gating and Label Selection (Pillar 2)
+Consistency and confidence signals must act as a **veto on the label/update**, not a smoother of the score.
 
 | Paper | The Concept | How to Use It |
 |---|---|---|
 | [**Temporal Ensembling**](https://scholar.google.com/scholar?q=Temporal+Ensembling+for+Semi-Supervised+Learning)<br>*(Laine & Aila, ICLR 2017)* | The foundational text on using moving averages of network predictions over time to stabilize pseudo-labels. | Maps perfectly to consecutive LiDAR frames for defining temporal vetoes. |
+| [**FixMatch**](https://scholar.google.com/scholar?q=FixMatch+Simplifying+Semi-Supervised+Learning+with+Consistency+and+Confidence)<br>*(Sohn et al., NeurIPS 2020)* | Enforces that weak and strong predictions must strictly agree before retaining a label. | The theoretical basis for a "hard veto" argument over "soft smoothing." |
 | [**ST3D**](https://scholar.google.com/scholar?q=ST3D+Self-training+for+Unsupervised+Domain+Adaptation+on+3D+Object+Detection)<br>*(Yang et al., CVPR 2021)* | State-of-the-art for 3D LiDAR UDA, heavily utilizing spatial/temporal consistency to filter pseudo-labels. | Read to see exactly what baselines your consistency veto must outperform. |
-| [**FixMatch**](https://scholar.google.com/scholar?q=FixMatch+Simplifying+Semi-Supervised+Learning+with+Consistency+and+Confidence)<br>*(Sohn et al., NeurIPS 2020)* | Enforces that weak and strong predictions must strictly agree before retaining a label. | The theoretical basis for your "hard veto" argument over "soft smoothing." |
+| [**TENT**](https://scholar.google.com/scholar?q=TENT+Fully+Test-Time+Adaptation+by+Entropy+Minimization)<br>*(Wang et al., ICLR 2021)* | The baseline for entropy minimization based TTA. | Cite as the counter-example: TENT's soft smoothing causes semantic poisoning. Contrast with a boolean temporal veto. |
 | [**PointTTA**](https://scholar.google.com/scholar?q=PointTTA+Test-Time+Adaptation+for+Point+Cloud+Processing)<br>*(Metzger et al., 2023)* | A direct TTA framework for 3D point clouds relying on spatial transformations and self-supervision. | Compare their soft-consistency loss to your hard-veto logic to define valid "spatial neighborhoods." |
-| [**Test-Time Training on Video**](https://scholar.google.com/scholar?q=Test-Time+Training+on+Video+Better+Point+Tracking+and+Pose+Estimation)<br>*(Sun et al., 2022)* | Adapts representations online by enforcing temporal consistency across sequential frames. | Validates the assumption that temporal physics is the ultimate arbiter of label correctness. Use tracking logic for frame-to-frame veto. |
 | [**Ada3D**](https://scholar.google.com/scholar?q=Ada3D+Adaptive+3D+Object+Detection)<br>*(Recent CVPR/ICCV)* | Focuses on aligning local spatial contexts under domain shifts, assuming adjacent points share semantic identity. | Formalize the spatial veto: if cosine similarity says Pedestrian, but k geometric neighbors are Road, the label is vetoed. |
-| [**TENT**](https://scholar.google.com/scholar?q=TENT+Fully+Test-Time+Adaptation+by+Entropy+Minimization)<br>*(Wang et al., ICLR 2021)* | The baseline for entropy minimization based TTA. | Cite as the counter-example: TENT's soft smoothing causes semantic poisoning. Contrast with your boolean temporal veto. |
 
-### 3. Subcluster Ledgers & Headroom Allocation (Contribution 2)
-These papers tackle gating updates based on representation saturation and non-i.i.d. target streams, aligning perfectly with the backprop-free subcluster ledger.
+### 3. Balanced / Headroom-Based Allocation (Pillar 3)
+These papers tackle gating updates based on representation saturation and non-i.i.d. target streams, aligning perfectly with the subcluster ledger.
 
 | Paper | The Concept | How to Use It |
 |---|---|---|
@@ -151,8 +245,8 @@ These papers tackle gating updates based on representation saturation and non-i.
 | [**AdaContrast**](https://scholar.google.com/scholar?q=AdaContrast+Contrastive+Test-Time+Adaptation)<br>*(Chen et al., CVPR 2022)* | Utilizes a pseudo-label queue to track class frequencies and reject over-represented classes. | Validates that updating saturated classes hurts. Defends why your ledger freezes saturated subclusters. |
 | [**Practical Coresets for Online ML**](https://scholar.google.com/scholar?q=Practical+Coresets+for+Online+Machine+Learning)<br>*(Feldman 2020)* | Focuses on selecting the smallest possible subset of streaming data to represent the full distribution. | Rigorous framing: your ledger maintains an online coreset of the target domain. Tracking K subclusters equalizes learning potential. |
 
-### 4. Multi-View Test-Time Augmentation (Contribution 3)
-If including the TTA variant for compute-scaling, it must be grounded in literature treating augmentation as a reliability signal.
+### 4. Multi-View Test-Time Augmentation (variant)
+If including the TTA variant for compute-scaling, ground it in literature treating augmentation as a reliability signal.
 
 | Paper | The Concept | How to Use It |
 |---|---|---|
@@ -162,10 +256,18 @@ If including the TTA variant for compute-scaling, it must be grounded in literat
 
 ---
 
-## 7. Order of work
+## 8. Order of work (current state)
 
-1. **Identify the epistemic UQ method (Pillar 1).** Find a lightweight, single-pass method compatible with our frozen backbone.
-2. **Draft the memory-safe subclustering ledger (Pillar 3).** Ensure it enforces the headroom-based budget.
-3. **Uncertainty sources, one at a time.** Measure macro precision on each independent source.
-4. **Fusion + full ablation.**
-5. **mIoU validation**: error bars, live classes, interleaved eval, oracle reported alongside.
+1. **Validate the gate signals on the robust encoder.** Fix the linear-probe
+   sampling (uniform across frames), complete the 8-corruption panel with the
+   clean-data control, per-gate-mode AUROC, and threshold envelope sweeps.
+2. **Rebuild the gate from the two bare signals** (confidence, feature norm)
+   on the new space — reusing the shipped `fuse_uncertainties` modes only where
+   the gate-fault diagnostics clear them.
+3. **Medium-scale pretraining run.** Plain `supcon_vib`, 100% data, seeded for
+   reproducibility (the naive EMA baseline of 18.34% on Fog is the floor the
+   converged encoder must beat).
+4. **Gated EMA TTA end-to-end** on the converged encoder, targeting the
+   oracle ceiling (19.54% Fog) and the Phase 9 acceptance band.
+5. **Balanced allocation ledger** on top of the gated adaptation (inter-class
+   headroom budgeting + intra-class subcluster bounds).
