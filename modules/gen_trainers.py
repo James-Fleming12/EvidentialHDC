@@ -16,8 +16,8 @@ class GenTrainer(Trainer):
         # Call super with path=None to prevent it from immediately loading the checkpoint
         super().__init__(ARCH, DATA, datadir, logdir, None)
         
-        # If VIB or SupCon+VIB, initialize logvar_head and add to optimizer BEFORE loading checkpoint
-        if self.method in ['vib', 'supcon_vib']:
+        # If VIB or any SupCon+VIB variant, initialize logvar_head and add to optimizer BEFORE loading checkpoint
+        if self.method == 'vib' or self.method.startswith('supcon_vib'):
             self.logvar_head = nn.Conv2d(128, 128, kernel_size=1).to(self.device)
             # Add to optimizer so it has 2 param groups (matching the saved checkpoint)
             self.optimizer.add_param_group({'params': self.logvar_head.parameters()})
@@ -132,6 +132,11 @@ class GenTrainer(Trainer):
             # Create augmented view for all methods
             in_vol_aug = self.get_augmented_view(in_vol)
 
+            # SupCon+VIB+SOR: mirror the eval-time SOR pre-filter on both clean and augmented inputs
+            if self.method == 'supcon_vib_sor':
+                in_vol = self.sor_filter(in_vol)
+                in_vol_aug = self.sor_filter(in_vol_aug)
+
             with torch.amp.autocast('cuda'):
                 # Forward pass clean
                 if self.ARCH["train"]["aux_loss"]:
@@ -219,7 +224,7 @@ class GenTrainer(Trainer):
                     loss_sem = (loss_ce_clean + loss_ce_aug) / 2.0
                     loss_total = loss_sem + 0.01 * loss_kl
 
-                elif self.method == 'supcon_vib':
+                elif self.method.startswith('supcon_vib'):
                     # Decoupled SupCon + VIB
                     # 1. VIB Magnitude Bottleneck (Absolute Space)
                     if self.logvar_head is None:

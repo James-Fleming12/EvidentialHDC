@@ -25,6 +25,20 @@ def calculate_iou(hist):
     iou[np.isnan(iou)] = 0.0
     return iou
 
+def apply_sor(in_vol):
+    """Pre-network Statistical Outlier Removal: zero out pixels with no local 3x3 neighbors.
+
+    Mirrors gen_trainers.sor_filter so that evaluation sees the same SOR-filtered
+    inputs the SupCon+VIB+SOR variant is trained on.
+    """
+    valid = (in_vol[:, 0:1, :, :] > 0).float()
+    kernel = torch.ones(1, 1, 3, 3, device=in_vol.device)
+    kernel[0, 0, 1, 1] = 0  # Don't count self
+    with torch.no_grad():
+        neighbors = F.conv2d(valid, kernel, padding=1)
+    keep = (neighbors >= 1).float()
+    return in_vol * keep
+
 def evaluate_headroom(model, clean_loader, corrupt_loader, device, num_frames=50, method='supcon_vib'):
     model.eval()
     
@@ -42,14 +56,7 @@ def evaluate_headroom(model, clean_loader, corrupt_loader, device, num_frames=50
         
         # Apply pre-network SOR filtering for evaluation if method is sor
         if method == 'supcon_vib_sor':
-            # Create a simple 3x3 neighbor count mask
-            valid = (in_vol[:, 0:1, :, :] > 0).float()
-            kernel = torch.ones(1, 1, 3, 3, device=device)
-            kernel[0, 0, 1, 1] = 0
-            with torch.no_grad():
-                neighbors = F.conv2d(valid, kernel, padding=1)
-            keep = (neighbors >= 1).float()
-            in_vol = in_vol * keep
+            in_vol = apply_sor(in_vol)
             
         mask = (batch[1].to(device) > 0).view(-1)
         with torch.no_grad():
@@ -74,13 +81,7 @@ def evaluate_headroom(model, clean_loader, corrupt_loader, device, num_frames=50
         labels = batch[2].to(device).view(-1)
         
         if method == 'supcon_vib_sor':
-            valid = (in_vol[:, 0:1, :, :] > 0).float()
-            kernel = torch.ones(1, 1, 3, 3, device=device)
-            kernel[0, 0, 1, 1] = 0
-            with torch.no_grad():
-                neighbors = F.conv2d(valid, kernel, padding=1)
-            keep = (neighbors >= 1).float()
-            in_vol = in_vol * keep
+            in_vol = apply_sor(in_vol)
             
         mask = (batch[1].to(device) > 0).view(-1)
         with torch.no_grad():
