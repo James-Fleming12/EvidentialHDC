@@ -33,7 +33,7 @@ $$ \text{gain} = +2.88 - 0.0972 \times \text{frozen\_mIoU} $$
 
 For corruptions where the initial frozen mIoU is above ~30, there is virtually no headroom left that geometric pseudo-labels can fix. The errors in those regimes consist of fundamentally degraded structures and ambiguous boundaries where pseudo-label confidence is uninformative or actively harmful. The geometric adaptation mechanism is capped by the ceiling of what is correctable without ground truth.
 
-*(For detailed ablations of the geometric mechanisms—Bayesian Momentum, IC4, and Asymmetric Dual Gating—see `docs/geometric_method/method_details.md`).*
+*(For detailed ablations of the geometric mechanisms - Bayesian Momentum, IC4, and Asymmetric Dual Gating - see `docs/geometric_method/method_details.md`).*
 
 ---
 

@@ -17,23 +17,23 @@ Our empirical results have brought us to a genuine fork in our research directio
 
 ## 2. Proposed Mechanisms (Non-MV)
 
-### N1 — Evidential Reject-Class Gating (COME)
+### N1: Evidential Reject-Class Gating (COME)
 - **Mechanism:** Replaces hard confidence thresholds with a Dirichlet subjective-logic gate. "Uncertainty mass" acts as its own channel; points update in proportion to $1 - u$.
 - **Fixes:** Resolves the softmax blockade (where 10K-D cosines squash max softmax to ~0.06, causing 0.90 thresholds to reject everything).
 - **Cost:** Trivial reweighting.
 - **Risk:** Very similar to our existing epistemic gate (`soft_dual_weight`). We must verify it adds actual novelty and doesn't just relabel what we have.
 
-### N2 — Dual-Channel Uncertainty Decomposition (EviATTA)
+### N2: Dual-Channel Uncertainty Decomposition (EviATTA)
 - **Mechanism:** Splits uncertainty into *distribution uncertainty* (domain gap/precision failure) and *data uncertainty* (inherent noise/hallucination).
 - **Fixes:** The fog false-trigger that killed the ratio-based prior switch. Prior is applied when dist-unc is high and data-unc is low.
 - **Risk:** The decomposition could be degenerate in HDC space (both channels move together). Requires a diagnostic check first to see if it actually separates fog from wet_ground.
 
-### N3 — Conjugate Pseudo-Label Loss (Goyal et al.)
+### N3: Conjugate Pseudo-Label Loss (Goyal et al.)
 - **Mechanism:** Replaces ad-hoc heuristic prototype updates with the convex conjugate of the supervised training loss, yielding a principled update rule.
 - **Fixes:** Objective-level poisoning of the prototypes.
 - **Cost/Risk:** High derivation effort. HDC quantization or non-convexity might break conjugate assumptions.
 
-### N4 — D-Optimal Subspace Prototypes (Liang et al.)
+### N4: D-Optimal Subspace Prototypes (Liang et al.)
 - **Mechanism:** Finds the informative subspace where semantic margin lives (D-optimal compression) and gates/updates over this dense core rather than the full 10,000 dimensions.
 - **Fixes:** The flattened-similarity problem at its root.
 - **Diagnostic:** Check the singular-value spectrum of source prototypes. If flat, HDC is truly holographic and compression will destroy the signal.
@@ -42,12 +42,12 @@ Our empirical results have brought us to a genuine fork in our research directio
 
 ## 3. Proposed Mechanisms (MV / Multi-View)
 
-### M1 — Structural-Alignment Gate with Negative Augmentations (SaTeen)
+### M1: Structural-Alignment Gate with Negative Augmentations (SaTeen)
 - **Mechanism:** Gates on both positive agreement (views agree) AND negative constraints (disagrees with destroyed views).
 - **Fixes:** Catches hallucination cases where a false point might agree across mild positive views but fails to scatter under destruction.
 - **Risk:** If hallucinated points also scatter under destruction like real points, the negative constraint adds nothing.
 
-### M2 — Weak-Strong Soft-Voting Update (Improved Self-Training)
+### M2: Weak-Strong Soft-Voting Update (Improved Self-Training)
 - **Mechanism:** Gates prototype updates on weak-strong augmentation consistency via soft voting, not confidence. Points update only if the pseudo-label survives strong augmentation.
 - **Fixes:** Confident-wrong poisoning. Structurally-sound points cluster under augmentation, while outliers scatter and self-veto.
 - **Risk:** Strong augmentation on LiDAR range projections must be carefully defined to preserve semantics.

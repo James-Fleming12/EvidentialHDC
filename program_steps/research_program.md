@@ -15,7 +15,7 @@ Once these properties are understood, architecture design will be derived direct
 
 ---
 
-## Phase I — Representation Audit
+## Phase I  -  Representation Audit
 **Scientific Question:** Where does useful information disappear?
 This phase is independent of any TTA algorithm.
 
@@ -58,7 +58,7 @@ Establish the upper bounds for future methods:
 
 ---
 
-## Phase II — Geometry Characterization
+## Phase II  -  Geometry Characterization
 **Scientific Question:** How is the representation organized?
 This phase measures the geometry of the feature space.
 
@@ -95,7 +95,7 @@ Track the topology across `Input -> Backbone -> HDC Projection -> Prototype` usi
 
 ---
 
-## Phase III — Adaptation Dynamics
+## Phase III  -  Adaptation Dynamics
 **Scientific Question:** Why does adaptation fail?
 This phase models adaptation as a dynamical system.
 
@@ -128,7 +128,7 @@ Estimate how much one sample changes the prototypes, logits, and neighboring pre
 
 ---
 
-## Phase IV — Stability Analysis
+## Phase IV  -  Stability Analysis
 **Scientific Question:** What perturbations can the representation tolerate?
 
 **Memory Capacity Scaling**
@@ -159,7 +159,7 @@ Measure representation drift over sequences of 1, 5, 20, and 100 frames.
 
 ---
 
-## Phase V — Recoverability
+## Phase V  -  Recoverability
 **Scientific Question:** If information disappears, is it fundamentally gone?
 
 **Representation Recovery (Inverse Problems)**
@@ -186,7 +186,7 @@ Measure representation drift over sequences of 1, 5, 20, and 100 frames.
 
 ---
 
-## Phase VI — Architecture Decision Matrix
+## Phase VI  -  Architecture Decision Matrix
 Turn the diagnostics into an explicit design methodology.
 
 | Observation | Architecture Implication |

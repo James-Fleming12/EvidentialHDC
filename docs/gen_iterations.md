@@ -272,11 +272,11 @@ While the gating diagnostics validated the *adaptive* path, we still owed the Ty
 
 1. **`supcon_vib_additive`:** The physics augmentation pipeline is enriched with **volumetric noise injection** (fake geometric returns scattered into empty space, simulating fog droplets) so the encoder sees additive hallucinations during training.
 2. **`supcon_vib_sor`:** A **pre-network Statistical Outlier Removal** filter (3×3 neighbor-count gate, keep points with $\geq$ 1 neighbor) that physically deletes isolated scattering noise from the range image *before* the encoder sees it.
-3. **`supcon_vib_global`:** **Expanded Spatial Pooling** — a 3×3 average pool applied to the 128D latent itself (Global Anchoring), smoothing each feature with its spatial neighbors at evaluation time.
+3. **`supcon_vib_global`:** **Expanded Spatial Pooling**, a 3×3 average pool applied to the 128D latent itself (Global Anchoring), smoothing each feature with its spatial neighbors at evaluation time.
 
-> **Methodology Note:** In the first run, the Additive/SOR/Global variants inadvertently trained through the plain symmetric-CE objective — the loss branch in `gen_trainers.py` matched only the exact method string `supcon_vib`, so the variant names silently bypassed the SupCon+VIB terms. This *did* isolate the pure effect of each remediation (their $L_2$ norms inflated toward 8+, exactly what the first table below shows), but it was not the intended "full method + remediation" test. Before the second run the routing was fixed (`startswith('supcon_vib')`), so every variant now trains with the full decoupled SupCon+VIB objective, and `supcon_vib_sor` additionally applies the SOR pre-filter to both clean and augmented inputs during training to match its evaluation-time filtering.
+> **Methodology Note:** In the first run, the Additive/SOR/Global variants inadvertently trained through the plain symmetric-CE objective, the loss branch in `gen_trainers.py` matched only the exact method string `supcon_vib`, so the variant names silently bypassed the SupCon+VIB terms. This *did* isolate the pure effect of each remediation (their $L_2$ norms inflated toward 8+, exactly what the first table below shows), but it was not the intended "full method + remediation" test. Before the second run the routing was fixed (`startswith('supcon_vib')`), so every variant now trains with the full decoupled SupCon+VIB objective, and `supcon_vib_sor` additionally applies the SOR pre-filter to both clean and augmented inputs during training to match its evaluation-time filtering.
 
-### Headroom Metrics (Heavy Fog, Frozen Features) — Old CE-Only Run → New Full-Loss Run
+### Headroom Metrics (Heavy Fog, Frozen Features): Old CE-Only Run → New Full-Loss Run
 
 | Metric | SupCon + VIB | + Additive Volumetric | + SOR Pre-Filter | + Global Pooling |
 | :--- | :--- | :--- | :--- | :--- |
@@ -290,11 +290,11 @@ While the gating diagnostics validated the *adaptive* path, we still owed the Ty
 
 1. **The Full Method is the HDC Winner (20.1%):** With all variants on the full objective, the canonical `supcon_vib` posted the best HDC Prototype Accuracy ever measured in this project (20.1%, previous best 15.8% in Phase 6). Every variant's $L_2$ envelope also returned to the VIB-capped 5.4–5.6 range, confirming the full loss is genuinely active across all four methods.
 2. **The SOR Stack Did Not Validate:** The CE-only SOR advantage (27.4% LP Fog, 0.434 shift, 44.6% retrieval) evaporated once SOR entered the full-loss training loop: LP (Fog) fell to 14.0%, retrieval to 31.1%, and Cosine Shift worsened to its worst value (0.730). The likely culprit is the interaction between the SOR filter and the augmentation pipeline: beam-drop zeroes 50% of scan rows, after which SOR deletes the legitimate neighbors of the dropped beams, corrupting both the CE supervision and the contrastive pair structure the full loss depends on. The "Sleeping Giant" finding is therefore an artifact of the CE-only setting, not a general property of SOR.
-3. **Global Pooling Was Redeemed by the Full Loss:** With VIB magnitudes intact, the 3×3 latent smoothing no longer collapses the geometry — HDC jumped from 4.1% to 14.4% (second best). Global pooling is now a plausible cheap auxiliary, though LP (Fog) remains the weakest (10.3%).
-4. **Additive Remains a Middle Ground:** Second-best LP (Fog) (13.3%), best angular stability (0.532), HDC 12.4% — but nothing beats the plain method on the HDC axis that matters most for the gated EMA prototype pipeline.
+3. **Global Pooling Was Redeemed by the Full Loss:** With VIB magnitudes intact, the 3×3 latent smoothing no longer collapses the geometry, HDC jumped from 4.1% to 14.4% (second best). Global pooling is now a plausible cheap auxiliary, though LP (Fog) remains the weakest (10.3%).
+4. **Additive Remains a Middle Ground:** Second-best LP (Fog) (13.3%), best angular stability (0.532), HDC 12.4%, but nothing beats the plain method on the HDC axis that matters most for the gated EMA prototype pipeline.
 
 ### Reproducibility Note: Why the Baseline Moved
-The canonical `supcon_vib` baseline itself shifted between runs (HDC 10.9% → 20.1%, Retrieval 35.1% → 26.4%) despite an unchanged code path. This is **not** a random projection matrix: the micro evaluation contains no random projection (the 10,000D HDC projection in `HDC_utils.set_uq_model` is imported but never called — prototype accuracy here uses raw 128D class-mean centroids and `torch.cdist`). The movement is pure stochasticity: `micro_pretrain_eval.py` never sets a seed, so each run re-initializes the SENet weights from scratch (`path=None`) and re-rolls the entire stochastic stack — beam-drop rows (`np.random.choice`), depth jitter, density masks, SupCon point subsampling (`randperm`), VIB reparameterization noise, and shuffled DataLoader workers. With only 5 epochs on 10% data and 50 evaluation frames, these unseeded draws dominate the final weights. For comparability, the medium-scale run should adopt the seeding already used by `med_pretrain_eval.py` (per-method `torch.manual_seed`) or `train.py`'s `--seed` argument.
+The canonical `supcon_vib` baseline itself shifted between runs (HDC 10.9% → 20.1%, Retrieval 35.1% → 26.4%) despite an unchanged code path. This is **not** a random projection matrix: the micro evaluation contains no random projection (the 10,000D HDC projection in `HDC_utils.set_uq_model` is imported but never called; prototype accuracy here uses raw 128D class-mean centroids and `torch.cdist`). The movement is pure stochasticity: `micro_pretrain_eval.py` never sets a seed, so each run re-initializes the SENet weights from scratch (`path=None`) and re-rolls the entire stochastic stack: beam-drop rows (`np.random.choice`), depth jitter, density masks, SupCon point subsampling (`randperm`), VIB reparameterization noise, and shuffled DataLoader workers. With only 5 epochs on 10% data and 50 evaluation frames, these unseeded draws dominate the final weights. For comparability, the medium-scale run should adopt the seeding already used by `med_pretrain_eval.py` (per-method `torch.manual_seed`) or `train.py`'s `--seed` argument.
 
 **The Verdict:**
 The full-loss shootout does not support stacking SOR (or any other remediation) on top of the canonical representation: plain `supcon_vib` wins the HDC axis outright (20.1%), and its $L_2$ envelope (5.62 → 4.55) retains the VIB magnitude isolation the gated EMA pipeline depends on. The remediation variants add nothing over the full method in this micro setting, and their apparent CE-only advantages did not survive contact with the real objective. The medium-scale commit should therefore proceed with **plain `supcon_vib`**, seeded for reproducibility.
@@ -305,10 +305,10 @@ The full-loss shootout does not support stacking SOR (or any other remediation) 
 
 ### Validation of the Pivot Decision
 
-1. **SOR-in-the-loop is a dead end; the fix is not more training.** The full-loss SOR run regressed on every axis (LP Fog 27.4% → 14.0%, Retrieval 44.6% → 31.1%, Cosine Shift 0.434 → 0.730) relative to the CE-only run, and its best HDC Prototype Accuracy (9.1%) is less than half of plain `supcon_vib`'s (20.1%). The mechanism is structural: the SOR filter runs *after* beam-drop augmentation (which zeroes 50% of scan rows), so it deletes the legitimate neighbors of dropped beams **every iteration**. This corrupts the contrastive pair structure the SupCon loss depends on, and longer training would *reinforce* — not heal — the corrupted geometry. Spending medium-scale compute on SOR variants is therefore not justified.
+1. **SOR-in-the-loop is a dead end; the fix is not more training.** The full-loss SOR run regressed on every axis (LP Fog 27.4% → 14.0%, Retrieval 44.6% → 31.1%, Cosine Shift 0.434 → 0.730) relative to the CE-only run, and its best HDC Prototype Accuracy (9.1%) is less than half of plain `supcon_vib`'s (20.1%). The mechanism is structural: the SOR filter runs *after* beam-drop augmentation (which zeroes 50% of scan rows), so it deletes the legitimate neighbors of dropped beams **every iteration**. This corrupts the contrastive pair structure the SupCon loss depends on, and longer training would *reinforce* (not heal) the corrupted geometry. Spending medium-scale compute on SOR variants is therefore not justified.
 2. **The representation is the solved part.** Phase 8 proved the `supcon_vib` 128D space is highly separable under Heavy Fog (49.4% Linear Probe) and that this information mathematically survives random projection and sign-binarization (49.0% / 47.8%). The residual HDC collapse (8.2% → 20.1% across runs) is exclusively a naive-decoder problem: indiscriminate EMA updates absorb the impossible Fog/Crosstalk artifacts and poison the Euclidean centroids. Crucially, the old feature space was so degraded that it forced exotic decoder machinery (the `AdaptiveMemoryBank`'s density-adaptive Hamming query, reservoir sampling, and purity thresholds were all built to survive a space that collapsed into isotropic noise). The entire premise of the pretraining investment is that the robust encoder makes this unnecessary: a plain EMA prototype update plus standard confidence gating should now suffice.
-3. **Uncertainty gating is the proven remediation.** Phase 9's oracle tests showed that filtering the bottom 50% of updates by confidence reaches 20.63% — 89% of the Perfect Oracle ceiling (23.32%) vs 16.36% for naive adaptation — and profiled the Harmful-update signature: lower confidence (0.62 vs 0.92) and larger feature norms (6.42 vs 5.28).
-4. **Honest caveats before committing.** (a) Eval-time-only SOR — a frozen full-loss encoder + SOR input pre-filter, *without* SOR in training — was never tested; that recipe was the biggest CE-only win (27.4%) and remains a cheap, orthogonal input-stage candidate for the TTA pipeline. (b) Earlier research threads (`docs/mem_method/new_prelims.md`) found no signal combination that separates hallucinations on Crosstalk in the *old* encoder setup (max AUROC 0.642), and documented AND-gate starvation / OR-gate flooding. Phase 9's universal matrix shows the confidence/norm signature survives on the new encoder (Crosstalk: 0.79 vs 0.61 confidence), but the gate must be re-validated per-corruption before it is trusted universally.
+3. **Uncertainty gating is the proven remediation.** Phase 9's oracle tests showed that filtering the bottom 50% of updates by confidence reaches 20.63% (89% of the Perfect Oracle ceiling, 23.32%, vs 16.36% for naive adaptation) and profiled the Harmful-update signature: lower confidence (0.62 vs 0.92) and larger feature norms (6.42 vs 5.28).
+4. **Honest caveats before committing.** (a) Eval-time-only SOR (a frozen full-loss encoder + SOR input pre-filter, without SOR in training) was never tested; that recipe was the biggest CE-only win (27.4%) and remains a cheap, orthogonal input-stage candidate for the TTA pipeline. (b) Earlier research threads (`docs/mem_method/new_prelims.md`) found no signal combination that separates hallucinations on Crosstalk in the *old* encoder setup (max AUROC 0.642), and documented AND-gate starvation / OR-gate flooding. Phase 9's universal matrix shows the confidence/norm signature survives on the new encoder (Crosstalk: 0.79 vs 0.61 confidence), but the gate must be re-validated per-corruption before it is trusted universally.
 
 ### The Gating Function: Combining Confidence and Feature Norm
 
@@ -316,7 +316,7 @@ The two Phase 9 signals live on incompatible scales (confidence $c \in [0,1]$, n
 
 $$c_z = \frac{c - \mu_c}{\sigma_c}, \qquad n_z = \frac{\Vert z \Vert - \mu_n}{\sigma_n}$$
 
-The unified gate weight is a soft, multiplicative decay — the same algebra already implemented in `fuse_uncertainties("soft_dual_weight")`, with the Phase 9-validated signals substituted for the current (Dirichlet uncertainty, distance z-score) pair:
+The unified gate weight is a soft, multiplicative decay, the same algebra already implemented in `fuse_uncertainties("soft_dual_weight")`, with the Phase 9-validated signals substituted for the current (Dirichlet uncertainty, distance z-score) pair:
 
 $$w(x) = \exp\big(-\lambda_1 \cdot \text{relu}(\tau_c - c)\big) \cdot \exp\big(-\lambda_2 \cdot \text{relu}(n_z - \tau_n)\big)$$
 
@@ -324,18 +324,18 @@ The EMA prototype update becomes $c \leftarrow c + \eta \cdot w(x) \cdot z$. Cal
 
 ### Next Steps
 
-1. **Re-validate the Harmful-update signature on the new encoder:** rerun the `oracle_gating_eval.py` leave-one-update-out protocol (already seeded) on the 20.1%-HDC `supcon_vib` features, per-corruption (Fog, Crosstalk, plus the geometric panel) — confirming confidence/norm still separate Helpful from Harmful updates before building on it.
+1. **Re-validate the Harmful-update signature on the new encoder:** rerun the `oracle_gating_eval.py` leave-one-update-out protocol (already seeded) on the 20.1%-HDC `supcon_vib` features, per-corruption (Fog, Crosstalk, plus the geometric panel), confirming confidence/norm still separate Helpful from Harmful updates before building on it.
 2. **Implement the gate as a new `fuse_uncertainties` mode** (e.g. `norm_confidence_gate`) using the weight above, so it is directly ablative against the existing `epistemic` / `geometric` / `soft_dual_weight` modes.
-3. **Sweep $(\tau_c, \tau_n, \lambda_1, \lambda_2)$** on Fog and Crosstalk through the standard EMA prototype update on the frozen encoder — the `fuse_uncertainties` gate feeding the plain prototype update, deliberately *without* any of the old `AdaptiveMemoryBank` machinery (density-adaptive Hamming, reservoir sampling). Acceptance criteria: beat the naive EMA baseline (16.36%) and approach the oracle ceiling (23.32%), and outperform the single-signal gates (confidence-only, norm-only) to justify the joint combination.
+3. **Sweep $(\tau_c, \tau_n, \lambda_1, \lambda_2)$** on Fog and Crosstalk through the standard EMA prototype update on the frozen encoder, the `fuse_uncertainties` gate feeding the plain prototype update, deliberately *without* any of the old `AdaptiveMemoryBank` machinery (density-adaptive Hamming, reservoir sampling). Acceptance criteria: beat the naive EMA baseline (16.36%) and approach the oracle ceiling (23.32%), and outperform the single-signal gates (confidence-only, norm-only) to justify the joint combination.
 4. **Commit the medium-scale run:** plain `supcon_vib` on 100% data (seeded per `med_pretrain_eval.py` convention) to obtain the converged encoder, then run the gated TTA end-to-end on top of it.
 
-**Contingency (deferred, not deleted):** SOR — whether as an eval-time input pre-filter on the frozen encoder or in any future augmentation variant — is parked. Its best ever HDC Prototype Accuracy (9.1%) is less than half of what the plain encoder already achieves (20.1%), so it does not justify proactive compute. Only revisit input-space remediation or richer physics augmentation if the gated TTA underperforms the naive EMA baseline.
+**Contingency (deferred, not deleted):** SOR (whether as an eval-time input pre-filter on the frozen encoder or in any future augmentation variant) is parked. Its best ever HDC Prototype Accuracy (9.1%) is less than half of what the plain encoder already achieves (20.1%), so it does not justify proactive compute. Only revisit input-space remediation or richer physics augmentation if the gated TTA underperforms the naive EMA baseline.
 
 ---
 
 ## Phase 13: The Full 8-Corruption Panel and the Pool/Val Mismatch Confound
 
-The full panel ran with the gate-fault diagnostics (clean-data control, per-gate-mode AUROC, threshold envelope sweeps) — and immediately exposed a **harness bug** that invalidates every absolute number in the panel, while still yielding decisive negative results about the shipped gates.
+The full panel ran with the gate-fault diagnostics (clean-data control, per-gate-mode AUROC, threshold envelope sweeps), and immediately exposed a **harness bug** that invalidates every absolute number in the panel, while still yielding decisive negative results about the shipped gates.
 
 ### The Gated EMA Ladder (10kD HDC, pool = 20k pts, val = 100k pts, α = 0.01)
 
@@ -353,35 +353,35 @@ The full panel ran with the gate-fault diagnostics (clean-data control, per-gate
 
 ### The Critical Discovery: The Pool/Val Mismatch Confound
 
-**The ground-truth Perfect Oracle loses to zero-shot on every single corruption** (Fog −2.1, Crosstalk −16.4) — **and even on the Clean Control (−1.65)**. A perfect-label oracle can only *hurt* if it is adapting to a distribution different from the one it is evaluated on. The cause is structural: the adaptation pool was the first 20k points of the stream (≈¼ of the first frame) and the validation set was the last 100k points (≈1.2 of the last frame) — **~98 frames apart, entirely different scenes**. This is why leave-one-out also reported near-zero Helpful updates on several corruptions (Incomplete Echo: 0 Helpful / 1246 Harmful): "helpful vs harmful" was measuring "does adapting toward scene A help classify scene B", which is almost always no.
+**The ground-truth Perfect Oracle loses to zero-shot on every single corruption** (Fog −2.1, Crosstalk −16.4), **and even on the Clean Control (−1.65)**. A perfect-label oracle can only *hurt* if it is adapting to a distribution different from the one it is evaluated on. The cause is structural: the adaptation pool was the first 20k points of the stream (≈¼ of the first frame) and the validation set was the last 100k points (≈1.2 of the last frame), **~98 frames apart, entirely different scenes**. This is why leave-one-out also reported near-zero Helpful updates on several corruptions (Incomplete Echo: 0 Helpful / 1246 Harmful): "helpful vs harmful" was measuring "does adapting toward scene A help classify scene B", which is almost always no.
 
-The confound was always present in the harness — the Phase 9-era encoder masked it, because on that encoder *any* movement toward the fog distribution improved the late-frame validation. The robust encoder's quality (clean prototypes already close to the fog geometry) makes the mismatch visible: adaptation now has to be *correct*, not just *closer*.
+The confound was always present in the harness, the Phase 9-era encoder masked it, because on that encoder *any* movement toward the fog distribution improved the late-frame validation. The robust encoder's quality (clean prototypes already close to the fog geometry) makes the mismatch visible: adaptation now has to be *correct*, not just *closer*.
 
 ### Secondary Findings (valid despite the confound)
 
-1. **The fog confidence inversion is confirmed — and catastrophic in action.** Conf AUROC 0.17 (anti-predictive); `top50_conf` crashes Fog to **4.2%** (from 15.4% naive) because the top-50% most-confident fog points are the most harmful (Harmful Conf 0.77 vs Helpful 0.54). The shipped gates' "harmful = low confidence" assumption is sign-reversed on Fog.
-2. **No single signal or gate is universally selective.** Norm AUROC is strong on the Type C's and Wet Ground (Fog 0.70, Crosstalk 0.85, Wet Ground 0.93) but **inverted on Snow (0.08)**; confidence is only sane on Motion Blur (0.86). The **logistic combination of conf + norm is the only universally strong selector (0.86–0.95)** — supporting a learned/calibrated joint gate over any fixed hand-designed mode.
+1. **The fog confidence inversion is confirmed, and catastrophic in action.** Conf AUROC 0.17 (anti-predictive); `top50_conf` crashes Fog to **4.2%** (from 15.4% naive) because the top-50% most-confident fog points are the most harmful (Harmful Conf 0.77 vs Helpful 0.54). The shipped gates' "harmful = low confidence" assumption is sign-reversed on Fog.
+2. **No single signal or gate is universally selective.** Norm AUROC is strong on the Type C's and Wet Ground (Fog 0.70, Crosstalk 0.85, Wet Ground 0.93) but **inverted on Snow (0.08)**; confidence is only sane on Motion Blur (0.86). The **logistic combination of conf + norm is the only universally strong selector (0.86–0.95)**, supporting a learned/calibrated joint gate over any fixed hand-designed mode.
 3. **Gate-mode AUROC confirms the shipped modes are old-space artifacts.** On Fog only `joint_flip` (veto high-confidence AND high-norm) is selective (0.82); `soft_dual_weight` and `and_gate` are *anti*-selective (0.41–0.42). On Snow every mode except `epistemic` is anti-selective (0.12–0.14). The diagnostics did their job: they caught the gates being wrong *before* we committed compute to them.
 4. **Threshold sweeps cannot rescue the shipped gates.** Best-case `soft_dual_weight` (`sdw_best`) ≈ naive everywhere (best margin: Motion Blur +1.0). Under the confound this is not yet conclusive, but combined with finding 3 it strongly suggests the SDW family should not be reused.
-5. **Run-to-run variance is large.** Fog zero-shot swung 12.7% ↔ 21.8% between two runs of the *same* checkpoint and projection seed — the data pipeline (point subsampling in extraction workers) is unseeded.
-6. **The shipped gates are degenerate on the new space (the bit-identical rows).** On the VIB-capped space, clean feature norms have near-zero variance, so the geometric z-scores explode to ±hundreds and every exponential decay saturates (weight ≈ 0 for z > 0.5, ≈ 1 for z ≤ 0.5). With probe confidence ≥ 0.5 everywhere, the epistemic factor also saturates at 1 — so `geometric`, `soft_dual_weight`, `and_gate`, and `ellipsoid_gate` all reduce to the *same binary "keep low-norm" gate* and report bit-identical accuracy (0.6867 on the clean control). The old space had norm ranges of 3–12 where these decays were meaningful; the new space has none. Gate weight statistics (mean / %saturated-admit / %saturated-veto) are now reported per mode to make this degeneracy visible instead of silent.
+5. **Run-to-run variance is large.** Fog zero-shot swung 12.7% ↔ 21.8% between two runs of the *same* checkpoint and projection seed, the data pipeline (point subsampling in extraction workers) is unseeded.
+6. **The shipped gates are degenerate on the new space (the bit-identical rows).** On the VIB-capped space, clean feature norms have near-zero variance, so the geometric z-scores explode to ±hundreds and every exponential decay saturates (weight ≈ 0 for z > 0.5, ≈ 1 for z ≤ 0.5). With probe confidence ≥ 0.5 everywhere, the epistemic factor also saturates at 1, so `geometric`, `soft_dual_weight`, `and_gate`, and `ellipsoid_gate` all reduce to the *same binary "keep low-norm" gate* and report bit-identical accuracy (0.6867 on the clean control). The old space had norm ranges of 3–12 where these decays were meaningful; the new space has none. Gate weight statistics (mean / %saturated-admit / %saturated-veto) are now reported per mode to make this degeneracy visible instead of silent.
 7. **The clean control exposed EMA base-erasure.** Even after the pool/val fix, the ground-truth oracle still lost on clean data (−0.8) and naive EMA crashed (−8.6). With α = 0.01 and an unbounded 20k-point pool, each prototype's final state is dominated by its last ~1/α ≈ 100 updates: the base prototype (estimated from millions of clean points) is erased and re-estimated from ~100 random points. Re-estimation noise hurts even perfect-label updates; the ~8% wrong pseudo-labels amplify it. The Phase 9-era encoder masked this because domain shift dominated the re-estimation noise; the robust encoder exposes it.
-8. **The pool is ~250× too small to refine 10kD prototypes — even the perfect oracle loses (−1.4 on Wet Ground).** With a same-distribution pool of 20k points (0.25% of the stream), the refinement signal cannot beat the variance of re-estimating 17 prototype directions from so few points. The oracle "headroom" measurement is structurally pessimistic at this pool size.
-9. **Gate-signal directions are pool-dependent, not universal.** On Wet Ground, the norm signal *flipped* between the v2 run (first-frame pool: Helpful 3.52 vs Harmful 5.30, norm AUROC 0.93 — "high norm = poison") and the v3 run (uniform pool: Helpful 6.79 vs Harmful 5.36, AUROC 0.295 — "high norm = helpful"). Fixed-direction gates therefore actively veto helpful points on some corruptions/pools (Wet Ground v3: every gate below naive). Per-corruption, per-pool direction calibration is mandatory; the Phase 9 "universal signature" holds for the first-frame pool composition but not in general.
+8. **The pool is ~250× too small to refine 10kD prototypes: even the perfect oracle loses (−1.4 on Wet Ground).** With a same-distribution pool of 20k points (0.25% of the stream), the refinement signal cannot beat the variance of re-estimating 17 prototype directions from so few points. The oracle "headroom" measurement is structurally pessimistic at this pool size.
+9. **Gate-signal directions are pool-dependent, not universal.** On Wet Ground, the norm signal *flipped* between the v2 run (first-frame pool: Helpful 3.52 vs Harmful 5.30, norm AUROC 0.93, "high norm = poison") and the v3 run (uniform pool: Helpful 6.79 vs Harmful 5.36, AUROC 0.295, "high norm = helpful"). Fixed-direction gates therefore actively veto helpful points on some corruptions/pools (Wet Ground v3: every gate below naive). Per-corruption, per-pool direction calibration is mandatory; the Phase 9 "universal signature" holds for the first-frame pool composition but not in general.
 
 ### Harness Fixes Applied
 
 1. **Pool/val now share one seeded uniform permutation** over all extracted points (pool = first N, val = next 100k of the permutation), so adaptation and evaluation cover the same frame distribution.
 2. **The whole pipeline is seeded** (`torch.manual_seed(42)`, `np.random.seed(42)`, `random.seed(42)`) before loader creation, making extraction and splits reproducible.
-3. **The EMA ladder is replaced by a vectorized weighted class-mean update** (`weighted_mean_update`, chunked `index_add_`), and the default pool is raised to **1M points** — the statistically honest adaptation operator at a statistically honest pool size. Prototype_c = normalize(Σ wᵢ·sign(zᵢ·proj)) over pool points with pseudo-label c; classes without pool support keep the base. This removes the α-dependent base-erasure (finding 7) and the small-pool pessimism (finding 8) at once, and makes the ladder cheap enough for million-point pools.
+3. **The EMA ladder is replaced by a vectorized weighted class-mean update** (`weighted_mean_update`, chunked `index_add_`), and the default pool is raised to **1M points**, the statistically honest adaptation operator at a statistically honest pool size. Prototype_c = normalize(Σ wᵢ·sign(zᵢ·proj)) over pool points with pseudo-label c; classes without pool support keep the base. This removes the α-dependent base-erasure (finding 7) and the small-pool pessimism (finding 8) at once, and makes the ladder cheap enough for million-point pools.
 4. **Per-mode gate weight statistics** reported in the ladder, so saturated/degenerate gates are visible rather than silently producing identical rows (finding 6).
 
 ### Next Steps
 
-1. **Re-run the 8-corruption panel** on the fully fixed harness (pool/val permutation + 1M-point weighted class-mean ladder) — the oracle must now land *at or above* zero-shot on every corruption, and the clean control must show gates ≈ naive ≈ zero-shot (no adaptation should help or hurt when nothing is wrong).
-2. **Fix the linear-probe sampling** (uniform subsample across all 100 frames, not the first 100k points) — the probe that supplies the confidence signal still trains on ~1–2 frames' worth of points, which may explain the fog confidence inversion and must be resolved before the gate is calibrated on confidence.
-3. **Treat the gate-fault results as binding**: drop the shipped `soft_dual_weight`/`and_gate`/`ellipsoid_gate` modes for the new space; build the gate from the two bare signals (confidence, feature norm) with **per-corruption direction calibration** — finding 9 shows the norm direction is pool-dependent, so a fixed "harmful = high norm" prior cannot be trusted (the LR combination is the reference: 0.86–0.95 AUROC when computed).
-4. **Commit the medium-scale run** (plain `supcon_vib`, seeded) in parallel — the encoder is not in question; the harness and gate questions are independent of it.
+1. **Re-run the 8-corruption panel** on the fully fixed harness (pool/val permutation + 1M-point weighted class-mean ladder): the oracle must now land *at or above* zero-shot on every corruption, and the clean control must show gates ≈ naive ≈ zero-shot (no adaptation should help or hurt when nothing is wrong).
+2. **Fix the linear-probe sampling** (uniform subsample across all 100 frames, not the first 100k points). The probe that supplies the confidence signal still trains on ~1–2 frames' worth of points, which may explain the fog confidence inversion and must be resolved before the gate is calibrated on confidence.
+3. **Treat the gate-fault results as binding**: drop the shipped `soft_dual_weight`/`and_gate`/`ellipsoid_gate` modes for the new space; build the gate from the two bare signals (confidence, feature norm) with **per-corruption direction calibration**: finding 9 shows the norm direction is pool-dependent, so a fixed "harmful = high norm" prior cannot be trusted (the LR combination is the reference: 0.86–0.95 AUROC when computed).
+4. **Commit the medium-scale run** (plain `supcon_vib`, seeded) in parallel: the encoder is not in question; the harness and gate questions are independent of it.
 
 ---
 
@@ -405,23 +405,23 @@ The v4 harness (seeded pool/val permutation + 1M-point weighted class-mean ladde
 
 ### The Verdict
 
-1. **The oracle headroom is gone.** Even with ground-truth labels and a 1M-point pool, re-estimating prototypes from the corrupted features *loses* to the frozen clean prototypes on every corruption — catastrophically on the Type C's (Fog −15.5, Crosstalk −21.5) and mildly (−0.8 to −2.7) on the geometric corruptions. The Phase 9-era headroom (+2.73, 23.32% oracle) was an artifact of the old encoder and the frame-mismatched harness; it does not reproduce here.
-2. **The mechanism is feature collapse in sign space.** On Fog/Crosstalk the features are so degraded that their binarized class means are near-random directions — target-domain prototypes are garbage, and any movement away from the clean anchors can only hurt. Even on mild corruptions, the drifted target means lose a point or two to the clean means (the Phase 7 prototype-quality variance, now measured end-to-end).
-3. **Pseudo-label adaptation is catastrophic everywhere** (Naive: −10 to −19 points), because re-estimation replaces the prototype set wholesale with 10–80%-wrong means. Gating rescues a fraction of that crash (`joint_flip` is consistently the best, recovering up to 10 points on Incomplete Echo) but **no gate reaches zero-shot** — with harmful updates outnumbering helpful ~45:1 on Crosstalk (leave-one-out: 42 helpful / 4337 harmful), freezing is the optimal policy.
-4. **Adapting the prototypes is not the lever.** The information is in the features (49.4% linear probe; 20–25% HDC zero-shot from *clean* prototypes) — but it cannot be harvested by centroid movement, because the corrupted centroids are worse than the clean ones.
+1. **The oracle headroom is gone.** Even with ground-truth labels and a 1M-point pool, re-estimating prototypes from the corrupted features *loses* to the frozen clean prototypes on every corruption, catastrophically on the Type C's (Fog −15.5, Crosstalk −21.5) and mildly (−0.8 to −2.7) on the geometric corruptions. The Phase 9-era headroom (+2.73, 23.32% oracle) was an artifact of the old encoder and the frame-mismatched harness; it does not reproduce here.
+2. **The mechanism is feature collapse in sign space.** On Fog/Crosstalk the features are so degraded that their binarized class means are near-random directions: target-domain prototypes are garbage, and any movement away from the clean anchors can only hurt. Even on mild corruptions, the drifted target means lose a point or two to the clean means (the Phase 7 prototype-quality variance, now measured end-to-end).
+3. **Pseudo-label adaptation is catastrophic everywhere** (Naive: −10 to −19 points), because re-estimation replaces the prototype set wholesale with 10–80%-wrong means. Gating rescues a fraction of that crash (`joint_flip` is consistently the best, recovering up to 10 points on Incomplete Echo) but **no gate reaches zero-shot**; with harmful updates outnumbering helpful ~45:1 on Crosstalk (leave-one-out: 42 helpful / 4337 harmful), freezing is the optimal policy.
+4. **Adapting the prototypes is not the lever.** The information is in the features (49.4% linear probe; 20–25% HDC zero-shot from *clean* prototypes), but it cannot be harvested by centroid movement, because the corrupted centroids are worse than the clean ones.
 
 ### Revised Next Steps
 
-1. **Move the gate from the UPDATE to the QUERY.** With prototypes frozen, the remaining lever is deciding *which points to trust at inference* — vetoing collapsed/hallucinated points (the Phase 4 magnitude-segregation idea: near-origin features are noise) before prototype classification. This is cheap to test: threshold the query points by norm/confidence on the frozen-prototype classifier and measure accuracy vs point-retention on the corrupted val.
-2. **Test feature-level adaptation** (e.g., test-time batch-norm / feature whitening alignment) as the alternative to prototype movement — the 49.4% linear separability proves the headroom exists in the feature space; the question is whether unsupervised alignment can capture it without labels.
-3. **One final prototype-adaptation check**: severity-split sequential adaptation (adapt on moderate Fog frames, evaluate on Heavy Fog frames) — the only regime where target-mean re-estimation could plausibly still help, since the mild-corruption means are less collapsed. If this also shows no headroom, prototype TTA is closed entirely.
+1. **Move the gate from the UPDATE to the QUERY.** With prototypes frozen, the remaining lever is deciding *which points to trust at inference*, vetoing collapsed/hallucinated points (the Phase 4 magnitude-segregation idea: near-origin features are noise) before prototype classification. This is cheap to test: threshold the query points by norm/confidence on the frozen-prototype classifier and measure accuracy vs point-retention on the corrupted val.
+2. **Test feature-level adaptation** (e.g., test-time batch-norm / feature whitening alignment) as the alternative to prototype movement: the 49.4% linear separability proves the headroom exists in the feature space; the question is whether unsupervised alignment can capture it without labels.
+3. **One final prototype-adaptation check**: severity-split sequential adaptation (adapt on moderate Fog frames, evaluate on Heavy Fog frames), the only regime where target-mean re-estimation could plausibly still help, since the mild-corruption means are less collapsed. If this also shows no headroom, prototype TTA is closed entirely.
 4. **The medium-scale run still pays**: its value is now the *frozen* representation (higher zero-shot HDC at convergence) plus query-side gating at scale, not gated prototype updates.
 
 ---
 
-## Phase 15: The Long Micro Run — Training Heals the Collapse, StrongVIB Wins the Frozen Decode
+## Phase 15: The Long Micro Run (Training Heals the Collapse, StrongVIB Wins the Frozen Decode)
 
-The 30-epoch micro run (cutoff 0.1, ~9.5k gradient steps — 6× the earlier micro budget) trained three variants — `supcon_vib`, `supcon_vib_strongvib` (5× VIB KL weight), `supcon_vib_additive` (volumetric noise injection) — each followed by the v4 oracle ladder plus the deep feature-space diagnostics. All three trained cleanly (IoU 0.30–0.31 by epoch 30, still climbing; strongvib's higher initial loss from the 5× KL converged to the same IoU).
+The 30-epoch micro run (cutoff 0.1, ~9.5k gradient steps, 6× the earlier micro budget) trained three variants: `supcon_vib`, `supcon_vib_strongvib` (5× VIB KL weight), and `supcon_vib_additive` (volumetric noise injection), each followed by the v4 oracle ladder plus the deep feature-space diagnostics. All three trained cleanly (IoU 0.30–0.31 by epoch 30, still climbing; strongvib's higher initial loss from the 5× KL converged to the same IoU).
 
 ### The Ladder (30-epoch encoders, v4 harness, zero-shot → perfect-oracle)
 
@@ -439,9 +439,9 @@ The 30-epoch micro run (cutoff 0.1, ~9.5k gradient steps — 6× the earlier mic
 
 ### Diagnostic Analysis
 
-1. **Training heals the collapse — partially.** The plain encoder's Fog zero-shot rose 25.0% → 28.8% and its Fog oracle more than doubled (9.5% → 21.8%) from 5 to 30 epochs; clean control rose to 80.4%. The binarized fog class means are no longer near-random (mean-norm ratio 1.07). The overnight medium run (95k steps, 10× this budget) is now strongly justified.
-2. **`strongvib` is the best frozen decoder — and has the best gate signals ever measured on Fog.** It leads Fog zero-shot (35.0%), Crosstalk (38.1%), and its Fog signal AUROCs are the strongest of the project: confidence 0.716, norm 0.807, joint 0.856, logistic 0.852. Its deep diagnostics show why it works: the 5× VIB redistributes fog features into the healthy mid-norm band (67% in [2,4) vs 91% in [4,∞) for the others) — the exact region that classifies well (band acc 36.3% vs 6.6% for [4,∞)). Cost: the clean control dips to 77.6% — the stronger KL slightly taxes the clean representation.
-3. **`additive` produced the first positive oracle headroom on Fog in the entire project: 26.1% → 45.3%.** Training against volumetric noise injection yields fog class means that are genuinely usable — prototype re-estimation on Fog *gains* +19.2 points. Phase 14's "prototype TTA is falsified" verdict is therefore encoder-specific, not universal. **But**: its own gate signals are the weakest of the three (fog logistic AUROC 0.616, confidence anti-predictive 0.372), so the headroom is not currently exploitable — naive adaptation lands at 20.2%, below its own zero-shot. This is the key open question for the prototype-adaptation path.
+1. **Training heals the collapse, partially.** The plain encoder's Fog zero-shot rose 25.0% → 28.8% and its Fog oracle more than doubled (9.5% → 21.8%) from 5 to 30 epochs; clean control rose to 80.4%. The binarized fog class means are no longer near-random (mean-norm ratio 1.07). The overnight medium run (95k steps, 10× this budget) is now strongly justified.
+2. **`strongvib` is the best frozen decoder and has the best gate signals ever measured on Fog.** It leads Fog zero-shot (35.0%), Crosstalk (38.1%), and its Fog signal AUROCs are the strongest of the project: confidence 0.716, norm 0.807, joint 0.856, logistic 0.852. Its deep diagnostics show why it works: the 5× VIB redistributes fog features into the healthy mid-norm band (67% in [2,4) vs 91% in [4,∞) for the others), the exact region that classifies well (band acc 36.3% vs 6.6% for [4,∞)). Cost: the clean control dips to 77.6%: the stronger KL slightly taxes the clean representation.
+3. **`additive` produced the first positive oracle headroom on Fog in the entire project: 26.1% → 45.3%.** Training against volumetric noise injection yields fog class means that are genuinely usable: prototype re-estimation on Fog *gains* +19.2 points. Phase 14's "prototype TTA is falsified" verdict is therefore encoder-specific, not universal. **But**: its own gate signals are the weakest of the three (fog logistic AUROC 0.616, confidence anti-predictive 0.372), so the headroom is not currently exploitable, and naive adaptation lands at 20.2%, below its own zero-shot. This is the key open question for the prototype-adaptation path.
 4. **The high-norm fog points are the poison, consistently.** Band accuracy across variants: the [4,∞) norm band classifies at 6.6–25.4% while the [2,4) band reaches 36–40%. The query-side gate direction is confirmed: veto high-norm fog points before prototype classification.
 
 ### Verdict & The Medium Run
@@ -450,14 +450,14 @@ The 30-epoch micro run (cutoff 0.1, ~9.5k gradient steps — 6× the earlier mic
 
 ### Next Steps
 
-1. **Overnight medium run**: `supcon_vib_strongvib`, 30 epochs on 100% data (~95k steps, ~12h), seeded — with headroom + deep diagnostics baked into `med_pretrain_eval.py`.
-2. **On the converged encoder**: re-run the v4 ladder + deep diagnostics — expect Fog zero-shot > 35% and Fog band-acc spread to sharpen; confirm the clean control recovers with the proper full-length LR schedule.
-3. **Build the query-side gate** on the strongvib signals (confidence + norm, direction-calibrated per corruption — the fog joint AUROC 0.856 is the reference).
-4. **Follow-up (prototype-adaptation path)**: study why `additive`'s fog means are usable — if its gate signals can be sharpened (e.g., stronger augmentation density or a norm-conditioned variant), the +19.2 oracle headroom becomes exploitable.
+1. **Overnight medium run**: `supcon_vib_strongvib`, 30 epochs on 100% data (~95k steps, ~12h), seeded, with headroom + deep diagnostics baked into `med_pretrain_eval.py`.
+2. **On the converged encoder**: re-run the v4 ladder + deep diagnostics: expect Fog zero-shot > 35% and Fog band-acc spread to sharpen; confirm the clean control recovers with the proper full-length LR schedule.
+3. **Build the query-side gate** on the strongvib signals (confidence + norm, direction-calibrated per corruption: the fog joint AUROC 0.856 is the reference).
+4. **Follow-up (prototype-adaptation path)**: study why `additive`'s fog means are usable: if its gate signals can be sharpened (e.g., stronger augmentation density or a norm-conditioned variant), the +19.2 oracle headroom becomes exploitable.
 
 ---
 
-## Phase 16: The Overnight Medium Run — Training at Scale Triples the Fog Prototype Decode
+## Phase 16: The Overnight Medium Run (Training at Scale Triples the Fog Prototype Decode)
 
 The medium-scale run (26 epochs on 100% data ≈ 83k gradient steps, ~10h, proper full-length cosine LR, seeded) trained `supcon_vib_strongvib` end-to-end and evaluated it with the headroom + deep diagnostics built into `med_pretrain_eval.py`. The checkpoint (model + optimizer + scheduler + epoch) is saved for cheap continuation.
 
@@ -470,34 +470,34 @@ The medium-scale run (26 epochs on 100% data ≈ 83k gradient steps, ~10h, prope
 | **Linear Probe (Clean)** | 87.6% | **89.6%** |
 | **Cross-Domain Retrieval** | 50.2% | 48.4% |
 | **Avg Cosine Shift** | 0.677 | 0.883 |
-| **Avg L2 Norm (Clean → Fog)** | — | 2.42 → 5.25 |
+| **Avg L2 Norm (Clean → Fog)** | n/a | 2.42 → 5.25 |
 
 ### Deep Diagnostics (medium encoder)
 
-- **The clean features over-collapsed.** Clean L2 norms dropped to 2.42 (previously ~5.6); 77% of clean points now sit in the [2,4) band, 19.6% in [1,2). The 5× VIB KL at 26 full epochs pulled the *clean* manifold toward the origin — while fog points did not collapse (78.5% in [4,∞)). The mean-norm ratio fog/clean is 1.66, with extreme per-class spread (class 0: 6.04×, class 2: 0.64×).
-- **The binarized fog means are nearly orthogonal to clean.** Clean↔fog binarized mean cosine fell to 0.125 (micro-30ep: 0.245). The fog class means are healthy in magnitude (binarized norm ratio 1.13) but point ~83° away from their clean counterparts — the per-class drift that the 0.883 cosine shift reflects.
-- **Query-gate direction reconfirmed at scale**: fog band accuracy is 33.3% for norm [2,4) vs 7.6% for norm ≥ 4. The high-norm fog points remain the poison — a norm veto on the frozen decode would lift the retained points' accuracy ~4.4×.
-- **Anisotropy persists**: ellipticity clean 0.470 / fog 0.663 — fog manifolds remain markedly more elongated.
-- **The degradation pipeline holds at scale**: binarized-10kD linear probe 38.2% / prototype 29.4% — the information survives projection+binarization on the converged encoder too.
+- **The clean features over-collapsed.** Clean L2 norms dropped to 2.42 (previously ~5.6); 77% of clean points now sit in the [2,4) band, 19.6% in [1,2). The 5× VIB KL at 26 full epochs pulled the *clean* manifold toward the origin, while fog points did not collapse (78.5% in [4,∞)). The mean-norm ratio fog/clean is 1.66, with extreme per-class spread (class 0: 6.04×, class 2: 0.64×).
+- **The binarized fog means are nearly orthogonal to clean.** Clean↔fog binarized mean cosine fell to 0.125 (micro-30ep: 0.245). The fog class means are healthy in magnitude (binarized norm ratio 1.13) but point ~83° away from their clean counterparts, the per-class drift that the 0.883 cosine shift reflects.
+- **Query-gate direction reconfirmed at scale**: fog band accuracy is 33.3% for norm [2,4) vs 7.6% for norm ≥ 4. The high-norm fog points remain the poison: a norm veto on the frozen decode would lift the retained points' accuracy ~4.4×.
+- **Anisotropy persists**: ellipticity clean 0.470 / fog 0.663, so fog manifolds remain markedly more elongated.
+- **The degradation pipeline holds at scale**: binarized-10kD linear probe 38.2% / prototype 29.4%: the information survives projection+binarization on the converged encoder too.
 
 ### Diagnostic Analysis
 
-1. **Training at scale is the single biggest decode lever measured so far**: HDC Prototype Accuracy on Fog tripled (9.6% → 31.7%) and Fog linear probe gained 8.4 points from 5× the gradient budget. The medium-run bet is confirmed — more training directly heals the prototype decode.
+1. **Training at scale is the single biggest decode lever measured so far**: HDC Prototype Accuracy on Fog tripled (9.6% → 31.7%) and Fog linear probe gained 8.4 points from 5× the gradient budget. The medium-run bet is confirmed, more training directly heals the prototype decode.
 2. **But the strong VIB now over-regulates the clean manifold.** The 5× KL weight at 26 full epochs collapses clean magnitudes to ~2.4 (vs the fog's 5.25). This is the flagged over-collapse risk realized: clean features lost their magnitude envelope while the drift grew (cosine shift 0.677 → 0.883). The clean representation is *less* healthy even though the fog decode improved.
-3. **The tension to resolve**: the fog decode improved despite (or because of?) the clean collapse. The 128D prototype metric rewards low-norm clean centroids against high-norm fog queries in a particular way — before trusting this, the v4 10kD ladder must be run on this checkpoint (it measures the HDC decode, the deployment metric).
+3. **The tension to resolve**: the fog decode improved despite (or because of?) the clean collapse. The 128D prototype metric rewards low-norm clean centroids against high-norm fog queries in a particular way; before trusting this, the v4 10kD ladder must be run on this checkpoint (it measures the HDC decode, the deployment metric).
 
 ### Next Steps
 
-1. **Run the v4 oracle ladder on the medium checkpoint** (`oracle_gating_eval.py --load_path logs/med_pretrain_supcon_vib_strongvib --method supcon_vib_strongvib`, ~15 min) — the 10kD zero-shot/oracle per condition is the deployment-metric view of this encoder and the honest comparison to the 30-epoch micro ladder (Fog zero-shot 35.0% there).
-2. **Test the decision-level prior correction** on this decoder (both point accuracy and mIoU, per condition) — the benign-condition mean recovery question.
+1. **Run the v4 oracle ladder on the medium checkpoint** (`oracle_gating_eval.py --load_path logs/med_pretrain_supcon_vib_strongvib --method supcon_vib_strongvib`, ~15 min): the 10kD zero-shot/oracle per condition is the deployment-metric view of this encoder and the honest comparison to the 30-epoch micro ladder (Fog zero-shot 35.0% there).
+2. **Test the decision-level prior correction** on this decoder (both point accuracy and mIoU, per condition): the benign-condition mean recovery question.
 3. **Decide continuation**: if the v4 ladder shows the fog zero-shot > 35% and climbing, extend with `--continue_training` (the saved checkpoint resumes the same cosine curve); the 5× VIB over-collapse of clean suggests also testing a mid-strength KL (e.g., 0.02–0.03) as a variant if the ladder disappoints.
 4. **Build the query-side norm gate** with the reconfirmed band-acc direction (veto fog norm ≥ 4).
 
 ---
 
-## Phase 17: The Medium Run's Over-Collapse — 5× VIB Destroyed the HDC Decode
+## Phase 17: The Medium Run's Over-Collapse: 5× VIB Destroyed the HDC Decode
 
-The v4 ladder on the medium-26ep `supcon_vib_strongvib` checkpoint delivered a decisive negative result that overturns the Phase 16 optimism: **the 10kD HDC decode collapsed on every condition** relative to the 30-epoch micro encoder — while the 128D headroom metrics simultaneously *improved*. The 128D numbers were a magnitude artifact.
+The v4 ladder on the medium-26ep `supcon_vib_strongvib` checkpoint delivered a decisive negative result that overturns the Phase 16 optimism: **the 10kD HDC decode collapsed on every condition** relative to the 30-epoch micro encoder, while the 128D headroom metrics simultaneously *improved*. The 128D numbers were a magnitude artifact.
 
 ### The 10kD Ladder: Micro-30ep → Medium-26ep (zero-shot, frozen clean prototypes)
 
@@ -515,27 +515,27 @@ The v4 ladder on the medium-26ep `supcon_vib_strongvib` checkpoint delivered a d
 
 ### The Degeneracy Signatures
 
-1. **`cross_sensor` is bit-identical across every ladder row** (zero-shot = oracle = naive = top50 = flip = sweep = 0.3334) — even true-label re-estimation changes nothing. The class prototypes have collapsed toward a common direction; the pool re-estimation is an identity because there is nothing class-specific left to re-estimate.
-2. **The leave-one-out signal AUROCs are degenerate** (snow: conf 0.000 / norm 0.000 / lr 0.000; several conditions hit exactly 1.000) — helpful/harmful profiling against a near-random classifier is meaningless.
-3. **"Positive oracle headroom" appeared** (fog +7.0, clean +3.5, blur +2.5) — but only because the *base* prototypes are broken; re-estimating toward target features helps a broken base. This is not evidence for adaptation.
+1. **`cross_sensor` is bit-identical across every ladder row** (zero-shot = oracle = naive = top50 = flip = sweep = 0.3334), even true-label re-estimation changes nothing. The class prototypes have collapsed toward a common direction; the pool re-estimation is an identity because there is nothing class-specific left to re-estimate.
+2. **The leave-one-out signal AUROCs are degenerate** (snow: conf 0.000 / norm 0.000 / lr 0.000; several conditions hit exactly 1.000), helpful/harmful profiling against a near-random classifier is meaningless.
+3. **"Positive oracle headroom" appeared** (fog +7.0, clean +3.5, blur +2.5), but only because the *base* prototypes are broken; re-estimating toward target features helps a broken base. This is not evidence for adaptation.
 
 ### Why: the 5× VIB over-collapse, and the 128D mirage
 
 The Phase 16 deep diagnostics now read as the cause, not a curiosity:
 
 - **Clean magnitudes collapsed to 2.42** (healthy ≈ 5.6): the 5× KL at 26 full epochs pushed the clean posterior means toward the origin.
-- The binarized class means are *self-consistent* (norm 78.8/10000 — points within a class agree) but **class-discriminative directions are gone** — the class means point in similar directions, so cosine classification in 10kD is near-chance.
-- The 128D headroom metric (Euclidean `cdist` to *unnormalized* centroids) **exploits the residual magnitude differences** between classes (per-class clean mean norms are heterogeneous — class 2 nearly collapsed, others less so). That is why "HDC Prototype Accuracy (Fog) 31.7%" looked like an improvement while the deployment decode (10kD cosine) fell 15–34 points everywhere. **The 128D headroom metric is not a proxy for the HDC decode — Phase 16's headline was a mirage.**
+- The binarized class means are *self-consistent* (norm 78.8/10000, points within a class agree) but **class-discriminative directions are gone**: the class means point in similar directions, so cosine classification in 10kD is near-chance.
+- The 128D headroom metric (Euclidean `cdist` to *unnormalized* centroids) **exploits the residual magnitude differences** between classes (per-class clean mean norms are heterogeneous, class 2 nearly collapsed, others less so). That is why "HDC Prototype Accuracy (Fog) 31.7%" looked like an improvement while the deployment decode (10kD cosine) fell 15–34 points everywhere. **The 128D headroom metric is not a proxy for the HDC decode: Phase 16's headline was a mirage.**
 
 ### Verdict
 
-**`supcon_vib_strongvib` at medium scale over-regularized the representation.** The strong-VIB lever was right in principle (it produced the best micro-scale frozen decode) but the 5× weight at 26 full epochs crossed the over-collapse threshold. The checkpoint should **not** be continued — the KL axis is over-trained, not under-trained.
+**`supcon_vib_strongvib` at medium scale over-regularized the representation.** The strong-VIB lever was right in principle (it produced the best micro-scale frozen decode) but the 5× weight at 26 full epochs crossed the over-collapse threshold. The checkpoint should **not** be continued, the KL axis is over-trained, not under-trained.
 
 ### Next Steps
 
-1. **Retrain at medium scale with a mid-strength KL** (`supcon_vib_midvib`, weight 0.02–0.03 — a one-line variant alongside `strongvib`'s 0.05) — the hypothesis: enough pressure to keep the micro-scale fog gains, not so much that the clean manifold collapses. This is the correct follow-up run (~10h overnight).
-2. **Re-run the v4 ladder on the result** — the deployment metric is the acceptance test; the 128D headroom metrics are demoted to diagnostics, not headline numbers.
-3. **Add a clean-manifold health gate to the eval protocol**: track clean L2 norm and clean zero-shot on the ladder as a first-class metric — the over-collapse was visible in the deep diagnostics but absent from the summary numbers that drove the Phase 16 verdict.
+1. **Retrain at medium scale with a mid-strength KL** (`supcon_vib_midvib`, weight 0.02–0.03, a one-line variant alongside `strongvib`'s 0.05): the hypothesis: enough pressure to keep the micro-scale fog gains, not so much that the clean manifold collapses. This is the correct follow-up run (~10h overnight).
+2. **Re-run the v4 ladder on the result**: the deployment metric is the acceptance test; the 128D headroom metrics are demoted to diagnostics, not headline numbers.
+3. **Add a clean-manifold health gate to the eval protocol**: track clean L2 norm and clean zero-shot on the ladder as a first-class metric, the over-collapse was visible in the deep diagnostics but absent from the summary numbers that drove the Phase 16 verdict.
 
 ---
 
@@ -547,27 +547,27 @@ The 2h diagnostic run (query gate on both strongvib encoders + the KL-0.03 midvi
 
 | Encoder | Fog tau=inf (no gate) | Fog tau=4 | Fog tau=5 | Verdict |
 | :--- | :--- | :--- | :--- | :--- |
-| **micro-30ep strongvib (healthy)** | 35.0% \| 0.084 | 37.6% \| 0.085 (70%) | 33.8% \| 0.085 (94%) | **neutral** — +2.6 acc, mIoU flat |
+| **micro-30ep strongvib (healthy)** | 35.0% \| 0.084 | 37.6% \| 0.085 (70%) | 33.8% \| 0.085 (94%) | **neutral**, +2.6 acc, mIoU flat |
 | **med-26ep strongvib (collapsed)** | 12.8% \| 0.060 | 30.5% \| 0.092 (24%) | 21.6% \| 0.077 (46%) | gains only at tiny retention |
 | **midvib-12.7k** | 25.1% \| 0.083 | 53.8% \| 0.115 (23%) | 48.1% \| 0.108 (40%) | gains only at tiny retention |
 
-**Verdict:** the norm veto is not a meaningful lever on the healthy encoder's 10kD decode (τ=4: +2.6 acc at 70% retention, mIoU flat 0.084→0.085 across all conditions). The Phase 15 "band-acc promise" — measured on the *128D* Euclidean decode (36.3% vs 6.6%) — does **not transfer to the 10kD cosine decode**. The gate only rescues the *broken* encoders, and only by discarding 77–92% of points. Query-side norm gating is parked.
+**Verdict:** the norm veto is not a meaningful lever on the healthy encoder's 10kD decode (τ=4: +2.6 acc at 70% retention, mIoU flat 0.084→0.085 across all conditions). The Phase 15 "band-acc promise" (measured on the *128D* Euclidean decode, 36.3% vs 6.6%) does **not transfer to the 10kD cosine decode**. The gate only rescues the *broken* encoders, and only by discarding 77–92% of points. Query-side norm gating is parked.
 
 ### The MidVIB Probe (KL 0.03, 8 epochs × 50% data ≈ 12.7k steps)
 
-- **Clean manifold health: PASSED** — clean zero-shot 76.2% (vs 43.7% for the collapsed med encoder), no magnitude collapse at 12.7k steps. KL 0.03 is safe at this budget.
-- **Fog decode: did not improve** — fog zero-shot 25.1%, *worse* than strongvib-9.5k's 35.0%. KL-weight × step-count is a non-monotone tradeoff, not a dial.
-- **Most anisotropic manifold yet**: fog ellipticity 0.822 (clean 0.482) — the strongest anisotropy measurement in the project, coinciding with the worst relative fog decode.
-- Fog band acc (128D) [2,4): 51.8% — the best band acc ever measured, but it did not carry to the 10kD decode.
+- **Clean manifold health: PASSED**, clean zero-shot 76.2% (vs 43.7% for the collapsed med encoder), no magnitude collapse at 12.7k steps. KL 0.03 is safe at this budget.
+- **Fog decode: did not improve**, fog zero-shot 25.1%, *worse* than strongvib-9.5k's 35.0%. KL-weight × step-count is a non-monotone tradeoff, not a dial.
+- **Most anisotropic manifold yet**: fog ellipticity 0.822 (clean 0.482), the strongest anisotropy measurement in the project, coinciding with the worst relative fog decode.
+- Fog band acc (128D) [2,4): 51.8%, the best band acc ever measured, but it did not carry to the 10kD decode.
 
 ### The Missing Data Point
 
-The KL axis has now been probed at {0.01 (micro only), 0.03 (12.7k), 0.05 (9.5k and 83k)} — but **plain 0.01 has never been run at medium scale**. The 5× collapse at 83k steps tells us nothing about whether the *default* configuration survives it. This is the cheapest decisive experiment available.
+The KL axis has now been probed at {0.01 (micro only), 0.03 (12.7k), 0.05 (9.5k and 83k)}, but **plain 0.01 has never been run at medium scale**. The 5× collapse at 83k steps tells us nothing about whether the *default* configuration survives it. This is the cheapest decisive experiment available.
 
 ### Next Steps
 
-1. **Run plain `supcon_vib` (KL 0.01) at medium scale** (26–30 epochs, 100% data) — the missing control. If clean stays healthy (L2 ~5.6, clean zs high) *and* fog zero-shot ≥ 35%, the isotropy question may not need a new loss term at all.
-2. **Probe the anisotropy hypothesis directly** (ellipticity 0.47–0.82 is the strongest measured correlate of the decode gap): options in order of cost — (a) pure `supcon` (no VIB — the branch already exists in `gen_trainers.py`), (b) a spectral-whitening / covariance-isotropy penalty term as a new variant, (c) decorrelation (Barlow-style) regularization. The architecture is *not* the lever — the backbone is already a CNN; CNNs are translation-equivariant, not feature-isotropic.
+1. **Run plain `supcon_vib` (KL 0.01) at medium scale** (26–30 epochs, 100% data): the missing control. If clean stays healthy (L2 ~5.6, clean zs high) *and* fog zero-shot ≥ 35%, the isotropy question may not need a new loss term at all.
+2. **Probe the anisotropy hypothesis directly** (ellipticity 0.47–0.82 is the strongest measured correlate of the decode gap): options in order of cost: (a) pure `supcon` (no VIB; the branch already exists in `gen_trainers.py`), (b) a spectral-whitening / covariance-isotropy penalty term as a new variant, (c) decorrelation (Barlow-style) regularization. The architecture is *not* the lever: the backbone is already a CNN; CNNs are translation-equivariant, not feature-isotropic.
 
 ---
 
@@ -594,7 +594,7 @@ A zero-training test of whether the anisotropy hypothesis warrants a new loss te
 
 ### The Verdict
 
-**Whitening destroys the decode — the anisotropy is load-bearing.** The semantic information lives in the high-variance (elongated) directions; decorrelating the space throws it away. Per the outcome table this is the third row: the elongated structure is load-bearing, the covariance is not to be touched, and the naive isotropy-loss direction is abandoned. (If isotropy were ever pursued, it would have to be a *learned* regularizer that preserves discriminative structure — but the probe shows the decode does not want the space made isotropic.) The config path — plain KL 0.01 / SupCon-only at scale — is the surviving direction, which is exactly what the convergence probe (Phase 20) tests.
+**Whitening destroys the decode: the anisotropy is load-bearing.** The semantic information lives in the high-variance (elongated) directions; decorrelating the space throws it away. Per the outcome table this is the third row: the elongated structure is load-bearing, the covariance is not to be touched, and the naive isotropy-loss direction is abandoned. (If isotropy were ever pursued, it would have to be a *learned* regularizer that preserves discriminative structure, but the probe shows the decode does not want the space made isotropic.) The config path (plain KL 0.01 / SupCon-only at scale) is the surviving direction, which is exactly what the convergence probe (Phase 20) tests.
 
 ### Next Steps
 
@@ -605,7 +605,7 @@ A zero-training test of whether the anisotropy hypothesis warrants a new loss te
 
 ## Phase 20: The Convergence Probe (Long Epochs × Small Subset)
 
-Tests whether the Phase 17 over-collapse is a *convergence* phenomenon (total KL exposure) rather than a data-coverage artifact, at ~1/3 the cost of the 83k-step run — and whether plain KL 0.01 survives 3.3× its largest tested budget.
+Tests whether the Phase 17 over-collapse is a *convergence* phenomenon (total KL exposure) rather than a data-coverage artifact, at ~1/3 the cost of the 83k-step run, and whether plain KL 0.01 survives 3.3× its largest tested budget.
 
 ### The Setup
 
@@ -623,7 +623,7 @@ Tests whether the Phase 17 over-collapse is a *convergence* phenomenon (total KL
 | 0.05 (micro long) | 9.5k | healthy (clean zs 77.6%) | 35.0% |
 | 0.05 (medium) | 83k | **collapsed** (clean L2 2.42, clean zs 43.7%) | 12.8% |
 
-Why this isolates the right variable: the scheduler steps per batch, so LR is a function of *step count*, not data fraction — at the collapse point (83k steps) the cosine LR was still high (~0.0076 of 0.01 max). The collapse is therefore driven by cumulative KL exposure, not LR decay and not data coverage — a 10%-data run reaching the same step counts should reproduce it if that reasoning holds.
+Why this isolates the right variable: the scheduler steps per batch, so LR is a function of *step count*, not data fraction: at the collapse point (83k steps) the cosine LR was still high (~0.0076 of 0.01 max). The collapse is therefore driven by cumulative KL exposure, not LR decay and not data coverage; a 10%-data run reaching the same step counts should reproduce it if that reasoning holds.
 
 ### The Outcomes
 
@@ -637,3 +637,13 @@ Why this isolates the right variable: the scheduler steps per batch, so LR is a 
 
 1. **Run the probe**: `micro_pretrain_eval.py --methods supcon_vib --epochs 100 --cutoff 0.1 --out_dir logs/micro_pretrain_conv_probe` (~3.5h); add `supcon_vib_strongvib` at the same budget if time allows.
 2. **Commit the overnight run** per the outcomes above: plain `supcon_vib` (KL 0.01) at medium scale unless a probe redirects it.
+
+### Deferred: Batch-Size Scaling (investigate only if results demand it)
+
+The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *possible* (batch 2–4, one-line Parser change, loop already batch-agnostic). This is parked for three reasons:
+
+1. **Comparability**: every data point in the KL × steps matrix (9.5k/12.7k/83k) was trained at batch 1, a batch change creates a new training regime and breaks cross-run attribution.
+2. **Compute-bound ceiling**: at 100% util, the expected gain is modest (1.2–1.5× from amortized Python/launch overhead, not linear).
+3. **Semantics change**: SupCon positives would span images within a batch rather than only the clean↔augmented pair, and the cosine scheduler (defined in steps) would traverse its cycle at half the per-epoch depth, a different configuration, not a free speedup.
+
+**Revisit only if**: a probe or the overnight run shows the training wall-clock (not the metrics) is the blocker, e.g., needing many more epochs of convergence than the compute budget allows. The decision rule: batch scaling earns investigation only if it is the *clear* bottleneck, not because headroom exists. (Timing test if revisited: 3 epochs at batch 2 in a scratch out_dir vs the 2.56 it/s baseline.)

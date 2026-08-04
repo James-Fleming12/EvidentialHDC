@@ -29,7 +29,7 @@ The claim that a single phantom point dragged prototypes 60° was false. The mas
 **Diagnostic Proof:** We updated the pretraining pipeline to correctly guarantee `||w_0|| = 1.0` for all classes right out of the gate. As a result, the Bug Reproduction run (Run 2) only saw a max rotation of ~11°, instead of 60°. The step sizes started reasonably small and decayed, rather than starting massive.
 
 ### A2. The Epistemic Anchor ($k=0$) does nothing
-The regression from $k=0.0001$ to $k=0.0$ was only 0.0004 mIoU—well below the noise floor. The spring is neither the cause of the `0.4840` shortfall nor a necessary anchor. 
+The regression from $k=0.0001$ to $k=0.0$ was only 0.0004 mIoU - well below the noise floor. The spring is neither the cause of the `0.4840` shortfall nor a necessary anchor. 
 
 ### A3. The `0.4840` vs `0.4129` Comparison is Confounded
 The `0.4840` metric was reported as a *cumulative online* mIoU during the adaptation pass. The `0.4129` metric was reported as a *final frozen* mIoU post-adaptation.

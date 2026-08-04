@@ -12,9 +12,9 @@ well-characterized. The following are **measured results**, not intuitions:
 |---|---|
 | **Every geometric refinement loses to a first-order dot product.** Covariance ellipsoids, subspace reweighting, unions of balls, subcluster gating, and k-NN contrastive banks all underperform plain prototype cosine similarity as a gate. | rank sweep (all four subspace modes converge to ~0.78 AUROC vs 0.84 for the plain ball); precision–coverage (prototype ≥ k-NN at every operating point) |
 | **The reason is `n ≪ d`.** ~5k samples/class in 10k dimensions. A mean is estimable; a covariance is not. Every second-order score is noise-dominated by construction. | spectrum diagnostic; monotone AUROC decline as more eigen-directions are used |
-| **Set-valued conformal prediction is vacuous in HDC.** `E[\|C(x)\|] = 0.58` — prediction sets are always empty or singleton, never ambiguous, because HDC preserves inter-class separation. | calibration-drift run |
+| **Set-valued conformal prediction is vacuous in HDC.** `E[\|C(x)\|] = 0.58`: prediction sets are always empty or singleton, never ambiguous, because HDC preserves inter-class separation. | calibration-drift run |
 | **AUROC is the wrong metric for a gate.** k-NN had far higher AUROC (0.939 vs 0.81) yet *lost* on precision-at-coverage, which is what a gate actually uses. | knn_sweep vs precision_coverage |
-| **No pseudo-label gate recovers any of the available headroom.** Oracle gate (ground-truth labels) +2.73 mIoU; best pseudo-label gate ~0.00 — the wrong 18% of pseudo-labels exactly cancel the right 82%. | overnight decision experiment |
+| **No pseudo-label gate recovers any of the available headroom.** Oracle gate (ground-truth labels) +2.73 mIoU; best pseudo-label gate ~0.00: the wrong 18% of pseudo-labels exactly cancel the right 82%. | overnight decision experiment |
 
 The decisive discovery came from the Corruption Atlas diagnostics, and it
 changed the direction of the project entirely:
@@ -25,19 +25,19 @@ changed the direction of the project entirely:
 | **The fix must happen before HDC projection.** The backbone itself has to be trained to map physical noise to clean semantic manifolds (or isolate it), so the HDC space has real geometry to work with. | micro/medium pretraining runs |
 | **A decoupled SupCon+VIB pretraining makes the encoder robust.** Linear Probe on Fog reached 49.4% vs 23.6% baseline (2.1×), and the semantic information mathematically survives random projection and sign binarization (49.4% → 49.0% → 47.8%). | Phase 7/8 headroom diagnostics |
 | **The remaining bottleneck is the naive decoder.** Indiscriminate EMA prototype updates absorb impossible Fog/Crosstalk artifacts, poisoning the Euclidean centroids: 8.2% prototype accuracy despite 49.4% linear separability. | Phase 8 degradation pipeline |
-| **Harmful updates are identifiable by a universal signature.** They carry significantly lower confidence (0.61 vs 0.91) and significantly larger feature norms (6.41 vs 5.27) — consistent across all 8 corruptions. | Phase 9 universal oracle matrix |
+| **Harmful updates are identifiable by a universal signature.** They carry significantly lower confidence (0.61 vs 0.91) and significantly larger feature norms (6.41 vs 5.27), consistent across all 8 corruptions. | Phase 9 universal oracle matrix |
 | **Gating by confidence recovers most of the oracle headroom.** Top-50% confidence gate: 20.63% vs perfect oracle 23.32% vs naive EMA 16.36%. | Phase 9 oracle gating |
 | **Input-space remediation is a dead end.** SOR pre-filtering (in the training loop), additive noise augmentation, and global latent pooling all fail to beat the plain robust encoder on HDC Prototype Accuracy (9.1% / 12.4% / 14.4% vs 20.1%). | Phase 10 remediation shootout |
-| **On the robust encoder, adaptation is nearly solved.** Naive EMA already harvests ~82% of the oracle headroom on Fog (18.34% vs 19.54%); feature norm is the dominant gate signal (AUROC 0.94), while probe confidence is currently anti-predictive (AUROC 0.15 — under re-test with corrected sampling). | Phase 12 gated-EMA diagnostic |
+| **On the robust encoder, adaptation is nearly solved.** Naive EMA already harvests ~82% of the oracle headroom on Fog (18.34% vs 19.54%); feature norm is the dominant gate signal (AUROC 0.94), while probe confidence is currently anti-predictive (AUROC 0.15, under re-test with corrected sampling). | Phase 12 gated-EMA diagnostic |
 
 **Therefore, the method rests on three pillars**, each attacking one of the
 measured failure modes:
 
-1. **Robust feature extractor pretraining (SupCon + VIB)** — make the 128D
+1. **Robust feature extractor pretraining (SupCon + VIB):** make the 128D
    space robust enough that HDC prototypes have a meaningful manifold to live on.
-2. **Uncertainty-gated prototype updates** — stop the EMA memory from overfitting
+2. **Uncertainty-gated prototype updates:** stop the EMA memory from overfitting
    to corruption artifacts, using standard confidence/uncertainty metrics.
-3. **Balanced update allocation** — ensure majority classes and dense feature
+3. **Balanced update allocation:** ensure majority classes and dense feature
    modes are not overrepresented in the adaptation budget.
 
 ---
@@ -58,7 +58,7 @@ oracle @ 100% target precision -> +2.73 mIoU
 ```
 
 This is why Pillar 1 exists: **at ~82% macro precision, the wrong 18% of
-pseudo-labels exactly cancel the right 82%** — and this is specifically a
+pseudo-labels exactly cancel the right 82%**, and this is specifically a
 rare-class problem (pooled precision 99.2% vs macro precision 81% at 10%
 coverage). No amount of clever filtering fixes a label that is wrong, and no
 gate can recover a feature space that has collapsed into isotropic noise. The
@@ -67,13 +67,13 @@ veto the residual artifacts.
 
 ---
 
-## 3. Pillar 1 — Robust Feature Extractor Pretraining (SupCon + VIB)
+## 3. Pillar 1: Robust Feature Extractor Pretraining (SupCon + VIB)
 
 ### The problem, measured
 
 Type C corruptions (Fog, Crosstalk) mathematically destroy the linear
 separability of the geometric manifolds. Prototype drift and memory-bank
-methods are powerless because the underlying 128D space has collapsed — the
+methods are powerless because the underlying 128D space has collapsed: the
 noise points are no longer separable from the semantic points by any
 threshold.
 
@@ -94,7 +94,7 @@ projection layer:
   bounded, spherical, dense clusters.
 - **Physics-based augmentation only.** Voxelized beam dropout (sparsity),
   anisotropic ray-axis jitter (sensor noise), and density subsampling
-  (attenuation) — explicitly *not* KITTI-C's ray-tracing algorithms, to avoid
+  (attenuation), explicitly *not* KITTI-C's ray-tracing algorithms, to avoid
   overfitting the augmentation to the corruption pipeline.
 
 ### Measured effect
@@ -107,12 +107,12 @@ projection layer:
 - Best HDC Prototype Accuracy from the naive decoder: **20.1%** (vs 5.3% for
   the untrained baseline in the same protocol).
 - Post-hoc remediation on top of the robust encoder (SOR pre-filtering,
-  additive noise augmentation, global pooling) does not help — the extractor
+  additive noise augmentation, global pooling) does not help: the extractor
   is "solved enough"; further investment belongs in the decoder.
 
 ---
 
-## 4. Pillar 2 — Uncertainty-Gated HDC Prototype Updates
+## 4. Pillar 2: Uncertainty-Gated HDC Prototype Updates
 
 ### The problem, measured
 
@@ -136,17 +136,16 @@ weight (the same algebra used by the production uncertainty fusion):
 
 $$w(x) = \exp\big(-\lambda_1 \cdot \text{relu}(\tau_c - c)\big) \cdot \exp\big(-\lambda_2 \cdot \text{relu}(n_z - \tau_n)\big)$$
 
-and the prototype update becomes $c \leftarrow c + \eta \cdot w(x) \cdot z$ —
-a soft veto that down-weights artifacts without starving adaptation
+and the prototype update becomes $c \leftarrow c + \eta \cdot w(x) \cdot z$, a soft veto that down-weights artifacts without starving adaptation
 (avoiding the hard AND-gate starvation and OR-gate flooding documented in the
 earlier geometric-method threads).
 
 ### Measured effect
 
 - On the pre-robust encoder: top-50% confidence gate reached **20.63%** vs
-  16.36% naive — 89% of the perfect-oracle ceiling (23.32%).
+  16.36% naive, 89% of the perfect-oracle ceiling (23.32%).
 - On the robust encoder (Phase 12, Fog): naive EMA already reaches 18.34% of
-  the 19.54% oracle ceiling — the gate's remaining job is closing that gap and
+  the 19.54% oracle ceiling; the gate's remaining job is closing that gap and
   preventing drift over long streams.
 
 ### Gate-fault verification (do not trust old calibration)
@@ -164,7 +163,7 @@ config vs shipped defaults).
 
 Prior correction and prototype updates must not share a pathway. The prior
 term is an inference-time constant that translates decision boundaries between
-prototype cells — it does not move prototypes and does not cause drift by
+prototype cells: it does not move prototypes and does not cause drift by
 itself. But if **prior-corrected pseudo-labels** feed the EMA updates (or the
 gate's confidence is computed on prior-inflated scores), the bias steers the
 updates, the prototypes move to reinforce the bias, and the drift compounds.
@@ -177,7 +176,7 @@ update loop entirely.
 
 ---
 
-## 5. Pillar 3 — Class Balance (Decision-Level Prior Correction + Update-Level Ledger)
+## 5. Pillar 3: Class Balance (Decision-Level Prior Correction + Update-Level Ledger)
 
 Class balance is required at two independent levels: the **decision rule** and
 the **update rule**. They are complementary and must not be conflated.
@@ -186,19 +185,19 @@ the **update rule**. They are complementary and must not be conflated.
 
 A frequency-proportional update budget spends almost all of its capacity on
 classes that cannot improve. Class 11 (Road) had millions of points but
-**negative headroom (-0.57)** — updating it hurts the model because it is
+**negative headroom (-0.57)**, updating it hurts the model because it is
 already saturated. Meanwhile Class 0 (Car) had only 98k points but
 **+41.07 headroom**. At the decision level, the pure nearest-prototype rule is
 a likelihood-only decoder: under corruption, scattered points land in the
 largest Voronoi cells, and majority classes' prototypes occupy the largest
-solid angle — "majority prototypes cannibalize the tail classes."
+solid angle, "majority prototypes cannibalize the tail classes."
 
 ### 5.2 Decision-level balance: source prior correction (inference-time)
 
 The corrected score is `score(q, c) = κ·cos(q, P_c) + τ·log π_c` (τ = −1.0 in
 the old configuration). Geometrically, `τ·log π_c` is a per-class constant that
 **translates every pairwise boundary** between prototype cells:
-`cos(q,P_a) − cos(q,P_b) = (τ/κ)·log(π_b/π_a)` — deflating the majority cells
+`cos(q,P_a) − cos(q,P_b) = (τ/κ)·log(π_b/π_a)`, deflating the majority cells
 and inflating the rare cells, so scattered points absorbed by Road/Building can
 be re-captured by their true rare class. It is Bayes' rule applied to the
 frozen decoder: κ·cos is the (uncalibrated) log-likelihood, τ·log π the
@@ -213,11 +212,11 @@ Design notes:
   a minority feature mode far from its class centroid stays misclassified
   regardless of the margin. That failure needs the update-level ledger below.
 - **mIoU-oriented.** It trades majority-class precision for rare-class recall.
-  Report both point accuracy and mIoU when evaluating it — a prior-corrected
+  Report both point accuracy and mIoU when evaluating it, a prior-corrected
   decode can look worse on point accuracy while genuinely improving mIoU.
 - **Selective application.** The old oracle-switch found it helps where scatter
   absorption dominates (Wet Ground +11.7 mIoU, Echo) and hurts where scatter is
-  minimal (Snow, Incomplete Echo) — apply per condition, per the Phase 2 rule.
+  minimal (Snow, Incomplete Echo), apply per condition, per the Phase 2 rule.
 - **Never feeds the updates** (see the phase-separation rule in Pillar 2).
 
 ### 5.3 Update-level balance: the subcluster update ledger
@@ -232,7 +231,7 @@ Allocate the adaptation budget by **headroom**, not frequency, at two levels:
   (initialized from source); a subcluster contributes to the prototype update
   only if its update count is within a bounded range of its siblings'. This
   prevents a single dense feature mode within a class from dominating the
-  prototype's motion — the "balance different feature representations when one
+  prototype's motion, the "balance different feature representations when one
   is majority over another" mechanism, and the only one that can fix
   cell-center displacement (5.2 cannot).
 
@@ -263,12 +262,12 @@ available, multi-view agreement raises macro precision at higher cost."*
 | **Pretraining objective (Pillar 1)** | Decoupled supervised contrastive (SupCon, L2-normalized, τ = 0.1) + Variational Information Bottleneck (KL → 𝒩(0, I), weight 0.01, applied to clean *and* augmented pathways) + CE, with physics-based augmentations only (voxelized beam dropout, ray-axis jitter, density subsampling) |
 | **HDC encoding** | Seeded random bipolar projection 128D → 10,000D + sign binarization (information-preserving: 49.4% → 49.0% → 47.8% linear) |
 | **Prototypes** | Per-class means of the binarized clean features (frozen) |
-| **Adaptation (Pillar 2)** | Prototype updates gated by uncertainty signals (confidence + feature norm) — *currently being redesigned: Phase 14 showed prototype-level TTA has no headroom on the robust encoder; the gate is moving to the query side* |
-| **Balance (Pillar 3)** | Headroom-based update allocation (inter-class: freeze saturated majority classes; intra-class: bounded per-subcluster counts) — planned |
+| **Adaptation (Pillar 2)** | Prototype updates gated by uncertainty signals (confidence + feature norm), *currently being redesigned: Phase 14 showed prototype-level TTA has no headroom on the robust encoder; the gate is moving to the query side* |
+| **Balance (Pillar 3)** | Headroom-based update allocation (inter-class: freeze saturated majority classes; intra-class: bounded per-subcluster counts), planned |
 
 ### 7.2 Previous performance: the original model per condition
 
-The Corruption Atlas measured the *original* (un-pretrained) model on each condition. Some conditions are nearly untouched; others collapse to the point where even an **oracle prototype** (perfect-label prototype updates) can barely classify anything — the feature space itself is gone, so no decoder can recover it.
+The Corruption Atlas measured the *original* (un-pretrained) model on each condition. Some conditions are nearly untouched; others collapse to the point where even an **oracle prototype** (perfect-label prototype updates) can barely classify anything, the feature space itself is gone, so no decoder can recover it.
 
 | Condition | Cosine Shift | Baseline mIoU (corrupted) | Oracle Prototype (perfect graph) | Corrupted 1-NN Purity |
 | :--- | :--- | :--- | :--- | :--- |
@@ -281,11 +280,11 @@ The Corruption Atlas measured the *original* (un-pretrained) model on each condi
 | **Crosstalk** | 0.767 | 4.7% | 13.3% | 86.6% |
 | **Fog** | 0.885 | **1.8%** | **8.7%** | 75.1% |
 
-*The drop is bimodal: five conditions keep ≥ 88% neighborhood purity and ≥ 14.8% mIoU, while Fog, Crosstalk and Cross Sensor collapse — Fog's perfect-graph oracle ceiling is 8.7% mIoU, proving the collapse is in the representation, not the decoder. (Metrics: mIoU for the two Oracle Family columns; point-wise 1-NN purity otherwise.)*
+*The drop is bimodal: five conditions keep ≥ 88% neighborhood purity and ≥ 14.8% mIoU, while Fog, Crosstalk and Cross Sensor collapse, Fog's perfect-graph oracle ceiling is 8.7% mIoU, proving the collapse is in the representation, not the decoder. (Metrics: mIoU for the two Oracle Family columns; point-wise 1-NN purity otherwise.)*
 
 #### The previous best method still showed the same bimodal gap
 
-The best pre-pretraining method (`DualGateModel`, `docs/geometric_method/method_details.md`) improved every condition — roughly doubling the collapsed ones — yet the bimodal structure persisted exactly: five conditions at 80–90% point accuracy, Fog and Crosstalk still barely classifiable.
+The best pre-pretraining method (`DualGateModel`, `docs/geometric_method/method_details.md`) improved every condition (roughly doubling the collapsed ones), yet the bimodal structure persisted exactly: five conditions at 80–90% point accuracy, Fog and Crosstalk still barely classifiable.
 
 | Condition | Frozen (no TTA) | DualGateModel (previous best) |
 | :--- | :--- | :--- |
@@ -299,11 +298,11 @@ The best pre-pretraining method (`DualGateModel`, `docs/geometric_method/method_
 | **Fog** | **13.2%** | **31.9%** |
 | **Mean** | 65.0% | 73.2% |
 
-*And the memory-bank era showed *why* the gap is structural (Iteration 6, `docs/mem_method/adaptive_iterations.md`): prototype adaptation *improved* the survivable conditions (Snow +8.7 mIoU, Motion Blur +6.1) while *collapsing* Fog further (0.065 → 0.029 mIoU, 89% memory error) — the Inlier Paradox: fog noise sits *closer* to the seed centroids than real geometry, so geometric gates admit it at 100% firing rate. Adaptation helps exactly where the representation survives and poisons exactly where it doesn't.*
+*And the memory-bank era showed *why* the gap is structural (Iteration 6, `docs/mem_method/adaptive_iterations.md`): prototype adaptation *improved* the survivable conditions (Snow +8.7 mIoU, Motion Blur +6.1) while *collapsing* Fog further (0.065 → 0.029 mIoU, 89% memory error). The Inlier Paradox: fog noise sits *closer* to the seed centroids than real geometry, so geometric gates admit it at 100% firing rate. Adaptation helps exactly where the representation survives and poisons exactly where it doesn't.*
 
 ### 7.3 Current performance: what the new methods change
 
-Representation-level gains (Linear Probe — how separable the 128D space is under corruption) and decode-level gains (HDC prototype accuracy from frozen clean prototypes, Phase 14 v4 harness — 1M-point pool, oracle-calibrated). The medium-pretrained `supcon_vib` encoder (Phase 7) roughly doubled Fog linear separability (23.6% → 49.4% Linear Probe), and the robust micro encoder lifted Fog zero-shot HDC classification from 1.8% mIoU to **25.0%** point accuracy.
+Representation-level gains (Linear Probe, how separable the 128D space is under corruption) and decode-level gains (HDC prototype accuracy from frozen clean prototypes, Phase 14 v4 harness, 1M-point pool, oracle-calibrated). The medium-pretrained `supcon_vib` encoder (Phase 7) roughly doubled Fog linear separability (23.6% → 49.4% Linear Probe), and the robust micro encoder lifted Fog zero-shot HDC classification from 1.8% mIoU to **25.0%** point accuracy.
 
 | Condition | Old baseline mIoU | New Linear Probe (robust encoder) | New zero-shot HDC (robust encoder) | New perfect-oracle HDC |
 | :--- | :--- | :--- | :--- | :--- |
@@ -316,11 +315,11 @@ Representation-level gains (Linear Probe — how separable the 128D space is und
 | **Crosstalk** | 4.7% | 23.6% | 35.4% | 13.9% |
 | **Fog** | **1.8%** | **41.2%** | **25.0%** | 9.5% |
 
-*Three stories in one table: (1) near-SOTA conditions stay near-SOTA (Incomplete Echo: 92.8% linear probe); (2) the collapsed conditions gain 10–20× (Fog 1.8% → 25.0% zero-shot, Crosstalk 4.7% → 35.4%); (3) the perfect-oracle column now sits *below* zero-shot on every condition — the robust encoder's clean prototypes are already the best prototypes available, and prototype-level adaptation has no headroom (Phase 14). Metric families differ across columns (mIoU vs point accuracy vs linear probe), and the Linear Probe column is from the medium-pretrained encoder while the HDC columns are from the micro-pretrained encoder; the within-column comparisons are the meaningful ones.*
+*Three stories in one table: (1) near-SOTA conditions stay near-SOTA (Incomplete Echo: 92.8% linear probe); (2) the collapsed conditions gain 10–20× (Fog 1.8% → 25.0% zero-shot, Crosstalk 4.7% → 35.4%); (3) the perfect-oracle column now sits *below* zero-shot on every condition, the robust encoder's clean prototypes are already the best prototypes available, and prototype-level adaptation has no headroom (Phase 14). Metric families differ across columns (mIoU vs point accuracy vs linear probe), and the Linear Probe column is from the medium-pretrained encoder while the HDC columns are from the micro-pretrained encoder; the within-column comparisons are the meaningful ones.*
 
 ### 7.4 Why the decoder, not the encoder, is the current bottleneck
 
-The HDC degradation pipeline (Phase 8, med-pretrained `supcon_vib`, D = 1000) showed the semantic information survives every stage of the HDC encoding losslessly — only the naive nearest-prototype decoder wastes it:
+The HDC degradation pipeline (Phase 8, med-pretrained `supcon_vib`, D = 1000) showed the semantic information survives every stage of the HDC encoding losslessly, only the naive nearest-prototype decoder wastes it:
 
 | Representation stage | Linear Probe Accuracy | Prototype Accuracy |
 | :--- | :--- | :--- |
@@ -339,7 +338,7 @@ The HDC degradation pipeline (Phase 8, med-pretrained `supcon_vib`, D = 1000) sh
    + scheduler saved for cheap `--continue_training` continuation), with headroom
    + deep diagnostics baked into `med_pretrain_eval.py`.
 2. **Measure the converged encoder** (morning): re-run the v4 oracle ladder +
-   deep diagnostics — expect Fog zero-shot > 35% and the benign-condition mean to
+   deep diagnostics, expect Fog zero-shot > 35% and the benign-condition mean to
    recover toward the old frozen 65% baseline as training converges.
 3. **Test decision-level prior correction on the strongvib decode** (cheap, no
    training): static source prior (τ = −1.0) applied *selectively* per condition,
@@ -347,14 +346,14 @@ The HDC degradation pipeline (Phase 8, med-pretrained `supcon_vib`, D = 1000) sh
    benign-condition mIoU recovers toward the DualGateModel-era numbers, reinstate
    it as the decision-level inter-class balance (Pillar 3.2).
 4. **Build the query-side gate on the strongvib signals** (confidence + norm,
-   direction-calibrated per corruption — fog joint AUROC 0.856 is the reference),
+   direction-calibrated per corruption, fog joint AUROC 0.856 is the reference),
    applied to the frozen prototypes. The prior (if reinstated) lives only in the
    prediction pathway, never in the gate or update (phase-separation rule).
 5. **Update-level class balance (Pillar 3.3)**: subcluster ledger on top of the
-   gated adaptation — inter-class headroom budgeting + intra-class per-subcluster
+   gated adaptation, inter-class headroom budgeting + intra-class per-subcluster
    bounds, once prototype adaptation is re-engaged (e.g., the `additive` oracle
    headroom follow-up).
 6. **Prototype-adaptation path (follow-up)**: study why `additive`'s Fog means
    are usable (+19.2 oracle headroom) and whether its weak gate signals can be
-   sharpened — if so, gated prototype adaptation becomes viable again, with the
+   sharpened, if so, gated prototype adaptation becomes viable again, with the
    prior strictly excluded from the update loop.

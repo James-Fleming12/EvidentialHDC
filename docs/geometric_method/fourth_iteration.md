@@ -179,4 +179,4 @@ The method recovers crosstalk slightly (+5.02) but dramatically underperforms th
 The method loses -7.25 mIoU on `wet_ground`.
 * **Head Classes (Road, Building):** Rotated by a massive average of ~46 degrees, leading to a catastrophic -15.0 mIoU drop.
 * **Tail Classes:** Rotated by ~0.1 degrees, resulting in a negligible -0.4 mIoU drop.
-* **Conclusion:** The method is confidently and catastrophically updating the reflection geometries of major classes. Wet ground cannot be gated out by geometry—it must be frozen dynamically at the domain level.
+* **Conclusion:** The method is confidently and catastrophically updating the reflection geometries of major classes. Wet ground cannot be gated out by geometry - it must be frozen dynamically at the domain level.
