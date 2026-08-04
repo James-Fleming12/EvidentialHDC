@@ -571,11 +571,9 @@ The KL axis has now been probed at {0.01 (micro only), 0.03 (12.7k), 0.05 (9.5k 
 
 ---
 
-## Phase 19: The Whitening Probe and the Convergence Probe (in flight)
+## Phase 19: The ZCA Whitening Probe (in flight)
 
-Two zero-to-cheap tests to decide the overnight configuration without committing the 10h run.
-
-### Probe 1: The ZCA Whitening Probe (no training, ~30 min)
+A zero-training test to decide whether the anisotropy hypothesis warrants a new loss term, before committing the 10h run.
 
 `oracle_gating_eval.py --whiten` computes a ZCA whitening transform from 500k clean points (covariance eigen-decomposition, symmetric `W = U·D^(−1/2)·Uᵀ`), applies it to the clean features (prototype building, probe training) and every corrupt set (pool/val) before projection + binarization. Since binarization is direction-only, this isolates the anisotropy variable: if the elongated manifolds (ellipticity 0.48 clean / 0.60–0.82 fog) are the reason centroids underperform the linear probe, whitening must recover the decode.
 
@@ -591,16 +589,25 @@ Two zero-to-cheap tests to decide the overnight configuration without committing
 | Whitened fog zero-shot ≈ 35.0% | Anisotropy is not the bottleneck | No new loss term; config path (plain 0.01 / SupCon-only) |
 | Whitened fog zero-shot ≪ 35.0% | The elongated structure is load-bearing | Do not touch the covariance; abandon isotropy direction |
 
-### Probe 2: The Convergence Probe (100 epochs × 10% data ≈ 31.8k steps, ~3.5h)
+### Next Steps
+
+1. **Run the whitening probe**: `oracle_gating_eval.py --load_path logs/micro_pretrain_long/supcon_vib_strongvib --method supcon_vib_strongvib --whiten` (fog-only first, ~5 min; full panel ~30 min) — compare against the 35.0% fog baseline.
+2. **Then run the convergence probe** (Phase 20) per the whitening outcome.
+
+---
+
+## Phase 20: The Convergence Probe (Long Epochs × Small Subset)
 
 Tests whether the Phase 17 over-collapse is a *convergence* phenomenon (total KL exposure) rather than a data-coverage artifact, at ~1/3 the cost of the 83k-step run — and whether plain KL 0.01 survives 3.3× its largest tested budget.
+
+### The Setup
 
 | Variant | Steps | Time | Question |
 | :--- | :--- | :--- | :--- |
 | `supcon_vib` (KL 0.01), 100 epochs, cutoff 0.1 | 31.8k | ~3.5h | Is the default KL safe at high step counts? |
 | (optional) `supcon_vib_strongvib` (0.05), 100 epochs, cutoff 0.1 | 31.8k | ~3.5h | Does the Phase 17 collapse reproduce on 10% data? |
 
-Evidence so far (KL × steps matrix):
+### Evidence So Far (KL × steps matrix)
 
 | Config | Steps | Clean health | Fog zero-shot |
 | :--- | :--- | :--- | :--- |
@@ -611,6 +618,8 @@ Evidence so far (KL × steps matrix):
 
 Why this isolates the right variable: the scheduler steps per batch, so LR is a function of *step count*, not data fraction — at the collapse point (83k steps) the cosine LR was still high (~0.0076 of 0.01 max). The collapse is therefore driven by cumulative KL exposure, not LR decay and not data coverage — a 10%-data run reaching the same step counts should reproduce it if that reasoning holds.
 
+### The Outcomes
+
 | Outcome | Interpretation | Decision |
 | :--- | :--- | :--- |
 | 0.05 collapses at 31.8k on 10% data; 0.01 stays healthy | Convergence-driven collapse; KL weight is the dial | Overnight: plain 0.01 at medium scale |
@@ -619,6 +628,5 @@ Why this isolates the right variable: the scheduler steps per batch, so LR is a 
 
 ### Next Steps
 
-1. **Run the whitening probe** on the micro-30ep strongvib checkpoint (~30 min) — decision table above.
-2. **Run the convergence probe**: `supcon_vib` at 100 epochs, cutoff 0.1 (~3.5h); add `supcon_vib_strongvib` at the same budget if time allows.
-3. **Commit the overnight run** per the probe outcomes: plain `supcon_vib` (KL 0.01) at medium scale unless a probe redirects it.
+1. **Run the probe**: `micro_pretrain_eval.py --methods supcon_vib --epochs 100 --cutoff 0.1 --out_dir logs/micro_pretrain_conv_probe` (~3.5h); add `supcon_vib_strongvib` at the same budget if time allows.
+2. **Commit the overnight run** per the outcomes above: plain `supcon_vib` (KL 0.01) at medium scale unless a probe redirects it.
