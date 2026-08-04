@@ -1,27 +1,66 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Sequential diagnostic run (~2h): query gates on both existing strongvib
+# checkpoints, then the midvib step-budget probe (train + ladder).
+#
+# Usage:
+#   ./run_diagnostics.sh [GPU_ID]     # default GPU 3
+#   nohup ./run_diagnostics.sh 3 > logs/diagnostics_driver.log 2>&1 &
+#
+# Decision readouts when it finishes:
+#   - logs/oracle_gating_qg_micro.log / _med.log : Query Gate block per condition
+#       (does mIoU jump between tau=inf and tau=4-6 with sane retention?)
+#   - logs/midvib_probe_train.log : Deep diagnostics (clean L2 must stay ~4-6,
+#       NOT collapse toward 2.4)
+#   - logs/oracle_gating_midvib_probe.log : clean zero-shot must stay high (not 43.7%)
+set -euo pipefail
+
+GPU="${1:-3}"
+export CUDA_VISIBLE_DEVICES="$GPU"
 export PYTORCH_ALLOC_CONF=expandable_segments:True
-export CUDA_VISIBLE_DEVICES=3
-export PYTHONUNBUFFERED=1
+LOG_DIR="logs"
+T0=$(date +%s)
 
-echo "=== Killing stale contaminated records ==="
-rm -f logs/ablation_v2/records.json
+run_step() {
+    local name="$1"; shift
+    local log="$LOG_DIR/$name.log"
+    echo ""
+    echo "============================================================"
+    echo "[$(date '+%H:%M:%S')] $name -> $log"
+    echo "============================================================"
+    if ! uv run python "$@" 2>&1 | tee "$log"; then
+        echo "FAILED: $name (see $log)" >&2
+        exit 1
+    fi
+    echo "[$(date '+%H:%M:%S')] done: $name"
+}
 
-echo "=== D-STANDARD & D-POISON (ConformalHDC_10K) ==="
-uv run python ablation_kitti-c.py \
-    --ablations conformalhdc_10k \
-    --seeds 42 \
-    --corruptions fog,wet_ground,snow,motion_blur,beam_missing,crosstalk,incomplete_echo,cross_sensor \
-    --severity 3 \
-    --chunked --reset_per_corruption \
-    --log_dir logs/d_standard \
-    2>&1 | tee logs/diagnostics_d_standard.log
+# --- Step 1: query gate on the best micro-30ep strongvib encoder ---
+MICRO_LOAD="logs/micro_pretrain_long/supcon_vib_strongvib"
+[ -d "$MICRO_LOAD" ] || { echo "Missing checkpoint: $MICRO_LOAD"; exit 1; }
+run_step oracle_gating_qg_micro oracle_gating_eval.py \
+    --load_path "$MICRO_LOAD" \
+    --method supcon_vib_strongvib
 
-echo "=== D-CEILING-CLEAN (Prior Only on 8 Corruptions) ==="
-uv run python ablation_kitti-c.py \
-    --ablations m_d_prior_only \
-    --seeds 42 \
-    --corruptions fog,wet_ground,snow,motion_blur,beam_missing,crosstalk,incomplete_echo,cross_sensor \
-    --severity 3 \
-    --chunked --reset_per_corruption \
-    --log_dir logs/d_ceiling \
-    2>&1 | tee logs/diagnostics_d_ceiling.log
+# --- Step 2: query gate on the collapsed medium-26ep strongvib encoder ---
+MED_LOAD="logs/med_pretrain_supcon_vib_strongvib"
+[ -d "$MED_LOAD" ] || { echo "Missing checkpoint: $MED_LOAD"; exit 1; }
+run_step oracle_gating_qg_med oracle_gating_eval.py \
+    --load_path "$MED_LOAD" \
+    --method supcon_vib_strongvib
+
+# --- Step 3: midvib (KL 0.03) step-budget probe: 8 epochs x 50% data ~ 12.7k steps ---
+run_step midvib_probe_train micro_pretrain_eval.py \
+    --methods supcon_vib_midvib \
+    --epochs 8 \
+    --cutoff 0.5 \
+    --out_dir logs/micro_pretrain_midvib_probe
+
+# --- Step 4: v4 ladder on the midvib probe checkpoint ---
+MIDVIB_LOAD="logs/micro_pretrain_midvib_probe/supcon_vib_midvib"
+[ -d "$MIDVIB_LOAD" ] || { echo "Missing checkpoint: $MIDVIB_LOAD"; exit 1; }
+run_step oracle_gating_midvib_probe oracle_gating_eval.py \
+    --load_path "$MIDVIB_LOAD" \
+    --method supcon_vib_midvib
+
+echo ""
+echo "All steps done in $(( ($(date +%s) - T0) / 60 )) min"

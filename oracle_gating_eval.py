@@ -90,6 +90,21 @@ def eval_protos(protos, proto_lbls, val_feats, val_lbls):
     preds = proto_lbls[sims.argmax(dim=1)]
     return (preds == val_lbls).float().mean().item()
 
+
+def compute_miou(preds, lbls, num_classes=17):
+    """Mean IoU over evaluated classes (class 0 ignored; absent classes excluded)."""
+    present = set(lbls.tolist())
+    ious = []
+    for c in range(1, num_classes):
+        if c not in present:
+            continue
+        tp = int(((preds == c) & (lbls == c)).sum().item())
+        fp = int(((preds == c) & (lbls != c)).sum().item())
+        fn = int(((preds != c) & (lbls == c)).sum().item())
+        denom = tp + fp + fn
+        ious.append(tp / denom if denom > 0 else 0.0)
+    return float(np.mean(ious)) if ious else 0.0
+
 def compute_signal_aurocs(meta_list):
     """AUROC of each gate signal for separating Helpful (delta > 0) from Harmful (delta < 0) updates."""
     if len(meta_list) < 10:
@@ -290,10 +305,33 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
     gated['geom_best'] = best_geom
     gated['geom_best_cfg'] = best_geom_cfg
     
+    # Query gate end-to-end: veto high-norm points at inference on the FROZEN
+    # prototypes (Phase 15/16 band acc: low-norm points classify far better).
+    # Reports point accuracy AND mIoU vs retained fraction for a norm-threshold sweep.
+    print("      -> Running Query Gate (frozen prototypes, veto norm >= tau)...")
+    val_norms = torch.norm(val_f_128, p=2, dim=1)
+    norm_val_feats = F.normalize(val_feats, p=2, dim=1)
+    query_gate = {}
+    for tau in [2.0, 3.0, 4.0, 5.0, 6.0, 8.0, float('inf')]:
+        keep = val_norms < tau
+        n_keep = int(keep.sum().item())
+        if n_keep < 100:
+            query_gate[f"tau={tau}"] = {'acc': None, 'miou': None, 'retained': n_keep / len(val_norms)}
+            continue
+        sims = torch.matmul(norm_val_feats[keep], base_protos.T)
+        preds = proto_lbls[sims.argmax(dim=1)]
+        lbl = val_lbls[keep]
+        query_gate[f"tau={tau}"] = {
+            'acc': float((preds == lbl).float().mean().item()),
+            'miou': compute_miou(preds, lbl),
+            'retained': n_keep / len(val_norms),
+        }
+    
     res = {
         'zero_shot': zero_shot_acc,
         'perfect_acc': perfect_acc,
         'gated': gated,
+        'query_gate': query_gate,
         'auroc': compute_signal_aurocs(all_meta),
         'mode_auroc': mode_auroc,
         'weight_stats': weight_stats,
@@ -485,6 +523,14 @@ def main():
             print(f"      [sdw_best at u_th={res['gated']['sdw_best_cfg'][0]}, z_th={res['gated']['sdw_best_cfg'][1]}]")
         if res['gated'].get('geom_best_cfg'):
             print(f"      [geom_best at z_th={res['gated']['geom_best_cfg'][0]}]")
+        qg = res.get('query_gate', {})
+        if qg:
+            print("   -> Query Gate (frozen prototypes, veto norm >= tau): acc | mIoU | retained")
+            for k, v in qg.items():
+                if v['acc'] is None:
+                    print(f"      {k:<10}:   --   |   --   | {v['retained']*100:.1f}%")
+                else:
+                    print(f"      {k:<10}: {v['acc']:.4f} | {v['miou']:.4f} | {v['retained']*100:.1f}%")
         a = res.get('auroc', {})
         if a:
             print(f"   -> Signal AUROC (Helpful vs Harmful): "
