@@ -492,3 +492,47 @@ The medium-scale run (26 epochs on 100% data ≈ 83k gradient steps, ~10h, prope
 2. **Test the decision-level prior correction** on this decoder (both point accuracy and mIoU, per condition) — the benign-condition mean recovery question.
 3. **Decide continuation**: if the v4 ladder shows the fog zero-shot > 35% and climbing, extend with `--continue_training` (the saved checkpoint resumes the same cosine curve); the 5× VIB over-collapse of clean suggests also testing a mid-strength KL (e.g., 0.02–0.03) as a variant if the ladder disappoints.
 4. **Build the query-side norm gate** with the reconfirmed band-acc direction (veto fog norm ≥ 4).
+
+---
+
+## Phase 17: The Medium Run's Over-Collapse — 5× VIB Destroyed the HDC Decode
+
+The v4 ladder on the medium-26ep `supcon_vib_strongvib` checkpoint delivered a decisive negative result that overturns the Phase 16 optimism: **the 10kD HDC decode collapsed on every condition** relative to the 30-epoch micro encoder — while the 128D headroom metrics simultaneously *improved*. The 128D numbers were a magnitude artifact.
+
+### The 10kD Ladder: Micro-30ep → Medium-26ep (zero-shot, frozen clean prototypes)
+
+| Condition | micro-30ep zero-shot | medium-26ep zero-shot | Δ |
+| :--- | :--- | :--- | :--- |
+| **Clean Control** | 77.6% | 43.7% | **−33.8** |
+| **Beam Missing** | 72.2% | 42.8% | −29.4 |
+| **Incomplete Echo** | 74.4% | 45.4% | −29.0 |
+| **Cross Sensor** | 62.0% | 33.3% | −28.7 |
+| **Motion Blur** | 68.8% | 41.2% | −27.6 |
+| **Wet Ground** | 66.5% | 42.4% | −24.2 |
+| **Snow** | 61.1% | 43.4% | −17.7 |
+| **Fog** | 35.0% | 19.9% | −15.1 |
+| **Crosstalk** | 38.1% | 29.9% | −8.2 |
+
+### The Degeneracy Signatures
+
+1. **`cross_sensor` is bit-identical across every ladder row** (zero-shot = oracle = naive = top50 = flip = sweep = 0.3334) — even true-label re-estimation changes nothing. The class prototypes have collapsed toward a common direction; the pool re-estimation is an identity because there is nothing class-specific left to re-estimate.
+2. **The leave-one-out signal AUROCs are degenerate** (snow: conf 0.000 / norm 0.000 / lr 0.000; several conditions hit exactly 1.000) — helpful/harmful profiling against a near-random classifier is meaningless.
+3. **"Positive oracle headroom" appeared** (fog +7.0, clean +3.5, blur +2.5) — but only because the *base* prototypes are broken; re-estimating toward target features helps a broken base. This is not evidence for adaptation.
+
+### Why: the 5× VIB over-collapse, and the 128D mirage
+
+The Phase 16 deep diagnostics now read as the cause, not a curiosity:
+
+- **Clean magnitudes collapsed to 2.42** (healthy ≈ 5.6): the 5× KL at 26 full epochs pushed the clean posterior means toward the origin.
+- The binarized class means are *self-consistent* (norm 78.8/10000 — points within a class agree) but **class-discriminative directions are gone** — the class means point in similar directions, so cosine classification in 10kD is near-chance.
+- The 128D headroom metric (Euclidean `cdist` to *unnormalized* centroids) **exploits the residual magnitude differences** between classes (per-class clean mean norms are heterogeneous — class 2 nearly collapsed, others less so). That is why "HDC Prototype Accuracy (Fog) 31.7%" looked like an improvement while the deployment decode (10kD cosine) fell 15–34 points everywhere. **The 128D headroom metric is not a proxy for the HDC decode — Phase 16's headline was a mirage.**
+
+### Verdict
+
+**`supcon_vib_strongvib` at medium scale over-regularized the representation.** The strong-VIB lever was right in principle (it produced the best micro-scale frozen decode) but the 5× weight at 26 full epochs crossed the over-collapse threshold. The checkpoint should **not** be continued — the KL axis is over-trained, not under-trained.
+
+### Next Steps
+
+1. **Retrain at medium scale with a mid-strength KL** (`supcon_vib_midvib`, weight 0.02–0.03 — a one-line variant alongside `strongvib`'s 0.05) — the hypothesis: enough pressure to keep the micro-scale fog gains, not so much that the clean manifold collapses. This is the correct follow-up run (~10h overnight).
+2. **Re-run the v4 ladder on the result** — the deployment metric is the acceptance test; the 128D headroom metrics are demoted to diagnostics, not headline numbers.
+3. **Add a clean-manifold health gate to the eval protocol**: track clean L2 norm and clean zero-shot on the ladder as a first-class metric — the over-collapse was visible in the deep diagnostics but absent from the summary numbers that drove the Phase 16 verdict.
