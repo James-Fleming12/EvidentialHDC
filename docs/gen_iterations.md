@@ -416,3 +416,41 @@ The v4 harness (seeded pool/val permutation + 1M-point weighted class-mean ladde
 2. **Test feature-level adaptation** (e.g., test-time batch-norm / feature whitening alignment) as the alternative to prototype movement — the 49.4% linear separability proves the headroom exists in the feature space; the question is whether unsupervised alignment can capture it without labels.
 3. **One final prototype-adaptation check**: severity-split sequential adaptation (adapt on moderate Fog frames, evaluate on Heavy Fog frames) — the only regime where target-mean re-estimation could plausibly still help, since the mild-corruption means are less collapsed. If this also shows no headroom, prototype TTA is closed entirely.
 4. **The medium-scale run still pays**: its value is now the *frozen* representation (higher zero-shot HDC at convergence) plus query-side gating at scale, not gated prototype updates.
+
+---
+
+## Phase 15: The Long Micro Run — Training Heals the Collapse, StrongVIB Wins the Frozen Decode
+
+The 30-epoch micro run (cutoff 0.1, ~9.5k gradient steps — 6× the earlier micro budget) trained three variants — `supcon_vib`, `supcon_vib_strongvib` (5× VIB KL weight), `supcon_vib_additive` (volumetric noise injection) — each followed by the v4 oracle ladder plus the deep feature-space diagnostics. All three trained cleanly (IoU 0.30–0.31 by epoch 30, still climbing; strongvib's higher initial loss from the 5× KL converged to the same IoU).
+
+### The Ladder (30-epoch encoders, v4 harness, zero-shot → perfect-oracle)
+
+| Condition | supcon_vib (5ep → 30ep) | strongvib (30ep) | additive (30ep) |
+| :--- | :--- | :--- | :--- |
+| **Fog** | 25.0 → 28.8% \| 9.5 → 21.8% | **35.0%** \| 22.7% | 26.1% \| **45.3%** |
+| **Crosstalk** | 35.4 → 36.6% \| 13.9 → 33.5% | **38.1%** \| 32.4% | 36.9% \| 28.7% |
+| **Snow** | 63.8 → 62.0% \| 62.8% | 61.1% \| 64.4% | 61.1% \| 62.7% |
+| **Wet Ground** | 64.3 → 67.0% \| 65.9% | 66.5% \| 64.9% | 65.7% \| 64.6% |
+| **Incomplete Echo** | 73.6 → 75.8% \| 74.8% | 74.4% \| 73.6% | 74.7% \| 73.9% |
+| **Beam Missing** | 71.4 → 72.5% \| 69.3% | 72.2% \| 69.3% | 71.8% \| 70.4% |
+| **Motion Blur** | 66.1 → 69.7% \| 68.4% | 68.8% \| 67.9% | 67.9% \| 66.4% |
+| **Cross Sensor** | 57.5 → 63.8% \| 58.5% | 62.0% \| 60.2% | 59.6% \| 59.3% |
+| **Clean Control** | 76.1 → **80.4%** \| 79.7% | 77.6% \| 77.3% | 79.2% \| 78.5% |
+
+### Diagnostic Analysis
+
+1. **Training heals the collapse — partially.** The plain encoder's Fog zero-shot rose 25.0% → 28.8% and its Fog oracle more than doubled (9.5% → 21.8%) from 5 to 30 epochs; clean control rose to 80.4%. The binarized fog class means are no longer near-random (mean-norm ratio 1.07). The overnight medium run (95k steps, 10× this budget) is now strongly justified.
+2. **`strongvib` is the best frozen decoder — and has the best gate signals ever measured on Fog.** It leads Fog zero-shot (35.0%), Crosstalk (38.1%), and its Fog signal AUROCs are the strongest of the project: confidence 0.716, norm 0.807, joint 0.856, logistic 0.852. Its deep diagnostics show why it works: the 5× VIB redistributes fog features into the healthy mid-norm band (67% in [2,4) vs 91% in [4,∞) for the others) — the exact region that classifies well (band acc 36.3% vs 6.6% for [4,∞)). Cost: the clean control dips to 77.6% — the stronger KL slightly taxes the clean representation.
+3. **`additive` produced the first positive oracle headroom on Fog in the entire project: 26.1% → 45.3%.** Training against volumetric noise injection yields fog class means that are genuinely usable — prototype re-estimation on Fog *gains* +19.2 points. Phase 14's "prototype TTA is falsified" verdict is therefore encoder-specific, not universal. **But**: its own gate signals are the weakest of the three (fog logistic AUROC 0.616, confidence anti-predictive 0.372), so the headroom is not currently exploitable — naive adaptation lands at 20.2%, below its own zero-shot. This is the key open question for the prototype-adaptation path.
+4. **The high-norm fog points are the poison, consistently.** Band accuracy across variants: the [4,∞) norm band classifies at 6.6–25.4% while the [2,4) band reaches 36–40%. The query-side gate direction is confirmed: veto high-norm fog points before prototype classification.
+
+### Verdict & The Medium Run
+
+**`supcon_vib_strongvib` is the medium-scale candidate.** It maximizes exactly what the current plan needs: the frozen decode on the priority corruptions (Fog 35.0%, Crosstalk 38.1%) and the strongest signals for the query-side gate (fog joint AUROC 0.856). The additive oracle headroom (45.3%) is real but unexploitable until its signals improve; it is documented as the follow-up question rather than the overnight bet.
+
+### Next Steps
+
+1. **Overnight medium run**: `supcon_vib_strongvib`, 30 epochs on 100% data (~95k steps, ~12h), seeded — with headroom + deep diagnostics baked into `med_pretrain_eval.py`.
+2. **On the converged encoder**: re-run the v4 ladder + deep diagnostics — expect Fog zero-shot > 35% and Fog band-acc spread to sharpen; confirm the clean control recovers with the proper full-length LR schedule.
+3. **Build the query-side gate** on the strongvib signals (confidence + norm, direction-calibrated per corruption — the fog joint AUROC 0.856 is the reference).
+4. **Follow-up (prototype-adaptation path)**: study why `additive`'s fog means are usable — if its gate signals can be sharpened (e.g., stronger augmentation density or a norm-conditioned variant), the +19.2 oracle headroom becomes exploitable.

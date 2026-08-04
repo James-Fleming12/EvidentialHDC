@@ -225,15 +225,17 @@ def main():
     parser.add_argument("--config", type=str, default="config/labels/semantic-kitti-all.yaml")
     parser.add_argument("--arch", type=str, default="config/arch/senet-2048p.yml")
     parser.add_argument("--log_dir", type=str, default="logs")
-    parser.add_argument("--epochs", type=int, default=5, help="Number of medium-scale epochs to run from scratch")
+    parser.add_argument("--epochs", type=int, default=5, help="Number of medium-scale epochs to run from scratch (100% data, ~21 min/epoch on this GPU)")
     parser.add_argument("--continue_training", type=int, default=0, help="If > 0, resume from log_dir weights and train for this many extra epochs")
+    parser.add_argument("--methods", type=str, default="baseline,supcon_vib",
+                        help="Comma-separated subset of methods to run (e.g. supcon_vib, supcon_vib_strongvib)")
     args = parser.parse_args()
 
     # Load configurations
     DATA = yaml.safe_load(open(args.config, 'r'))
     ARCH = yaml.safe_load(open(args.arch, 'r'))
 
-    methods = ['baseline', 'supcon_vib']
+    methods = [m.strip() for m in args.methods.split(',') if m.strip()]
     results = {}
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
