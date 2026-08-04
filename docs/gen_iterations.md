@@ -571,9 +571,9 @@ The KL axis has now been probed at {0.01 (micro only), 0.03 (12.7k), 0.05 (9.5k 
 
 ---
 
-## Phase 19: The ZCA Whitening Probe (in flight)
+## Phase 19: The ZCA Whitening Probe (completed)
 
-A zero-training test to decide whether the anisotropy hypothesis warrants a new loss term, before committing the 10h run.
+A zero-training test of whether the anisotropy hypothesis warrants a new loss term, before committing the 10h run.
 
 `oracle_gating_eval.py --whiten` computes a ZCA whitening transform from 500k clean points (covariance eigen-decomposition, symmetric `W = U·D^(−1/2)·Uᵀ`), applies it to the clean features (prototype building, probe training) and every corrupt set (pool/val) before projection + binarization. Since binarization is direction-only, this isolates the anisotropy variable: if the elongated manifolds (ellipticity 0.48 clean / 0.60–0.82 fog) are the reason centroids underperform the linear probe, whitening must recover the decode.
 
@@ -583,16 +583,23 @@ A zero-training test to decide whether the anisotropy hypothesis warrants a new 
 | Transform | ZCA whitening, clean statistics, 500k points, seeded |
 | Question | Does decorrelating the space improve the 10kD prototype decode? |
 
-| Outcome | Interpretation | Decision |
-| :--- | :--- | :--- |
-| Whitened fog zero-shot ≫ 35.0% | Anisotropy is a real decode blocker | Build the isotropy loss term |
-| Whitened fog zero-shot ≈ 35.0% | Anisotropy is not the bottleneck | No new loss term; config path (plain 0.01 / SupCon-only) |
-| Whitened fog zero-shot ≪ 35.0% | The elongated structure is load-bearing | Do not touch the covariance; abandon isotropy direction |
+### The Results (micro-30ep strongvib, fog + clean control)
+
+| Metric | Non-whitened | Whitened | Δ |
+| :--- | :--- | :--- | :--- |
+| Fog zero-shot | 35.0% | 25.9% | **−9.1** |
+| Fog perfect-oracle | 22.7% | 8.6% | −14.1 |
+| Clean zero-shot | 77.6% | 56.1% | **−21.5** |
+| Fog query-gate (τ=5) | 33.8% | 30.9% | −2.9 |
+
+### The Verdict
+
+**Whitening destroys the decode — the anisotropy is load-bearing.** The semantic information lives in the high-variance (elongated) directions; decorrelating the space throws it away. Per the outcome table this is the third row: the elongated structure is load-bearing, the covariance is not to be touched, and the naive isotropy-loss direction is abandoned. (If isotropy were ever pursued, it would have to be a *learned* regularizer that preserves discriminative structure — but the probe shows the decode does not want the space made isotropic.) The config path — plain KL 0.01 / SupCon-only at scale — is the surviving direction, which is exactly what the convergence probe (Phase 20) tests.
 
 ### Next Steps
 
-1. **Run the whitening probe**: `oracle_gating_eval.py --load_path logs/micro_pretrain_long/supcon_vib_strongvib --method supcon_vib_strongvib --whiten` (fog-only first, ~5 min; full panel ~30 min) — compare against the 35.0% fog baseline.
-2. **Then run the convergence probe** (Phase 20) per the whitening outcome.
+1. **Run the convergence probe** (Phase 20): `supcon_vib` at 100 epochs, cutoff 0.1 (~3.5h), then its v4 ladder.
+2. **Commit the overnight run** per the Phase 20 outcomes: plain `supcon_vib` (KL 0.01) at medium scale unless it redirects.
 
 ---
 
