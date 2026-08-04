@@ -365,6 +365,10 @@ def main():
     parser.add_argument("--z_coef", type=float, default=GATE_CFG["z_coef"])
     parser.add_argument("--corruptions", type=str, default="",
                         help="Comma-separated subset of the 8 corruptions (default: all)")
+    parser.add_argument("--whiten", action="store_true",
+                        help="ZCA-whiten all features (transform from 500k clean points) before "
+                             "the ladder — anisotropy probe: does decorrelating the space improve "
+                             "the 10kD prototype decode?")
     args, _ = parser.parse_known_args()
     
     DATA = yaml.safe_load(open(args.config, 'r'))
@@ -424,6 +428,24 @@ def main():
     clean_feats = torch.cat(clean_feats, dim=0)
     clean_lbls = torch.cat(clean_lbls, dim=0)
     print(f"   [Total Clean Points Extracted: {len(clean_feats)}]")
+    
+    # Optional ZCA whitening probe: decorrelate clean features with clean statistics,
+    # apply the same transform to every corrupt set, then re-run the ladder.
+    # Tests whether the measured anisotropy (ellipticity ~0.5 clean / ~0.6-0.8 fog)
+    # is the bottleneck of the 10kD centroid decode.
+    if args.whiten:
+        print("-> Computing ZCA Whitening (from 500k clean points)...")
+        torch.manual_seed(42)
+        sub_idx = torch.randperm(len(clean_feats))[:500000]
+        mean_c = clean_feats[sub_idx].mean(dim=0)
+        Xc = clean_feats[sub_idx] - mean_c
+        cov = (Xc.T @ Xc) / len(Xc)
+        U, S, _ = torch.linalg.svd(cov)
+        W = U @ torch.diag(1.0 / torch.sqrt(S + 1e-6)) @ U.T
+        whiten = (mean_c, W)
+        clean_feats = (clean_feats - mean_c) @ W
+        print(f"   [whiten] covariance eigen-range: {float(S[-1]):.5f} .. {float(S[0]):.5f} "
+              f"(ratio {float(S[0] / (S[-1] + 1e-8)):.1f})")
     
     # Train Linear Probe on 128D (to use as our confidence oracle)
     print("-> Training Linear Probe Oracle (128D on 100k points)...")
@@ -505,6 +527,9 @@ def main():
                 
         corrupt_feats = torch.cat(corrupt_feats, dim=0)
         corrupt_lbls = torch.cat(corrupt_lbls, dim=0)
+        
+        if args.whiten:
+            corrupt_feats = (corrupt_feats - whiten[0]) @ whiten[1]
         
         probe_corrupt_acc = clf.score(corrupt_feats[:train_size].numpy(), corrupt_lbls[:train_size].numpy())
         print(f"   -> 128D Linear Probe Accuracy: {probe_corrupt_acc:.4f}")

@@ -536,3 +536,89 @@ The Phase 16 deep diagnostics now read as the cause, not a curiosity:
 1. **Retrain at medium scale with a mid-strength KL** (`supcon_vib_midvib`, weight 0.02–0.03 — a one-line variant alongside `strongvib`'s 0.05) — the hypothesis: enough pressure to keep the micro-scale fog gains, not so much that the clean manifold collapses. This is the correct follow-up run (~10h overnight).
 2. **Re-run the v4 ladder on the result** — the deployment metric is the acceptance test; the 128D headroom metrics are demoted to diagnostics, not headline numbers.
 3. **Add a clean-manifold health gate to the eval protocol**: track clean L2 norm and clean zero-shot on the ladder as a first-class metric — the over-collapse was visible in the deep diagnostics but absent from the summary numbers that drove the Phase 16 verdict.
+
+---
+
+## Phase 18: The Query Gate Verdict and the MidVIB Probe
+
+The 2h diagnostic run (query gate on both strongvib encoders + the KL-0.03 midvib step probe at 12.7k steps) delivered two results: the norm-veto query gate is **neutral on the healthy encoder**, and the midvib probe's clean manifold stays **healthy** while its fog decode does not improve.
+
+### The Query Gate (frozen prototypes, veto norm ≥ τ): acc | mIoU | retained
+
+| Encoder | Fog tau=inf (no gate) | Fog tau=4 | Fog tau=5 | Verdict |
+| :--- | :--- | :--- | :--- | :--- |
+| **micro-30ep strongvib (healthy)** | 35.0% \| 0.084 | 37.6% \| 0.085 (70%) | 33.8% \| 0.085 (94%) | **neutral** — +2.6 acc, mIoU flat |
+| **med-26ep strongvib (collapsed)** | 12.8% \| 0.060 | 30.5% \| 0.092 (24%) | 21.6% \| 0.077 (46%) | gains only at tiny retention |
+| **midvib-12.7k** | 25.1% \| 0.083 | 53.8% \| 0.115 (23%) | 48.1% \| 0.108 (40%) | gains only at tiny retention |
+
+**Verdict:** the norm veto is not a meaningful lever on the healthy encoder's 10kD decode (τ=4: +2.6 acc at 70% retention, mIoU flat 0.084→0.085 across all conditions). The Phase 15 "band-acc promise" — measured on the *128D* Euclidean decode (36.3% vs 6.6%) — does **not transfer to the 10kD cosine decode**. The gate only rescues the *broken* encoders, and only by discarding 77–92% of points. Query-side norm gating is parked.
+
+### The MidVIB Probe (KL 0.03, 8 epochs × 50% data ≈ 12.7k steps)
+
+- **Clean manifold health: PASSED** — clean zero-shot 76.2% (vs 43.7% for the collapsed med encoder), no magnitude collapse at 12.7k steps. KL 0.03 is safe at this budget.
+- **Fog decode: did not improve** — fog zero-shot 25.1%, *worse* than strongvib-9.5k's 35.0%. KL-weight × step-count is a non-monotone tradeoff, not a dial.
+- **Most anisotropic manifold yet**: fog ellipticity 0.822 (clean 0.482) — the strongest anisotropy measurement in the project, coinciding with the worst relative fog decode.
+- Fog band acc (128D) [2,4): 51.8% — the best band acc ever measured, but it did not carry to the 10kD decode.
+
+### The Missing Data Point
+
+The KL axis has now been probed at {0.01 (micro only), 0.03 (12.7k), 0.05 (9.5k and 83k)} — but **plain 0.01 has never been run at medium scale**. The 5× collapse at 83k steps tells us nothing about whether the *default* configuration survives it. This is the cheapest decisive experiment available.
+
+### Next Steps
+
+1. **Run plain `supcon_vib` (KL 0.01) at medium scale** (26–30 epochs, 100% data) — the missing control. If clean stays healthy (L2 ~5.6, clean zs high) *and* fog zero-shot ≥ 35%, the isotropy question may not need a new loss term at all.
+2. **Probe the anisotropy hypothesis directly** (ellipticity 0.47–0.82 is the strongest measured correlate of the decode gap): options in order of cost — (a) pure `supcon` (no VIB — the branch already exists in `gen_trainers.py`), (b) a spectral-whitening / covariance-isotropy penalty term as a new variant, (c) decorrelation (Barlow-style) regularization. The architecture is *not* the lever — the backbone is already a CNN; CNNs are translation-equivariant, not feature-isotropic.
+
+---
+
+## Phase 19: The Whitening Probe and the Convergence Probe (in flight)
+
+Two zero-to-cheap tests to decide the overnight configuration without committing the 10h run.
+
+### Probe 1: The ZCA Whitening Probe (no training, ~30 min)
+
+`oracle_gating_eval.py --whiten` computes a ZCA whitening transform from 500k clean points (covariance eigen-decomposition, symmetric `W = U·D^(−1/2)·Uᵀ`), applies it to the clean features (prototype building, probe training) and every corrupt set (pool/val) before projection + binarization. Since binarization is direction-only, this isolates the anisotropy variable: if the elongated manifolds (ellipticity 0.48 clean / 0.60–0.82 fog) are the reason centroids underperform the linear probe, whitening must recover the decode.
+
+| Setting | Value |
+| :--- | :--- |
+| Encoder | micro-30ep `supcon_vib_strongvib` (fog zero-shot 35.0%, clean 77.6%) |
+| Transform | ZCA whitening, clean statistics, 500k points, seeded |
+| Question | Does decorrelating the space improve the 10kD prototype decode? |
+
+| Outcome | Interpretation | Decision |
+| :--- | :--- | :--- |
+| Whitened fog zero-shot ≫ 35.0% | Anisotropy is a real decode blocker | Build the isotropy loss term |
+| Whitened fog zero-shot ≈ 35.0% | Anisotropy is not the bottleneck | No new loss term; config path (plain 0.01 / SupCon-only) |
+| Whitened fog zero-shot ≪ 35.0% | The elongated structure is load-bearing | Do not touch the covariance; abandon isotropy direction |
+
+### Probe 2: The Convergence Probe (100 epochs × 10% data ≈ 31.8k steps, ~3.5h)
+
+Tests whether the Phase 17 over-collapse is a *convergence* phenomenon (total KL exposure) rather than a data-coverage artifact, at ~1/3 the cost of the 83k-step run — and whether plain KL 0.01 survives 3.3× its largest tested budget.
+
+| Variant | Steps | Time | Question |
+| :--- | :--- | :--- | :--- |
+| `supcon_vib` (KL 0.01), 100 epochs, cutoff 0.1 | 31.8k | ~3.5h | Is the default KL safe at high step counts? |
+| (optional) `supcon_vib_strongvib` (0.05), 100 epochs, cutoff 0.1 | 31.8k | ~3.5h | Does the Phase 17 collapse reproduce on 10% data? |
+
+Evidence so far (KL × steps matrix):
+
+| Config | Steps | Clean health | Fog zero-shot |
+| :--- | :--- | :--- | :--- |
+| 0.01 (micro long) | 9.5k | healthy | 28.8% |
+| 0.03 (midvib probe) | 12.7k | healthy (clean zs 76.2%) | 25.1% |
+| 0.05 (micro long) | 9.5k | healthy (clean zs 77.6%) | 35.0% |
+| 0.05 (medium) | 83k | **collapsed** (clean L2 2.42, clean zs 43.7%) | 12.8% |
+
+Why this isolates the right variable: the scheduler steps per batch, so LR is a function of *step count*, not data fraction — at the collapse point (83k steps) the cosine LR was still high (~0.0076 of 0.01 max). The collapse is therefore driven by cumulative KL exposure, not LR decay and not data coverage — a 10%-data run reaching the same step counts should reproduce it if that reasoning holds.
+
+| Outcome | Interpretation | Decision |
+| :--- | :--- | :--- |
+| 0.05 collapses at 31.8k on 10% data; 0.01 stays healthy | Convergence-driven collapse; KL weight is the dial | Overnight: plain 0.01 at medium scale |
+| 0.05 stays healthy at 31.8k | Data coverage (100%) or a later step regime triggers it | Overnight: plain 0.01 with clean-health monitoring; expect healthy |
+| 0.01 also collapses at 31.8k | The VIB mechanism itself over-regulates at scale | SupCon-only or isotropy-loss direction takes priority |
+
+### Next Steps
+
+1. **Run the whitening probe** on the micro-30ep strongvib checkpoint (~30 min) — decision table above.
+2. **Run the convergence probe**: `supcon_vib` at 100 epochs, cutoff 0.1 (~3.5h); add `supcon_vib_strongvib` at the same budget if time allows.
+3. **Commit the overnight run** per the probe outcomes: plain `supcon_vib` (KL 0.01) at medium scale unless a probe redirects it.
