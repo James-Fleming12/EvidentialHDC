@@ -603,40 +603,34 @@ A zero-training test of whether the anisotropy hypothesis warrants a new loss te
 
 ---
 
-## Phase 20: The Convergence Probe (Long Epochs × Small Subset)
+## Phase 20: The Convergence Probe (Long Epochs × Small Subset) — COMPLETED
 
-Tests whether the Phase 17 over-collapse is a *convergence* phenomenon (total KL exposure) rather than a data-coverage artifact, at ~1/3 the cost of the 83k-step run, and whether plain KL 0.01 survives 3.3× its largest tested budget.
+The probe ran plain `supcon_vib` (KL 0.01) to 62 epochs on 10% data (≈19.7k steps, cut short of 100 epochs once the decision was banked), then the v4 ladder measured the frozen decode.
 
-### The Setup
+### The Result (62-epoch probe checkpoint, v4 ladder)
 
-| Variant | Steps | Time | Question |
+| Condition | Zero-shot | Perfect-oracle | Naive EMA |
 | :--- | :--- | :--- | :--- |
-| `supcon_vib` (KL 0.01), 100 epochs, cutoff 0.1 | 31.8k | ~3.5h | Is the default KL safe at high step counts? |
-| (optional) `supcon_vib_strongvib` (0.05), 100 epochs, cutoff 0.1 | 31.8k | ~3.5h | Does the Phase 17 collapse reproduce on 10% data? |
+| **Clean Control** | **81.4%** | 81.3% | 66.4% |
+| **Fog** | 27.4% | **46.4% (+19.1)** | 25.7% |
+| **Snow** | 65.2% | 67.9% | 48.7% |
+| **Wet Ground** | 68.9% | 68.4% | 55.5% |
+| **Incomplete Echo** | 77.9% | 77.5% | 55.5% |
+| **Crosstalk** | 34.2% | 32.4% | 15.0% |
+| **Beam Missing** | 75.1% | 74.3% | 56.0% |
+| **Motion Blur** | 72.9% | 71.8% | 55.0% |
+| **Cross Sensor** | 64.8% | 62.6% | 42.5% |
 
-### Evidence So Far (KL × steps matrix)
+### The Verdict
 
-| Config | Steps | Clean health | Fog zero-shot |
-| :--- | :--- | :--- | :--- |
-| 0.01 (micro long) | 9.5k | healthy | 28.8% |
-| 0.03 (midvib probe) | 12.7k | healthy (clean zs 76.2%) | 25.1% |
-| 0.05 (micro long) | 9.5k | healthy (clean zs 77.6%) | 35.0% |
-| 0.05 (medium) | 83k | **collapsed** (clean L2 2.42, clean zs 43.7%) | 12.8% |
-
-Why this isolates the right variable: the scheduler steps per batch, so LR is a function of *step count*, not data fraction: at the collapse point (83k steps) the cosine LR was still high (~0.0076 of 0.01 max). The collapse is therefore driven by cumulative KL exposure, not LR decay and not data coverage; a 10%-data run reaching the same step counts should reproduce it if that reasoning holds.
-
-### The Outcomes
-
-| Outcome | Interpretation | Decision |
-| :--- | :--- | :--- |
-| 0.05 collapses at 31.8k on 10% data; 0.01 stays healthy | Convergence-driven collapse; KL weight is the dial | Overnight: plain 0.01 at medium scale |
-| 0.05 stays healthy at 31.8k | Data coverage (100%) or a later step regime triggers it | Overnight: plain 0.01 with clean-health monitoring; expect healthy |
-| 0.01 also collapses at 31.8k | The VIB mechanism itself over-regulates at scale | SupCon-only or isotropy-loss direction takes priority |
+1. **KL 0.01 is definitively safe at scale.** Clean zero-shot **81.4%** — the best clean decode measured on any encoder (vs 80.4% micro-30ep plain, 77.6% strongvib, 43.7% collapsed med). The Phase 20 outcome lands in the first row: *0.01 stays healthy → overnight: plain `supcon_vib` at medium scale*.
+2. **Fog oracle 46.4% — the best ever measured** (+19.1 over zero-shot). Only the second positive fog headroom in the project (additive: 45.3%), and this time on the plain config that is going to the medium run. The plain encoder's fog class means are genuinely usable at 19.7k steps; the 5× VIB destroyed this property (strongvib fog oracle was 22.7%).
+3. Training was still improving at epoch 62 (train IoU 0.39, loss 0.61) — no collapse signal, no plateau of concern.
 
 ### Next Steps
 
-1. **Run the probe**: `micro_pretrain_eval.py --methods supcon_vib --epochs 100 --cutoff 0.1 --out_dir logs/micro_pretrain_conv_probe` (~3.5h); add `supcon_vib_strongvib` at the same budget if time allows.
-2. **Commit the overnight run** per the outcomes above: plain `supcon_vib` (KL 0.01) at medium scale unless a probe redirects it.
+1. **Overnight medium run** (plain `supcon_vib`, 26 epochs, 100% data ≈ 83k steps) — validated. The morning readout: deep diagnostics clean L2 + the v4 ladder. Watch specifically for the **fog oracle**: if it holds or grows beyond 46.4% at 83k steps, prototype-level adaptation is back on the table for the plain config (with the phase-separation rule for any prior correction).
+2. **Log the probe checkpoint's ladder** into the evidence matrix (0.01 @ 19.7k: clean 81.4%, fog zs 27.4%, fog oracle 46.4%).
 
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
