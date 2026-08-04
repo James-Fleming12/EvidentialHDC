@@ -160,19 +160,67 @@ exists), **per-gate-mode AUROC** (is the gate's own score selective?),
 **sign-corrected joint gates**, and **threshold envelope sweeps** (best-case
 config vs shipped defaults).
 
+### Phase separation (design rule)
+
+Prior correction and prototype updates must not share a pathway. The prior
+term is an inference-time constant that translates decision boundaries between
+prototype cells — it does not move prototypes and does not cause drift by
+itself. But if **prior-corrected pseudo-labels** feed the EMA updates (or the
+gate's confidence is computed on prior-inflated scores), the bias steers the
+updates, the prototypes move to reinforce the bias, and the drift compounds.
+Rule: the **prediction pathway** may use the prior-corrected score; the
+**adaptation pathway** (admission + update) must use prior-free likelihood
+confidence. This is why the frozen-decode + query-gate plan can apply the
+prior safely (no updates → no feedback loop), while any prototype-adaptation
+follow-up (e.g., the `additive` oracle headroom) must keep the prior out of the
+update loop entirely.
+
 ---
 
-## 5. Pillar 3 — Balanced Update Allocation (Intra/Inter-Class Balance)
+## 5. Pillar 3 — Class Balance (Decision-Level Prior Correction + Update-Level Ledger)
 
-### The problem, measured
+Class balance is required at two independent levels: the **decision rule** and
+the **update rule**. They are complementary and must not be conflated.
+
+### 5.1 The problem, measured
 
 A frequency-proportional update budget spends almost all of its capacity on
 classes that cannot improve. Class 11 (Road) had millions of points but
 **negative headroom (-0.57)** — updating it hurts the model because it is
 already saturated. Meanwhile Class 0 (Car) had only 98k points but
-**+41.07 headroom**.
+**+41.07 headroom**. At the decision level, the pure nearest-prototype rule is
+a likelihood-only decoder: under corruption, scattered points land in the
+largest Voronoi cells, and majority classes' prototypes occupy the largest
+solid angle — "majority prototypes cannibalize the tail classes."
 
-### The mechanism: a subcluster update ledger
+### 5.2 Decision-level balance: source prior correction (inference-time)
+
+The corrected score is `score(q, c) = κ·cos(q, P_c) + τ·log π_c` (τ = −1.0 in
+the old configuration). Geometrically, `τ·log π_c` is a per-class constant that
+**translates every pairwise boundary** between prototype cells:
+`cos(q,P_a) − cos(q,P_b) = (τ/κ)·log(π_b/π_a)` — deflating the majority cells
+and inflating the rare cells, so scattered points absorbed by Road/Building can
+be re-captured by their true rare class. It is Bayes' rule applied to the
+frozen decoder: κ·cos is the (uncalibrated) log-likelihood, τ·log π the
+log-prior.
+
+Design notes:
+- **Balances frequency, not representation volume.** It keys on the scene prior
+  π_c. The old EVT density penalty (√(2 ln N) correction) balanced *angular
+  volume* instead; if a majority class is also representation-dense, the prior
+  alone under-compensates. Measure which imbalance is dominant before choosing.
+- **Moves boundaries, not centers.** It cannot fix intra-class mode imbalance:
+  a minority feature mode far from its class centroid stays misclassified
+  regardless of the margin. That failure needs the update-level ledger below.
+- **mIoU-oriented.** It trades majority-class precision for rare-class recall.
+  Report both point accuracy and mIoU when evaluating it — a prior-corrected
+  decode can look worse on point accuracy while genuinely improving mIoU.
+- **Selective application.** The old oracle-switch found it helps where scatter
+  absorption dominates (Wet Ground +11.7 mIoU, Echo) and hurts where scatter is
+  minimal (Snow, Incomplete Echo) — apply per condition, per the Phase 2 rule.
+- **Never feeds the updates** (see the phase-separation rule in Pillar 2).
+
+### 5.3 Update-level balance: the subcluster update ledger
 
 Allocate the adaptation budget by **headroom**, not frequency, at two levels:
 
@@ -184,7 +232,9 @@ Allocate the adaptation budget by **headroom**, not frequency, at two levels:
   (initialized from source); a subcluster contributes to the prototype update
   only if its update count is within a bounded range of its siblings'. This
   prevents a single dense feature mode within a class from dominating the
-  prototype's motion.
+  prototype's motion — the "balance different feature representations when one
+  is majority over another" mechanism, and the only one that can fix
+  cell-center displacement (5.2 cannot).
 
 Crucially, the subclusters only track updates; they never touch inference.
 This prevents the Voronoi-shattering failure that destroyed previous
@@ -284,16 +334,27 @@ The HDC degradation pipeline (Phase 8, med-pretrained `supcon_vib`, D = 1000) sh
 
 ## 8. Order of work (current state)
 
-1. **Validate the gate signals on the robust encoder.** Fix the linear-probe
-   sampling (uniform across frames), complete the 8-corruption panel with the
-   clean-data control, per-gate-mode AUROC, and threshold envelope sweeps.
-2. **Rebuild the gate from the two bare signals** (confidence, feature norm)
-   on the new space — reusing the shipped `fuse_uncertainties` modes only where
-   the gate-fault diagnostics clear them.
-3. **Medium-scale pretraining run.** Plain `supcon_vib`, 100% data, seeded for
-   reproducibility (the naive EMA baseline of 18.34% on Fog is the floor the
-   converged encoder must beat).
-4. **Gated EMA TTA end-to-end** on the converged encoder, targeting the
-   oracle ceiling (19.54% Fog) and the Phase 9 acceptance band.
-5. **Balanced allocation ledger** on top of the gated adaptation (inter-class
-   headroom budgeting + intra-class subcluster bounds).
+1. **Overnight medium-scale pretraining run** (in flight): `supcon_vib_strongvib`,
+   26–30 epochs on 100% data (proper full-length cosine LR, checkpoint + optimizer
+   + scheduler saved for cheap `--continue_training` continuation), with headroom
+   + deep diagnostics baked into `med_pretrain_eval.py`.
+2. **Measure the converged encoder** (morning): re-run the v4 oracle ladder +
+   deep diagnostics — expect Fog zero-shot > 35% and the benign-condition mean to
+   recover toward the old frozen 65% baseline as training converges.
+3. **Test decision-level prior correction on the strongvib decode** (cheap, no
+   training): static source prior (τ = −1.0) applied *selectively* per condition,
+   reporting **both point accuracy and mIoU** (the prior is mIoU-oriented). If the
+   benign-condition mIoU recovers toward the DualGateModel-era numbers, reinstate
+   it as the decision-level inter-class balance (Pillar 3.2).
+4. **Build the query-side gate on the strongvib signals** (confidence + norm,
+   direction-calibrated per corruption — fog joint AUROC 0.856 is the reference),
+   applied to the frozen prototypes. The prior (if reinstated) lives only in the
+   prediction pathway, never in the gate or update (phase-separation rule).
+5. **Update-level class balance (Pillar 3.3)**: subcluster ledger on top of the
+   gated adaptation — inter-class headroom budgeting + intra-class per-subcluster
+   bounds, once prototype adaptation is re-engaged (e.g., the `additive` oracle
+   headroom follow-up).
+6. **Prototype-adaptation path (follow-up)**: study why `additive`'s Fog means
+   are usable (+19.2 oracle headroom) and whether its weak gate signals can be
+   sharpened — if so, gated prototype adaptation becomes viable again, with the
+   prior strictly excluded from the update loop.
