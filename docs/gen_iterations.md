@@ -454,3 +454,41 @@ The 30-epoch micro run (cutoff 0.1, ~9.5k gradient steps — 6× the earlier mic
 2. **On the converged encoder**: re-run the v4 ladder + deep diagnostics — expect Fog zero-shot > 35% and Fog band-acc spread to sharpen; confirm the clean control recovers with the proper full-length LR schedule.
 3. **Build the query-side gate** on the strongvib signals (confidence + norm, direction-calibrated per corruption — the fog joint AUROC 0.856 is the reference).
 4. **Follow-up (prototype-adaptation path)**: study why `additive`'s fog means are usable — if its gate signals can be sharpened (e.g., stronger augmentation density or a norm-conditioned variant), the +19.2 oracle headroom becomes exploitable.
+
+---
+
+## Phase 16: The Overnight Medium Run — Training at Scale Triples the Fog Prototype Decode
+
+The medium-scale run (26 epochs on 100% data ≈ 83k gradient steps, ~10h, proper full-length cosine LR, seeded) trained `supcon_vib_strongvib` end-to-end and evaluated it with the headroom + deep diagnostics built into `med_pretrain_eval.py`. The checkpoint (model + optimizer + scheduler + epoch) is saved for cheap continuation.
+
+### Headroom Metrics: Micro-30ep → Medium-26ep (same script, same 128D eval)
+
+| Metric | strongvib micro-30ep | strongvib medium-26ep |
+| :--- | :--- | :--- |
+| **HDC Prototype Accuracy (Fog)** | 9.6% | **31.7% (3.3×)** |
+| **Linear Probe (Fog)** | 12.4% | **20.8%** |
+| **Linear Probe (Clean)** | 87.6% | **89.6%** |
+| **Cross-Domain Retrieval** | 50.2% | 48.4% |
+| **Avg Cosine Shift** | 0.677 | 0.883 |
+| **Avg L2 Norm (Clean → Fog)** | — | 2.42 → 5.25 |
+
+### Deep Diagnostics (medium encoder)
+
+- **The clean features over-collapsed.** Clean L2 norms dropped to 2.42 (previously ~5.6); 77% of clean points now sit in the [2,4) band, 19.6% in [1,2). The 5× VIB KL at 26 full epochs pulled the *clean* manifold toward the origin — while fog points did not collapse (78.5% in [4,∞)). The mean-norm ratio fog/clean is 1.66, with extreme per-class spread (class 0: 6.04×, class 2: 0.64×).
+- **The binarized fog means are nearly orthogonal to clean.** Clean↔fog binarized mean cosine fell to 0.125 (micro-30ep: 0.245). The fog class means are healthy in magnitude (binarized norm ratio 1.13) but point ~83° away from their clean counterparts — the per-class drift that the 0.883 cosine shift reflects.
+- **Query-gate direction reconfirmed at scale**: fog band accuracy is 33.3% for norm [2,4) vs 7.6% for norm ≥ 4. The high-norm fog points remain the poison — a norm veto on the frozen decode would lift the retained points' accuracy ~4.4×.
+- **Anisotropy persists**: ellipticity clean 0.470 / fog 0.663 — fog manifolds remain markedly more elongated.
+- **The degradation pipeline holds at scale**: binarized-10kD linear probe 38.2% / prototype 29.4% — the information survives projection+binarization on the converged encoder too.
+
+### Diagnostic Analysis
+
+1. **Training at scale is the single biggest decode lever measured so far**: HDC Prototype Accuracy on Fog tripled (9.6% → 31.7%) and Fog linear probe gained 8.4 points from 5× the gradient budget. The medium-run bet is confirmed — more training directly heals the prototype decode.
+2. **But the strong VIB now over-regulates the clean manifold.** The 5× KL weight at 26 full epochs collapses clean magnitudes to ~2.4 (vs the fog's 5.25). This is the flagged over-collapse risk realized: clean features lost their magnitude envelope while the drift grew (cosine shift 0.677 → 0.883). The clean representation is *less* healthy even though the fog decode improved.
+3. **The tension to resolve**: the fog decode improved despite (or because of?) the clean collapse. The 128D prototype metric rewards low-norm clean centroids against high-norm fog queries in a particular way — before trusting this, the v4 10kD ladder must be run on this checkpoint (it measures the HDC decode, the deployment metric).
+
+### Next Steps
+
+1. **Run the v4 oracle ladder on the medium checkpoint** (`oracle_gating_eval.py --load_path logs/med_pretrain_supcon_vib_strongvib --method supcon_vib_strongvib`, ~15 min) — the 10kD zero-shot/oracle per condition is the deployment-metric view of this encoder and the honest comparison to the 30-epoch micro ladder (Fog zero-shot 35.0% there).
+2. **Test the decision-level prior correction** on this decoder (both point accuracy and mIoU, per condition) — the benign-condition mean recovery question.
+3. **Decide continuation**: if the v4 ladder shows the fog zero-shot > 35% and climbing, extend with `--continue_training` (the saved checkpoint resumes the same cosine curve); the 5× VIB over-collapse of clean suggests also testing a mid-strength KL (e.g., 0.02–0.03) as a variant if the ladder disappoints.
+4. **Build the query-side norm gate** with the reconfirmed band-acc direction (veto fog norm ≥ 4).
