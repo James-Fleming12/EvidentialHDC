@@ -867,6 +867,32 @@ D3CTTA's paper numbers come from their own converged backbone plus a mechanism w
 1. **Test-time feature-statistics alignment probe** (the D3CTTA mechanism on our encoder): align the corrupt features' per-dimension mean/std to clean, then re-run the decode. If fog mIoU moves, encoder-level TTA is a missing lever worth pursuing. If it does not, the alignment mechanism does not help these features either, and the remaining candidates are the encoder-side ones (Phase 23) plus the open intra-class balance checks — no path is treated as closed until the probe results are in.
 2. **Encoder-side candidate, now quantified**: the pretraining objective should keep fog/crosstalk features in the healthy mid-norm band and prevent the magnitude inflation + ellipticity blow-up (the strongvib micro-scale redistribution did this; the medium-scale config must be re-tuned to match) — one of several candidates under consideration.
 
+---
+
+## Phase 24.1: The BN-Statistic Alignment Probe — Not the Missing Lever for Fog
+
+The D3CTTA-style test-time alignment (per-dimension mean/std of the corrupt features aligned to clean, then re-decode with frozen clean prototypes) was run across all 8 conditions. This directly tests the one mechanism D3CTTA uses that we had never tried: encoder-level statistic adaptation rather than decode-side movement.
+
+### Aligned vs Baseline (Acc → AlignAcc | mIoU → AlignmIoU)
+
+| Condition | Acc → AlignAcc | mIoU → AlignmIoU | Δ mIoU |
+| :--- | :--- | :--- | :--- |
+| **Fog** | 26.4% → 25.2% | 10.1% → 10.7% | **+0.6 (flat)** |
+| **Crosstalk** | 33.5% → 34.1% | 12.0% → 15.1% | **+3.1** |
+| Snow | 66.6% → 69.6% | 39.4% → 39.9% | +0.5 |
+| Wet Ground | 68.8% → 59.4% | 49.0% → 40.5% | **−8.5** |
+| Incomplete Echo | 78.8% → 78.2% | 41.2% → 40.6% | −0.6 |
+| Beam Missing | 77.2% → 77.4% | 53.7% → 53.6% | −0.1 |
+| Motion Blur | 73.4% → 74.4% | 44.3% → 44.8% | +0.5 |
+| Cross Sensor | 68.9% → 72.0% | 41.5% → 42.6% | +1.1 |
+
+### The Verdict
+
+1. **Fog: the alignment mechanism is not the missing lever.** Fog mIoU stays flat (10.1 → 10.7, noise level). The D3CTTA-style statistic alignment cannot fix the fog representation either — consistent with the Phase 19 whitening verdict: on fog, the *structure* (not the statistics) carries what little signal exists, and the magnitude inflation survives alignment because it is a per-point property, not a per-dimension statistic.
+2. **Crosstalk: alignment is a modest positive** (+3.1 mIoU: 12.0 → 15.1, the largest gain of any condition) — worth noting, but far below the 20 mIoU target, and the label-free margin gate already delivers 23.1% on crosstalk (Phase 23). If crosstalk is ever pursued further, alignment + gate is a candidate combination.
+3. **Wet Ground degrades under alignment** (−8.5 mIoU) — the statistic transfer is harmful where the corruption is reflectance-based, an important caution against blanket BN-style TTA.
+4. **The D3CTTA-mechanism question is now answered on this encoder**: their paper gains on fog/crosstalk came from their own backbone + this alignment mechanism; on our features, the mechanism contributes nothing to fog and a small gain to crosstalk. The encoder remains the primary candidate for fog, with the intra-class balance checks and the encoder-side options from Phase 23 still open — no path treated as closed beyond what the data now shows.
+
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
 The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *possible* (batch 2–4, one-line Parser change, loop already batch-agnostic). This is parked for three reasons:
