@@ -458,7 +458,7 @@ def condition_autopsy(base_protos, proto_lbls, clean_means128, corrupt_feats, co
     near_origin = float((norms < 4.0).float().mean().item())
 
     # cosine shift (128D): clean means vs corrupt class means
-    cm = {c: clean_means128[c] for c in clean_means128}
+    cm = {c: clean_means128[c].to(device) for c in clean_means128}
     shifts = []
     for c in sorted(cm):
         fm = val_f[val_l == c]
