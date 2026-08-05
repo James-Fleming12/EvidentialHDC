@@ -393,7 +393,7 @@ CLASS_NAMES = {1: 'car', 2: 'bicycle', 3: 'motorcycle', 4: 'truck', 5: 'other-ve
 
 
 def condition_autopsy(base_protos, proto_lbls, clean_means128, corrupt_feats, corrupt_lbls, proj,
-                      device, clf=None, clean_stats=None, corrupt_depths=None, seed=42, far_thresh=25.0):
+                      device, clf=None, clean_stats=None, corrupt_depths=None, seed=42):
     """Per-condition hyperspace + decode signature (Phase 24).
 
     Quantifies what separates the stuck conditions (fog/crosstalk) from the
@@ -533,20 +533,22 @@ def condition_autopsy(base_protos, proto_lbls, clean_means128, corrupt_feats, co
     else:
         binarized_cos, binarized_ratio = 0.0, 0.0
 
-    # Range/depth correlation (the far-field destruction hypothesis, Phase 24.2):
-    # per-class mean depth, far-point fraction, and near/far classification accuracy
+    # Range/depth correlation (the far-field destruction hypothesis, Phase 24.2).
+    # NOTE: the fog range channel is NOT calibrated meters (values ~4-7, negatives),
+    # so the near/far split is RELATIVE (median of the masked depths), encoding-agnostic.
     depth_stats = {}
     if corrupt_depths is not None:
         dep = corrupt_depths[val_idx].to(device)
         depth_stats['norm_depth_corr'] = float(torch.corrcoef(
             torch.stack([norms, dep.float()]))[0, 1].item())
-        depth_stats['far_thresh'] = far_thresh
+        depth_stats['far_split'] = 'relative(median)'
+        med = torch.median(dep)
         per_class_depth = {}
         for c in sorted(present):
             cm = val_l == c
             if cm.sum() < 500:
                 continue
-            far = dep[cm] >= far_thresh
+            far = dep[cm] >= med
             n_far = int(far.sum().item())
             row = {'mean_depth': float(dep[cm].mean().item()),
                    'far_frac': float(far.float().mean().item())}
