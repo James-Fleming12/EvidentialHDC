@@ -386,6 +386,12 @@ def gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, devic
             'per_class_iou': per_class}
 
 
+CLASS_NAMES = {1: 'car', 2: 'bicycle', 3: 'motorcycle', 4: 'truck', 5: 'other-vehicle',
+               6: 'person', 7: 'road', 8: 'fence', 9: 'vegetation', 10: 'trunk',
+               11: 'terrain', 12: 'pole', 13: 'traffic-sign', 14: 'other-ground',
+               15: 'building', 16: 'other-object'}
+
+
 def eval_protos_miou(protos, proto_lbls, val_feats, val_lbls):
     """Point accuracy AND mIoU (classes present in labels; class 0 ignored)."""
     sims = torch.matmul(F.normalize(val_feats, p=2, dim=1), protos.T)
@@ -489,6 +495,16 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
     zero_shot_correct = (base_preds == val_lbls).sum().item()
     zero_shot_acc = zero_shot_correct / len(val_lbls)
     zero_shot_miou = compute_miou(base_preds, val_lbls)
+    zero_shot_per_class = {}
+    present = set(val_lbls.tolist())
+    for c in range(1, 17):
+        if c not in present:
+            continue
+        tp = int(((base_preds == c) & (val_lbls == c)).sum().item())
+        fp = int(((base_preds == c) & (val_lbls != c)).sum().item())
+        fn = int(((base_preds != c) & (val_lbls == c)).sum().item())
+        d = tp + fp + fn
+        zero_shot_per_class[c] = tp / d if d > 0 else 0.0
     
     # Perfect Oracle test: weighted class-mean update restricted to true-label points
     print("      -> Running Perfect Oracle Test...")
@@ -639,6 +655,7 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
         'perfect_acc': perfect_acc,
         'gated': gated,
         'query_gate': query_gate,
+        'zero_shot_per_class_iou': zero_shot_per_class,
         'auroc': compute_signal_aurocs(all_meta),
         'mode_auroc': mode_auroc,
         'weight_stats': weight_stats,
@@ -961,6 +978,10 @@ def main():
         if zs_m is not None:
             print(f"   -> Zero-Shot mIoU: {zs_m:.4f} | Oracle mIoU: {res['gated'].get('perfect_oracle_miou', 0):.4f} | "
                   f"Naive mIoU: {res['gated'].get('naive_ema_miou', 0):.4f}")
+        pc = res.get('zero_shot_per_class_iou')
+        if pc:
+            print("   -> Zero-Shot Per-Class IoU: " + ", ".join(
+                f"{CLASS_NAMES.get(c, str(c))}={v:.3f}" for c, v in sorted(pc.items())))
         if res['gated'].get('sdw_best_cfg'):
             print(f"      [sdw_best at u_th={res['gated']['sdw_best_cfg'][0]}, z_th={res['gated']['sdw_best_cfg'][1]}]")
         if res['gated'].get('geom_best_cfg'):

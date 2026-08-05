@@ -775,6 +775,35 @@ The artifact-filtered buffer mode (norm, cosine-to-true, perceptron-loss, and to
 1. **Pivot to the encoder side** (confirmed by all evidence): per-class fog IoU breakdown (which classes survive at 10.1% mIoU) to target the pretraining objective; buffer-selection retraining on source-domain data (`unsup_main.py` path, where the 5–6× mIoU boost was demonstrated) and measure the resulting fog mIoU.
 2. **Consider the perceptron-loss/margin as a query-gate signal**: it is a far sharper fog-artifact discriminator than the 128D norm (0.04% vs 29% survival) — if a decoder-side veto is ever needed, this is the better signal.
 
+---
+
+## Phase 23: The Artifact-Gate Sweep — Gating Verdict: Crosstalk Solved, Fog Exhausted
+
+The in-memory gate sweep (Phase 23 diagnostic) exhaustively searched the artifact-gate space on the plain medium encoder: 1200 configs over (128D norm, 10kD top-2 margin, top-1 cosine, **128D nearest-clean-prototype cosine**, probe confidence), plus the oracle-aware perceptron-loss gate as an upper bound.
+
+### The Pareto (best mIoU per retention band)
+
+| Band | Fog mIoU | Fog cfg | Crosstalk mIoU | Crosstalk cfg |
+| :--- | :--- | :--- | :--- | :--- |
+| ≥75% | 11.2% | margin≥0.05, cos128≥0.2, conf≥0.3 | 15.0% | n<8, m≥0.02, c1≥0.1, c128≥0.2 |
+| 50–75% | 18.0% *(oracle loss)* | loss≤0.15 | **23.1%** *(label-free)* | m≥0.2, c1≥0.3, c128≥0.4 @ 52% |
+| 25–50% | **55.3%** *(oracle loss)* | loss≤0.02 @ 28% | 60.7% *(oracle loss)* | loss≤0.02 @ 35% |
+| 10–25% | 17.0% | n<5, m≥0.2, c1≥0.3, c128≥0.4 | — | — |
+| <10% | 20.3% | n<4, m≥0.2, c1≥0.3, c128≥0.4 | — | — |
+
+### The Verdict
+
+1. **Crosstalk: the 20 mIoU target is achievable label-free** — 23.1% mIoU at 51.6% retention with a pure margin+cosine gate (no oracle). This gate is buildable today.
+2. **Fog: label-free gating is exhausted.** The new 128D cos-to-prototype and probe-confidence signals did not close the gap — the best label-free configs stall at 11–17% mIoU at usable retention (the ≥20% numbers only appear below 10% retention). The oracle-loss gate (18% @ 64% retention, 55% @ 28%) proves the information exists but is not estimable from prototype geometry + confidence alone — consistent with Phase 22.2: fog misclassifications are confident artifacts that are geometrically indistinguishable from confident-correct points without the true label.
+3. **Per the decision rule: go back to feature-extractor training.** Fog gating cannot reach the target; the encoder is the only remaining lever. The oracle-gate per-class IoUs (best config: class spread 0.13–0.97, with the weakest classes at 0.13–0.22) identify exactly which classes the encoder must rescue.
+4. **The oracle-loss bound is the prize if the encoder improves**: 55% mIoU at 28% retention with perfect gating means a strong encoder + the (now-buildable) crosstalk-style gate could yield far more than 20 mIoU on fog.
+
+### Next Steps (back to the feature extractor)
+
+1. **Per-class fog IoU diagnostic** on the plain medium encoder (which classes sit at 0.10–0.25 IoU under fog) — the concrete target list for the pretraining objective.
+2. **Encoder-side candidates**, in order of evidence: (a) the `supcon_vib_additive` variant (volumetric noise augmentation — showed usable fog means, oracle headroom 45.3% at micro scale) at medium scale; (b) HyperLiDAR buffer-selection retraining on *source* data (`unsup_main.py` path, the demonstrated 5–6× mIoU mechanism); (c) per-class weighting in the SupCon/VIB objective targeting the fog-weak classes.
+3. **Keep the crosstalk gate** (margin≥0.2, cos1≥0.3, cos128≥0.4 @ ~52% retention, 23.1% mIoU) as the one working decode-side artifact — it survives the pivot.
+
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
 The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *possible* (batch 2–4, one-line Parser change, loop already batch-agnostic). This is parked for three reasons:
