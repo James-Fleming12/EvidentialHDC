@@ -92,20 +92,24 @@ def eval_protos(protos, proto_lbls, val_feats, val_lbls):
 
 
 def evaluate_oracle_retrain(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, device,
-                            pool_size=1000000, buffer_frac=0.05, rounds=5, per_class=False, seed=42):
-    """HyperLiDAR-style oracle retraining (backprop-free, perceptron updates).
+                            pool_size=1000000, buffer_frac=0.05, rounds=5,
+                            buffer_mode='trainer', update_strength=2, seed=42):
+    """Oracle retraining with buffer selection, faithful to Basic_HD.retrain / unsup_main.py.
 
-    Iterative rounds on TRUE labels (oracle bound):
-      1. Classify the pool with the current prototypes; per-point loss
-         L = max_cos - cos(true)  (HyperLiDAR Eq. 4; 0 for correct points).
-      2. Select a buffer of buffer_frac of the pool: half highest-loss ("hard")
-         samples, half random from the remainder (optionally per-class hard
-         selection to protect rare classes).
-      3. Perceptron update on the buffer: w[true] += hv, w[pred] -= hv, renormalize.
-      4. Evaluate acc + mIoU on the held-out val.
+    Perfect labels (oracle bound). Two buffer-selection modes, both with the
+    trainer's 2x perceptron update (w[true] += 2*hv, w[pred] -= 2*hv) applied to
+    misclassified points only:
 
-    Answers: does iterative hard-example buffered retraining with perfect labels
-    recover the fog mIoU that the one-shot oracle crashed (10.1% -> 4.9%)?
+      'trainer' (default, matches the codebase):
+        - cumulative is_wrong memory over the pool (points stay until sampled)
+        - each round samples buffer_frac of the pool: all remembered-wrong points
+          first (up to the cap), then random fill; sampled points are cleared
+        - update on this round's misclassified sampled points; newly-wrong re-added
+      'hyperlidar' (paper form):
+        - per-round losses recomputed; buffer = half top-loss ("hard") + half random
+
+    Returns per-round {round, acc, miou, buffer_size, hard_size, rand_size,
+    wrong_size, wrong_mem}.
     """
     torch.manual_seed(seed)
     perm = torch.randperm(len(corrupt_feats))
@@ -119,54 +123,66 @@ def evaluate_oracle_retrain(base_protos, proto_lbls, corrupt_feats, corrupt_lbls
 
     protos = F.normalize(base_protos.clone(), p=2, dim=1)
     n = len(pool_f)
-    chunk = 100000
+    n_samples = max(1, int(n * buffer_frac))
+    is_wrong = torch.zeros(n, dtype=torch.bool, device=device)
     results = []
     for r in range(rounds + 1):
         acc, miou = eval_protos_miou(protos, proto_lbls, val_h, val_l)
-        losses = torch.zeros(n, device=device)
-        preds_all = torch.zeros(n, dtype=torch.long, device=device)
-        for s in range(0, n, chunk):
-            h = torch.sign(pool_f[s:s + chunk] @ proj)
-            sims = h @ protos.T
-            preds_all[s:s + chunk] = proto_lbls[sims.argmax(dim=1)]
-            true_idx = torch.searchsorted(proto_lbls, pool_l[s:s + chunk])
-            true_val = sims[torch.arange(len(preds_all[s:s + chunk]), device=device), true_idx]
-            wrong_val = sims.max(dim=1).values
-            losses[s:s + chunk] = (wrong_val - true_val).clamp(min=0)
-        results.append({'round': r, 'acc': acc, 'miou': miou})
         if r == rounds:
+            results.append({'round': r, 'acc': acc, 'miou': miou})
             break
-        k = max(1, int(n * buffer_frac))
-        n_hard = max(1, k // 2)
-        if per_class:
-            hard_parts = []
-            for c in proto_lbls.tolist():
-                cm = (pool_l == c)
-                cnt = int(cm.sum().item())
-                if cnt == 0:
-                    continue
-                take = min(cnt, max(1, n_hard // len(proto_lbls)))
-                top = torch.topk(losses[cm], take).indices
-                hard_parts.append(cm.nonzero(as_tuple=True)[0][top])
-            hard_idx = torch.cat(hard_parts) if hard_parts else torch.tensor([], device=device, dtype=torch.long)
-        else:
-            hard_idx = torch.topk(losses, n_hard).indices
-        sel = set(hard_idx.tolist())
-        rest = torch.tensor([i for i in range(n) if i not in sel], device=device, dtype=torch.long)
-        n_rand = max(0, k - len(hard_idx))
-        rand_idx = rest[torch.randperm(len(rest))[:n_rand]] if n_rand > 0 else torch.tensor([], device=device, dtype=torch.long)
-        buf = torch.cat([hard_idx, rand_idx])
-        buf_h = torch.sign(pool_f[buf] @ proj)
-        true_l = pool_l[buf]
-        pred_l = preds_all[buf]
-        ti = torch.searchsorted(proto_lbls, true_l)
-        pi = torch.searchsorted(proto_lbls, pred_l)
-        protos.index_add_(0, ti, buf_h)
-        protos.index_add_(0, pi, -buf_h)
-        protos = F.normalize(protos, p=2, dim=1)
-        results[-1]['buffer_size'] = len(buf)
-        results[-1]['hard_size'] = len(hard_idx)
-        results[-1]['rand_size'] = len(rand_idx)
+        # --- buffer selection ---
+        if buffer_mode == 'trainer':
+            wrong_idx = is_wrong.nonzero(as_tuple=False).view(-1)
+            if wrong_idx.numel() >= n_samples:
+                sel = wrong_idx[torch.randperm(len(wrong_idx), device=device)[:n_samples]]
+                hard_size = n_samples
+            else:
+                non_wrong = (~is_wrong).nonzero(as_tuple=False).view(-1)
+                remaining = n_samples - wrong_idx.numel()
+                fill = non_wrong[torch.randperm(len(non_wrong), device=device)[:remaining]]
+                sel = torch.cat([wrong_idx, fill])
+                hard_size = wrong_idx.numel()
+            is_wrong[sel] = False  # sampled points leave the memory
+            rand_size = n_samples - hard_size
+        else:  # 'hyperlidar': per-round top-loss + random
+            losses = torch.zeros(n, device=device)
+            preds_all = torch.zeros(n, dtype=torch.long, device=device)
+            for s in range(0, n, 100000):
+                h = torch.sign(pool_f[s:s + 100000] @ proj)
+                sims = h @ protos.T
+                preds_all[s:s + 100000] = proto_lbls[sims.argmax(dim=1)]
+                true_idx = torch.searchsorted(proto_lbls, pool_l[s:s + 100000])
+                true_val = sims[torch.arange(len(preds_all[s:s + 100000]), device=device), true_idx]
+                losses[s:s + 100000] = (sims.max(dim=1).values - true_val).clamp(min=0)
+            n_hard = max(1, n_samples // 2)
+            hard = torch.topk(losses, n_hard).indices
+            sel_set = set(hard.tolist())
+            rest = torch.tensor([i for i in range(n) if i not in sel_set], device=device, dtype=torch.long)
+            rand = rest[torch.randperm(len(rest), device=device)[:n_samples - n_hard]]
+            sel = torch.cat([hard, rand])
+            hard_size, rand_size = n_hard, len(rand)
+        # --- classify the buffer ---
+        buf_h = torch.sign(pool_f[sel] @ proj)
+        sims = buf_h @ protos.T
+        pred = proto_lbls[sims.argmax(dim=1)]
+        wrong_now = pred != pool_l[sel]
+        # --- trainer-faithful perceptron update (2x), misclassified only ---
+        if wrong_now.sum() > 0:
+            ti = torch.searchsorted(proto_lbls, pool_l[sel][wrong_now])
+            pi = torch.searchsorted(proto_lbls, pred[wrong_now])
+            hw = buf_h[wrong_now]
+            for _ in range(update_strength):
+                protos.index_add_(0, ti, hw)
+                protos.index_add_(0, pi, -hw)
+            protos = F.normalize(protos, p=2, dim=1)
+        # --- re-add newly wrong to the memory (trainer mode) ---
+        if buffer_mode == 'trainer':
+            is_wrong[sel[wrong_now]] = True
+        results.append({'round': r, 'acc': acc, 'miou': miou, 'buffer_size': len(sel),
+                        'hard_size': hard_size, 'rand_size': rand_size,
+                        'wrong_size': int(wrong_now.sum().item()),
+                        'wrong_mem': int(is_wrong.sum().item())})
     return results
 
 
@@ -461,14 +477,18 @@ def main():
                              "the ladder — anisotropy probe: does decorrelating the space improve "
                              "the 10kD prototype decode?")
     parser.add_argument("--oracle_retrain", type=int, default=0,
-                        help="Run HyperLiDAR-style oracle retraining for this many rounds "
-                             "(perfect labels, perceptron updates on a hard-example buffer). "
+                        help="Run oracle retraining (perfect labels) for this many rounds "
+                             "with buffer selection + perceptron updates (Basic_HD.retrain). "
                              "0 = off.")
     parser.add_argument("--buffer_frac", type=float, default=0.05,
-                        help="Buffer fraction of the pool per retraining round (HyperLiDAR k%%).")
-    parser.add_argument("--buffer_per_class", action="store_true",
-                        help="Select the hard half of the buffer per-class (protects rare classes; "
-                             "default is global top-loss selection per HyperLiDAR).")
+                        help="Buffer fraction of the pool per retraining round (the trainer's 0.05).")
+    parser.add_argument("--buffer_mode", type=str, default="trainer",
+                        choices=["trainer", "hyperlidar"],
+                        help="'trainer' = cumulative is_wrong memory + random fill (matches the "
+                             "codebase). 'hyperlidar' = per-round top-loss + random (paper form).")
+    parser.add_argument("--update_strength", type=int, default=2,
+                        help="Perceptron update multiplier (Basic_HD.retrain applies each "
+                             "index_add twice = 2x).")
     args, _ = parser.parse_known_args()
     
     DATA = yaml.safe_load(open(args.config, 'r'))
@@ -638,17 +658,22 @@ def main():
                                      device, pool_size=args.pool_size, gate_cfg=gate_cfg)
         if args.oracle_retrain > 0:
             print(f"      -> Running Oracle Retraining ({args.oracle_retrain} rounds, "
-                  f"buffer {args.buffer_frac*100:.0f}%{' per-class' if args.buffer_per_class else ''})...")
+                  f"buffer {args.buffer_frac*100:.0f}%, mode={args.buffer_mode}, "
+                  f"update_strength={args.update_strength})...")
             rt = evaluate_oracle_retrain(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj,
                                          device, pool_size=args.pool_size,
                                          buffer_frac=args.buffer_frac,
                                          rounds=args.oracle_retrain,
-                                         per_class=args.buffer_per_class)
+                                         buffer_mode=args.buffer_mode,
+                                         update_strength=args.update_strength)
             res['oracle_retrain'] = rt
-            print("   -> Oracle Retrain Trajectory (acc | mIoU | buffer hard/rand):")
+            print("   -> Oracle Retrain Trajectory (acc | mIoU | buf hard/rand | wrong-now/mem):")
             for row in rt:
-                extra = f" | {row.get('hard_size', 0)}/{row.get('rand_size', 0)}" if row.get('buffer_size') else ""
-                print(f"      round {row['round']}: {row['acc']:.4f} | {row['miou']:.4f}{extra}")
+                if row.get('buffer_size') is not None:
+                    print(f"      round {row['round']}: {row['acc']:.4f} | {row['miou']:.4f} | "
+                          f"{row['hard_size']}/{row['rand_size']} | {row['wrong_size']}/{row['wrong_mem']}")
+                else:
+                    print(f"      round {row['round']}: {row['acc']:.4f} | {row['miou']:.4f}")
         res['probe_acc'] = probe_corrupt_acc
         all_results[corruption] = res
         
