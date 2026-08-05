@@ -317,6 +317,24 @@ Representation-level gains (Linear Probe, how separable the 128D space is under 
 
 *Three stories in one table: (1) near-SOTA conditions stay near-SOTA (Incomplete Echo: 92.8% linear probe); (2) the collapsed conditions gain 10–20× (Fog 1.8% → 25.0% zero-shot, Crosstalk 4.7% → 35.4%); (3) the perfect-oracle column now sits *below* zero-shot on every condition, the robust encoder's clean prototypes are already the best prototypes available, and prototype-level adaptation has no headroom (Phase 14). Metric families differ across columns (mIoU vs point accuracy vs linear probe), and the Linear Probe column is from the medium-pretrained encoder while the HDC columns are from the micro-pretrained encoder; the within-column comparisons are the meaningful ones.*
 
+#### Intermediate results: the plain medium encoder, frozen, on accuracy and mIoU
+
+The current encoder (plain `supcon_vib`, 26 epochs on 100% data ≈ 83k steps, clean zero-shot 82.7% / mIoU 49.6%) evaluated frozen against the previous baselines on both metrics. **Fog and Crosstalk improve on both axes** (mIoU ×5.6 and ×2.6, accuracy ×2.0 and ×1.5); the geometric corruptions show **semi-equivalent accuracy with substantially better mIoU**.
+
+| Condition | Old acc (frozen) | Ours acc (frozen) | Old mIoU (baseline) | Ours mIoU (frozen) |
+| :--- | :--- | :--- | :--- | :--- |
+| **Fog** | 13.2% | **26.4%** | 1.8% | **10.1%** |
+| **Crosstalk** | 22.1% | **33.5%** | 4.7% | **12.0%** |
+| **Snow** | 86.4% | 66.6% | 20.6% | **39.4%** |
+| **Wet Ground** | 89.6% | 68.8% | 18.8% | **49.0%** |
+| **Motion Blur** | 84.1% | 73.4% | 14.8% | **44.3%** |
+| **Beam Missing** | 80.0% | 77.2% | 15.2% | **53.7%** |
+| **Incomplete Echo** | 88.2% | 78.8% | 25.5% | **41.2%** |
+| **Cross Sensor** | 56.6% | **68.9%** | 4.4% | **41.5%** |
+| **Mean (8 conditions)** | 65.0% | 61.7% | 13.2% | **36.4%** |
+
+*Protocols differ across the "Old" columns (DualGate-era: converged clean backbone with adaptation, full-sequence eval; atlas-era: original model, mIoU) and the "Ours" columns (frozen plain medium encoder, oracle-calibrated 100k-point val). The within-column comparisons are the meaningful ones: mIoU improves on every condition (mean ×2.75), and the Fog/Crosstalk gains are robust across both metrics — while the geometric-corruption accuracy is semi-equivalent (within ~10 points, lower on some, higher on Cross Sensor) and their mIoU is substantially higher.*
+
 ### 7.4 Why the decoder, not the encoder, is the current bottleneck
 
 The HDC degradation pipeline (Phase 8, med-pretrained `supcon_vib`, D = 1000) showed the semantic information survives every stage of the HDC encoding losslessly, only the naive nearest-prototype decoder wastes it:

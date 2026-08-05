@@ -804,6 +804,31 @@ The in-memory gate sweep (Phase 23 diagnostic) exhaustively searched the artifac
 2. **Encoder-side candidates**, in order of evidence: (a) the `supcon_vib_additive` variant (volumetric noise augmentation — showed usable fog means, oracle headroom 45.3% at micro scale) at medium scale; (b) HyperLiDAR buffer-selection retraining on *source* data (`unsup_main.py` path, the demonstrated 5–6× mIoU mechanism); (c) per-class weighting in the SupCon/VIB objective targeting the fog-weak classes.
 3. **Keep the crosstalk gate** (margin≥0.2, cos1≥0.3, cos128≥0.4 @ ~52% retention, 23.1% mIoU) as the one working decode-side artifact — it survives the pivot.
 
+---
+
+## Phase 23.1: The Buffer-Selection Pretrain Weights — Confirmed as a Source-Domain Mechanism
+
+The existing `unsup_kitti-c.py --pretrain` weights (`logs/kitti_pretrain/hdc_sub.pth`: extractor + HDC trained with 14 buffer-selection retrain epochs) were evaluated frozen on fog and crosstalk under the full 4071-frame protocol.
+
+### The Results (frozen decode, unsup_kitti-c protocol)
+
+| Condition | mIoU | Head | Mid | Tail | Acc |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Fog-3** | 5.8% | 13.0% | 2.2% | **0.06%** | 14.6% |
+| **Crosstalk-3** | 7.0% | 14.8% | 4.3% | **0.33%** | 19.8% |
+
+### The Verdict
+
+1. **The buffer-selection-pretrained model sits at historical baseline levels on corruptions**: fog 5.8% mIoU ≈ the DualGateModel-era fog (5.78%). The 5–6× mIoU boost from buffer selection lives in the *source-domain* retraining (where classes are separable and hard examples are fixable) — it does not transfer to the corrupted decode. This is the same conclusion as Phase 22 (decode-side retraining closed), now confirmed from the pretrain side: the trained HDC prototypes are no better on fog/crosstalk than the pre-buffer-selection era.
+2. **Tail mIoU is catastrophic** (0.06–0.33%) on both corruptions — the pretrained models have essentially no rare-class recovery under corruption, consistent with the Phase 23 oracle-gate per-class findings.
+3. **The mechanism's role is settled**: buffer selection is a source-domain training-time tool (improve the HDC prototypes on clean data), not a corruption-robustness tool. The corrupted-condition mIoU must come from the feature extractor.
+
+### Next Steps (unchanged from Phase 23)
+
+1. **Per-class fog IoU on the plain medium encoder** (the ladder's new per-class print) — the concrete encoder target list.
+2. **Encoder-side candidates**: `supcon_vib_additive` at medium scale (volumetric noise augmentation — the only variant with usable fog means), per-class weighting in the pretraining objective targeting the fog-weak classes, and (source-domain) buffer-selection retraining as a complement for clean mIoU rather than a corruption fix.
+3. **The crosstalk gate survives** (23.1% mIoU @ 52% retention, label-free).
+
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
 The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *possible* (batch 2–4, one-line Parser change, loop already batch-agnostic). This is parked for three reasons:
