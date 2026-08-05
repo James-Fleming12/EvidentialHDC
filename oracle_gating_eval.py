@@ -853,6 +853,7 @@ def main():
         print(f"   -> 128D Linear Probe Accuracy: {probe_corrupt_acc:.4f}")
         
         if args.gate_sweep:
+            res = {}
             print("      -> Running Artifact-Gate Sweep (in-memory)...")
             gs = gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, device)
             res['gate_sweep'] = gs
