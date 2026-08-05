@@ -710,6 +710,39 @@ The trainer-faithful oracle retraining (HyperLiDAR-style buffer selection: cumul
 3. **Update-strength sweep** (`--update_strength 1`): the 2× step may be too aggressive for the 10kD oracle setting (the trainer's 2× was tuned on source-domain retraining).
 4. **Per-class IoU across rounds**: if per-class selection still fails to lift rare-class IoU, the rare classes' fog features are unrecoverable by prototype movement even with perfect labels and hard-example mining, and the mIoU recovery must come from the encoder or the buffer-selection-on-the-encoder-training (unsup_main.py's actual retraining loop) rather than the decode.
 
+---
+
+## Phase 22.1: Per-Class Buffer Selection — Still Below Zero-Shot; Decode-Side Retraining Closed
+
+The per-class hard-selection variant (per-class quota from the wrong-memory, so rare classes cannot be starved of buffer slots) was run on the same fog oracle setup.
+
+### The Trajectory (acc | mIoU | buffer hard/rand | wrong-now/memory)
+
+| Round | Acc | mIoU | Buffer hard/rand | Wrong mem |
+| :--- | :--- | :--- | :--- | :--- |
+| 0 (base) | 26.4% | **10.1%** | — | 36722 |
+| 1 | 50.5% | 7.2% | 18401/31599 | 42568 |
+| 2 | 26.3% | 8.9% | 24455/25545 | 53666 |
+| 3 | 40.3% | 4.5% | 23953/26047 | 60419 |
+| 4 | 28.3% | **9.8%** | 25730/24270 | 70712 |
+| 5 | 38.9% | 5.9% | — | — |
+
+### The Verdict
+
+1. **Per-class selection barely helps and does not cross the baseline.** Best mIoU 9.8% (vs 9.1% global, 10.1% zero-shot). The trajectory still limit-cycles (acc 50.5 → 26.3 → 40.3 → 28.3 → 38.9), and the round-1 acc spike (50.5%) with mIoU 7.2% is the same majority-class artifact.
+2. **The wrong-memory saturates monotonically** (36.7k → 42.6k → 53.7k → 60.4k → 70.7k): under fog, 50–70% of the pool is misclassified, so the 5% buffer can never drain the hard population. The hard set simply outgrows the sampling capacity.
+3. **Decode-side retraining is closed.** Both buffer-selection variants (global and per-class) fail to recover fog mIoU with perfect labels. Combined with Phase 22, the evidence says: the rare classes' fog features are not recoverable by prototype movement at decode time, no matter how the retraining buffer is chosen.
+
+### Why This Is Consistent With the Original 5–6× mIoU Claim
+
+The buffer selection's demonstrated mIoU boost (5–6×) came from `unsup_main.py`'s training loop — retraining the HDC prototypes on **source-domain data**, where classes are separable and hard examples are genuinely fixable. The oracle test applies the same mechanism to **target (fog) data at decode**, where the rare classes' features have collapsed: hard-example mining cannot fix what the representation cannot separate. The mIoU recovery therefore belongs in the **encoder side** — buffer-selection-guided retraining on data where separability exists, or making the encoder's fog features separable in the first place.
+
+### Next Steps
+
+1. **Final decode-side check (optional)**: `--update_strength 1` with `--buffer_frac 0.20` isolates whether a gentler/larger-buffer update stabilizes the loop; low prior, cheap to run, closes the thread.
+2. **Pivot to the encoder side**: apply the buffer-selection retraining to the *source-domain* HDC training (the `unsup_main.py` path where the 5–6× mIoU boost was demonstrated) and measure the converged plain-medium encoder's fog mIoU with it; or pursue encoder training that keeps rare-class fog features separable (per-class treatment in the pretraining objective).
+3. **Rare-class fog diagnostic**: per-class IoU on fog (which classes survive at 10.1% mIoU) to quantify exactly what the encoder must recover.
+
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
 The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *possible* (batch 2–4, one-line Parser change, loop already batch-agnostic). This is parked for three reasons:
