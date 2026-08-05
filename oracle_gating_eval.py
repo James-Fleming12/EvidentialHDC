@@ -273,6 +273,96 @@ def evaluate_oracle_retrain(base_protos, proto_lbls, corrupt_feats, corrupt_lbls
     return results
 
 
+def gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, device, seed=42):
+    """In-memory artifact-gate sweep (Phase 23).
+
+    Computes per-point gate signals once (128D norm, 10kD top-1 cosine, top-2 margin,
+    and the oracle-aware perceptron loss = cos(top1) - cos(true)), then sweeps the
+    threshold space, reporting (acc, mIoU, retention) Pareto bands. The loss-based
+    gate is an oracle upper bound: it shows what a label-free gate could achieve if
+    the loss were perfectly estimated.
+
+    Goal: does ANY gate config reach ~20 mIoU on Fog/Crosstalk at usable retention
+    (>= 25-50%)? If not, artifact gating is exhausted and the fix is the encoder.
+    """
+    torch.manual_seed(seed)
+    perm = torch.randperm(len(corrupt_feats))
+    val_idx = perm[-100000:]
+    val_f = corrupt_feats[val_idx].to(device)
+    val_l = corrupt_lbls[val_idx].to(device)
+    val_h = torch.sign(val_f @ proj)
+    norms = torch.norm(val_f, p=2, dim=1)
+    sims = F.normalize(val_h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T
+    top2 = torch.topk(sims, 2, dim=1)
+    cos_top1 = top2.values[:, 0]
+    margin = (top2.values[:, 0] - top2.values[:, 1]).clamp(min=0)
+    ti = torch.searchsorted(proto_lbls, val_l)
+    cos_true = sims[torch.arange(len(val_l), device=device), ti]
+    loss = (cos_top1 - cos_true).clamp(min=0)
+
+    n = len(val_l)
+    rows = []
+    for max_norm in [1e9, 8.0, 6.0, 5.0, 4.0]:
+        for min_margin in [0.0, 0.02, 0.05, 0.1, 0.2]:
+            for min_cos1 in [-1.0, 0.0, 0.1, 0.2, 0.3]:
+                keep = (norms < max_norm) & (margin >= min_margin) & (cos_top1 >= min_cos1)
+                nk = int(keep.sum().item())
+                if nk < 1000:
+                    continue
+                preds = proto_lbls[sims[keep].argmax(dim=1)]
+                lbl = val_l[keep]
+                acc = float((preds == lbl).float().mean().item())
+                rows.append((nk / n, acc, compute_miou(preds, lbl),
+                             max_norm, min_margin, min_cos1))
+    for max_loss in [0.15, 0.1, 0.05, 0.02]:
+        keep = loss <= max_loss
+        nk = int(keep.sum().item())
+        if nk < 1000:
+            continue
+        preds = proto_lbls[sims[keep].argmax(dim=1)]
+        lbl = val_l[keep]
+        rows.append((nk / n, float((preds == lbl).float().mean().item()),
+                     compute_miou(preds, lbl), 'loss', max_loss, '-'))
+
+    # Pareto: best mIoU within retention bands
+    bands = [(0.75, 1.01, '>=75%'), (0.5, 0.75, '50-75%'), (0.25, 0.5, '25-50%'),
+             (0.1, 0.25, '10-25%'), (0.0, 0.1, '<10%')]
+    pareto = []
+    for lo, hi, name in bands:
+        cand = [r for r in rows if lo <= r[0] < hi]
+        if cand:
+            best = max(cand, key=lambda r: r[2])
+            pareto.append({'band': name, 'retention': best[0], 'acc': best[1],
+                           'miou': best[2], 'cfg': (best[3], best[4], best[5])})
+    # oracle-loss bound at 25-50% and 50-75% bands
+    loss_band = {}
+    for lo, hi, name in bands:
+        cand = [r for r in rows if r[3] == 'loss' and lo <= r[0] < hi]
+        if cand:
+            best = max(cand, key=lambda r: r[2])
+            loss_band[name] = {'retention': best[0], 'acc': best[1], 'miou': best[2],
+                               'max_loss': best[4]}
+    # per-class IoU at the overall best config
+    best = max(rows, key=lambda r: r[2])
+    keep = (norms < best[3]) & (margin >= best[4]) & (cos_top1 >= best[5]) if best[3] != 'loss' else (loss <= best[4])
+    preds = proto_lbls[sims[keep].argmax(dim=1)]
+    lbl = val_l[keep]
+    per_class = {}
+    present = set(lbl.tolist())
+    for c in range(1, 17):
+        if c not in present:
+            continue
+        tp = int(((preds == c) & (lbl == c)).sum().item())
+        fp = int(((preds == c) & (lbl != c)).sum().item())
+        fn = int(((preds != c) & (lbl == c)).sum().item())
+        d = tp + fp + fn
+        per_class[c] = tp / d if d > 0 else 0.0
+    return {'pareto': pareto, 'loss_band': loss_band,
+            'best': {'retention': best[0], 'acc': best[1], 'miou': best[2],
+                     'cfg': (best[3], best[4], best[5])},
+            'per_class_iou': per_class}
+
+
 def eval_protos_miou(protos, proto_lbls, val_feats, val_lbls):
     """Point accuracy AND mIoU (classes present in labels; class 0 ignored)."""
     sims = torch.matmul(F.normalize(val_feats, p=2, dim=1), protos.T)
@@ -593,6 +683,10 @@ def main():
     parser.add_argument("--artifact_min_margin", type=float, default=0.02,
                         help="Artifact filter: keep only points with top-2 cosine margin at least "
                              "this (too ambiguous = unreliable).")
+    parser.add_argument("--gate_sweep", action="store_true",
+                        help="Run the in-memory artifact-gate sweep (Phase 23) and skip the "
+                             "ladder: extract per-point signals once, sweep threshold space, "
+                             "report acc/mIoU Pareto bands + oracle-loss bound + per-class IoU.")
     args, _ = parser.parse_known_args()
     
     DATA = yaml.safe_load(open(args.config, 'r'))
@@ -758,6 +852,29 @@ def main():
         probe_corrupt_acc = clf.score(corrupt_feats[:train_size].numpy(), corrupt_lbls[:train_size].numpy())
         print(f"   -> 128D Linear Probe Accuracy: {probe_corrupt_acc:.4f}")
         
+        if args.gate_sweep:
+            print("      -> Running Artifact-Gate Sweep (in-memory)...")
+            gs = gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, device)
+            res['gate_sweep'] = gs
+            print("   -> Gate-Sweep Pareto (best mIoU per retention band):")
+            for b in gs['pareto']:
+                print(f"      {b['band']:<8}: ret {b['retention']*100:5.1f}% | acc {b['acc']:.4f} | "
+                      f"mIoU {b['miou']:.4f} | cfg norm<{b['cfg'][0]} marg>={b['cfg'][1]} cos1>={b['cfg'][2]}")
+            lb = gs['loss_band']
+            if lb:
+                print("   -> Oracle-Loss Gate Bound (label-free achievable if loss were learned):")
+                for band, v in lb.items():
+                    print(f"      {band:<8}: ret {v['retention']*100:5.1f}% | acc {v['acc']:.4f} | "
+                          f"mIoU {v['miou']:.4f} | loss<={v['max_loss']}")
+            best = gs['best']
+            print(f"   -> Best config: mIoU {best['miou']:.4f} | acc {best['acc']:.4f} | "
+                  f"ret {best['retention']*100:.1f}% | cfg {best['cfg']}")
+            pc = gs['per_class_iou']
+            if pc:
+                print("   -> Per-class IoU at best config: "
+                      + ", ".join(f"{c}:{v:.2f}" for c, v in sorted(pc.items())))
+            all_results[corruption] = res
+            continue
         res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,
                                      device, pool_size=args.pool_size, gate_cfg=gate_cfg)
         if args.oracle_retrain > 0:
@@ -849,6 +966,8 @@ def main():
     print("|" + "-"*17 + "|" + "-"*9 + "|" + "-"*9 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*9 + "|" + "-"*9 + "|")
     for corruption, res in all_results.items():
         if corruption == 'clean_control':
+            continue
+        if 'gated' not in res:
             continue
         g = res['gated']
         zs_m = g.get('zero_shot_miou', 0.0)
