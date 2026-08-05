@@ -273,7 +273,8 @@ def evaluate_oracle_retrain(base_protos, proto_lbls, corrupt_feats, corrupt_lbls
     return results
 
 
-def gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, device, seed=42):
+def gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, device,
+               clf=None, clean_means128=None, seed=42):
     """In-memory artifact-gate sweep (Phase 23).
 
     Computes per-point gate signals once (128D norm, 10kD top-1 cosine, top-2 margin,
@@ -300,20 +301,38 @@ def gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, devic
     cos_true = sims[torch.arange(len(val_l), device=device), ti]
     loss = (cos_top1 - cos_true).clamp(min=0)
 
+    # 128D label-free signals: nearest-clean-prototype cosine (proxy for cos(true),
+    # where the continuous-space geometry is the meaningful one) and probe confidence
+    if clean_means128 is not None:
+        cm = torch.stack([clean_means128[c] for c in sorted(clean_means128)]).to(device)
+        sims128 = F.normalize(val_f, p=2, dim=1) @ F.normalize(cm, p=2, dim=1).T
+        cos128 = sims128.max(dim=1).values
+    else:
+        cos128 = torch.full((len(val_l),), -1.0, device=device)
+    if clf is not None:
+        probs = clf.predict_proba(val_f.cpu().numpy())
+        conf = torch.tensor(probs.max(axis=1), device=device)
+    else:
+        conf = torch.zeros(len(val_l), device=device)
+
     n = len(val_l)
     rows = []
     for max_norm in [1e9, 8.0, 6.0, 5.0, 4.0]:
         for min_margin in [0.0, 0.02, 0.05, 0.1, 0.2]:
             for min_cos1 in [-1.0, 0.0, 0.1, 0.2, 0.3]:
-                keep = (norms < max_norm) & (margin >= min_margin) & (cos_top1 >= min_cos1)
-                nk = int(keep.sum().item())
-                if nk < 1000:
-                    continue
-                preds = proto_lbls[sims[keep].argmax(dim=1)]
-                lbl = val_l[keep]
-                acc = float((preds == lbl).float().mean().item())
-                rows.append((nk / n, acc, compute_miou(preds, lbl),
-                             max_norm, min_margin, min_cos1))
+                for min_cos128 in [-1.0, 0.2, 0.3, 0.4]:
+                    for min_conf in [0.0, 0.3, 0.5]:
+                        keep = ((norms < max_norm) & (margin >= min_margin)
+                                & (cos_top1 >= min_cos1) & (cos128 >= min_cos128)
+                                & (conf >= min_conf))
+                        nk = int(keep.sum().item())
+                        if nk < 1000:
+                            continue
+                        preds = proto_lbls[sims[keep].argmax(dim=1)]
+                        lbl = val_l[keep]
+                        acc = float((preds == lbl).float().mean().item())
+                        rows.append((nk / n, acc, compute_miou(preds, lbl),
+                                     max_norm, min_margin, min_cos1, min_cos128, min_conf))
     for max_loss in [0.15, 0.1, 0.05, 0.02]:
         keep = loss <= max_loss
         nk = int(keep.sum().item())
@@ -322,7 +341,7 @@ def gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, devic
         preds = proto_lbls[sims[keep].argmax(dim=1)]
         lbl = val_l[keep]
         rows.append((nk / n, float((preds == lbl).float().mean().item()),
-                     compute_miou(preds, lbl), 'loss', max_loss, '-'))
+                     compute_miou(preds, lbl), 'loss', max_loss, '-', '-', '-'))
 
     # Pareto: best mIoU within retention bands
     bands = [(0.75, 1.01, '>=75%'), (0.5, 0.75, '50-75%'), (0.25, 0.5, '25-50%'),
@@ -333,7 +352,7 @@ def gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, devic
         if cand:
             best = max(cand, key=lambda r: r[2])
             pareto.append({'band': name, 'retention': best[0], 'acc': best[1],
-                           'miou': best[2], 'cfg': (best[3], best[4], best[5])})
+                           'miou': best[2], 'cfg': (best[3], best[4], best[5], best[6], best[7])})
     # oracle-loss bound at 25-50% and 50-75% bands
     loss_band = {}
     for lo, hi, name in bands:
@@ -344,7 +363,11 @@ def gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, devic
                                'max_loss': best[4]}
     # per-class IoU at the overall best config
     best = max(rows, key=lambda r: r[2])
-    keep = (norms < best[3]) & (margin >= best[4]) & (cos_top1 >= best[5]) if best[3] != 'loss' else (loss <= best[4])
+    if best[3] == 'loss':
+        keep = loss <= best[4]
+    else:
+        keep = ((norms < best[3]) & (margin >= best[4]) & (cos_top1 >= best[5])
+                & (cos128 >= best[6]) & (conf >= best[7]))
     preds = proto_lbls[sims[keep].argmax(dim=1)]
     lbl = val_l[keep]
     per_class = {}
@@ -779,6 +802,13 @@ def main():
     proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
     base_protos, proto_lbls = build_hdc_prototypes(clean_feats, clean_lbls, proj, device=device)
     
+    # 128D clean class means (for the gate sweep's label-free cos-to-prototype signal)
+    clean_means128 = {}
+    for c in proto_lbls.tolist():
+        m = clean_feats[clean_lbls == c]
+        if len(m) > 0:
+            clean_means128[c] = F.normalize(m.mean(dim=0), p=2, dim=0)
+    
     # Clean-data control: adapting clean -> clean, no poison exists. A good gate must
     # stay ~= naive EMA here; any large degradation is over-gating (a gate fault).
     clean_control = None
@@ -855,12 +885,19 @@ def main():
         if args.gate_sweep:
             res = {}
             print("      -> Running Artifact-Gate Sweep (in-memory)...")
-            gs = gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, device)
+            gs = gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, device,
+                            clf=clf, clean_means128=clean_means128)
             res['gate_sweep'] = gs
             print("   -> Gate-Sweep Pareto (best mIoU per retention band):")
             for b in gs['pareto']:
+                cfg = b['cfg']
+                if cfg[0] == 'loss':
+                    desc = f"loss<={cfg[1]}"
+                else:
+                    desc = (f"norm<{cfg[0]} marg>={cfg[1]} cos1>={cfg[2]} "
+                            f"cos128>={cfg[3]} conf>={cfg[4]}")
                 print(f"      {b['band']:<8}: ret {b['retention']*100:5.1f}% | acc {b['acc']:.4f} | "
-                      f"mIoU {b['miou']:.4f} | cfg norm<{b['cfg'][0]} marg>={b['cfg'][1]} cos1>={b['cfg'][2]}")
+                      f"mIoU {b['miou']:.4f} | {desc}")
             lb = gs['loss_band']
             if lb:
                 print("   -> Oracle-Loss Gate Bound (label-free achievable if loss were learned):")
