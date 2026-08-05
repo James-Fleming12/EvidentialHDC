@@ -91,6 +91,14 @@ def eval_protos(protos, proto_lbls, val_feats, val_lbls):
     return (preds == val_lbls).float().mean().item()
 
 
+def eval_protos_miou(protos, proto_lbls, val_feats, val_lbls):
+    """Point accuracy AND mIoU (classes present in labels; class 0 ignored)."""
+    sims = torch.matmul(F.normalize(val_feats, p=2, dim=1), protos.T)
+    preds = proto_lbls[sims.argmax(dim=1)]
+    acc = float((preds == val_lbls).float().mean().item())
+    return acc, compute_miou(preds, val_lbls)
+
+
 def compute_miou(preds, lbls, num_classes=17):
     """Mean IoU over evaluated classes (class 0 ignored; absent classes excluded)."""
     present = set(lbls.tolist())
@@ -185,6 +193,7 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
     base_preds = proto_lbls[sims.argmax(dim=1)]
     zero_shot_correct = (base_preds == val_lbls).sum().item()
     zero_shot_acc = zero_shot_correct / len(val_lbls)
+    zero_shot_miou = compute_miou(base_preds, val_lbls)
     
     # Perfect Oracle test: weighted class-mean update restricted to true-label points
     print("      -> Running Perfect Oracle Test...")
@@ -192,7 +201,7 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
     w_one = torch.ones_like(pool_conf)
     adapted_protos = weighted_mean_update(base_protos, proto_lbls, pool_f_128,
                                           pool_pseudo, w_one, proj, device, mask=mask_perfect)
-    perfect_acc = eval_protos(adapted_protos, proto_lbls, val_feats, val_lbls)
+    perfect_acc, perfect_miou = eval_protos_miou(adapted_protos, proto_lbls, val_feats, val_lbls)
     
     # Leave-One-Update-Out (also collects per-update metadata for the AUROC diagnostics)
     print("      -> Running Leave-One-Update-Out Test...")
@@ -257,21 +266,22 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
     # Diagnostic 1: Gated EMA Ladder (weighted class-mean updates)
     print("      -> Running Gated EMA Ladder...")
     
-    gated = {'zero_shot': zero_shot_acc, 'perfect_oracle': perfect_acc}
+    gated = {'zero_shot': zero_shot_acc, 'zero_shot_miou': zero_shot_miou,
+             'perfect_oracle': perfect_acc, 'perfect_oracle_miou': perfect_miou}
     
     w_uniform = torch.ones_like(pool_conf)
-    gated['naive_ema'] = eval_protos(
+    gated['naive_ema'], gated['naive_ema_miou'] = eval_protos_miou(
         weighted_mean_update(base_protos, proto_lbls, pool_f_128, pool_pseudo, w_uniform, proj, device),
         proto_lbls, val_feats, val_lbls)
     
     w_top50 = torch.zeros_like(pool_conf)
     w_top50[torch.topk(pool_conf, pool_size // 2).indices] = 1.0
-    gated['top50_conf'] = eval_protos(
+    gated['top50_conf'], gated['top50_conf_miou'] = eval_protos_miou(
         weighted_mean_update(base_protos, proto_lbls, pool_f_128, pool_pseudo, w_top50, proj, device),
         proto_lbls, val_feats, val_lbls)
     
     for mode in ['epistemic', 'geometric', 'soft_dual_weight', 'and_gate', 'ellipsoid_gate', 'joint_flip']:
-        gated[mode] = eval_protos(
+        gated[mode], gated[f'{mode}_miou'] = eval_protos_miou(
             weighted_mean_update(base_protos, proto_lbls, pool_f_128, pool_pseudo, w_modes[mode], proj, device),
             proto_lbls, val_feats, val_lbls)
     
@@ -279,30 +289,32 @@ def evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
     # If even the best config cannot beat naive EMA, the gate family is dead in this space;
     # if it can, the shipped defaults were simply old-space calibration.
     print("      -> Sweeping Gate Thresholds (soft_dual_weight, geometric)...")
-    best_sdw, best_sdw_cfg = -1.0, None
+    best_sdw, best_sdw_miou, best_sdw_cfg = -1.0, 0.0, None
     for u_th in [0.25, 0.5, 0.75]:
         for z_th in [0.0, 0.5, 1.0]:
             w = fuse_uncertainties(u_epi, n_z, method='soft_dual_weight',
                                    cfg={"u_th": u_th, "u_coef": gate_cfg.get("u_coef", 1.5),
                                         "z_th": z_th, "z_coef": gate_cfg.get("z_coef", 1.0)})
-            acc = eval_protos(weighted_mean_update(base_protos, proto_lbls, pool_f_128,
-                                                   pool_pseudo, w, proj, device),
-                              proto_lbls, val_feats, val_lbls)
+            acc, miou = eval_protos_miou(weighted_mean_update(base_protos, proto_lbls, pool_f_128,
+                                                              pool_pseudo, w, proj, device),
+                                         proto_lbls, val_feats, val_lbls)
             if acc > best_sdw:
-                best_sdw, best_sdw_cfg = acc, [u_th, z_th]
+                best_sdw, best_sdw_miou, best_sdw_cfg = acc, miou, [u_th, z_th]
     gated['sdw_best'] = best_sdw
+    gated['sdw_best_miou'] = best_sdw_miou
     gated['sdw_best_cfg'] = best_sdw_cfg
     
-    best_geom, best_geom_cfg = -1.0, None
+    best_geom, best_geom_miou, best_geom_cfg = -1.0, 0.0, None
     for z_th in [-0.5, 0.0, 0.5, 1.0]:
         w = fuse_uncertainties(u_epi, n_z, method='geometric',
                                cfg={"z_th": z_th, "z_coef": gate_cfg.get("z_coef", 1.0)})
-        acc = eval_protos(weighted_mean_update(base_protos, proto_lbls, pool_f_128,
-                                               pool_pseudo, w, proj, device),
-                          proto_lbls, val_feats, val_lbls)
+        acc, miou = eval_protos_miou(weighted_mean_update(base_protos, proto_lbls, pool_f_128,
+                                                          pool_pseudo, w, proj, device),
+                                     proto_lbls, val_feats, val_lbls)
         if acc > best_geom:
-            best_geom, best_geom_cfg = acc, [z_th]
+            best_geom, best_geom_miou, best_geom_cfg = acc, miou, [z_th]
     gated['geom_best'] = best_geom
+    gated['geom_best_miou'] = best_geom_miou
     gated['geom_best_cfg'] = best_geom_cfg
     
     # Query gate end-to-end: veto high-norm points at inference on the FROZEN
@@ -473,7 +485,7 @@ def main():
                                                pool_size=args.pool_size, gate_cfg=gate_cfg)
         print("   -> Clean Ladder (gate should ~= naive_ema):")
         for k, v in clean_control['gated'].items():
-            if not k.endswith('_cfg'):
+            if not k.endswith('_cfg') and not k.endswith('_miou'):
                 print(f"      {k:<16}: {v:.4f}")
     
     # We no longer need the massive clean_feats tensor
@@ -540,10 +552,19 @@ def main():
         all_results[corruption] = res
         
         print(f"   -> Perfect Oracle HDC Acc: {res['perfect_acc']:.4f} (Zero-Shot: {res['zero_shot']:.4f})")
-        print("   -> Gated EMA Ladder:")
+        print("   -> Gated EMA Ladder (acc | mIoU):")
         for k, v in res['gated'].items():
-            if not k.endswith('_cfg'):
+            if k.endswith('_cfg') or k.endswith('_miou'):
+                continue
+            m = res['gated'].get(f'{k}_miou')
+            if m is not None:
+                print(f"      {k:<16}: {v:.4f} | {m:.4f}")
+            else:
                 print(f"      {k:<16}: {v:.4f}")
+        zs_m = res['gated'].get('zero_shot_miou')
+        if zs_m is not None:
+            print(f"   -> Zero-Shot mIoU: {zs_m:.4f} | Oracle mIoU: {res['gated'].get('perfect_oracle_miou', 0):.4f} | "
+                  f"Naive mIoU: {res['gated'].get('naive_ema_miou', 0):.4f}")
         if res['gated'].get('sdw_best_cfg'):
             print(f"      [sdw_best at u_th={res['gated']['sdw_best_cfg'][0]}, z_th={res['gated']['sdw_best_cfg'][1]}]")
         if res['gated'].get('geom_best_cfg'):
@@ -579,20 +600,21 @@ def main():
         all_results['clean_control'] = clean_control
     
     print("\n\n" + "="*110)
-    print(" GATED EMA LADDER (all corruptions)")
+    print(" GATED EMA LADDER (all corruptions) — acc | mIoU")
     print("="*110)
-    header = (f"| {'Corruption':<16} | {'ZeroShot':<8} | {'Naive':<7} | {'Top50':<7} | {'Epi':<7} | "
-              f"{'Geom':<7} | {'SDW':<7} | {'AND':<7} | {'Flip':<7} | {'SDW*':<7} | {'Geom*':<7} | {'Oracle':<8} |")
+    header = (f"| {'Corruption':<16} | {'ZeroShot':<8} | {'ZS-mIoU':<8} | {'Naive':<7} | {'SDW*':<7} | "
+              f"{'Oracle':<8} | {'Or-mIoU':<8} |")
     print(header)
-    print("|" + "-"*17 + "|" + "-"*9 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*9 + "|")
+    print("|" + "-"*17 + "|" + "-"*9 + "|" + "-"*9 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*9 + "|" + "-"*9 + "|")
     for corruption, res in all_results.items():
         if corruption == 'clean_control':
             continue
         g = res['gated']
-        print(f"| {corruption:<16} | {g['zero_shot']:<8.4f} | {g['naive_ema']:<7.4f} | {g['top50_conf']:<7.4f} | "
-              f"{g.get('epistemic', 0):<7.4f} | {g.get('geometric', 0):<7.4f} | {g.get('soft_dual_weight', 0):<7.4f} | "
-              f"{g.get('and_gate', 0):<7.4f} | {g.get('joint_flip', 0):<7.4f} | {g.get('sdw_best', 0):<7.4f} | "
-              f"{g.get('geom_best', 0):<7.4f} | {res['perfect_acc']:<8.4f} |")
+        zs_m = g.get('zero_shot_miou', 0.0)
+        or_m = g.get('perfect_oracle_miou', 0.0)
+        print(f"| {corruption:<16} | {g['zero_shot']:<8.4f} | {zs_m:<8.4f} | "
+              f"{g['naive_ema']:<7.4f} | {g.get('sdw_best', 0):<7.4f} | "
+              f"{res['perfect_acc']:<8.4f} | {or_m:<8.4f} |")
     print("="*110 + "\n")
     
     with open(out_path, 'w') as f:
