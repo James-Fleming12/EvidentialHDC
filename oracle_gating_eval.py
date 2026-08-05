@@ -90,7 +90,6 @@ def eval_protos(protos, proto_lbls, val_feats, val_lbls):
     preds = proto_lbls[sims.argmax(dim=1)]
     return (preds == val_lbls).float().mean().item()
 
-
 def evaluate_oracle_retrain(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, device,
                             pool_size=1000000, buffer_frac=0.05, rounds=5,
                             buffer_mode='trainer', update_strength=2, per_class=False, seed=42,
@@ -272,7 +271,6 @@ def evaluate_oracle_retrain(base_protos, proto_lbls, corrupt_feats, corrupt_lbls
                         **({'filter_stats': filter_stats} if buffer_mode == 'artifact' else {})})
     return results
 
-
 def gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, device,
                clf=None, clean_means128=None, seed=42):
     """In-memory artifact-gate sweep (Phase 23).
@@ -385,12 +383,10 @@ def gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, devic
                      'cfg': (best[3], best[4], best[5])},
             'per_class_iou': per_class}
 
-
 CLASS_NAMES = {1: 'car', 2: 'bicycle', 3: 'motorcycle', 4: 'truck', 5: 'other-vehicle',
                6: 'person', 7: 'road', 8: 'fence', 9: 'vegetation', 10: 'trunk',
                11: 'terrain', 12: 'pole', 13: 'traffic-sign', 14: 'other-ground',
                15: 'building', 16: 'other-object'}
-
 
 def condition_autopsy(base_protos, proto_lbls, clean_means128, corrupt_feats, corrupt_lbls, proj,
                       device, clf=None, clean_stats=None, corrupt_depths=None, seed=42):
@@ -592,14 +588,12 @@ def condition_autopsy(base_protos, proto_lbls, clean_means128, corrupt_feats, co
         'depth_stats': depth_stats,
     }
 
-
 def eval_protos_miou(protos, proto_lbls, val_feats, val_lbls):
     """Point accuracy AND mIoU (classes present in labels; class 0 ignored)."""
     sims = torch.matmul(F.normalize(val_feats, p=2, dim=1), protos.T)
     preds = proto_lbls[sims.argmax(dim=1)]
     acc = float((preds == val_lbls).float().mean().item())
     return acc, compute_miou(preds, val_lbls)
-
 
 def compute_miou(preds, lbls, num_classes=17):
     """Mean IoU over evaluated classes (class 0 ignored; absent classes excluded)."""
