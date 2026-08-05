@@ -93,7 +93,9 @@ def eval_protos(protos, proto_lbls, val_feats, val_lbls):
 
 def evaluate_oracle_retrain(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, device,
                             pool_size=1000000, buffer_frac=0.05, rounds=5,
-                            buffer_mode='trainer', update_strength=2, per_class=False, seed=42):
+                            buffer_mode='trainer', update_strength=2, per_class=False, seed=42,
+                            artifact_max_norm=6.0, artifact_max_loss=0.15,
+                            artifact_min_cos_true=0.05, artifact_min_margin=0.02):
     """Oracle retraining with buffer selection, faithful to Basic_HD.retrain / unsup_main.py.
 
     Perfect labels (oracle bound). Two buffer-selection modes, both with the
@@ -158,7 +160,7 @@ def evaluate_oracle_retrain(base_protos, proto_lbls, corrupt_feats, corrupt_lbls
             fill = non_wrong[torch.randperm(len(non_wrong), device=device)[:remaining]]
             sel = torch.cat([hard_idx, fill])
             rand_size = len(fill)
-        else:  # 'hyperlidar': per-round top-loss + random
+        elif buffer_mode == 'hyperlidar':  # paper form: per-round top-loss + random
             losses = torch.zeros(n, device=device)
             preds_all = torch.zeros(n, dtype=torch.long, device=device)
             for s in range(0, n, 100000):
@@ -188,6 +190,64 @@ def evaluate_oracle_retrain(base_protos, proto_lbls, corrupt_feats, corrupt_lbls
             rand = rest[torch.randperm(len(rest), device=device)[:n_samples - len(hard)]]
             sel = torch.cat([hard, rand])
             hard_size, rand_size = len(hard), len(rand)
+        else:  # 'artifact': hard candidates filtered by artifact signals
+            # (1) norm: fog artifacts live at high 128D magnitude (query-gate evidence)
+            # (2) too far from true prototype: cos(q, P_true) too low
+            # (3) confidently absorbed by a wrong class: perceptron loss too high
+            # (4) too ambiguous: top-2 cosine margin too small
+            norms = torch.norm(pool_f, p=2, dim=1)
+            losses = torch.zeros(n, device=device)
+            cos_true = torch.zeros(n, device=device)
+            margin = torch.zeros(n, device=device)
+            preds_all = torch.zeros(n, dtype=torch.long, device=device)
+            for s in range(0, n, 100000):
+                h = torch.sign(pool_f[s:s + 100000] @ proj)
+                sims = h @ protos.T
+                top2 = torch.topk(sims, 2, dim=1)
+                preds_all[s:s + 100000] = proto_lbls[top2.indices[:, 0]]
+                ti = torch.searchsorted(proto_lbls, pool_l[s:s + 100000])
+                tv = sims[torch.arange(len(preds_all[s:s + 100000]), device=device), ti]
+                cos_true[s:s + 100000] = tv
+                losses[s:s + 100000] = (top2.values[:, 0] - tv).clamp(min=0)
+                margin[s:s + 100000] = (top2.values[:, 0] - top2.values[:, 1]).clamp(min=0)
+            mis = preds_all != pool_l
+            n_mis = int(mis.sum().item())
+            f_norm = mis & (norms < artifact_max_norm)
+            f_true = f_norm & (cos_true >= artifact_min_cos_true)
+            f_loss = f_true & (losses <= artifact_max_loss)
+            f_margin = f_loss & (margin >= artifact_min_margin)
+            cand = f_margin
+            n_cand = int(cand.sum().item())
+            if n_cand == 0:
+                hard_idx = torch.tensor([], device=device, dtype=torch.long)
+            elif per_class:
+                quota = max(1, n_samples // len(proto_lbls))
+                parts = []
+                for c in proto_lbls.tolist():
+                    cm = (cand & (pool_l == c))
+                    cnt = int(cm.sum().item())
+                    if cnt == 0:
+                        continue
+                    idx = cm.nonzero(as_tuple=False).view(-1)
+                    # top-loss within the filtered candidates (hard emphasis, artifact-free)
+                    take = min(cnt, quota)
+                    top = torch.topk(losses[idx], take).indices
+                    parts.append(idx[top])
+                hard_idx = torch.cat(parts) if parts else torch.tensor([], device=device, dtype=torch.long)
+            else:
+                idx = cand.nonzero(as_tuple=False).view(-1)
+                take = min(len(idx), max(1, n_samples // 2))
+                top = torch.topk(losses[idx], take).indices
+                hard_idx = idx[top]
+            hard_size = len(hard_idx)
+            sel_set = set(hard_idx.tolist())
+            rest = torch.tensor([i for i in range(n) if i not in sel_set], device=device, dtype=torch.long)
+            rand = rest[torch.randperm(len(rest), device=device)[:n_samples - hard_size]]
+            sel = torch.cat([hard_idx, rand])
+            rand_size = len(rand)
+            filter_stats = {'n_mis': n_mis, 'pass_norm': int(f_norm.sum().item()),
+                            'pass_true': int(f_true.sum().item()), 'pass_loss': int(f_loss.sum().item()),
+                            'pass_margin': int(f_margin.sum().item()), 'n_cand': n_cand}
         # --- classify the buffer ---
         buf_h = torch.sign(pool_f[sel] @ proj)
         sims = buf_h @ protos.T
@@ -208,7 +268,8 @@ def evaluate_oracle_retrain(base_protos, proto_lbls, corrupt_feats, corrupt_lbls
         results.append({'round': r, 'acc': acc, 'miou': miou, 'buffer_size': len(sel),
                         'hard_size': hard_size, 'rand_size': rand_size,
                         'wrong_size': int(wrong_now.sum().item()),
-                        'wrong_mem': int(is_wrong.sum().item())})
+                        'wrong_mem': int(is_wrong.sum().item()),
+                        **({'filter_stats': filter_stats} if buffer_mode == 'artifact' else {})})
     return results
 
 
@@ -509,15 +570,29 @@ def main():
     parser.add_argument("--buffer_frac", type=float, default=0.05,
                         help="Buffer fraction of the pool per retraining round (the trainer's 0.05).")
     parser.add_argument("--buffer_mode", type=str, default="trainer",
-                        choices=["trainer", "hyperlidar"],
+                        choices=["trainer", "hyperlidar", "artifact"],
                         help="'trainer' = cumulative is_wrong memory + random fill (matches the "
-                             "codebase). 'hyperlidar' = per-round top-loss + random (paper form).")
+                             "codebase). 'hyperlidar' = per-round top-loss + random (paper form). "
+                             "'artifact' = hard candidates filtered by artifact signals "
+                             "(norm, cosine-to-true, perceptron loss, top-2 margin).")
     parser.add_argument("--update_strength", type=int, default=2,
                         help="Perceptron update multiplier (Basic_HD.retrain applies each "
                              "index_add twice = 2x).")
     parser.add_argument("--buffer_per_class", action="store_true",
                         help="Per-class hard selection (per-class quota from the wrong memory "
                              "/ top-loss), protecting rare classes from majority-class domination.")
+    parser.add_argument("--artifact_max_norm", type=float, default=6.0,
+                        help="Artifact filter: keep only misclassified points with 128D norm below this "
+                             "(fog artifacts live at high magnitude).")
+    parser.add_argument("--artifact_max_loss", type=float, default=0.15,
+                        help="Artifact filter: keep only misclassified points with perceptron loss "
+                             "(cos(pred) - cos(true)) at most this (confidently-wrong = hallucination).")
+    parser.add_argument("--artifact_min_cos_true", type=float, default=0.05,
+                        help="Artifact filter: keep only points with cosine to their true prototype "
+                             "at least this (too far from own prototype = noise).")
+    parser.add_argument("--artifact_min_margin", type=float, default=0.02,
+                        help="Artifact filter: keep only points with top-2 cosine margin at least "
+                             "this (too ambiguous = unreliable).")
     args, _ = parser.parse_known_args()
     
     DATA = yaml.safe_load(open(args.config, 'r'))
@@ -695,13 +770,23 @@ def main():
                                          rounds=args.oracle_retrain,
                                          buffer_mode=args.buffer_mode,
                                          update_strength=args.update_strength,
-                                         per_class=args.buffer_per_class)
+                                         per_class=args.buffer_per_class,
+                                         artifact_max_norm=args.artifact_max_norm,
+                                         artifact_max_loss=args.artifact_max_loss,
+                                         artifact_min_cos_true=args.artifact_min_cos_true,
+                                         artifact_min_margin=args.artifact_min_margin)
             res['oracle_retrain'] = rt
             print("   -> Oracle Retrain Trajectory (acc | mIoU | buf hard/rand | wrong-now/mem):")
             for row in rt:
                 if row.get('buffer_size') is not None:
-                    print(f"      round {row['round']}: {row['acc']:.4f} | {row['miou']:.4f} | "
-                          f"{row['hard_size']}/{row['rand_size']} | {row['wrong_size']}/{row['wrong_mem']}")
+                    line = (f"      round {row['round']}: {row['acc']:.4f} | {row['miou']:.4f} | "
+                            f"{row['hard_size']}/{row['rand_size']} | {row['wrong_size']}/{row['wrong_mem']}")
+                    fs = row.get('filter_stats')
+                    if fs:
+                        line += (f" | filt {fs['n_cand']}/{fs['n_mis']} "
+                                 f"(norm {fs['pass_norm']}, true {fs['pass_true']}, "
+                                 f"loss {fs['pass_loss']}, marg {fs['pass_margin']})")
+                    print(line)
                 else:
                     print(f"      round {row['round']}: {row['acc']:.4f} | {row['miou']:.4f}")
         res['probe_acc'] = probe_corrupt_acc
