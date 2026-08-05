@@ -829,6 +829,44 @@ The existing `unsup_kitti-c.py --pretrain` weights (`logs/kitti_pretrain/hdc_sub
 2. **Encoder-side candidates**: `supcon_vib_additive` at medium scale (volumetric noise augmentation — the only variant with usable fog means), per-class weighting in the pretraining objective targeting the fog-weak classes, and (source-domain) buffer-selection retraining as a complement for clean mIoU rather than a corruption fix.
 3. **The crosstalk gate survives** (23.1% mIoU @ 52% retention, label-free).
 
+---
+
+## Phase 24: The Condition Autopsy — Why Fog and Crosstalk Are Stuck
+
+The per-condition autopsy (frozen clean prototypes, plain medium encoder, 100k-point val) measured the hyperspace/decode signature of all 8 conditions. Two conditions (Fog, Crosstalk) carry a distinctive and coherent feature-level signature that the geometric corruptions do not share.
+
+### The Autopsy Table
+
+| Condition | Acc | mIoU | LP | nMis | ArtFrac | ArtSurv | marC/marM | nrmC/nrmM | <4norm | cosShift | Ellip | BinCos |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Fog** | 26.4% | 10.1% | 36.3% | 73604 | 0.487 | **2335** (3.2%) | 0.29/0.11 | 4.8/7.3 | **12.0%** | **0.821** | **0.762** | **0.111** |
+| **Crosstalk** | 33.5% | 12.0% | 35.3% | 66475 | 0.676 | **2477** (3.7%) | 0.43/0.19 | 4.3/5.8 | **30.7%** | **0.780** | **0.701** | **0.146** |
+| Snow | 66.6% | 39.4% | 74.8% | 33425 | 0.679 | 8591 (25.7%) | 0.48/0.15 | 3.5/3.7 | 85.2% | 0.043 | 0.285 | 0.293 |
+| Wet Ground | 68.8% | 49.0% | 75.3% | 31208 | 0.636 | 9082 (29.1%) | 0.40/0.20 | 3.7/3.5 | 79.2% | 0.028 | 0.297 | 0.355 |
+| Incomplete Echo | 78.8% | 41.2% | 84.2% | 21173 | 0.665 | 5622 (26.6%) | 0.50/0.19 | 3.5/3.8 | 87.8% | 0.000 | 0.306 | 0.280 |
+| Beam Missing | 77.2% | 53.7% | 83.7% | 22790 | 0.622 | 6804 (29.9%) | 0.48/0.17 | 3.5/3.7 | 85.0% | 0.005 | 0.284 | 0.287 |
+| Motion Blur | 73.4% | 44.3% | 79.3% | 26564 | 0.659 | 7005 (26.4%) | 0.46/0.17 | 3.5/3.7 | 86.0% | 0.013 | 0.268 | 0.299 |
+| Cross Sensor | 68.9% | 41.5% | 77.5% | 31107 | 0.563 | 10577 (34.0%) | 0.41/0.12 | 3.4/3.7 | 81.2% | 0.050 | 0.291 | 0.309 |
+
+*ArtSurv = artifact-filter survivors among misclassified (norm<6, cos-true≥0.05, loss≤0.15, margin≥0.02). marC/marM = top-2 cosine margin of correct/misclassified. nrmC/nrmM = 128D norm of correct/misclassified. <4norm = fraction of points with norm < 4. cosShift = mean per-class 128D clean→corrupt cosine shift. Ellip = top-eigenvalue/trace ellipticity. BinCos = clean↔corrupt binarized class-mean cosine.*
+
+### The Fog/Crosstalk Signature
+
+1. **Magnitude inflation is the lead discriminator.** Only 12–31% of fog/crosstalk points sit in the healthy norm < 4 band (vs 79–88% for every geometric corruption), and the *misclassified* points have far higher norms than the correct ones (fog: 7.3 vs 4.8; crosstalk: 5.8 vs 4.3) — versus geometric corruptions where correct and misclassified norms are identical (~3.5/3.7). The high-norm population is the poison (the Phase 18 query-gate direction), and in fog/crosstalk it is the *majority* of the data.
+2. **The manifolds are extreme in every geometry metric**: cosine shift 0.78–0.82 (geometric: 0.00–0.05), ellipticity 0.70–0.76 (geometric: 0.27–0.31), binarized mean cosine 0.11–0.15 (geometric: 0.28–0.36). The class structure is rotated ~80° and elongated; the binarized prototypes are nearly orthogonal to clean.
+3. **Even the *correct* classifications are marginal**: fog's correct-point margins are 0.29 (vs 0.40–0.50 for geometric) — the representation barely separates classes under fog, not just the errors.
+4. **The decoder ceiling is quantified**: only **3.2–3.7% of misclassified points are boundary-recoverable** (passing all artifact filters) versus **26–34%** for the geometric corruptions — a ~8–10× difference. This is the *mathematical* reason every decode-side lever failed on fog/crosstalk (Phases 14, 22, 23): with perfect labels, gating, adaptation, and buffer selection combined, there is ~10× less recoverable signal to work with. Note ArtFrac (the single loss filter) does *not* separate the conditions — the separation needs the joint norm+cos-true+loss+margin signature.
+5. **The representation itself is degraded** (LP 35–36% vs 75–84%), so even a learned decoder starts from a collapsed space — the Corruption Atlas verdict, now fully quantified per condition.
+
+### The D3CTTA Context
+
+D3CTTA's paper numbers come from their own converged backbone plus a mechanism we have never tested: **encoder-level test-time adaptation** (entropy-minimization batch-statistic alignment), not decode-side movement. The autopsy's magnitude-inflation finding is the reason this lever is the one untested candidate that *could* matter: fog/crosstalk's feature *statistics* (norms, means) are grossly misaligned with clean (88% of points in the wrong norm band), and BN-style statistic alignment directly targets that — unlike gating/adaptation/buffer selection, which the autopsy shows are capped at ~3.5% recoverable signal.
+
+### Next Steps
+
+1. **Test-time feature-statistics alignment probe** (the D3CTTA mechanism on our encoder): align the corrupt features' per-dimension mean/std to clean, then re-run the decode. If fog mIoU moves, encoder-level TTA is a missing lever worth pursuing. If it does not, the alignment mechanism does not help these features either, and the remaining candidates are the encoder-side ones (Phase 23) plus the open intra-class balance checks — no path is treated as closed until the probe results are in.
+2. **Encoder-side candidate, now quantified**: the pretraining objective should keep fog/crosstalk features in the healthy mid-norm band and prevent the magnitude inflation + ellipticity blow-up (the strongvib micro-scale redistribution did this; the medium-scale config must be re-tuned to match) — one of several candidates under consideration.
+
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
 The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *possible* (batch 2–4, one-line Parser change, loop already batch-agnostic). This is parked for three reasons:

@@ -393,7 +393,7 @@ CLASS_NAMES = {1: 'car', 2: 'bicycle', 3: 'motorcycle', 4: 'truck', 5: 'other-ve
 
 
 def condition_autopsy(base_protos, proto_lbls, clean_means128, corrupt_feats, corrupt_lbls, proj,
-                      device, clf=None, seed=42):
+                      device, clf=None, clean_stats=None, seed=42):
     """Per-condition hyperspace + decode signature (Phase 24).
 
     Quantifies what separates the stuck conditions (fog/crosstalk) from the
@@ -501,6 +501,21 @@ def condition_autopsy(base_protos, proto_lbls, clean_means128, corrupt_feats, co
     else:
         binarized_cos, binarized_ratio = 0.0, 0.0
 
+    # BN-style test-time statistic alignment (the D3CTTA mechanism on our encoder):
+    # align the corrupt features' per-dimension mean/std to the clean statistics,
+    # then re-run the 10kD prototype decode.
+    align_acc, align_miou = None, None
+    if clean_stats is not None:
+        cmean, cstd = clean_stats[0].to(device), clean_stats[1].to(device)
+        fmean = val_f.mean(dim=0)
+        fstd = val_f.std(dim=0) + 1e-6
+        aligned = (val_f - fmean) / fstd * cstd + cmean
+        ah = torch.sign(aligned @ proj)
+        asims = F.normalize(ah, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T
+        apreds = proto_lbls[asims.argmax(dim=1)]
+        align_acc = float((apreds == val_l).float().mean().item())
+        align_miou = compute_miou(apreds, val_l)
+
     return {
         'acc': acc, 'miou': miou, 'per_class_iou': per_class,
         'n_mis': n_mis, 'conf_artifact_frac': conf_artifact / max(n_mis, 1),
@@ -509,6 +524,7 @@ def condition_autopsy(base_protos, proto_lbls, clean_means128, corrupt_feats, co
         'norm_correct': norm_c, 'norm_mis': norm_m, 'near_origin': near_origin,
         'cos_shift': cos_shift, 'ellipticity': ellipt, 'lp_acc': lp,
         'binarized_cos': binarized_cos, 'binarized_ratio': binarized_ratio,
+        'align_acc': align_acc, 'align_miou': align_miou,
     }
 
 
@@ -951,6 +967,12 @@ def main():
         if len(m) > 0:
             clean_means128[c] = F.normalize(m.mean(dim=0), p=2, dim=0)
     
+    # Per-dimension clean feature statistics (for the BN-style test-time alignment probe)
+    torch.manual_seed(42)
+    sub_idx = torch.randperm(len(clean_feats))[:500000]
+    clean_stats = (clean_feats[sub_idx].mean(dim=0),
+                   clean_feats[sub_idx].std(dim=0) + 1e-6)
+    
     # Clean-data control: adapting clean -> clean, no poison exists. A good gate must
     # stay ~= naive EMA here; any large degradation is over-gating (a gate fault).
     clean_control = None
@@ -1028,7 +1050,8 @@ def main():
             res = {}
             print("      -> Running Condition Autopsy...")
             au = condition_autopsy(base_protos, proto_lbls, clean_means128,
-                                   corrupt_feats, corrupt_lbls, proj, device, clf=clf)
+                                   corrupt_feats, corrupt_lbls, proj, device,
+                                   clf=clf, clean_stats=clean_stats)
             res['autopsy'] = au
             all_results[corruption] = res
             continue
@@ -1175,17 +1198,19 @@ def main():
         print("="*140)
         print(f"| {'Condition':<16} | {'Acc':<7} | {'mIoU':<7} | {'LP':<7} | {'nMis':<7} | {'ArtFrac':<8} | "
               f"{'ArtSurv':<8} | {'marC/marM':<10} | {'nrmC/nrmM':<10} | {'<4norm':<7} | {'cosShift':<8} | "
-              f"{'Ellip':<6} | {'BinCos':<7} |")
-        print("|" + "-"*17 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*9 + "|" + "-"*9 + "|" + "-"*11 + "|" + "-"*11 + "|" + "-"*8 + "|" + "-"*9 + "|" + "-"*7 + "|" + "-"*8 + "|")
+              f"{'Ellip':<6} | {'BinCos':<7} | {'AlignAcc':<8} | {'AlignmIoU':<9} |")
+        print("|" + "-"*17 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*9 + "|" + "-"*9 + "|" + "-"*11 + "|" + "-"*11 + "|" + "-"*8 + "|" + "-"*9 + "|" + "-"*7 + "|" + "-"*8 + "|" + "-"*9 + "|" + "-"*10 + "|")
         for corruption, res in all_results.items():
             if 'autopsy' not in res:
                 continue
             a = res['autopsy']
             surv = a['artifact_survivors']
+            al = f"{a['align_acc']:.3f}/{a['align_miou']:.3f}" if a['align_acc'] is not None else "n/a"
             print(f"| {corruption:<16} | {a['acc']:<7.3f} | {a['miou']:<7.3f} | {a['lp_acc']:<7.3f} | "
                   f"{a['n_mis']:<7d} | {a['conf_artifact_frac']:<8.3f} | {surv[0]}/{surv[4]:<7d} | "
                   f"{a['margin_correct']:.2f}/{a['margin_mis']:.2f} | {a['norm_correct']:.1f}/{a['norm_mis']:.1f} | "
-                  f"{a['near_origin']:<7.3f} | {a['cos_shift']:<8.3f} | {a['ellipticity']:<6.3f} | {a['binarized_cos']:<7.3f} |")
+                  f"{a['near_origin']:<7.3f} | {a['cos_shift']:<8.3f} | {a['ellipticity']:<6.3f} | "
+                  f"{a['binarized_cos']:<7.3f} | {al:<8} |")
         print("="*140 + "\n")
     
     with open(out_path, 'w') as f:
