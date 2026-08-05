@@ -322,15 +322,6 @@ $$w(x) = \exp\big(-\lambda_1 \cdot \text{relu}(\tau_c - c)\big) \cdot \exp\big(-
 
 The EMA prototype update becomes $c \leftarrow c + \eta \cdot w(x) \cdot z$. Calibration anchors come directly from Phase 9: $\tau_c \approx 0.75$ (midpoint of 0.62/0.92), $\tau_n \approx 5.9$ (midpoint of 6.42/5.28), with $\lambda_1, \lambda_2$ swept. This form preserves the soft-weighting regime proven in the geometric-method thread (avoiding both AND-gate starvation and OR-gate flooding) while keying on the exact signature the oracle validated.
 
-### Next Steps
-
-1. **Re-validate the Harmful-update signature on the new encoder:** rerun the `oracle_gating_eval.py` leave-one-update-out protocol (already seeded) on the 20.1%-HDC `supcon_vib` features, per-corruption (Fog, Crosstalk, plus the geometric panel), confirming confidence/norm still separate Helpful from Harmful updates before building on it.
-2. **Implement the gate as a new `fuse_uncertainties` mode** (e.g. `norm_confidence_gate`) using the weight above, so it is directly ablative against the existing `epistemic` / `geometric` / `soft_dual_weight` modes.
-3. **Sweep $(\tau_c, \tau_n, \lambda_1, \lambda_2)$** on Fog and Crosstalk through the standard EMA prototype update on the frozen encoder, the `fuse_uncertainties` gate feeding the plain prototype update, deliberately *without* any of the old `AdaptiveMemoryBank` machinery (density-adaptive Hamming, reservoir sampling). Acceptance criteria: beat the naive EMA baseline (16.36%) and approach the oracle ceiling (23.32%), and outperform the single-signal gates (confidence-only, norm-only) to justify the joint combination.
-4. **Commit the medium-scale run:** plain `supcon_vib` on 100% data (seeded per `med_pretrain_eval.py` convention) to obtain the converged encoder, then run the gated TTA end-to-end on top of it.
-
-**Contingency (deferred, not deleted):** SOR (whether as an eval-time input pre-filter on the frozen encoder or in any future augmentation variant) is parked. Its best ever HDC Prototype Accuracy (9.1%) is less than half of what the plain encoder already achieves (20.1%), so it does not justify proactive compute. Only revisit input-space remediation or richer physics augmentation if the gated TTA underperforms the naive EMA baseline.
-
 ---
 
 ## Phase 13: The Full 8-Corruption Panel and the Pool/Val Mismatch Confound
@@ -375,13 +366,6 @@ The confound was always present in the harness, the Phase 9-era encoder masked i
 2. **The whole pipeline is seeded** (`torch.manual_seed(42)`, `np.random.seed(42)`, `random.seed(42)`) before loader creation, making extraction and splits reproducible.
 3. **The EMA ladder is replaced by a vectorized weighted class-mean update** (`weighted_mean_update`, chunked `index_add_`), and the default pool is raised to **1M points**, the statistically honest adaptation operator at a statistically honest pool size. Prototype_c = normalize(Σ wᵢ·sign(zᵢ·proj)) over pool points with pseudo-label c; classes without pool support keep the base. This removes the α-dependent base-erasure (finding 7) and the small-pool pessimism (finding 8) at once, and makes the ladder cheap enough for million-point pools.
 4. **Per-mode gate weight statistics** reported in the ladder, so saturated/degenerate gates are visible rather than silently producing identical rows (finding 6).
-
-### Next Steps
-
-1. **Re-run the 8-corruption panel** on the fully fixed harness (pool/val permutation + 1M-point weighted class-mean ladder): the oracle must now land *at or above* zero-shot on every corruption, and the clean control must show gates ≈ naive ≈ zero-shot (no adaptation should help or hurt when nothing is wrong).
-2. **Fix the linear-probe sampling** (uniform subsample across all 100 frames, not the first 100k points). The probe that supplies the confidence signal still trains on ~1–2 frames' worth of points, which may explain the fog confidence inversion and must be resolved before the gate is calibrated on confidence.
-3. **Treat the gate-fault results as binding**: drop the shipped `soft_dual_weight`/`and_gate`/`ellipsoid_gate` modes for the new space; build the gate from the two bare signals (confidence, feature norm) with **per-corruption direction calibration**: finding 9 shows the norm direction is pool-dependent, so a fixed "harmful = high norm" prior cannot be trusted (the LR combination is the reference: 0.86–0.95 AUROC when computed).
-4. **Commit the medium-scale run** (plain `supcon_vib`, seeded) in parallel: the encoder is not in question; the harness and gate questions are independent of it.
 
 ---
 
@@ -448,13 +432,6 @@ The 30-epoch micro run (cutoff 0.1, ~9.5k gradient steps, 6× the earlier micro 
 
 **`supcon_vib_strongvib` is the medium-scale candidate.** It maximizes exactly what the current plan needs: the frozen decode on the priority corruptions (Fog 35.0%, Crosstalk 38.1%) and the strongest signals for the query-side gate (fog joint AUROC 0.856). The additive oracle headroom (45.3%) is real but unexploitable until its signals improve; it is documented as the follow-up question rather than the overnight bet.
 
-### Next Steps
-
-1. **Overnight medium run**: `supcon_vib_strongvib`, 30 epochs on 100% data (~95k steps, ~12h), seeded, with headroom + deep diagnostics baked into `med_pretrain_eval.py`.
-2. **On the converged encoder**: re-run the v4 ladder + deep diagnostics: expect Fog zero-shot > 35% and Fog band-acc spread to sharpen; confirm the clean control recovers with the proper full-length LR schedule.
-3. **Build the query-side gate** on the strongvib signals (confidence + norm, direction-calibrated per corruption: the fog joint AUROC 0.856 is the reference).
-4. **Follow-up (prototype-adaptation path)**: study why `additive`'s fog means are usable: if its gate signals can be sharpened (e.g., stronger augmentation density or a norm-conditioned variant), the +19.2 oracle headroom becomes exploitable.
-
 ---
 
 ## Phase 16: The Overnight Medium Run (Training at Scale Triples the Fog Prototype Decode)
@@ -485,13 +462,6 @@ The medium-scale run (26 epochs on 100% data ≈ 83k gradient steps, ~10h, prope
 1. **Training at scale is the single biggest decode lever measured so far**: HDC Prototype Accuracy on Fog tripled (9.6% → 31.7%) and Fog linear probe gained 8.4 points from 5× the gradient budget. The medium-run bet is confirmed, more training directly heals the prototype decode.
 2. **But the strong VIB now over-regulates the clean manifold.** The 5× KL weight at 26 full epochs collapses clean magnitudes to ~2.4 (vs the fog's 5.25). This is the flagged over-collapse risk realized: clean features lost their magnitude envelope while the drift grew (cosine shift 0.677 → 0.883). The clean representation is *less* healthy even though the fog decode improved.
 3. **The tension to resolve**: the fog decode improved despite (or because of?) the clean collapse. The 128D prototype metric rewards low-norm clean centroids against high-norm fog queries in a particular way; before trusting this, the v4 10kD ladder must be run on this checkpoint (it measures the HDC decode, the deployment metric).
-
-### Next Steps
-
-1. **Run the v4 oracle ladder on the medium checkpoint** (`oracle_gating_eval.py --load_path logs/med_pretrain_supcon_vib_strongvib --method supcon_vib_strongvib`, ~15 min): the 10kD zero-shot/oracle per condition is the deployment-metric view of this encoder and the honest comparison to the 30-epoch micro ladder (Fog zero-shot 35.0% there).
-2. **Test the decision-level prior correction** on this decoder (both point accuracy and mIoU, per condition): the benign-condition mean recovery question.
-3. **Decide continuation**: if the v4 ladder shows the fog zero-shot > 35% and climbing, extend with `--continue_training` (the saved checkpoint resumes the same cosine curve); the 5× VIB over-collapse of clean suggests also testing a mid-strength KL (e.g., 0.02–0.03) as a variant if the ladder disappoints.
-4. **Build the query-side norm gate** with the reconfirmed band-acc direction (veto fog norm ≥ 4).
 
 ---
 
@@ -531,12 +501,6 @@ The Phase 16 deep diagnostics now read as the cause, not a curiosity:
 
 **`supcon_vib_strongvib` at medium scale over-regularized the representation.** The strong-VIB lever was right in principle (it produced the best micro-scale frozen decode) but the 5× weight at 26 full epochs crossed the over-collapse threshold. The checkpoint should **not** be continued, the KL axis is over-trained, not under-trained.
 
-### Next Steps
-
-1. **Retrain at medium scale with a mid-strength KL** (`supcon_vib_midvib`, weight 0.02–0.03, a one-line variant alongside `strongvib`'s 0.05): the hypothesis: enough pressure to keep the micro-scale fog gains, not so much that the clean manifold collapses. This is the correct follow-up run (~10h overnight).
-2. **Re-run the v4 ladder on the result**: the deployment metric is the acceptance test; the 128D headroom metrics are demoted to diagnostics, not headline numbers.
-3. **Add a clean-manifold health gate to the eval protocol**: track clean L2 norm and clean zero-shot on the ladder as a first-class metric, the over-collapse was visible in the deep diagnostics but absent from the summary numbers that drove the Phase 16 verdict.
-
 ---
 
 ## Phase 18: The Query Gate Verdict and the MidVIB Probe
@@ -563,11 +527,6 @@ The 2h diagnostic run (query gate on both strongvib encoders + the KL-0.03 midvi
 ### The Missing Data Point
 
 The KL axis has now been probed at {0.01 (micro only), 0.03 (12.7k), 0.05 (9.5k and 83k)}, but **plain 0.01 has never been run at medium scale**. The 5× collapse at 83k steps tells us nothing about whether the *default* configuration survives it. This is the cheapest decisive experiment available.
-
-### Next Steps
-
-1. **Run plain `supcon_vib` (KL 0.01) at medium scale** (26–30 epochs, 100% data): the missing control. If clean stays healthy (L2 ~5.6, clean zs high) *and* fog zero-shot ≥ 35%, the isotropy question may not need a new loss term at all.
-2. **Probe the anisotropy hypothesis directly** (ellipticity 0.47–0.82 is the strongest measured correlate of the decode gap): options in order of cost: (a) pure `supcon` (no VIB; the branch already exists in `gen_trainers.py`), (b) a spectral-whitening / covariance-isotropy penalty term as a new variant, (c) decorrelation (Barlow-style) regularization. The architecture is *not* the lever: the backbone is already a CNN; CNNs are translation-equivariant, not feature-isotropic.
 
 ---
 
@@ -596,11 +555,6 @@ A zero-training test of whether the anisotropy hypothesis warrants a new loss te
 
 **Whitening destroys the decode: the anisotropy is load-bearing.** The semantic information lives in the high-variance (elongated) directions; decorrelating the space throws it away. Per the outcome table this is the third row: the elongated structure is load-bearing, the covariance is not to be touched, and the naive isotropy-loss direction is abandoned. (If isotropy were ever pursued, it would have to be a *learned* regularizer that preserves discriminative structure, but the probe shows the decode does not want the space made isotropic.) The config path (plain KL 0.01 / SupCon-only at scale) is the surviving direction, which is exactly what the convergence probe (Phase 20) tests.
 
-### Next Steps
-
-1. **Run the convergence probe** (Phase 20): `supcon_vib` at 100 epochs, cutoff 0.1 (~3.5h), then its v4 ladder.
-2. **Commit the overnight run** per the Phase 20 outcomes: plain `supcon_vib` (KL 0.01) at medium scale unless it redirects.
-
 ---
 
 ## Phase 20: The Convergence Probe (Long Epochs × Small Subset) — COMPLETED
@@ -627,14 +581,9 @@ The probe ran plain `supcon_vib` (KL 0.01) to 62 epochs on 10% data (≈19.7k st
 2. **Fog oracle 46.4% — the best ever measured** (+19.1 over zero-shot). Only the second positive fog headroom in the project (additive: 45.3%), and this time on the plain config that is going to the medium run. The plain encoder's fog class means are genuinely usable at 19.7k steps; the 5× VIB destroyed this property (strongvib fog oracle was 22.7%).
 3. Training was still improving at epoch 62 (train IoU 0.39, loss 0.61) — no collapse signal, no plateau of concern.
 
-### Next Steps
-
-1. **Overnight medium run** (plain `supcon_vib`, 26 epochs, 100% data ≈ 83k steps) — validated. The morning readout: deep diagnostics clean L2 + the v4 ladder. Watch specifically for the **fog oracle**: if it holds or grows beyond 46.4% at 83k steps, prototype-level adaptation is back on the table for the plain config (with the phase-separation rule for any prior correction).
-2. **Log the probe checkpoint's ladder** into the evidence matrix (0.01 @ 19.7k: clean 81.4%, fog zs 27.4%, fog oracle 46.4%).
-
 ---
 
-## Phase 21: The Plain Medium Run — Health Passed, Naive Fog Adaptation Finally Works
+## Phase 21: The Plain Medium Run — Health Passed, Fog Adaptation Was an Accuracy Artifact
 
 The overnight medium run (plain `supcon_vib`, KL 0.01, 26 epochs on 100% data ≈ 83k steps) plus its v4 ladder delivered the strongest result in the project: a fully healthy clean manifold and, for the first time, **naive prototype adaptation that works on Fog**.
 
@@ -674,12 +623,6 @@ The overnight medium run (plain `supcon_vib`, KL 0.01, 26 epochs on 100% data �
 
 *Mean mIoU (8 corruptions, zero-shot): 36.4%.*
 
-### Next Steps
-
-1. **The mIoU lever is the HyperLiDAR buffer selection** (`thirdparty/hyperlidar.pdf`): a per-epoch hard-example buffer that selects the worst-performing samples from previous scans for retraining. It boosted mIoU 5–6× in previous iterations by forcing rare-class points into the training buffer. Applied to the plain medium encoder (or its adaptation loop), it directly targets the rare-class collapse behind the fog mIoU (10.1%) and is the single most promising mIoU mechanism identified.
-2. **Rare-class diagnostics**: the accuracy/mIoU divergence on fog (26.4% vs 10.1%) means the majority classes are carrying the accuracy; per-class IoU breakdown on fog (which classes survive the collapse) would quantify exactly what buffer selection must recover.
-3. **Build the gated adaptation** only if the mIoU metric shows headroom — the Phase 21.1 revision killed the accuracy-based justification; any adaptation must now be validated on mIoU, where freezing is currently optimal.
-
 ---
 
 ## Phase 22: Oracle Retraining with Buffer Selection — Oscillates, Never Beats Zero-Shot mIoU
@@ -702,13 +645,6 @@ The trainer-faithful oracle retraining (HyperLiDAR-style buffer selection: cumul
 1. **Buffer selection does not recover the fog mIoU.** Best mIoU across all rounds: 9.1% (round 4), still below the zero-shot baseline (10.1%). The accuracy gains (50.5% at round 1) are again majority-class artifacts: acc/mIoU diverge by 43 points at round 1.
 2. **The loop limit-cycles.** The trajectory oscillates (acc 50.5 → 28.2 → 41.0 → 28.7 → 32.1; mIoU 7.2 → 9.0 → 4.1 → 9.1 → 5.9): full-strength 2× perceptron updates on a 5% buffer over-shoot, and the re-selected buffer corrects back next round. The wrong-memory swings 18.5k–36.7k without stabilizing.
 3. **The hard buffer is majority-dominated.** 36.7k of the first 50k buffer points are misclassified (73% error on fog), and the majority classes (Road/Building) dominate that population — so the perceptron updates fix majority classes (acc up) while the rare classes, starved of buffer slots, keep collapsing (mIoU down). The exact mechanism behind the Phase 21 mIoU crash, now at the buffer level.
-
-### Next Steps (diagnostics in order)
-
-1. **Per-class hard selection** (`--buffer_per_class`): force rare-class misclassified points into the buffer with a per-class quota, directly countering the majority domination. This is the mIoU-protective variant and the most promising lever.
-2. **Paper-form buffer** (`--buffer_mode hyperlidar`): 50/50 top-loss + random mix adds diversity that may dampen the oscillation.
-3. **Update-strength sweep** (`--update_strength 1`): the 2× step may be too aggressive for the 10kD oracle setting (the trainer's 2× was tuned on source-domain retraining).
-4. **Per-class IoU across rounds**: if per-class selection still fails to lift rare-class IoU, the rare classes' fog features are unrecoverable by prototype movement even with perfect labels and hard-example mining, and the mIoU recovery must come from the encoder or the buffer-selection-on-the-encoder-training (unsup_main.py's actual retraining loop) rather than the decode.
 
 ---
 
@@ -737,12 +673,6 @@ The per-class hard-selection variant (per-class quota from the wrong-memory, so 
 
 The buffer selection's demonstrated mIoU boost (5–6×) came from `unsup_main.py`'s training loop — retraining the HDC prototypes on **source-domain data**, where classes are separable and hard examples are genuinely fixable. The oracle test applies the same mechanism to **target (fog) data at decode**, where the rare classes' features have collapsed: hard-example mining cannot fix what the representation cannot separate. The mIoU recovery therefore belongs in the **encoder side** — buffer-selection-guided retraining on data where separability exists, or making the encoder's fog features separable in the first place.
 
-### Next Steps
-
-1. **Final decode-side check (optional)**: `--update_strength 1` with `--buffer_frac 0.20` isolates whether a gentler/larger-buffer update stabilizes the loop; low prior, cheap to run, closes the thread.
-2. **Pivot to the encoder side**: apply the buffer-selection retraining to the *source-domain* HDC training (the `unsup_main.py` path where the 5–6× mIoU boost was demonstrated) and measure the converged plain-medium encoder's fog mIoU with it; or pursue encoder training that keeps rare-class fog features separable (per-class treatment in the pretraining objective).
-3. **Rare-class fog diagnostic**: per-class IoU on fog (which classes survive at 10.1% mIoU) to quantify exactly what the encoder must recover.
-
 ---
 
 ## Phase 22.2: Artifact-Filtered Buffer Selection — 99.96% of Fog Misclassifications Are Confident Hallucinations
@@ -770,11 +700,6 @@ The artifact-filtered buffer mode (norm, cosine-to-true, perceptron-loss, and to
 
 **Under heavy fog, 99.96% of misclassified points are confident artifacts** (perceptron loss > 0.15 with cosine-to-true < 0.05). This single number explains every adaptation failure in this project (Phase 14 oracle crash, Phase 22 retraining oscillations) and motivates the encoder-side fix: fog mIoU can only improve by making the rare classes' fog features separable in the first place.
 
-### Next Steps
-
-1. **Pivot to the encoder side** (confirmed by all evidence): per-class fog IoU breakdown (which classes survive at 10.1% mIoU) to target the pretraining objective; buffer-selection retraining on source-domain data (`unsup_main.py` path, where the 5–6× mIoU boost was demonstrated) and measure the resulting fog mIoU.
-2. **Consider the perceptron-loss/margin as a query-gate signal**: it is a far sharper fog-artifact discriminator than the 128D norm (0.04% vs 29% survival) — if a decoder-side veto is ever needed, this is the better signal.
-
 ---
 
 ## Phase 23: The Artifact-Gate Sweep — Gating Verdict: Crosstalk Solved, Fog Exhausted
@@ -798,12 +723,6 @@ The in-memory gate sweep (Phase 23 diagnostic) exhaustively searched the artifac
 3. **Per the decision rule: go back to feature-extractor training.** Fog gating cannot reach the target; the encoder is the only remaining lever. The oracle-gate per-class IoUs (best config: class spread 0.13–0.97, with the weakest classes at 0.13–0.22) identify exactly which classes the encoder must rescue.
 4. **The oracle-loss bound is the prize if the encoder improves**: 55% mIoU at 28% retention with perfect gating means a strong encoder + the (now-buildable) crosstalk-style gate could yield far more than 20 mIoU on fog.
 
-### Next Steps (back to the feature extractor)
-
-1. **Per-class fog IoU diagnostic** on the plain medium encoder (which classes sit at 0.10–0.25 IoU under fog) — the concrete target list for the pretraining objective.
-2. **Encoder-side candidates**, in order of evidence: (a) the `supcon_vib_additive` variant (volumetric noise augmentation — showed usable fog means, oracle headroom 45.3% at micro scale) at medium scale; (b) HyperLiDAR buffer-selection retraining on *source* data (`unsup_main.py` path, the demonstrated 5–6× mIoU mechanism); (c) per-class weighting in the SupCon/VIB objective targeting the fog-weak classes.
-3. **Keep the crosstalk gate** (margin≥0.2, cos1≥0.3, cos128≥0.4 @ ~52% retention, 23.1% mIoU) as the one working decode-side artifact — it survives the pivot.
-
 ---
 
 ## Phase 23.1: The Buffer-Selection Pretrain Weights — Confirmed as a Source-Domain Mechanism
@@ -822,12 +741,6 @@ The existing `unsup_kitti-c.py --pretrain` weights (`logs/kitti_pretrain/hdc_sub
 1. **The buffer-selection-pretrained model sits at historical baseline levels on corruptions**: fog 5.8% mIoU ≈ the DualGateModel-era fog (5.78%). The 5–6× mIoU boost from buffer selection lives in the *source-domain* retraining (where classes are separable and hard examples are fixable) — it does not transfer to the corrupted decode. This is the same conclusion as Phase 22 (decode-side retraining closed), now confirmed from the pretrain side: the trained HDC prototypes are no better on fog/crosstalk than the pre-buffer-selection era.
 2. **Tail mIoU is catastrophic** (0.06–0.33%) on both corruptions — the pretrained models have essentially no rare-class recovery under corruption, consistent with the Phase 23 oracle-gate per-class findings.
 3. **The mechanism's role is settled**: buffer selection is a source-domain training-time tool (improve the HDC prototypes on clean data), not a corruption-robustness tool. The corrupted-condition mIoU must come from the feature extractor.
-
-### Next Steps (unchanged from Phase 23)
-
-1. **Per-class fog IoU on the plain medium encoder** (the ladder's new per-class print) — the concrete encoder target list.
-2. **Encoder-side candidates**: `supcon_vib_additive` at medium scale (volumetric noise augmentation — the only variant with usable fog means), per-class weighting in the pretraining objective targeting the fog-weak classes, and (source-domain) buffer-selection retraining as a complement for clean mIoU rather than a corruption fix.
-3. **The crosstalk gate survives** (23.1% mIoU @ 52% retention, label-free).
 
 ---
 
@@ -862,11 +775,6 @@ The per-condition autopsy (frozen clean prototypes, plain medium encoder, 100k-p
 
 D3CTTA's paper numbers come from their own converged backbone plus a mechanism we have never tested: **encoder-level test-time adaptation** (entropy-minimization batch-statistic alignment), not decode-side movement. The autopsy's magnitude-inflation finding is the reason this lever is the one untested candidate that *could* matter: fog/crosstalk's feature *statistics* (norms, means) are grossly misaligned with clean (88% of points in the wrong norm band), and BN-style statistic alignment directly targets that — unlike gating/adaptation/buffer selection, which the autopsy shows are capped at ~3.5% recoverable signal.
 
-### Next Steps
-
-1. **Test-time feature-statistics alignment probe** (the D3CTTA mechanism on our encoder): align the corrupt features' per-dimension mean/std to clean, then re-run the decode. If fog mIoU moves, encoder-level TTA is a missing lever worth pursuing. If it does not, the alignment mechanism does not help these features either, and the remaining candidates are the encoder-side ones (Phase 23) plus the open intra-class balance checks — no path is treated as closed until the probe results are in.
-2. **Encoder-side candidate, now quantified**: the pretraining objective should keep fog/crosstalk features in the healthy mid-norm band and prevent the magnitude inflation + ellipticity blow-up (the strongvib micro-scale redistribution did this; the medium-scale config must be re-tuned to match) — one of several candidates under consideration.
-
 ---
 
 ## Phase 24.1: The BN-Statistic Alignment Probe — Not the Missing Lever for Fog
@@ -893,6 +801,34 @@ The D3CTTA-style test-time alignment (per-dimension mean/std of the corrupt feat
 3. **Wet Ground degrades under alignment** (−8.5 mIoU) — the statistic transfer is harmful where the corruption is reflectance-based, an important caution against blanket BN-style TTA.
 4. **The D3CTTA-mechanism question is now answered on this encoder**: their paper gains on fog/crosstalk came from their own backbone + this alignment mechanism; on our features, the mechanism contributes nothing to fog and a small gain to crosstalk. The encoder remains the primary candidate for fog, with the intra-class balance checks and the encoder-side options from Phase 23 still open — no path treated as closed beyond what the data now shows.
 
+---
+
+## Phase 24.2: The Fog Class-Level Autopsy — the Collapse Is Class-Conditional, Not Uniform
+
+Two new autopsy dimensions on fog: the **learned-decoder ceiling** (LP mIoU and per-class) and the **per-class poison-band structure** (fraction of each class's points in the norm ≥ 4 band and their accuracy there).
+
+### The Numbers (fog, 100k-point val, 8 classes present: 2, 4, 7, 11, 13, 14, 15, 16)
+
+| Class | Proto IoU | LP IoU | Poison-band frac | Poison-band acc |
+| :--- | :--- | :--- | :--- | :--- |
+| Terrain (11) | **0.526** | 0.484 | 0.727 | **0.895** |
+| Truck (4) | 0.157 | **0.007** | 0.998 | 0.591 |
+| Other-object (16) | 0.093 | 0.033 | 0.926 | 0.077 |
+| Building (15) | 0.024 | 0.010 | 0.984 | 0.030 |
+| Other-ground (14) | 0.005 | **0.044** | 0.914 | 0.004 |
+| Road (7) | 0.003 | 0.000 | — | — |
+| Traffic-sign (13) | 0.000 | 0.000 | 0.885 | 0.000 |
+| Bicycle (2) | 0.000 | 0.000 | — | — |
+
+*Overall: proto mIoU 10.1%, LP mIoU 7.2%, LP acc 36.3%.*
+
+### The Findings
+
+1. **The learned decoder is not the fog fix — confirmed at class level.** LP mIoU 7.2% < proto 10.1%; the LP is *worse* on Truck (0.007 vs 0.157), Road (0.0 vs 0.003), Other-object (0.033 vs 0.093), and no better on the dead classes (Road/Traffic-sign/Bicycle at 0.0 for both). Every decoder variant we now have (centroids, learned head, gates, alignment, adaptation, retraining) converges on the same ceiling: the representation's class-conditional collapse, not the decode.
+2. **The magnitude inflation is universal — but the poison band is class-selective.** 73–100% of every class's points sit in the norm ≥ 4 band, so a class-agnostic norm target would be wrong. Yet within the poison band, **Terrain classifies at 89.5% and Truck at 59.1%** while Building (3.0%), Other-ground (0.4%), and Traffic-sign (0.0%) are dead. The fog representation collapse is **class-conditional**: Terrain and Truck survive the high-norm regime, Road/Building/Other-ground/Traffic-sign/Bicycle do not.
+3. **Why this matters for the training regimen**: the collapse is *not* intrinsic to fog — the encoder can represent fog-surviving classes (Terrain's poison-band points at 90% accuracy prove it). The objective needs to rescue the *collapsing* classes specifically. The natural hypothesis is geometric: the dying classes (Road, Building, Other-ground) are large planar surfaces whose features rely on fine range texture that scattering destroys, while Terrain (near-field ground) and Truck (large solid) retain structure — testable via a depth/range correlation of the poison-band points (far-field destruction).
+4. **Actionable target list for the pretraining objective**: classes 7 (Road), 15 (Building), 14 (Other-ground), 13 (Traffic-sign), 2 (Bicycle) are the fog casualties — the additive volumetric augmentation and any per-class weighting must focus on keeping *these* classes' fog features separable, with Terrain/Truck as the proof that the representation can do it.
+
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
 The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *possible* (batch 2–4, one-line Parser change, loop already batch-agnostic). This is parked for three reasons:
@@ -902,3 +838,15 @@ The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *pos
 3. **Semantics change**: SupCon positives would span images within a batch rather than only the clean↔augmented pair, and the cosine scheduler (defined in steps) would traverse its cycle at half the per-epoch depth, a different configuration, not a free speedup.
 
 **Revisit only if**: a probe or the overnight run shows the training wall-clock (not the metrics) is the blocker, e.g., needing many more epochs of convergence than the compute budget allows. The decision rule: batch scaling earns investigation only if it is the *clear* bottleneck, not because headroom exists. (Timing test if revisited: 3 epochs at batch 2 in a scratch out_dir vs the 2.56 it/s baseline.)
+
+---
+
+### Current Next Steps (consolidated)
+
+1. **The additive medium run — the fog training-regimen test**: `supcon_vib_additive`, 26 epochs on 100% data (~10h), the only variant with usable fog means at micro scale (oracle headroom 45.3%). Measure fog mIoU + the autopsy signature; the target is moving fog off the 10.1% plateau.
+2. **The depth/range-correlation diagnostic** (intrinsic fog property): correlate the poison-band points' feature norms with their range values — tests the far-field-destruction hypothesis from Phase 24.2 (the dying classes — Road, Building, Other-ground — are planar surfaces whose range texture scattering destroys, while Terrain/Truck survive).
+3. **Per-class weighting for the fog casualties** (classes 2, 7, 13, 14, 15) in the pretraining objective — the concrete target list from Phase 24.2, whether applied to the additive regimen or a variant of it.
+4. **Intra-class balance checks** (open thread): per-class hard selection behaved differently from global selection (Phase 22.1), so the intra-class balance question is not yet settled — the subcluster ledger and per-class buffer variants remain to be evaluated.
+5. **Prior correction test** (still unrun): static source prior (τ = −1.0), both point accuracy and mIoU, per condition, with the phase-separation rule (prediction-only; never in the gate or update). The benign-condition mIoU recovery question.
+6. **Crosstalk stack to finish the 20-target**: the label-free margin gate (23.1% mIoU @ 52% retention) combined with the BN-statistic alignment (+3.1 raw mIoU) — evaluate the combined decode.
+7. **Optional decode-thread closure**: `--update_strength 1 --buffer_frac 0.20` on the oracle retrain — low prior that it stabilizes the loop; cheap, closes Phase 22.

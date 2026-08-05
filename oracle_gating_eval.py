@@ -393,7 +393,7 @@ CLASS_NAMES = {1: 'car', 2: 'bicycle', 3: 'motorcycle', 4: 'truck', 5: 'other-ve
 
 
 def condition_autopsy(base_protos, proto_lbls, clean_means128, corrupt_feats, corrupt_lbls, proj,
-                      device, clf=None, clean_stats=None, seed=42):
+                      device, clf=None, clean_stats=None, corrupt_depths=None, seed=42, far_thresh=25.0):
     """Per-condition hyperspace + decode signature (Phase 24).
 
     Quantifies what separates the stuck conditions (fog/crosstalk) from the
@@ -533,6 +533,34 @@ def condition_autopsy(base_protos, proto_lbls, clean_means128, corrupt_feats, co
     else:
         binarized_cos, binarized_ratio = 0.0, 0.0
 
+    # Range/depth correlation (the far-field destruction hypothesis, Phase 24.2):
+    # per-class mean depth, far-point fraction, and near/far classification accuracy
+    depth_stats = {}
+    if corrupt_depths is not None:
+        dep = corrupt_depths[val_idx].to(device)
+        depth_stats['norm_depth_corr'] = float(torch.corrcoef(
+            torch.stack([norms, dep.float()]))[0, 1].item())
+        depth_stats['far_thresh'] = far_thresh
+        per_class_depth = {}
+        for c in sorted(present):
+            cm = val_l == c
+            if cm.sum() < 500:
+                continue
+            far = dep[cm] >= far_thresh
+            n_far = int(far.sum().item())
+            row = {'mean_depth': float(dep[cm].mean().item()),
+                   'far_frac': float(far.float().mean().item())}
+            if n_far >= 100 and (len(far) - n_far) >= 100:
+                cp = preds[cm]
+                cl = val_l[cm]
+                row['near_acc'] = float((cp[~far] == cl[~far]).float().mean().item())
+                row['far_acc'] = float((cp[far] == cl[far]).float().mean().item())
+            else:
+                row['near_acc'] = None
+                row['far_acc'] = None
+            per_class_depth[c] = row
+        depth_stats['per_class'] = per_class_depth
+
     # BN-style test-time statistic alignment (the D3CTTA mechanism on our encoder):
     # align the corrupt features' per-dimension mean/std to the clean statistics,
     # then re-run the 10kD prototype decode.
@@ -559,6 +587,7 @@ def condition_autopsy(base_protos, proto_lbls, clean_means128, corrupt_feats, co
         'poison_band_frac': poison_band_frac, 'poison_band_acc': poison_band_acc,
         'binarized_cos': binarized_cos, 'binarized_ratio': binarized_ratio,
         'align_acc': align_acc, 'align_miou': align_miou,
+        'depth_stats': depth_stats,
     }
 
 
@@ -1053,7 +1082,7 @@ def main():
         
         corrupt_loader = corrupt_parser.get_train_set()
         
-        corrupt_feats, corrupt_lbls = [], []
+        corrupt_feats, corrupt_lbls, corrupt_depths = [], [], []
         
         with torch.no_grad():
             for i, batch in enumerate(tqdm(corrupt_loader, total=NUM_BATCHES, desc=f"   Ext. {corruption}")):
@@ -1070,9 +1099,11 @@ def main():
                 z_flat = z8.permute(0, 2, 3, 1).reshape(-1, z8.shape[1])[mask]
                 corrupt_feats.append(z_flat.cpu())
                 corrupt_lbls.append(labels[mask].cpu())
+                corrupt_depths.append(in_vol[:, 0, :, :][mask].cpu())  # range channel, same mask order
                 
         corrupt_feats = torch.cat(corrupt_feats, dim=0)
         corrupt_lbls = torch.cat(corrupt_lbls, dim=0)
+        corrupt_depths = torch.cat(corrupt_depths, dim=0)
         
         if args.whiten:
             corrupt_feats = (corrupt_feats - whiten[0]) @ whiten[1]
@@ -1085,7 +1116,8 @@ def main():
             print("      -> Running Condition Autopsy...")
             au = condition_autopsy(base_protos, proto_lbls, clean_means128,
                                    corrupt_feats, corrupt_lbls, proj, device,
-                                   clf=clf, clean_stats=clean_stats)
+                                   clf=clf, clean_stats=clean_stats,
+                                   corrupt_depths=corrupt_depths)
             res['autopsy'] = au
             all_results[corruption] = res
             continue
@@ -1246,6 +1278,21 @@ def main():
                   f"{a['margin_correct']:.2f}/{a['margin_mis']:.2f} | {a['norm_correct']:.1f}/{a['norm_mis']:.1f} | "
                   f"{a['near_origin']:<7.3f} | {a['cos_shift']:<8.3f} | {a['ellipticity']:<6.3f} | "
                   f"{a['binarized_cos']:<7.3f} | {al:<8} |")
+        print("="*140 + "\n")
+        print(" DEPTH/RANGE DIAGNOSTIC (far-thresh 25m; near_acc/far_acc of the proto decode)")
+        print("="*140)
+        for corruption, res in all_results.items():
+            if 'autopsy' not in res:
+                continue
+            ds = res['autopsy'].get('depth_stats')
+            if not ds:
+                continue
+            line = f"{corruption:<16} norm-depth corr {ds['norm_depth_corr']:+.3f} | "
+            for c, row in sorted(ds.get('per_class', {}).items()):
+                na = f"{row['near_acc']:.2f}" if row['near_acc'] is not None else "  -  "
+                fa = f"{row['far_acc']:.2f}" if row['far_acc'] is not None else "  -  "
+                line += f"c{c}(d{row['mean_depth']:.0f}m,far{row['far_frac']*100:.0f}%):{na}/{fa}  "
+            print(line)
         print("="*140 + "\n")
     
     with open(out_path, 'w') as f:
