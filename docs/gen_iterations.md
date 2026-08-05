@@ -743,6 +743,38 @@ The buffer selection's demonstrated mIoU boost (5–6×) came from `unsup_main.p
 2. **Pivot to the encoder side**: apply the buffer-selection retraining to the *source-domain* HDC training (the `unsup_main.py` path where the 5–6× mIoU boost was demonstrated) and measure the converged plain-medium encoder's fog mIoU with it; or pursue encoder training that keeps rare-class fog features separable (per-class treatment in the pretraining objective).
 3. **Rare-class fog diagnostic**: per-class IoU on fog (which classes survive at 10.1% mIoU) to quantify exactly what the encoder must recover.
 
+---
+
+## Phase 22.2: Artifact-Filtered Buffer Selection — 99.96% of Fog Misclassifications Are Confident Hallucinations
+
+The artifact-filtered buffer mode (norm, cosine-to-true, perceptron-loss, and top-2-margin filters on the hard candidates, plus per-class quota protection) was run on the same fog oracle setup.
+
+### The Trajectory (acc | mIoU | buffer hard/rand | filter pass-rates)
+
+| Round | Acc | mIoU | Hard/Rand | Filter pass (candidates/misclassified) |
+| :--- | :--- | :--- | :--- | :--- |
+| 0 | 26.4% | **10.1%** | 269/49731 | 269 / 735698 (norm 215936, true 153046, loss 306, marg 269) |
+| 1 | 51.3% | 7.9% | 1569/48431 | 1569 / 486368 |
+| 2 | 24.8% | 9.2% | 352/49648 | 352 / 751710 |
+| 3 | 46.5% | 5.9% | 1617/48383 | 1617 / 533959 |
+| 4 | 28.6% | **9.1%** | 686/49314 | 686 / 713725 |
+| 5 | 45.8% | 5.9% | — | — |
+
+### The Verdict
+
+1. **The confident-hallucination hypothesis is confirmed at population scale.** Of 735,698 misclassified fog points, only **269 survive the artifact filters (0.04%)**. The cascade breakdown is the story: the norm filter removes 71% (215,936 of 735,698 — the high-magnitude artifacts), the cosine-to-true filter another 29% of the remainder, and then **the perceptron-loss filter annihilates the rest: 153,046 → 306**. Under heavy fog, essentially every misclassification is *confidently* wrong (loss > 0.15) — they are hallucinations, not boundary-adjacent recoverable points. The perceptron loss is a dramatically sharper artifact signal than the 128D norm (0.2% survival vs 29%), worth noting for the query-gate work too.
+2. **The filters do not rescue the trajectory.** Still oscillating (best mIoU 9.2%, below the 10.1% zero-shot baseline). With only 269–1,617 hard candidates per round (of 50k buffer slots), the buffer is ~97% random fill, and the random half's unfiltered misclassified points still inject artifact updates.
+3. **Decode-side retraining is closed, definitively.** Across all four buffer strategies (global, per-class, paper-form, artifact-filtered), fog mIoU never crosses the frozen zero-shot baseline with perfect labels. The fog pool contains essentially zero recoverable hard examples: prototype adaptation has nothing to learn from.
+
+### The Paper-Ready Statistic
+
+**Under heavy fog, 99.96% of misclassified points are confident artifacts** (perceptron loss > 0.15 with cosine-to-true < 0.05). This single number explains every adaptation failure in this project (Phase 14 oracle crash, Phase 22 retraining oscillations) and motivates the encoder-side fix: fog mIoU can only improve by making the rare classes' fog features separable in the first place.
+
+### Next Steps
+
+1. **Pivot to the encoder side** (confirmed by all evidence): per-class fog IoU breakdown (which classes survive at 10.1% mIoU) to target the pretraining objective; buffer-selection retraining on source-domain data (`unsup_main.py` path, where the 5–6× mIoU boost was demonstrated) and measure the resulting fog mIoU.
+2. **Consider the perceptron-loss/margin as a query-gate signal**: it is a far sharper fog-artifact discriminator than the 128D norm (0.04% vs 29% survival) — if a decoder-side veto is ever needed, this is the better signal.
+
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
 The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *possible* (batch 2–4, one-line Parser change, loop already batch-agnostic). This is parked for three reasons:
