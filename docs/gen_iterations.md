@@ -680,6 +680,36 @@ The overnight medium run (plain `supcon_vib`, KL 0.01, 26 epochs on 100% data �
 2. **Rare-class diagnostics**: the accuracy/mIoU divergence on fog (26.4% vs 10.1%) means the majority classes are carrying the accuracy; per-class IoU breakdown on fog (which classes survive the collapse) would quantify exactly what buffer selection must recover.
 3. **Build the gated adaptation** only if the mIoU metric shows headroom — the Phase 21.1 revision killed the accuracy-based justification; any adaptation must now be validated on mIoU, where freezing is currently optimal.
 
+---
+
+## Phase 22: Oracle Retraining with Buffer Selection — Oscillates, Never Beats Zero-Shot mIoU
+
+The trainer-faithful oracle retraining (HyperLiDAR-style buffer selection: cumulative `is_wrong` memory, 5% buffer, 2× perceptron updates, perfect labels) was run on the plain medium encoder's fog features.
+
+### The Trajectory (acc | mIoU | buffer hard/rand | wrong-now/memory)
+
+| Round | Acc | mIoU | Buffer hard/rand | Wrong now/mem |
+| :--- | :--- | :--- | :--- | :--- |
+| 0 (base) | 26.4% | **10.1%** | — | 36723/36723 |
+| 1 | **50.5%** | 7.2% | 36723/13277 | 18476/18476 |
+| 2 | 28.2% | 9.0% | 18476/31524 | 34694/34694 |
+| 3 | 41.0% | 4.1% | 34694/15306 | 25778/25778 |
+| 4 | 28.7% | **9.1%** | 25778/24222 | 35504/35504 |
+| 5 | 32.1% | 5.9% | — | — |
+
+### The Verdict
+
+1. **Buffer selection does not recover the fog mIoU.** Best mIoU across all rounds: 9.1% (round 4), still below the zero-shot baseline (10.1%). The accuracy gains (50.5% at round 1) are again majority-class artifacts: acc/mIoU diverge by 43 points at round 1.
+2. **The loop limit-cycles.** The trajectory oscillates (acc 50.5 → 28.2 → 41.0 → 28.7 → 32.1; mIoU 7.2 → 9.0 → 4.1 → 9.1 → 5.9): full-strength 2× perceptron updates on a 5% buffer over-shoot, and the re-selected buffer corrects back next round. The wrong-memory swings 18.5k–36.7k without stabilizing.
+3. **The hard buffer is majority-dominated.** 36.7k of the first 50k buffer points are misclassified (73% error on fog), and the majority classes (Road/Building) dominate that population — so the perceptron updates fix majority classes (acc up) while the rare classes, starved of buffer slots, keep collapsing (mIoU down). The exact mechanism behind the Phase 21 mIoU crash, now at the buffer level.
+
+### Next Steps (diagnostics in order)
+
+1. **Per-class hard selection** (`--buffer_per_class`): force rare-class misclassified points into the buffer with a per-class quota, directly countering the majority domination. This is the mIoU-protective variant and the most promising lever.
+2. **Paper-form buffer** (`--buffer_mode hyperlidar`): 50/50 top-loss + random mix adds diversity that may dampen the oscillation.
+3. **Update-strength sweep** (`--update_strength 1`): the 2× step may be too aggressive for the 10kD oracle setting (the trainer's 2× was tuned on source-domain retraining).
+4. **Per-class IoU across rounds**: if per-class selection still fails to lift rare-class IoU, the rare classes' fog features are unrecoverable by prototype movement even with perfect labels and hard-example mining, and the mIoU recovery must come from the encoder or the buffer-selection-on-the-encoder-training (unsup_main.py's actual retraining loop) rather than the decode.
+
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
 The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *possible* (batch 2–4, one-line Parser change, loop already batch-agnostic). This is parked for three reasons:

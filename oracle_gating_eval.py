@@ -93,7 +93,7 @@ def eval_protos(protos, proto_lbls, val_feats, val_lbls):
 
 def evaluate_oracle_retrain(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, device,
                             pool_size=1000000, buffer_frac=0.05, rounds=5,
-                            buffer_mode='trainer', update_strength=2, seed=42):
+                            buffer_mode='trainer', update_strength=2, per_class=False, seed=42):
     """Oracle retraining with buffer selection, faithful to Basic_HD.retrain / unsup_main.py.
 
     Perfect labels (oracle bound). Two buffer-selection modes, both with the
@@ -134,17 +134,30 @@ def evaluate_oracle_retrain(base_protos, proto_lbls, corrupt_feats, corrupt_lbls
         # --- buffer selection ---
         if buffer_mode == 'trainer':
             wrong_idx = is_wrong.nonzero(as_tuple=False).view(-1)
-            if wrong_idx.numel() >= n_samples:
-                sel = wrong_idx[torch.randperm(len(wrong_idx), device=device)[:n_samples]]
-                hard_size = n_samples
+            if per_class:
+                # per-class quota from the wrong memory: protects rare classes
+                # from being starved of buffer slots by majority-class errors
+                quota = max(1, n_samples // len(proto_lbls))
+                parts = []
+                for c in proto_lbls.tolist():
+                    cm = (is_wrong & (pool_l == c))
+                    cnt = int(cm.sum().item())
+                    if cnt == 0:
+                        continue
+                    idx = cm.nonzero(as_tuple=False).view(-1)
+                    parts.append(idx[torch.randperm(len(idx), device=device)[:min(cnt, quota)]])
+                hard_idx = torch.cat(parts) if parts else torch.tensor([], device=device, dtype=torch.long)
+            elif wrong_idx.numel() >= n_samples:
+                hard_idx = wrong_idx[torch.randperm(len(wrong_idx), device=device)[:n_samples]]
             else:
-                non_wrong = (~is_wrong).nonzero(as_tuple=False).view(-1)
-                remaining = n_samples - wrong_idx.numel()
-                fill = non_wrong[torch.randperm(len(non_wrong), device=device)[:remaining]]
-                sel = torch.cat([wrong_idx, fill])
-                hard_size = wrong_idx.numel()
-            is_wrong[sel] = False  # sampled points leave the memory
-            rand_size = n_samples - hard_size
+                hard_idx = wrong_idx
+            hard_size = len(hard_idx)
+            is_wrong[hard_idx] = False  # sampled points leave the memory
+            non_wrong = (~is_wrong).nonzero(as_tuple=False).view(-1)
+            remaining = n_samples - hard_size
+            fill = non_wrong[torch.randperm(len(non_wrong), device=device)[:remaining]]
+            sel = torch.cat([hard_idx, fill])
+            rand_size = len(fill)
         else:  # 'hyperlidar': per-round top-loss + random
             losses = torch.zeros(n, device=device)
             preds_all = torch.zeros(n, dtype=torch.long, device=device)
@@ -156,12 +169,25 @@ def evaluate_oracle_retrain(base_protos, proto_lbls, corrupt_feats, corrupt_lbls
                 true_val = sims[torch.arange(len(preds_all[s:s + 100000]), device=device), true_idx]
                 losses[s:s + 100000] = (sims.max(dim=1).values - true_val).clamp(min=0)
             n_hard = max(1, n_samples // 2)
-            hard = torch.topk(losses, n_hard).indices
+            if per_class:
+                quota = max(1, n_hard // len(proto_lbls))
+                parts = []
+                for c in proto_lbls.tolist():
+                    cm = (pool_l == c)
+                    cnt = int(cm.sum().item())
+                    if cnt == 0:
+                        continue
+                    idx = cm.nonzero(as_tuple=False).view(-1)
+                    top = torch.topk(losses[cm], min(cnt, quota)).indices
+                    parts.append(idx[top])
+                hard = torch.cat(parts) if parts else torch.tensor([], device=device, dtype=torch.long)
+            else:
+                hard = torch.topk(losses, n_hard).indices
             sel_set = set(hard.tolist())
             rest = torch.tensor([i for i in range(n) if i not in sel_set], device=device, dtype=torch.long)
-            rand = rest[torch.randperm(len(rest), device=device)[:n_samples - n_hard]]
+            rand = rest[torch.randperm(len(rest), device=device)[:n_samples - len(hard)]]
             sel = torch.cat([hard, rand])
-            hard_size, rand_size = n_hard, len(rand)
+            hard_size, rand_size = len(hard), len(rand)
         # --- classify the buffer ---
         buf_h = torch.sign(pool_f[sel] @ proj)
         sims = buf_h @ protos.T
@@ -489,6 +515,9 @@ def main():
     parser.add_argument("--update_strength", type=int, default=2,
                         help="Perceptron update multiplier (Basic_HD.retrain applies each "
                              "index_add twice = 2x).")
+    parser.add_argument("--buffer_per_class", action="store_true",
+                        help="Per-class hard selection (per-class quota from the wrong memory "
+                             "/ top-loss), protecting rare classes from majority-class domination.")
     args, _ = parser.parse_known_args()
     
     DATA = yaml.safe_load(open(args.config, 'r'))
@@ -665,7 +694,8 @@ def main():
                                          buffer_frac=args.buffer_frac,
                                          rounds=args.oracle_retrain,
                                          buffer_mode=args.buffer_mode,
-                                         update_strength=args.update_strength)
+                                         update_strength=args.update_strength,
+                                         per_class=args.buffer_per_class)
             res['oracle_retrain'] = rt
             print("   -> Oracle Retrain Trajectory (acc | mIoU | buf hard/rand | wrong-now/mem):")
             for row in rt:
