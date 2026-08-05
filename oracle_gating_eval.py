@@ -1239,9 +1239,10 @@ def main():
                 continue
             a = res['autopsy']
             surv = a['artifact_survivors']
-            al = f"{a['align_acc']:.3f}/{a['align_miou']:.3f}" if a['align_acc'] is not None else "n/a"
+            al = f"{a['align_acc']:.3f}/{a['align_miou']:.3f}" if a.get('align_acc') is not None else "n/a"
+            lp_m = a.get('lp_miou', 0.0)
             print(f"| {corruption:<16} | {a['acc']:<7.3f} | {a['miou']:<7.3f} | {a['lp_acc']:<7.3f} | "
-                  f"{a['lp_miou']:<8.3f} | {a['n_mis']:<7d} | {a['conf_artifact_frac']:<8.3f} | {surv[0]}/{surv[4]:<7d} | "
+                  f"{lp_m:<8.3f} | {a['n_mis']:<7d} | {a['conf_artifact_frac']:<8.3f} | {surv[0]}/{surv[4]:<7d} | "
                   f"{a['margin_correct']:.2f}/{a['margin_mis']:.2f} | {a['norm_correct']:.1f}/{a['norm_mis']:.1f} | "
                   f"{a['near_origin']:<7.3f} | {a['cos_shift']:<8.3f} | {a['ellipticity']:<6.3f} | "
                   f"{a['binarized_cos']:<7.3f} | {al:<8} |")
