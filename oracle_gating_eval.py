@@ -1099,7 +1099,7 @@ def main():
                 z_flat = z8.permute(0, 2, 3, 1).reshape(-1, z8.shape[1])[mask]
                 corrupt_feats.append(z_flat.cpu())
                 corrupt_lbls.append(labels[mask].cpu())
-                corrupt_depths.append(in_vol[:, 0, :, :][mask].cpu())  # range channel, same mask order
+                corrupt_depths.append(in_vol[:, 0, :, :].reshape(-1)[mask].cpu())  # range channel, same mask order
                 
         corrupt_feats = torch.cat(corrupt_feats, dim=0)
         corrupt_lbls = torch.cat(corrupt_lbls, dim=0)
