@@ -656,15 +656,29 @@ The overnight medium run (plain `supcon_vib`, KL 0.01, 26 epochs on 100% data �
 
 1. **Clean health: passed, definitively.** Clean zero-shot **82.7%** — the best ever measured in 10kD (probe@19.7k: 81.4%; strongvib med: 43.7%). No collapse. The plain config is the right one.
 2. **The 128D number was a magnitude artifact, again.** The 128D eval claimed 48.1% fog prototype accuracy; the honest 10kD decode is 26.4%. The 128D Euclidean `cdist` was exploiting the clean/fog magnitude split (3.57 vs 6.70). Confirmed once more: the 10kD ladder is the deployment metric.
-3. **Naive fog adaptation WORKS for the first time: 42.5% (+16.1 over zero-shot).** On every previous encoder, naive pseudo-label re-estimation crashed below zero-shot. On this encoder, even imperfect pseudo-labels re-estimate fog prototypes that beat the clean ones by 16 points, and the oracle reaches **48.3% (+21.9, best ever, and grown from the probe's 46.4%)**. The usable-fog-means property persists and improves with training.
-4. **The gate's job just shrank.** The adaptation gap is now naive→oracle (+5.8) rather than zero-shot→oracle (+21.9). Gate signals are modest on this encoder (fog LR-combo AUROC 0.662, conf 0.348, norm 0.370), but the required selectivity is small.
-5. **Query gate direction reconfirmed but retention-costly**: fog τ=4 gives 61.3% acc at 12% retention (mIoU 0.135 vs 0.101); τ=6 gives 49.4% at 43% retention.
+3. **The mIoU view overturns the "adaptation works" claim (Phase 21.1 revision).** The accuracy gains from fog prototype adaptation (+21.9 oracle, +16.1 naive) are a **majority-class artifact**: re-estimated fog prototypes improve Road/Building/Vegetation (boosting point accuracy) while destroying the rare classes. On mIoU — the paper metric — adaptation *crashes* fog from 10.1% (zero-shot) to 4.9% (oracle) and 1.5% (naive). **The frozen clean prototypes remain the best mIoU decoder on every condition.**
+
+### The mIoU Ladder (plain medium encoder, v4 harness)
+
+| Condition | Zero-shot acc \| mIoU | Oracle acc \| mIoU | Naive acc \| mIoU |
+| :--- | :--- | :--- | :--- |
+| **Clean Control** | 82.7% \| **49.6%** | 82.7% \| 48.9% | 76.9% \| 36.4% |
+| **Fog** | 26.4% \| **10.1%** | 48.2% \| 4.9% | 42.4% \| 1.5% |
+| **Snow** | 66.6% \| 39.4% | 69.9% \| 37.5% | 53.4% \| 26.2% |
+| **Wet Ground** | 68.8% \| 49.0% | 68.2% \| 48.2% | 57.1% \| 33.7% |
+| **Incomplete Echo** | 78.8% \| 41.2% | 78.5% \| 40.9% | 71.2% \| 34.5% |
+| **Crosstalk** | 33.5% \| 12.0% | 28.8% \| 8.1% | 18.1% \| 4.0% |
+| **Beam Missing** | 77.2% \| 53.7% | 76.3% \| 51.7% | 64.1% \| 36.8% |
+| **Motion Blur** | 73.4% \| 44.3% | 72.9% \| 43.4% | 61.7% \| 31.5% |
+| **Cross Sensor** | 68.9% \| 41.5% | 68.0% \| 38.8% | 53.9% \| 28.4% |
+
+*Mean mIoU (8 corruptions, zero-shot): 36.4%.*
 
 ### Next Steps
 
-1. **Build the gated adaptation on this encoder** (the Phase 11 plan, now justified): the EMA-prototype update with confidence/norm gating to bridge naive (42.5%) toward the oracle (48.3%) on Fog — the first encoder where this path has real headroom. The phase-separation rule applies if prior correction is added.
-2. **Optional continuation**: `--continue_training 12` would push to ~121k steps; the fog oracle was still growing with steps (46.4 → 48.3), so an extension likely buys more headroom, but the gated-adaptation work can proceed on the current checkpoint regardless.
-3. **Document the failure modes in the paper**: the 128D/10kD metric divergence (Phase 17/21) and the clean-manifold-health protocol are methodological contributions of their own.
+1. **The mIoU lever is the HyperLiDAR buffer selection** (`thirdparty/hyperlidar.pdf`): a per-epoch hard-example buffer that selects the worst-performing samples from previous scans for retraining. It boosted mIoU 5–6× in previous iterations by forcing rare-class points into the training buffer. Applied to the plain medium encoder (or its adaptation loop), it directly targets the rare-class collapse behind the fog mIoU (10.1%) and is the single most promising mIoU mechanism identified.
+2. **Rare-class diagnostics**: the accuracy/mIoU divergence on fog (26.4% vs 10.1%) means the majority classes are carrying the accuracy; per-class IoU breakdown on fog (which classes survive the collapse) would quantify exactly what buffer selection must recover.
+3. **Build the gated adaptation** only if the mIoU metric shows headroom — the Phase 21.1 revision killed the accuracy-based justification; any adaptation must now be validated on mIoU, where freezing is currently optimal.
 
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
