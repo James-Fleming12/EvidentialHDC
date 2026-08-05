@@ -477,10 +477,42 @@ def condition_autopsy(base_protos, proto_lbls, clean_means128, corrupt_feats, co
     sub = val_f[:20000]
     ellipt = ellipticity(sub) if len(sub) >= 500 else 0.0
 
-    # linear probe (representation headroom)
+    # linear probe (representation headroom) + its DECODE mIoU (learned-decoder ceiling)
     lp = 0.0
+    lp_miou = 0.0
+    lp_per_class = {}
     if clf is not None:
-        lp = clf.score(val_f.cpu().numpy()[:50000], val_l.cpu().numpy()[:50000])
+        n_lp = min(50000, len(val_f))
+        pl = torch.tensor(clf.predict(val_f.cpu().numpy()[:n_lp])).to(device)
+        ll = val_l[:n_lp]
+        lp = float((pl == ll).float().mean().item())
+        lp_miou = compute_miou(pl, ll)
+        present = set(ll.tolist())
+        for c in range(1, 17):
+            if c not in present:
+                continue
+            tp = int(((pl == c) & (ll == c)).sum().item())
+            fp = int(((pl == c) & (ll != c)).sum().item())
+            fn = int(((pl != c) & (ll == c)).sum().item())
+            d = tp + fp + fn
+            lp_per_class[c] = tp / d if d > 0 else 0.0
+
+    # per-class poison-band structure: fraction of each class's points with norm >= 4
+    poison_band_frac = {}
+    poison_band_acc = {}
+    for c in range(1, 17):
+        cm = val_l == c
+        if cm.sum() < 500:
+            continue
+        idx = cm.nonzero(as_tuple=False).view(-1)
+        pb = norms[idx] >= 4.0
+        poison_band_frac[c] = float(pb.float().mean().item())
+        if pb.sum() >= 100:
+            pb_preds = preds[idx][pb]
+            pb_lbl = val_l[idx][pb]
+            poison_band_acc[c] = float((pb_preds == pb_lbl).float().mean().item())
+        else:
+            poison_band_acc[c] = None
 
     # binarized class-mean quality (10kD)
     bcs = []
@@ -523,6 +555,8 @@ def condition_autopsy(base_protos, proto_lbls, clean_means128, corrupt_feats, co
         'margin_correct': mar_c, 'margin_mis': mar_m,
         'norm_correct': norm_c, 'norm_mis': norm_m, 'near_origin': near_origin,
         'cos_shift': cos_shift, 'ellipticity': ellipt, 'lp_acc': lp,
+        'lp_miou': lp_miou, 'lp_per_class': lp_per_class,
+        'poison_band_frac': poison_band_frac, 'poison_band_acc': poison_band_acc,
         'binarized_cos': binarized_cos, 'binarized_ratio': binarized_ratio,
         'align_acc': align_acc, 'align_miou': align_miou,
     }
@@ -1196,10 +1230,10 @@ def main():
         print("\n\n" + "="*140)
         print(" CONDITION AUTOPSY (frozen clean prototypes)")
         print("="*140)
-        print(f"| {'Condition':<16} | {'Acc':<7} | {'mIoU':<7} | {'LP':<7} | {'nMis':<7} | {'ArtFrac':<8} | "
+        print(f"| {'Condition':<16} | {'Acc':<7} | {'mIoU':<7} | {'LP':<7} | {'LPmIoU':<8} | {'nMis':<7} | {'ArtFrac':<8} | "
               f"{'ArtSurv':<8} | {'marC/marM':<10} | {'nrmC/nrmM':<10} | {'<4norm':<7} | {'cosShift':<8} | "
               f"{'Ellip':<6} | {'BinCos':<7} | {'AlignAcc':<8} | {'AlignmIoU':<9} |")
-        print("|" + "-"*17 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*9 + "|" + "-"*9 + "|" + "-"*11 + "|" + "-"*11 + "|" + "-"*8 + "|" + "-"*9 + "|" + "-"*7 + "|" + "-"*8 + "|" + "-"*9 + "|" + "-"*10 + "|")
+        print("|" + "-"*17 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*9 + "|" + "-"*8 + "|" + "-"*9 + "|" + "-"*9 + "|" + "-"*11 + "|" + "-"*11 + "|" + "-"*8 + "|" + "-"*9 + "|" + "-"*7 + "|" + "-"*8 + "|" + "-"*9 + "|" + "-"*10 + "|")
         for corruption, res in all_results.items():
             if 'autopsy' not in res:
                 continue
@@ -1207,7 +1241,7 @@ def main():
             surv = a['artifact_survivors']
             al = f"{a['align_acc']:.3f}/{a['align_miou']:.3f}" if a['align_acc'] is not None else "n/a"
             print(f"| {corruption:<16} | {a['acc']:<7.3f} | {a['miou']:<7.3f} | {a['lp_acc']:<7.3f} | "
-                  f"{a['n_mis']:<7d} | {a['conf_artifact_frac']:<8.3f} | {surv[0]}/{surv[4]:<7d} | "
+                  f"{a['lp_miou']:<8.3f} | {a['n_mis']:<7d} | {a['conf_artifact_frac']:<8.3f} | {surv[0]}/{surv[4]:<7d} | "
                   f"{a['margin_correct']:.2f}/{a['margin_mis']:.2f} | {a['norm_correct']:.1f}/{a['norm_mis']:.1f} | "
                   f"{a['near_origin']:<7.3f} | {a['cos_shift']:<8.3f} | {a['ellipticity']:<6.3f} | "
                   f"{a['binarized_cos']:<7.3f} | {al:<8} |")
