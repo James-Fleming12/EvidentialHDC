@@ -392,6 +392,126 @@ CLASS_NAMES = {1: 'car', 2: 'bicycle', 3: 'motorcycle', 4: 'truck', 5: 'other-ve
                15: 'building', 16: 'other-object'}
 
 
+def condition_autopsy(base_protos, proto_lbls, clean_means128, corrupt_feats, corrupt_lbls, proj,
+                      device, clf=None, seed=42):
+    """Per-condition hyperspace + decode signature (Phase 24).
+
+    Quantifies what separates the stuck conditions (fog/crosstalk) from the
+    geometric corruptions:
+      - decode: zero-shot acc/mIoU + per-class IoU
+      - artifact profile (Phase 22.2 signature): of the misclassified points, how
+        many are confident artifacts (high norm / low cos-to-true / high
+        perceptron loss / small margin) vs boundary-recoverable
+      - margin statistics: correct vs misclassified
+      - norm statistics: correct vs misclassified, near-origin fraction
+      - cosine shift (128D clean->corrupt class means)
+      - ellipticity (top-eigenvalue/trace of the corrupt manifold)
+      - linear probe acc (representation headroom)
+      - binarized (10kD) class-mean quality: norm ratio + clean<->corrupt cos sim
+    """
+    torch.manual_seed(seed)
+    perm = torch.randperm(len(corrupt_feats))
+    val_idx = perm[-100000:]
+    val_f = corrupt_feats[val_idx].to(device)
+    val_l = corrupt_lbls[val_idx].to(device)
+    val_h = torch.sign(val_f @ proj)
+    norms = torch.norm(val_f, p=2, dim=1)
+    sims = F.normalize(val_h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T
+    top2 = torch.topk(sims, 2, dim=1)
+    margin = (top2.values[:, 0] - top2.values[:, 1]).clamp(min=0)
+    ti = torch.searchsorted(proto_lbls, val_l)
+    cos_true = sims[torch.arange(len(val_l), device=device), ti]
+    loss = (top2.values[:, 0] - cos_true).clamp(min=0)
+    preds = proto_lbls[top2.indices[:, 0]]
+    correct = preds == val_l
+
+    acc = float(correct.float().mean().item())
+    miou = compute_miou(preds, val_l)
+
+    # per-class IoU
+    per_class = {}
+    present = set(val_l.tolist())
+    for c in range(1, 17):
+        if c not in present:
+            continue
+        tp = int(((preds == c) & (val_l == c)).sum().item())
+        fp = int(((preds == c) & (val_l != c)).sum().item())
+        fn = int(((preds != c) & (val_l == c)).sum().item())
+        d = tp + fp + fn
+        per_class[c] = tp / d if d > 0 else 0.0
+
+    # artifact profile on misclassified points
+    mis = ~correct
+    n_mis = int(mis.sum().item())
+    f_norm = int((mis & (norms < 6.0)).sum().item())
+    f_true = int((mis & (norms < 6.0) & (cos_true >= 0.05)).sum().item())
+    f_loss = int((mis & (norms < 6.0) & (cos_true >= 0.05) & (loss <= 0.15)).sum().item())
+    f_margin = int((mis & (norms < 6.0) & (cos_true >= 0.05) & (loss <= 0.15)
+                    & (margin >= 0.02)).sum().item())
+    conf_artifact = int((mis & (loss > 0.15)).sum().item())
+
+    # margin / norm statistics
+    mar_c = float(margin[correct].mean().item()) if correct.any() else 0.0
+    mar_m = float(margin[mis].mean().item()) if n_mis else 0.0
+    norm_c = float(norms[correct].mean().item()) if correct.any() else 0.0
+    norm_m = float(norms[mis].mean().item()) if n_mis else 0.0
+    near_origin = float((norms < 4.0).float().mean().item())
+
+    # cosine shift (128D): clean means vs corrupt class means
+    cm = {c: clean_means128[c] for c in clean_means128}
+    shifts = []
+    for c in sorted(cm):
+        fm = val_f[val_l == c]
+        if len(fm) >= 500:
+            fmu = F.normalize(fm.mean(dim=0), p=2, dim=0)
+            shifts.append(1.0 - float(F.cosine_similarity(cm[c].unsqueeze(0), fmu.unsqueeze(0)).item()))
+    cos_shift = float(np.mean(shifts)) if shifts else 0.0
+
+    # ellipticity (subsample 20k)
+    def ellipticity(x):
+        x = x - x.mean(dim=0)
+        cov = (x.T @ x) / len(x)
+        eig = torch.linalg.eigvalsh(cov).clamp(min=0.0)
+        tr = eig.sum()
+        return float((eig[-1] / (tr + 1e-8)).item()) if tr > 1e-8 else 0.0
+    sub = val_f[:20000]
+    ellipt = ellipticity(sub) if len(sub) >= 500 else 0.0
+
+    # linear probe (representation headroom)
+    lp = 0.0
+    if clf is not None:
+        lp = clf.score(val_f.cpu().numpy()[:50000], val_l.cpu().numpy()[:50000])
+
+    # binarized class-mean quality (10kD)
+    bcs = []
+    for c in proto_lbls.tolist():
+        m = (val_l == c)
+        if m.sum() >= 500:
+            bh = torch.sign(val_f[m][:20000] @ proj).float().mean(dim=0)
+            bcs.append(bh)
+    if bcs:
+        bm = torch.stack(bcs)
+        bn = F.normalize(bm, p=2, dim=1)
+        bm_clean = F.normalize(base_protos, p=2, dim=1)
+        cs = float((bn @ bm_clean.T).diag().mean().item())
+        bm_norm = float(bm.norm(dim=1).mean().item())
+        cl_norm = float(base_protos.norm(dim=1).mean().item())
+        binarized_cos = cs
+        binarized_ratio = bm_norm / max(cl_norm, 1e-8)
+    else:
+        binarized_cos, binarized_ratio = 0.0, 0.0
+
+    return {
+        'acc': acc, 'miou': miou, 'per_class_iou': per_class,
+        'n_mis': n_mis, 'conf_artifact_frac': conf_artifact / max(n_mis, 1),
+        'artifact_survivors': (f_margin, f_loss, f_true, f_norm, n_mis),
+        'margin_correct': mar_c, 'margin_mis': mar_m,
+        'norm_correct': norm_c, 'norm_mis': norm_m, 'near_origin': near_origin,
+        'cos_shift': cos_shift, 'ellipticity': ellipt, 'lp_acc': lp,
+        'binarized_cos': binarized_cos, 'binarized_ratio': binarized_ratio,
+    }
+
+
 def eval_protos_miou(protos, proto_lbls, val_feats, val_lbls):
     """Point accuracy AND mIoU (classes present in labels; class 0 ignored)."""
     sims = torch.matmul(F.normalize(val_feats, p=2, dim=1), protos.T)
@@ -727,6 +847,11 @@ def main():
                         help="Run the in-memory artifact-gate sweep (Phase 23) and skip the "
                              "ladder: extract per-point signals once, sweep threshold space, "
                              "report acc/mIoU Pareto bands + oracle-loss bound + per-class IoU.")
+    parser.add_argument("--autopsy", action="store_true",
+                        help="Run the per-condition hyperspace/decode autopsy (Phase 24) for "
+                             "each corruption and print the comparison table: artifact profile, "
+                             "margin/norm stats, cosine shift, ellipticity, LP headroom, "
+                             "binarized mean quality. Skips the ladder.")
     args, _ = parser.parse_known_args()
     
     DATA = yaml.safe_load(open(args.config, 'r'))
@@ -899,6 +1024,14 @@ def main():
         probe_corrupt_acc = clf.score(corrupt_feats[:train_size].numpy(), corrupt_lbls[:train_size].numpy())
         print(f"   -> 128D Linear Probe Accuracy: {probe_corrupt_acc:.4f}")
         
+        if args.autopsy:
+            res = {}
+            print("      -> Running Condition Autopsy...")
+            au = condition_autopsy(base_protos, proto_lbls, clean_means128,
+                                   corrupt_feats, corrupt_lbls, proj, device, clf=clf)
+            res['autopsy'] = au
+            all_results[corruption] = res
+            continue
         if args.gate_sweep:
             res = {}
             print("      -> Running Artifact-Gate Sweep (in-memory)...")
@@ -1035,6 +1168,25 @@ def main():
               f"{g['naive_ema']:<7.4f} | {g.get('sdw_best', 0):<7.4f} | "
               f"{res['perfect_acc']:<8.4f} | {or_m:<8.4f} |")
     print("="*110 + "\n")
+    
+    if args.autopsy:
+        print("\n\n" + "="*140)
+        print(" CONDITION AUTOPSY (frozen clean prototypes)")
+        print("="*140)
+        print(f"| {'Condition':<16} | {'Acc':<7} | {'mIoU':<7} | {'LP':<7} | {'nMis':<7} | {'ArtFrac':<8} | "
+              f"{'ArtSurv':<8} | {'marC/marM':<10} | {'nrmC/nrmM':<10} | {'<4norm':<7} | {'cosShift':<8} | "
+              f"{'Ellip':<6} | {'BinCos':<7} |")
+        print("|" + "-"*17 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*8 + "|" + "-"*9 + "|" + "-"*9 + "|" + "-"*11 + "|" + "-"*11 + "|" + "-"*8 + "|" + "-"*9 + "|" + "-"*7 + "|" + "-"*8 + "|")
+        for corruption, res in all_results.items():
+            if 'autopsy' not in res:
+                continue
+            a = res['autopsy']
+            surv = a['artifact_survivors']
+            print(f"| {corruption:<16} | {a['acc']:<7.3f} | {a['miou']:<7.3f} | {a['lp_acc']:<7.3f} | "
+                  f"{a['n_mis']:<7d} | {a['conf_artifact_frac']:<8.3f} | {surv[0]}/{surv[4]:<7d} | "
+                  f"{a['margin_correct']:.2f}/{a['margin_mis']:.2f} | {a['norm_correct']:.1f}/{a['norm_mis']:.1f} | "
+                  f"{a['near_origin']:<7.3f} | {a['cos_shift']:<8.3f} | {a['ellipticity']:<6.3f} | {a['binarized_cos']:<7.3f} |")
+        print("="*140 + "\n")
     
     with open(out_path, 'w') as f:
         json.dump(all_results, f, indent=4)
