@@ -632,6 +632,40 @@ The probe ran plain `supcon_vib` (KL 0.01) to 62 epochs on 10% data (≈19.7k st
 1. **Overnight medium run** (plain `supcon_vib`, 26 epochs, 100% data ≈ 83k steps) — validated. The morning readout: deep diagnostics clean L2 + the v4 ladder. Watch specifically for the **fog oracle**: if it holds or grows beyond 46.4% at 83k steps, prototype-level adaptation is back on the table for the plain config (with the phase-separation rule for any prior correction).
 2. **Log the probe checkpoint's ladder** into the evidence matrix (0.01 @ 19.7k: clean 81.4%, fog zs 27.4%, fog oracle 46.4%).
 
+---
+
+## Phase 21: The Plain Medium Run — Health Passed, Naive Fog Adaptation Finally Works
+
+The overnight medium run (plain `supcon_vib`, KL 0.01, 26 epochs on 100% data ≈ 83k steps) plus its v4 ladder delivered the strongest result in the project: a fully healthy clean manifold and, for the first time, **naive prototype adaptation that works on Fog**.
+
+### The 10kD Ladder (plain medium checkpoint, v4 harness)
+
+| Condition | Zero-shot | Perfect-oracle | Naive EMA |
+| :--- | :--- | :--- | :--- |
+| **Clean Control** | **82.7%** | 82.7% | 76.8% |
+| **Fog** | 26.4% | **48.3% (+21.9)** | **42.5% (+16.1)** |
+| **Snow** | 66.6% | 69.9% | 53.4% |
+| **Wet Ground** | 68.8% | 68.3% | 57.1% |
+| **Incomplete Echo** | 78.8% | 78.5% | 71.2% |
+| **Crosstalk** | 33.5% | 28.9% | 18.1% |
+| **Beam Missing** | 77.2% | 76.4% | 64.1% |
+| **Motion Blur** | 73.4% | 72.9% | 61.6% |
+| **Cross Sensor** | 68.9% | 68.1% | 53.9% |
+
+### The Verdict
+
+1. **Clean health: passed, definitively.** Clean zero-shot **82.7%** — the best ever measured in 10kD (probe@19.7k: 81.4%; strongvib med: 43.7%). No collapse. The plain config is the right one.
+2. **The 128D number was a magnitude artifact, again.** The 128D eval claimed 48.1% fog prototype accuracy; the honest 10kD decode is 26.4%. The 128D Euclidean `cdist` was exploiting the clean/fog magnitude split (3.57 vs 6.70). Confirmed once more: the 10kD ladder is the deployment metric.
+3. **Naive fog adaptation WORKS for the first time: 42.5% (+16.1 over zero-shot).** On every previous encoder, naive pseudo-label re-estimation crashed below zero-shot. On this encoder, even imperfect pseudo-labels re-estimate fog prototypes that beat the clean ones by 16 points, and the oracle reaches **48.3% (+21.9, best ever, and grown from the probe's 46.4%)**. The usable-fog-means property persists and improves with training.
+4. **The gate's job just shrank.** The adaptation gap is now naive→oracle (+5.8) rather than zero-shot→oracle (+21.9). Gate signals are modest on this encoder (fog LR-combo AUROC 0.662, conf 0.348, norm 0.370), but the required selectivity is small.
+5. **Query gate direction reconfirmed but retention-costly**: fog τ=4 gives 61.3% acc at 12% retention (mIoU 0.135 vs 0.101); τ=6 gives 49.4% at 43% retention.
+
+### Next Steps
+
+1. **Build the gated adaptation on this encoder** (the Phase 11 plan, now justified): the EMA-prototype update with confidence/norm gating to bridge naive (42.5%) toward the oracle (48.3%) on Fog — the first encoder where this path has real headroom. The phase-separation rule applies if prior correction is added.
+2. **Optional continuation**: `--continue_training 12` would push to ~121k steps; the fog oracle was still growing with steps (46.4 → 48.3), so an extension likely buys more headroom, but the gated-adaptation work can proceed on the current checkpoint regardless.
+3. **Document the failure modes in the paper**: the 128D/10kD metric divergence (Phase 17/21) and the clean-manifold-health protocol are methodological contributions of their own.
+
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
 The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *possible* (batch 2–4, one-line Parser change, loop already batch-agnostic). This is parked for three reasons:
