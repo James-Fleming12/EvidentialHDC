@@ -80,6 +80,32 @@ Full-scene mIoU, plain medium encoder, Phase 24.9 harness (200k pool / 100k val)
 
 **Implication for Iteration 1**: the loss-estimator head does not need to solve assignment globally; it needs to recover the *rare-class* assignments (13, 14, 15, 16, and to a lesser extent 4) where pseudo-label precision is currently 0.0-0.24, and it must not degrade the already-correct majority assignments (Terrain, Car).
 
+### Iteration 0.1: how the prototypes should be updated: gating is NOT the path (complete)
+
+**Setup**: `--iter0_update_diag` on the plain medium encoder (500k pool / 100k val). Distinguishes a gating problem (correctly-assigned pseudo points are informative but drowned out) from an overrun problem (minority classes swamped by majority artifacts regardless of weighting). Key number: the **correct-subset gate bound** (re-estimate prototypes from pseudo-assigned points restricted to the *correct* subset, i.e., perfect gating of pseudo-labels).
+
+**The gate-bound ladder (full-scene mIoU): zero-shot → naive pseudo → gate bound → full-label oracle**
+
+| Condition | Zero-shot | naive pseudo | **Gate bound** | Full-label oracle |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | 10.1% | 9.3% | **10.3%** | 16.4% |
+| crosstalk | 12.0% | 10.7% | **13.3%** | 26.2% |
+| snow | 39.4% | 38.1% | 39.7% | 40.7% |
+| wet_ground | 49.0% | 47.7% | 49.3% | 51.5% |
+| incomplete_echo | 41.2% | 39.5% | 40.8% | 41.2% |
+| beam_missing | 53.7% | 51.6% | 53.0% | 53.7% |
+| motion_blur | 44.3% | 43.0% | 43.8% | 44.8% |
+| cross_sensor | 41.5% | 39.7% | 42.0% | 43.5% |
+
+**Findings:**
+1. **Perfect gating of pseudo-labels does NOT reach the oracle**: the gate bound is 10.3% on fog and 13.3% on crosstalk, essentially at zero-shot, while the oracle is 16.4% and 26.2%. The gating hypothesis is falsified; even keeping only the correct pseudo-assigned points cannot re-estimate the prototypes well enough.
+2. **The reason is recall starvation, not weighting.** The dying classes' points are overwhelmingly mis-assigned elsewhere, so the pseudo-decoder sees almost none of them and their correct-subset is tiny: fog Traffic-sign (13) has 73,193 true pool points but only 32 correct pseudo-assignments; crosstalk Traffic-sign has 101,158 true but 74 correct; Other-ground (14) 38-82k true but 198-327 correct; Vegetation (16) 26-76k true but 3.4k-3.9k correct. A 10kD prototype cannot be re-estimated from 32-198 points, so gating the existing assignments has nothing to work with.
+3. **The oracle's power is assignment recall on the rare classes**: it assigns the bulk of each class's points to the right prototype (Traffic-sign 0.000 → 0.24-0.31 IoU, Vegetation up to 0.434). No weight or gate on the current pseudo-labels can recover this; the assignments themselves must be fixed.
+4. **The healthy classes are gating-fixable but don't need it**: Road/Terrain/Car/Building have large correct subsets and their naive prototypes already sit at cosine 0.91-1.0 to the oracle; their problem is not prototype estimation.
+5. **The 128D linear probe is a strictly better assignment source than the 10kD zero-shot** (fog LP 36.3% vs zs 26.4%, and 57% under the additive regimen), so an improved assignment source is available label-free; whether it is enough to approach the oracle is the next test.
+
+**Revised implication for Iteration 1**: a *weighting* head on the existing pseudo-labels is closed. Iteration 1 must **improve rare-class assignment** (recall on classes 13, 14, 16, 15, 4), i.e., the head's role is to produce better pseudo-labels (a better label-free decoder), not to weight them. The natural first test is the 128D-probe-based re-estimate (the LP's assignments are already ~10 points more accurate than the 10kD zero-shot).
+
 ### Iteration 1: the learned loss-estimator head (proposed, not yet run)
 
 The leading candidate: a small head trained (on clean/self-supervised signal) to predict each point's cos-to-true at test time, used as the per-point weight (or pseudo-label confidence) in a prototype re-estimate (Phase 24.4 #3). Rationale: the oracle's advantage over every label-free variant is exactly the per-point cos-to-true it has and they lack; Iteration 0 shows the labels' information is *assignment*, concentrated in the rare classes (13, 14, 15, 16, 4), where pseudo-label precision is currently 0.0-0.24.
