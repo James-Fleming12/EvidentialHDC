@@ -488,13 +488,20 @@ def prototype_rebalance(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, pr
     }
 
 def prior_correction_sweep(base_protos, proto_lbls, prior_vec, corrupt_feats, corrupt_lbls,
-                           proj, device, taus=(0.0, -0.25, -0.5, -1.0, -2.0), seed=42):
+                           proj, device,
+                           cfgs=((0.0, 1.0), (-1.0, 5.0), (-1.0, 10.0), (-1.0, 20.0),
+                                 (-1.0, 50.0), (-1.0, 100.0), (-0.5, 10.0), (-2.0, 20.0)),
+                           seed=42):
     """Decision-level source-prior correction (README Pillar 3, sec 5.2).
 
     score(q, c) = kappa*cos(q, P_c) + tau*log(pi_c), prediction-only (never in
-    the gate or the updates). Reports full-scene acc + mIoU per tau. tau=0 is
-    the plain zero-shot baseline. mIoU-oriented: it trades majority precision
-    for rare-class recall, so acc and mIoU must be read together.
+    the gate or the updates). The prior's strength is the ratio tau/kappa: it
+    translates each boundary by (tau/kappa)*log(pi_b/pi_a), so kappa must scale
+    the cosine term; with kappa=1 the log-prior (+7 for a rare class) overwhelms
+    the top-2 cosine margin (~0.05) and collapses the decode onto one class.
+    Reports full-scene acc + mIoU per (tau, kappa). tau=0 is the plain
+    zero-shot baseline. mIoU-oriented: it trades majority precision for
+    rare-class recall, so acc and mIoU must be read together.
     """
     torch.manual_seed(seed)
     perm = torch.randperm(len(corrupt_feats))
@@ -505,10 +512,10 @@ def prior_correction_sweep(base_protos, proto_lbls, prior_vec, corrupt_feats, co
     sims = val_h @ F.normalize(base_protos, p=2, dim=1).T
     log_prior = torch.log(prior_vec.to(device).clamp(min=1e-9))
     rows = []
-    for tau in taus:
-        score = sims + tau * log_prior if tau != 0.0 else sims
+    for tau, kappa in cfgs:
+        score = kappa * sims + tau * log_prior
         preds = proto_lbls[score.argmax(dim=1)]
-        rows.append({'tau': tau,
+        rows.append({'tau': tau, 'kappa': kappa,
                      'acc': float((preds == val_l).float().mean().item()),
                      'miou': compute_miou(preds, val_l)})
     return {'rows': rows}
@@ -1060,7 +1067,7 @@ def main():
     parser.add_argument("--prior_sweep", action="store_true",
                         help="Run the decision-level source-prior correction test "
                              "(README sec 5.2): score = kappa*cos + tau*log(pi_c) over "
-                             "tau = 0, -0.25, -0.5, -1.0, -2.0, full-scene acc + mIoU, "
+                             "(tau, kappa) configs, full-scene acc + mIoU, "
                              "prediction-only (never in the gate or updates).")
     parser.add_argument("--autopsy", action="store_true",
                         help="Run the per-condition hyperspace/decode autopsy (Phase 24) for "
@@ -1326,10 +1333,11 @@ def main():
             ps = prior_correction_sweep(base_protos, proto_lbls, prior_vec,
                                         corrupt_feats, corrupt_lbls, proj, device)
             res['prior_sweep'] = ps
-            print("   -> Full-scene acc | mIoU per tau (score = kappa*cos + tau*log pi):")
+            print("   -> Full-scene acc | mIoU per (tau, kappa) [score = kappa*cos + tau*log pi]:")
             for r in ps['rows']:
                 marker = " (baseline)" if r['tau'] == 0.0 else ""
-                print(f"      tau={r['tau']:>6}: acc {r['acc']:.4f} | mIoU {r['miou']:.4f}{marker}")
+                print(f"      tau={r['tau']:>5} kappa={r['kappa']:>5}: acc {r['acc']:.4f} | "
+                      f"mIoU {r['miou']:.4f}{marker}")
             all_results[corruption] = res
             continue
         res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,
