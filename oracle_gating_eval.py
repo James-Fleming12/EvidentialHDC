@@ -1160,7 +1160,6 @@ def deep_label_analysis(base_protos, proto_lbls, clean_feats, clean_lbls, corrup
     val_f = corrupt_feats[val_idx].to(device)
     val_l = corrupt_lbls[val_idx].to(device)
     val_h = torch.sign(val_f @ proj)
-    pool_h = torch.sign(pool_f @ proj)
     w_one = torch.ones(len(pool_f), device=device)
 
     def decode(protos):
@@ -1221,7 +1220,13 @@ def deep_label_analysis(base_protos, proto_lbls, clean_feats, clean_lbls, corrup
         }
 
     # ---- B. pseudo-label confusion + re-estimate impact ----
-    pool_sims = F.normalize(pool_h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T
+    # pool_sims via chunked projection (pool_h at 500k x 10kD = 20GB; compute per chunk).
+    base_norm = F.normalize(base_protos, p=2, dim=1)
+    sims_chunks = []
+    for start in range(0, len(pool_f), 50000):
+        hc = torch.sign(pool_f[start:start + 50000] @ proj)
+        sims_chunks.append(F.normalize(hc, p=2, dim=1) @ base_norm.T)
+    pool_sims = torch.cat(sims_chunks, dim=0)
     zs_pseudo = proto_lbls[pool_sims.argmax(dim=1)]
     protos_oracle = weighted_mean_update(base_protos, proto_lbls, pool_f, pool_l, w_one, proj, device)
     protos_zs = weighted_mean_update(base_protos, proto_lbls, pool_f, zs_pseudo, w_one, proj, device)
