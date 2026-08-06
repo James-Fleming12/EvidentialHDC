@@ -890,6 +890,36 @@ The gate sweep on the additive retrain's fog vs the Phase 23 med-plain sweep:
 2. **Commit the medium additive run** — the oracle-bound jump (67%) makes it the strongest regime candidate; the decision hinges on whether the label-free signals sharpen at convergence.
 3. **If the label-free gap persists at medium scale**: the fix is a *learned* loss estimator — a small head trained (on clean/self-supervised signal) to predict cos-to-true, or per-class calibrated margins — targeting the 11% → 67% gap directly.
 
+---
+
+## Phase 24.5: Full 8-Condition Additive Autopsy — the Regime Trades Others for Fog
+
+Full-condition autopsy on the additive retrain (micro encoder) vs the med-plain table:
+
+| Condition | Plain-med acc/mIoU | Additive acc/mIoU | LP | BinCos |
+| :--- | :--- | :--- | :--- | :--- |
+| **fog** | 26.4 / 10.1 | 27.3 / **9.2** | **57.0** (+21) | **0.046** (worst) |
+| **crosstalk** | 33.5 / 12.0 | **37.2 / 12.5** | **40.2** (+5) | 0.197 (better) |
+| snow | 66.6 / 39.4 | 61.9 / 35.6 | 68.6 | 0.241 |
+| wet_ground | 68.8 / 49.0 | 65.5 / 43.3 | 71.1 | 0.347 |
+| incomplete_echo | 78.8 / 41.2 | 74.9 / 38.7 | 79.9 | 0.208 |
+| beam_missing | 77.2 / 53.7 | 71.1 / 48.0 | 77.4 | 0.288 |
+| motion_blur | 73.4 / 44.3 | 69.8 / 41.4 | 73.2 | 0.285 |
+| cross_sensor | 68.9 / 41.5 | 62.4 / 34.8 | 65.0 | 0.351 |
+
+### The Findings
+
+1. **The additive regime is a trade, not a free lunch**: fog LP +21 pts and crosstalk up (+3.7 acc, +0.05 BinCos), but **all six other conditions drop 2.5–6.7 pts** (acc and mIoU both; worst: cross_sensor −6.7 mIoU, wet_ground −5.7, beam_missing −5.7). The volumetric-noise augmentation trades distributional fidelity on the non-fog conditions for fog/crosstalk robustness. Only fog and crosstalk benefit (crosstalk also gained in LP: 40.2 vs 35.3); snow/wet_ground/cross_sensor all *lost* LP too — they do **not** benefit from the volumetric mix.
+2. **Capacity caveat**: this is micro-vs-medium (1/8 params) and there is **no plain-micro 8-condition baseline** (deleted in cleanup), so every delta is capacity-confounded — the medium additive run is the first *same-capacity* comparison, not merely "longer training". Note the clean control also dropped (additive micro 78.8% acc / 45.1 mIoU vs plain medium 82.7 / 49.6) but *less* than the worst conditions — the trade is partly condition-specific, with the biggest losses on the sparse-return conditions (cross_sensor, beam_missing), which hints the volumetric injection (fake returns in 5% of empty space, per-sample, pretraining views only) teaches the encoder to down-weight isolated sparse returns rather than destroying textures (the aug never touches occupied voxels).
+3. **The fog decode-transfer failure is confirmed condition-wide**: fog proto mIoU flat (9.2% vs plain 10.1%) despite the LP at 57% — and fog BinCos 0.046 is the worst across all 8 conditions (next worst: incomplete_echo 0.208). The 10kD sign-space decode still cannot exploit the healed continuous representation; the plain 128D linear head can (57% LP).
+4. **Fog misclassification is now maximally polarized**: ArtFrac 0.830 (vs 0.487 plain) — the vast majority of fog errors are confident artifacts, and nearly all non-artifact errors (8812/9758 ≈ 90%) are oracle-recoverable. The oracle gate's 67.3% mIoU is consistent: it can find nearly everything; label-free signals still cannot.
+
+### Next Steps
+
+1. **Commit the medium additive run** (26 ep) — decides whether capacity rescues the 6 lost conditions. Morning readout: fog LP/mIoU, BinCos, and the 6-condition deltas vs the plain-medium table.
+2. **If the trade persists at medium scale**: the lever is the volumetric injection itself (density 0.05 / per-sample), because the "balanced mix" is already largely in place — beam-drop (50% of scan lines) and 20% density subsampling are in the base `get_augmented_view` for *all* methods. A tuned mix (e.g., lower injection density, per-sample injection probability, or injecting into occupied-voxel neighborhoods to mimic snow/wet_ground rather than empty-space-only fog) is the regime-side fix, informed by the clean-control mIoU: if clean drops at medium scale too, the regime distorts the clean manifold and needs rebalancing, not just per-condition scheduling.
+3. **The learned loss-estimator head** (Phase 24.4 #3) remains the standing plan for the label-free gate gap (11% → 67%), independent of the regime decision.
+
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
 The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *possible* (batch 2–4, one-line Parser change, loop already batch-agnostic). This is parked for three reasons:
