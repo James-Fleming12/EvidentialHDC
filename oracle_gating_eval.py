@@ -1530,6 +1530,11 @@ def main():
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}")
+
+    # Sensor normalization constants for the multi-view geometric transforms (read from
+    # the ARCH config, not the Parser instance, so it is version-robust).
+    mv_means = torch.tensor(ARCH["dataset"]["sensor"]["img_means"], dtype=torch.float32).view(5, 1, 1).to(device)
+    mv_stds = torch.tensor(ARCH["dataset"]["sensor"]["img_stds"], dtype=torch.float32).view(5, 1, 1).to(device)
     
     # Seed the full pipeline (extraction workers, point subsampling) so feature
     # extraction and the pool/val split are reproducible across runs.
@@ -1683,8 +1688,6 @@ def main():
         corrupt_feats, corrupt_lbls, corrupt_depths = [], [], []
         if args.iter1_pseudo_refine:
             corrupt_views = [[] for _ in VIEW_CONFIGS]
-            mv_means = corrupt_parser.sensor_img_means.view(5, 1, 1).to(device)
-            mv_stds = corrupt_parser.sensor_img_stds.view(5, 1, 1).to(device)
         
         with torch.no_grad():
             for i, batch in enumerate(tqdm(corrupt_loader, total=NUM_BATCHES, desc=f"   Ext. {corruption}")):
