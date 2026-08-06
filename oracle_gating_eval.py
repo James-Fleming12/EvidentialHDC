@@ -1014,25 +1014,48 @@ def iter2_balanced_reestimate(base_protos, proto_lbls, prior_vec, corrupt_feats,
     pri = prior_vec.to(device).float()
     pri = pri.clamp(min=1e-6)
     b = (pri / pri.sum()) * n
-    P = F.softmax(tau * sims, dim=1)
+    # Sinkhorn on exp(tau*sims) with a SMALL temperature: a peaked (near one-hot)
+    # P locks the column sums to the argmax marginals and the prior cannot be enforced.
+    # exp(0.1-1.0 * shifted sims) keeps enough row spread for Sinkhorn to redistribute.
+    sims_shifted = sims - sims.max(dim=1, keepdim=True).values
+    results = {}
+    best = None
+    for tau in [0.1, 0.3, 0.5, 1.0]:
+        P = torch.exp(tau * sims_shifted)
+        u = torch.ones(n, device=device)
+        for _ in range(n_sinkhorn_iters):
+            v = b / (P.T @ u + 1e-9)
+            u = 1.0 / (P @ v + 1e-9)
+        P_bal = P * (u[:, None] * v[None, :])
+        bal_pseudo = proto_lbls[P_bal.argmax(dim=1)]
+        counts = torch.bincount(bal_pseudo, minlength=K)[:K]
+        sup_match = float((counts - b).abs().sum().item()) / (2.0 * n)  # 0 = perfect match to prior
+        res = decode(reestimate(bal_pseudo))
+        results[f'tau{tau}'] = {'miou': res['miou'], 'acc': res['acc'],
+                                'sup_match': sup_match}
+        if best is None or sup_match < best['sup_match']:
+            best = {'tau': tau, 'miou': res['miou'], 'acc': res['acc'],
+                    'sup_match': sup_match, 'counts': counts}
+
+    # use the best-matching tau for the soft re-estimate and support report
+    P = torch.exp(best['tau'] * sims_shifted)
     u = torch.ones(n, device=device)
     for _ in range(n_sinkhorn_iters):
         v = b / (P.T @ u + 1e-9)
         u = 1.0 / (P @ v + 1e-9)
     P_bal = P * (u[:, None] * v[None, :])
 
-    bal_hard_pseudo = proto_lbls[P_bal.argmax(dim=1)]
-    bal_hard_res = decode(reestimate(bal_hard_pseudo))
-
     # soft re-estimate: prototype_c = normalize(sum_i P_bal[i,c] * sign(z_i @ proj))
     S = torch.zeros(K, proj.shape[1], device=device)
     for c in range(K):
         S[c] = (P_bal[:, c].unsqueeze(1) * pool_h).sum(dim=0)
     protos_soft = F.normalize(S, p=2, dim=1)
-    sup = P_bal.sum(dim=0)
-    keep_base = sup < 1.0
+    sup_vec = P_bal.sum(dim=0)
+    keep_base = sup_vec < 1.0
     protos_soft[keep_base] = F.normalize(base_protos[keep_base], p=2, dim=1)
     bal_soft_res = decode(protos_soft)
+
+    bal_hard_pseudo = proto_lbls[P_bal.argmax(dim=1)]
 
     # verify the guardrail: balanced assignment's per-class support vs the prior
     counts_zs = {str(c): int((zs_pseudo == c).sum().item()) for c in proto_lbls.tolist()}
@@ -1042,12 +1065,15 @@ def iter2_balanced_reestimate(base_protos, proto_lbls, prior_vec, corrupt_feats,
 
     return {
         'metrics': {'zero_shot': zs, 'zs_pseudo_reestimate': zs_res,
-                    'balanced_hard': bal_hard_res, 'balanced_soft': bal_soft_res,
+                    'balanced_hard': {'acc': best['acc'], 'miou': best['miou']},
+                    'balanced_soft': bal_soft_res,
                     'oracle': oracle},
         'pseudo_acc': {
             'zs': float((pool_l == zs_pseudo).float().mean().item()),
             'balanced_hard': float((pool_l == bal_hard_pseudo).float().mean().item()),
         },
+        'sinkhorn': {'per_tau': results, 'best_tau': best['tau'],
+                     'sup_match_best': best['sup_match']},
         'support': {'zs': counts_zs, 'balanced': counts_bal, 'prior': prior_counts},
     }
 
@@ -2037,6 +2063,11 @@ def main():
                           m['oracle']['miou']))
             pa = i2['pseudo_acc']
             print(f"   -> Pseudo acc: zs {pa['zs']:.4f} | balanced_hard {pa['balanced_hard']:.4f}")
+            sk = i2['sinkhorn']
+            print(f"   -> Sinkhorn (best tau {sk['best_tau']}, support-match to prior "
+                  f"{sk['sup_match_best']:.3f} [0 = perfect]):")
+            for tk, tv in sk['per_tau'].items():
+                print(f"      {tk}: mIoU {tv['miou']:.4f} | sup_match {tv['sup_match']:.3f}")
             print("   -> Support (zs / balanced / prior):")
             for c in proto_lbls.tolist():
                 print(f"      class {c:<2}: {i2['support']['zs'][str(c)]:>7} / "

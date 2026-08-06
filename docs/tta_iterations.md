@@ -135,7 +135,7 @@ Full-scene mIoU, plain medium encoder, Phase 24.9 harness (200k pool / 100k val)
 
 **Rationale**: Iteration 0 showed the oracle's gain is rare-class assignment recall; argmax pseudo-labels starve the rare classes. Sinkhorn-Knopp forces the re-estimate pool's class marginals to match the source frequencies, guaranteeing rare-class support (SHOT's diversity term without the entropy-minimization or backprop). Implemented as `--iter2_balanced_reestimate`: hard (argmax of the balanced matrix) and soft (P_bal-weighted prototype mean) re-estimates vs zero-shot / zs-pseudo / oracle.
 
-**Placeholder results** (pending the run): fog zs-pseudo-reest _9.2%_ → balanced-hard _TBD_ / balanced-soft _TBD_ vs oracle _16.5%_; crosstalk _9.6%_ → _TBD_ / _TBD_ vs _22.8%_.
+**Placeholder results** (pending a re-run: the first run used a peaked Sinkhorn temperature that locked the assignment to the argmax marginals, so the prior was never enforced and its results are invalid; the fix sweeps τ ∈ {0.1, 0.3, 0.5, 1.0} on `exp(τ·sims)` with a support-match check [0 = perfect prior match]): fog zs-pseudo-reest _9.2%_ → balanced-hard _TBD_ / balanced-soft _TBD_ vs oracle _16.5%_; crosstalk _9.6%_ → _TBD_ / _TBD_ vs _22.8%_.
 
 **Hypothesis to test**: does forcing rare-class support in the re-estimate pool move the re-estimate toward the oracle, or does the balanced assignment trade recall for precision (assigning wrong points to rare classes) and stay flat? Iteration 0.1's recall-starvation result predicts the former is possible but bounded by how separable the rare classes actually are in the features.
 
