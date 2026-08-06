@@ -1013,7 +1013,7 @@ def deep_label_analysis(base_protos, proto_lbls, clean_feats, clean_lbls, corrup
         norm = torch.norm(val_f, p=2, dim=1)
         top2 = torch.topk(F.normalize(val_h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T, 2, dim=1)
         margin = (top2.values[:, 0] - top2.values[:, 1]).clamp(min=0)
-        lp_conf = torch.tensor(clf.predict_proba(val_f.cpu().numpy()).max(axis=1))
+        lp_conf = torch.tensor(clf.predict_proba(val_f.cpu().numpy()).max(axis=1)).to(device)
         ti = torch.searchsorted(proto_lbls, val_l)
         cos_true = (F.normalize(val_h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T)[torch.arange(len(val_l), device=device), ti]
         loss = (top2.values[:, 0] - cos_true).clamp(min=0)
