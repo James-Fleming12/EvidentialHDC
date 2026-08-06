@@ -729,6 +729,85 @@ def iteration0_label_info(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, 
         },
     }
 
+def iteration0_update_diag(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, device,
+                           pool_size=500000, val_size=100000, seed=42):
+    """Iteration 0 diagnostic (tta_iterations.md): HOW should the prototypes be updated?
+
+    Distinguishes two failure modes for the label-free re-estimate:
+      (A) GATING problem: the correctly-assigned pseudo points are informative (their
+          mean points at the oracle prototype) but are drowned out by wrong assignments.
+          Fix = weight/gate the pseudo-labels toward the correct subset.
+      (B) OVERRUN problem: the correct subset is too small or itself non-informative
+          (mean far from the oracle prototype); the minority class is overrun by
+          majority artifacts regardless of weighting. Fix = assignment-level repair.
+
+    Per class c it reports:
+      - pseudo precision / n_correct / n_assigned (the overrun measure)
+      - cosine(naive_proto_c, oracle_proto_c)   (how far the contaminated mean is)
+      - cosine(correct_subset_proto_c, oracle_proto_c) (how informative the correct points are)
+    And val-side full-scene mIoU for: zero-shot / naive (pseudo) / CORRECT-SUBSET
+    re-estimate (the perfect-gating bound) / full-label oracle.
+    """
+    torch.manual_seed(seed)
+    perm = torch.randperm(len(corrupt_feats))
+    pool_idx = perm[:pool_size]
+    val_idx = perm[-val_size:]
+    pool_f = corrupt_feats[pool_idx].to(device)
+    pool_l = corrupt_lbls[pool_idx].to(device)
+    val_f = corrupt_feats[val_idx].to(device)
+    val_l = corrupt_lbls[val_idx].to(device)
+    val_h = torch.sign(val_f @ proj)
+    w_one = torch.ones(len(pool_f), device=device)
+
+    def decode(protos):
+        sims = F.normalize(val_h, p=2, dim=1) @ F.normalize(protos, p=2, dim=1).T
+        preds = proto_lbls[sims.argmax(dim=1)]
+        return {'acc': float((preds == val_l).float().mean().item()),
+                'miou': compute_miou(preds, val_l)}
+
+    pool_h = torch.sign(pool_f @ proj)
+    pool_sims = F.normalize(pool_h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T
+    pool_zs = proto_lbls[pool_sims.argmax(dim=1)]
+
+    class_info = {}
+    for c in proto_lbls.tolist():
+        assigned = pool_zs == c
+        correct = assigned & (pool_l == c)
+        true_m = pool_l == c
+        n_assigned = int(assigned.sum().item())
+        n_correct = int(correct.sum().item())
+        n_true = int(true_m.sum().item())
+        prec = n_correct / n_assigned if n_assigned > 0 else 0.0
+        # prototype vectors (sign-means) for cosine comparison
+        def proto_vec(mask):
+            if int(mask.sum().item()) < 50:
+                return None
+            return F.normalize(pool_h[mask].mean(dim=0), p=2, dim=0)
+        v_naive = proto_vec(assigned)
+        v_correct = proto_vec(correct)
+        v_oracle = proto_vec(true_m)
+        cos_naive = float((v_naive @ v_oracle).item()) if (v_naive is not None and v_oracle is not None) else None
+        cos_correct = float((v_correct @ v_oracle).item()) if (v_correct is not None and v_oracle is not None) else None
+        class_info[c] = {'prec': prec, 'n_correct': n_correct, 'n_assigned': n_assigned,
+                         'n_true': n_true, 'cos_naive_oracle': cos_naive,
+                         'cos_correct_oracle': cos_correct}
+
+    # val-side: perfect-gating bound = weighted_mean_update with pseudo labels but masked
+    # to the correct subset
+    protos_naive = weighted_mean_update(base_protos, proto_lbls, pool_f, pool_zs, w_one, proj, device)
+    correct_mask = (pool_zs == pool_l)
+    protos_correct = weighted_mean_update(base_protos, proto_lbls, pool_f, pool_zs, w_one,
+                                          proj, device, mask=correct_mask)
+    protos_oracle = weighted_mean_update(base_protos, proto_lbls, pool_f, pool_l, w_one, proj, device)
+
+    return {
+        'metrics': {'zero_shot': decode(base_protos),
+                    'naive_pseudo': decode(protos_naive),
+                    'correct_subset_gate_bound': decode(protos_correct),
+                    'full_label_oracle': decode(protos_oracle)},
+        'class_info': class_info,
+    }
+
 CLASS_NAMES = {1: 'car', 2: 'bicycle', 3: 'motorcycle', 4: 'truck', 5: 'other-vehicle',
                6: 'person', 7: 'road', 8: 'fence', 9: 'vegetation', 10: 'trunk',
                11: 'terrain', 12: 'pole', 13: 'traffic-sign', 14: 'other-ground',
@@ -1295,6 +1374,14 @@ def main():
                              "Per-class pool pseudo-label precision/recall + contamination "
                              "source, and per-class val IoU for zero-shot / naive EMA / "
                              "full-label oracle.")
+    parser.add_argument("--iter0_update_diag", action="store_true",
+                        help="Iteration 0 diagnostic: HOW the prototypes should be updated. "
+                             "Distinguishes a gating problem (correct pseudo-assigned points "
+                             "are informative but drowned out) from an overrun problem "
+                             "(minority classes swamped by majority artifacts). Per-class "
+                             "cosine of the naive / correct-subset prototype to the oracle "
+                             "prototype, and val mIoU for zero-shot / naive / correct-subset "
+                             "(perfect-gating bound) / full-label oracle.")
     parser.add_argument("--autopsy", action="store_true",
                         help="Run the per-condition hyperspace/decode autopsy (Phase 24) for "
                              "each corruption and print the comparison table: artifact profile, "
@@ -1614,6 +1701,27 @@ def main():
                 print(f"      class {c:<2}: IoU {z:.3f} | {n:.3f} | {o:.3f} | "
                       f"pool {ci['true']}/{ci['pred']} prec {ci['prec']:.3f} rec {ci['rec']:.3f} | "
                       f"top contam {ci['top_contam']}")
+            all_results[corruption] = res
+            continue
+        if args.iter0_update_diag:
+            res = {}
+            print("      -> Running Iteration-0 Update-Mechanism Diagnostic...")
+            iu = iteration0_update_diag(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
+                                        proj, device)
+            res['iter0_update_diag'] = iu
+            m = iu['metrics']
+            print(f"   -> Full-scene mIoU: zero-shot {m['zero_shot']['miou']:.4f} | "
+                  f"naive_pseudo {m['naive_pseudo']['miou']:.4f} | "
+                  f"correct_subset_gate_bound {m['correct_subset_gate_bound']['miou']:.4f} | "
+                  f"full_label_oracle {m['full_label_oracle']['miou']:.4f}")
+            print("   -> Per-class: prec | n_correct/n_assigned | cos(naive,oracle) | "
+                  "cos(correct,oracle):")
+            for c in proto_lbls.tolist():
+                ci = iu['class_info'][c]
+                cn = f"{ci['cos_naive_oracle']:.3f}" if ci['cos_naive_oracle'] is not None else "  n/a"
+                cc = f"{ci['cos_correct_oracle']:.3f}" if ci['cos_correct_oracle'] is not None else "  n/a"
+                print(f"      class {c:<2}: prec {ci['prec']:.3f} | {ci['n_correct']}/{ci['n_assigned']} | "
+                      f"{cn} | {cc}")
             all_results[corruption] = res
             continue
         res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,
