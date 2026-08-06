@@ -938,6 +938,14 @@ def iter1_pseudo_refine(base_protos, proto_lbls, corrupt_feats, corrupt_views, c
     # artifact from a genuine LP-assignment failure.
     lp_val_preds = torch.tensor(clf.predict(val_f.cpu().numpy())).to(device)
     val_lp_acc = float((lp_val_preds == val_l).float().mean().item())
+    pool_norm_mean = float(pool_f.norm(p=2, dim=1).mean().item())
+    val_norm_mean = float(val_f.norm(p=2, dim=1).mean().item())
+
+    def class_counts(lbls):
+        out = {}
+        for c in proto_lbls.tolist():
+            out[str(c)] = int((lbls == c).sum().item())
+        return out
 
     return {
         'metrics': {'zero_shot': zs, 'zs_pseudo_reestimate': zs_res, 'LP_pseudo': lp_res,
@@ -948,6 +956,10 @@ def iter1_pseudo_refine(base_protos, proto_lbls, corrupt_feats, corrupt_views, c
             'val_class0_frac': float((val_l == 0).float().mean().item()),
             'LP_acc_pool': pseudo_acc['LP_base'],
             'LP_acc_val': val_lp_acc,
+            'norm_mean_pool': pool_norm_mean,
+            'norm_mean_val': val_norm_mean,
+            'pool_class_counts': class_counts(pool_l),
+            'val_class_counts': class_counts(val_l),
         },
         'views': [name for name, _ in VIEW_CONFIGS],
     }
