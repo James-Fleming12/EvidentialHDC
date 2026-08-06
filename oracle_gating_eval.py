@@ -41,6 +41,7 @@ from modules.tta_diagnostics import (
     react_test,
     deep_label_analysis,
     combined_gate_sweep,
+    assignment_gap_diag,
     VIEW_CONFIGS,
 )
 
@@ -155,6 +156,15 @@ def main():
                              "Reports decode-side retained mIoU and re-estimate-side weighted "
                              "full-scene mIoU per config, plus zero-shot/zs-reest/oracle "
                              "references. Run on all 8 conditions for the collapse check.")
+    parser.add_argument("--assignment_gap_diag", action="store_true",
+                        help="Iteration 6 diagnostic: WHY the recoverability signal (combined "
+                             "AUROC 0.68-0.80) does not connect to labels, and whether it can "
+                             "be bridged. Decomposes detection vs assignment: rank of the true "
+                             "class in the clean-prototype ordering (correct/recovered/stuck), "
+                             "LP accuracy on the recovered vs stuck sets, the gated-oracle "
+                             "bound (top-R recoverable zs-wrong points set to their TRUE class) "
+                             "and the gated-LP reassign (deployable), and recovered-set cluster "
+                             "purity (kNN coherence / within-vs-between cosine).")
     parser.add_argument("--autopsy", action="store_true",
                         help="Run the per-condition hyperspace/decode autopsy (Phase 24) for "
                              "each corruption and print the comparison table: artifact profile, "
@@ -612,6 +622,32 @@ def main():
                 dc = cfg['decode_retained']
                 print(f"      {cname:<13}: " + " | ".join(
                     f"{k} {v:.4f}" for k, v in dc.items()))
+            all_results[corruption] = res
+            continue
+        if args.assignment_gap_diag:
+            res = {}
+            print("      -> Running Assignment-Gap Diagnostic...")
+            ag = assignment_gap_diag(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
+                                     clf, proj, device)
+            res['assignment_gap_diag'] = ag
+            m = ag['metrics']
+            print("   -> Full-scene mIoU: zero-shot {:.4f} | zs-reest {:.4f} | oracle {:.4f}"
+                  .format(m['zero_shot'], m['zs_reestimate'], m['oracle']))
+            print("   -> Rank of true class (mean | frac rank2 | frac rank3 | frac rank5 | n):")
+            for name, r in ag['rank_of_true_class'].items():
+                print(f"      {name:<10}: {r['mean']:.2f} | {r['frac_rank2']:.3f} | "
+                      f"{r['frac_rank3']:.3f} | {r['frac_rank5']:.3f} | {r['n']}")
+            if ag['lp_on']:
+                print("   -> LP accuracy on recovered {:.3f} | stuck {:.3f}".format(
+                    ag['lp_on']['recovered'], ag['lp_on']['stuck']))
+            print("   -> Gated re-estimate mIoU (top-R recoverable zs-wrong, oracle vs LP assigned):")
+            for k, v in ag['gated'].items():
+                print(f"      {k}: oracle_assigned {v['oracle_assigned']:.4f} | "
+                      f"lp_assigned {v['lp_assigned']:.4f} | n {v['n_selected']}")
+            cl = ag['cluster']
+            print("   -> Recovered-set cluster purity: kNN true-label acc {:.3f} | "
+                  "within-cos {:.3f} | between-cos {:.3f} | n {}".format(
+                      cl['knn_true_label_acc'], cl['within_cos'], cl['between_cos'], cl['n']))
             all_results[corruption] = res
             continue
         res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,

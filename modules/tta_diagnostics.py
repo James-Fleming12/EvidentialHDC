@@ -1179,3 +1179,167 @@ def combined_gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, cl
         'metrics': {'zero_shot': zs, 'zs_pseudo_reestimate': zs_reest, 'oracle': oracle},
         'configs': results,
     }
+
+def assignment_gap_diag(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj, device,
+                        pool_size=500000, val_size=100000, seed=42):
+    """Iteration 6 diagnostic: WHY is there a gap between the recoverability signal
+    (combined AUROC 0.68-0.80) and the label connection (no decode gains), and can it be
+    bridged? Decomposes the two gaps:
+      Detection  - how well a signal identifies the fixable set (known: AUC 0.68-0.80).
+      Assignment - given the fixable set, does ANY label-free source know each point's
+                   true class, and are the fixable points separable by class at all?
+
+    Reports, on a shared pool/val split:
+      A. rank of the true class in the clean-prototype similarity ordering, for
+         zs-correct / oracle-recovered / oracle-stuck points.
+      B. LP accuracy on the recovered vs stuck sets (does a label-free classifier know
+         the fixable points' classes?).
+      C. gated-oracle bound: re-estimate with the top-R% recoverable zs-wrong points set
+         to their TRUE class, rest zs (isolates the assignment gap given perfect detection).
+      D. gated-LP reassign: same selection but assigned by the LP (the deployable mechanism).
+      E. recovered-set cluster purity: among top-recoverability zs-wrong points, does kNN
+         labeled by true class cohere? (the 'how to fix' probe).
+    """
+    torch.manual_seed(seed)
+    perm = torch.randperm(len(corrupt_feats))
+    pool_idx = perm[:pool_size]
+    val_idx = perm[-val_size:]
+    pool_f = corrupt_feats[pool_idx].to(device)
+    pool_l = corrupt_lbls[pool_idx].to(device)
+    val_f = corrupt_feats[val_idx].to(device)
+    val_l = corrupt_lbls[val_idx].to(device)
+    w_one = torch.ones(len(pool_f), device=device)
+    base_norm = F.normalize(base_protos, p=2, dim=1)
+
+    def project(feats):
+        h = torch.sign(feats @ proj)
+        return F.normalize(h, p=2, dim=1) @ base_norm.T
+
+    def decode(protos):
+        sims = F.normalize(torch.sign(val_f @ proj), p=2, dim=1) @ F.normalize(protos, p=2, dim=1).T
+        preds = proto_lbls[sims.argmax(dim=1)]
+        return preds, compute_miou(preds, val_l)
+
+    # pool signals (chunked)
+    pool_sims = []
+    for start in range(0, len(pool_f), 50000):
+        pool_sims.append(project(pool_f[start:start + 50000]))
+    pool_sims = torch.cat(pool_sims, dim=0)
+    zs_pseudo = proto_lbls[pool_sims.argmax(dim=1)]
+    val_sims = project(val_f)
+    val_zs = proto_lbls[val_sims.argmax(dim=1)]
+    lp_val = torch.tensor(clf.predict(val_f.cpu().numpy())).to(device)
+    lp_pool = torch.tensor(clf.predict(pool_f.cpu().numpy())).to(device)
+
+    protos_oracle = weighted_mean_update(base_protos, proto_lbls, pool_f, pool_l, w_one, proj, device)
+    oracle_val_preds, oracle_miou = decode(protos_oracle)
+
+    recovered = (val_zs != val_l) & (oracle_val_preds == val_l)
+    stuck = (val_zs != val_l) & (oracle_val_preds != val_l)
+    correct = val_zs == val_l
+
+    # ---- A. rank of true class in the clean-prototype ordering ----
+    def true_rank(sims, lbls):
+        ti = torch.searchsorted(proto_lbls, lbls)
+        order = sims.argsort(dim=1, descending=True)
+        ranks = torch.zeros(len(lbls), device=device)
+        for i in range(len(lbls)):
+            ranks[i] = (order[i] == ti[i]).nonzero(as_tuple=True)[0].item()
+        return ranks
+    tr_all = true_rank(val_sims, val_l)
+    rank_of = {}
+    for name, mask in [('correct', correct), ('recovered', recovered), ('stuck', stuck)]:
+        r = tr_all[mask]
+        rank_of[name] = {'mean': float(r.float().mean().item()),
+                         'frac_rank2': float((r <= 1).float().mean().item()),
+                         'frac_rank3': float((r <= 2).float().mean().item()),
+                         'frac_rank5': float((r <= 4).float().mean().item()),
+                         'n': int(mask.sum().item())}
+
+    # ---- B. LP accuracy on recovered vs stuck ----
+    lp_on = {}
+    if recovered.sum() > 50 and stuck.sum() > 50:
+        lp_on['recovered'] = float((lp_val[recovered] == val_l[recovered]).float().mean().item())
+        lp_on['stuck'] = float((lp_val[stuck] == val_l[stuck]).float().mean().item())
+
+    # ---- detector (oracle-trained LR on val, applied to pool) ----
+    # standardize val AND pool with the POOL statistics so train/apply scales match.
+    from sklearn.linear_model import LogisticRegression
+    norm = torch.norm(pool_f, p=2, dim=1)
+    margin = (torch.topk(pool_sims, 2, dim=1).values[:, 0]
+              - torch.topk(pool_sims, 2, dim=1).values[:, 1]).clamp(min=0)
+    lp_probs = torch.tensor(clf.predict_proba(pool_f.cpu().numpy())).to(device)
+    lp_conf = lp_probs.max(dim=1).values
+    lp_entropy = -(lp_probs * torch.log(lp_probs.clamp(min=1e-12))).sum(dim=1)
+    pool_sig = torch.stack([norm, margin, lp_conf, lp_entropy], dim=1)
+    mu = pool_sig.mean(dim=0)
+    sd = pool_sig.std(dim=0) + 1e-8
+
+    v_norm = torch.norm(val_f, p=2, dim=1)
+    v_t2 = torch.topk(val_sims, 2, dim=1)
+    v_margin = (v_t2.values[:, 0] - v_t2.values[:, 1]).clamp(min=0)
+    v_lp = torch.tensor(clf.predict_proba(val_f.cpu().numpy())).to(device)
+    v_lp_conf = v_lp.max(dim=1).values
+    v_lp_entropy = -(v_lp * torch.log(v_lp.clamp(min=1e-12))).sum(dim=1)
+    v_sig = torch.stack([v_norm, v_margin, v_lp_conf, v_lp_entropy], dim=1)
+
+    Xp = (pool_sig - mu) / sd
+    Xv = (v_sig - mu) / sd
+    yv = torch.zeros(len(val_f), device=device)
+    yv[recovered] = 1
+    det = LogisticRegression(max_iter=1000)
+    use = (recovered | stuck)
+    det.fit(Xv[use].cpu().numpy(), yv[use].cpu().numpy())
+    pool_det = torch.tensor(det.decision_function(Xp.cpu().numpy())).to(device)
+
+    # zs-wrong pool points, selected by detector
+    pool_wrong = zs_pseudo != pool_l
+    det_score = torch.full_like(pool_det, -1e9)
+    det_score[pool_wrong] = pool_det[pool_wrong]
+
+    # ---- C. gated-oracle bound / D. gated-LP reassign ----
+    gated = {}
+    for R in (0.1, 0.25, 0.5):
+        k = max(int(pool_wrong.sum().item() * R), 1)
+        sel = torch.topk(det_score, k).indices
+        pseudo_oracle = zs_pseudo.clone()
+        pseudo_oracle[sel] = pool_l[sel]
+        pseudo_lp = zs_pseudo.clone()
+        pseudo_lp[sel] = lp_pool[sel]
+        _, miou_oracle = decode(weighted_mean_update(base_protos, proto_lbls, pool_f,
+                                                     pseudo_oracle, w_one, proj, device))
+        _, miou_lp = decode(weighted_mean_update(base_protos, proto_lbls, pool_f,
+                                                 pseudo_lp, w_one, proj, device))
+        gated[f'R{R}'] = {'oracle_assigned': miou_oracle, 'lp_assigned': miou_lp,
+                          'n_selected': int(len(sel))}
+
+    # ---- E. recovered-set cluster purity (top-25% recoverability zs-wrong) ----
+    cluster = {}
+    wrong_mask = val_zs != val_l
+    v_det_all = torch.tensor(det.decision_function(Xv.cpu().numpy())).to(device)
+    v_det_all[~wrong_mask] = -1e9
+    kn = min(20000, int(wrong_mask.sum().item()))
+    top = torch.topk(v_det_all, kn).indices
+    top_f = val_f[top]
+    d = torch.cdist(top_f, top_f)
+    nb = torch.topk(d, 11, dim=1, largest=False).indices[:, 1:]
+    nb_true = val_l[top][nb]
+    cluster['knn_true_label_acc'] = float(
+        (nb_true.mode(dim=1).values == val_l[top]).float().mean().item())
+    tf = F.normalize(top_f, p=2, dim=1)
+    same = (val_l[top].unsqueeze(1) == val_l[top].unsqueeze(0))
+    cos = tf @ tf.T
+    eye = torch.eye(len(top), dtype=torch.bool, device=device)
+    cluster['within_cos'] = float(cos[same & ~eye].mean().item()) if (same & ~eye).sum() > 1 else float('nan')
+    cluster['between_cos'] = float(cos[~same].mean().item()) if (~same).sum() > 1 else float('nan')
+    cluster['n'] = int(len(top))
+
+    return {
+        'metrics': {'zero_shot': decode(base_protos)[1], 'zs_reestimate': decode(
+            weighted_mean_update(base_protos, proto_lbls, pool_f, zs_pseudo, w_one, proj, device))[1],
+            'oracle': oracle_miou},
+        'rank_of_true_class': rank_of,
+        'lp_on': lp_on,
+        'gated': gated,
+        'cluster': cluster,
+    }
