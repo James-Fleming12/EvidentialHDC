@@ -933,11 +933,22 @@ def iter1_pseudo_refine(base_protos, proto_lbls, corrupt_feats, corrupt_views, c
         'MVAC_LP': float((pool_l == mvac_lp_pseudo).float().mean().item()),
         'MVAC_proto': float((pool_l == mvac_proto_pseudo).float().mean().item()),
     }
+    # self-check: is the pool representative? LP accuracy on the val subset and the
+    # class-0 (unlabeled) fraction of pool vs val disambiguate a pool-composition
+    # artifact from a genuine LP-assignment failure.
+    lp_val_preds = torch.tensor(clf.predict(val_f.cpu().numpy())).to(device)
+    val_lp_acc = float((lp_val_preds == val_l).float().mean().item())
 
     return {
         'metrics': {'zero_shot': zs, 'zs_pseudo_reestimate': zs_res, 'LP_pseudo': lp_res,
                     'MVAC_LP': mvac_lp_res, 'MVAC_proto': mvac_proto_res, 'oracle': oracle},
         'pseudo_acc': pseudo_acc,
+        'self_check': {
+            'pool_class0_frac': float((pool_l == 0).float().mean().item()),
+            'val_class0_frac': float((val_l == 0).float().mean().item()),
+            'LP_acc_pool': pseudo_acc['LP_base'],
+            'LP_acc_val': val_lp_acc,
+        },
         'views': [name for name, _ in VIEW_CONFIGS],
     }
 
@@ -1742,6 +1753,10 @@ def main():
                           m['MVAC_proto']['miou'], m['oracle']['miou']))
             print("   -> Pool pseudo-label accuracy: "
                   + " | ".join(f"{k} {v:.4f}" for k, v in pa.items()))
+            sc = i1['self_check']
+            print(f"   -> Self-check: class0 frac pool {sc['pool_class0_frac']:.3f} / "
+                  f"val {sc['val_class0_frac']:.3f} | LP acc pool {sc['LP_acc_pool']:.4f} / "
+                  f"val {sc['LP_acc_val']:.4f}")
             all_results[corruption] = res
             continue
         
