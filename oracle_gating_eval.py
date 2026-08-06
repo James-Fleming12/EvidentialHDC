@@ -487,6 +487,32 @@ def prototype_rebalance(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, pr
                         'max_loss': best_loss[3]},
     }
 
+def prior_correction_sweep(base_protos, proto_lbls, prior_vec, corrupt_feats, corrupt_lbls,
+                           proj, device, taus=(0.0, -0.25, -0.5, -1.0, -2.0), seed=42):
+    """Decision-level source-prior correction (README Pillar 3, sec 5.2).
+
+    score(q, c) = kappa*cos(q, P_c) + tau*log(pi_c), prediction-only (never in
+    the gate or the updates). Reports full-scene acc + mIoU per tau. tau=0 is
+    the plain zero-shot baseline. mIoU-oriented: it trades majority precision
+    for rare-class recall, so acc and mIoU must be read together.
+    """
+    torch.manual_seed(seed)
+    perm = torch.randperm(len(corrupt_feats))
+    val_idx = perm[-100000:]
+    val_f = corrupt_feats[val_idx].to(device)
+    val_l = corrupt_lbls[val_idx].to(device)
+    val_h = F.normalize(torch.sign(val_f @ proj), p=2, dim=1)
+    sims = val_h @ F.normalize(base_protos, p=2, dim=1).T
+    log_prior = torch.log(prior_vec.to(device).clamp(min=1e-9))
+    rows = []
+    for tau in taus:
+        score = sims + tau * log_prior if tau != 0.0 else sims
+        preds = proto_lbls[score.argmax(dim=1)]
+        rows.append({'tau': tau,
+                     'acc': float((preds == val_l).float().mean().item()),
+                     'miou': compute_miou(preds, val_l)})
+    return {'rows': rows}
+
 CLASS_NAMES = {1: 'car', 2: 'bicycle', 3: 'motorcycle', 4: 'truck', 5: 'other-vehicle',
                6: 'person', 7: 'road', 8: 'fence', 9: 'vegetation', 10: 'trunk',
                11: 'terrain', 12: 'pole', 13: 'traffic-sign', 14: 'other-ground',
@@ -1031,6 +1057,11 @@ def main():
                              "selects which points recompute each class prototype, and the "
                              "rebalanced prototypes are evaluated over the FULL scene. "
                              "Distinct from decode-side gating (retained-subset mIoU).")
+    parser.add_argument("--prior_sweep", action="store_true",
+                        help="Run the decision-level source-prior correction test "
+                             "(README sec 5.2): score = kappa*cos + tau*log(pi_c) over "
+                             "tau = 0, -0.25, -0.5, -1.0, -2.0, full-scene acc + mIoU, "
+                             "prediction-only (never in the gate or updates).")
     parser.add_argument("--autopsy", action="store_true",
                         help="Run the per-condition hyperspace/decode autopsy (Phase 24) for "
                              "each corruption and print the comparison table: artifact profile, "
@@ -1134,6 +1165,12 @@ def main():
         m = clean_feats[clean_lbls == c]
         if len(m) > 0:
             clean_means128[c] = F.normalize(m.mean(dim=0), p=2, dim=0)
+
+    # Source class prior pi_c (clean class frequencies), aligned to proto_lbls order,
+    # for the decision-level prior-correction test (prediction-only).
+    lbl_arr = clean_lbls.numpy()
+    pi = {c: float((lbl_arr == c).mean()) for c in proto_lbls.tolist()}
+    prior_vec = torch.tensor([pi[c] for c in proto_lbls.tolist()], dtype=torch.float32)
     
     # Per-dimension clean feature statistics (for the BN-style test-time alignment probe)
     torch.manual_seed(42)
@@ -1281,6 +1318,18 @@ def main():
             bo = rb['best_oracle']
             print(f"   -> Oracle-loss bound: full-scene mIoU {bo['miou']:.4f} | "
                   f"selection {bo['selection']*100:.1f}% | loss<={bo['max_loss']}")
+            all_results[corruption] = res
+            continue
+        if args.prior_sweep:
+            res = {}
+            print("      -> Running Source-Prior Correction Sweep (prediction-only)...")
+            ps = prior_correction_sweep(base_protos, proto_lbls, prior_vec,
+                                        corrupt_feats, corrupt_lbls, proj, device)
+            res['prior_sweep'] = ps
+            print("   -> Full-scene acc | mIoU per tau (score = kappa*cos + tau*log pi):")
+            for r in ps['rows']:
+                marker = " (baseline)" if r['tau'] == 0.0 else ""
+                print(f"      tau={r['tau']:>6}: acc {r['acc']:.4f} | mIoU {r['miou']:.4f}{marker}")
             all_results[corruption] = res
             continue
         res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,
