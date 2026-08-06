@@ -43,13 +43,45 @@ Full-scene mIoU, plain medium encoder, Phase 24.9 harness (200k pool / 100k val)
 
 ## Iteration Log
 
-### Iteration 0: setup (context from the oracle phases, no TTA run yet)
+### Iteration 0: what the labels give (complete)
 
-- Phase 24.9 established the harness (`--tta_oracle`): TTA battery + prototype-oracle bounds on a shared seeded pool/val split, full-scene acc + mIoU.
-- Phase 24.10 established the target: the full-label oracle is pool-size-stable and beats zero-shot on fog/crosstalk; the prior "oracle crashes fog to 4.9%" claim (Phase 21) was not reproduced by the current harness and is flagged for reconciliation.
+**Setup**: `--iter0_label_info` on the plain medium encoder (500k pool / 100k val). naive EMA and the full-label oracle use the **same weighted-mean prototype operator**; the only difference is the per-point class assignment. So the labels' information is *assignment*, and this run quantifies it.
+
+**Overall: pseudo-label accuracy on the collapsed conditions is near-random.**
+
+| Condition | Zero-shot mIoU | naive EMA | Full-label oracle | Pool pseudo-label acc |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | 10.1% | 9.3% | **16.4%** | **26.4%** |
+| crosstalk | 12.0% | 10.7% | **26.2%** | **33.7%** |
+| snow | 39.4% | 38.1% | 40.7% | 66.5% |
+| wet_ground | 49.0% | 47.7% | 51.5% | 68.8% |
+| incomplete_echo | 41.2% | 39.5% | 41.2% | 78.9% |
+| beam_missing | 53.7% | 51.6% | 53.7% | 77.2% |
+| motion_blur | 44.3% | 43.0% | 44.8% | 73.3% |
+| cross_sensor | 41.5% | 39.7% | 43.5% | 68.8% |
+
+**Per-class: the labels rescue exactly the class-conditional casualties** (per-class val IoU: zero-shot → naive → oracle):
+
+| Class | fog | crosstalk |
+| :--- | :--- | :--- |
+| Traffic-sign (13) | 0.000 → 0.000 → **0.243** | 0.001 → 0.001 → **0.309** |
+| Other-ground (14) | 0.005 → 0.007 → **0.160** | 0.004 → 0.011 → **0.177** |
+| Vegetation (16) | 0.093 → 0.062 → **0.177** | 0.050 → 0.031 → **0.434** |
+| Building (15) | 0.024 → 0.045 → 0.047 | 0.114 → 0.073 → **0.235** |
+| Car (4) | 0.157 → 0.114 → **0.208** | 0.346 → 0.247 → **0.423** |
+| Terrain (11) | 0.526 → 0.514 → 0.462 | 0.424 → 0.474 → 0.475 |
+| Road (7) | 0.003 → 0.003 → 0.014 | 0.022 → 0.016 → 0.035 |
+
+**Findings:**
+1. **The labels' information is correct class assignment, and it is currently near-missing entirely**: pool pseudo-label accuracy is 26.4% (fog) and 33.7% (crosstalk) versus 66-79% on the geometric conditions. Every label-free prototype re-estimate is built from majority-contaminated means (e.g., fog Road's pseudo-prototype has precision 0.003, with 160k unlabeled points assigned into it).
+2. **The oracle's full-scene gain is concentrated in the class-conditional casualties**: Traffic-sign, Other-ground, Vegetation, Building, and Car all jump dramatically under correct assignment (Traffic-sign 0.000 → 0.24-0.31, Vegetation up to 0.434). Road stays dead even with labels (features too collapsed); Bicycle is absent from the pool.
+3. **naive EMA does not merely fail, it actively degrades**: classes the zero-shot decode handles OK (Car, Vegetation) get *worse* under pseudo-label re-estimation (fog Car 0.157 → 0.114, Vegetation 0.093 → 0.062), because the majority-wrong assignments contaminate their prototypes.
+4. **The geometric conditions are assignment-healthy** (66-79% pseudo accuracy): their prototypes are only mildly contaminated, which is why they sit at or near the oracle already.
+
+**Implication for Iteration 1**: the loss-estimator head does not need to solve assignment globally; it needs to recover the *rare-class* assignments (13, 14, 15, 16, and to a lesser extent 4) where pseudo-label precision is currently 0.0-0.24, and it must not degrade the already-correct majority assignments (Terrain, Car).
 
 ### Iteration 1: the learned loss-estimator head (proposed, not yet run)
 
-The leading candidate: a small head trained (on clean/self-supervised signal) to predict each point's cos-to-true at test time, used as the per-point weight in a prototype re-estimate (Phase 24.4 #3). Rationale: the oracle's advantage over every label-free variant is exactly the per-point cos-to-true it has and they lack; the loss is the single sharpest artifact/relevance signal measured (Phase 22.2), and it is estimable in principle from the 128D geometry on clean data.
+The leading candidate: a small head trained (on clean/self-supervised signal) to predict each point's cos-to-true at test time, used as the per-point weight (or pseudo-label confidence) in a prototype re-estimate (Phase 24.4 #3). Rationale: the oracle's advantage over every label-free variant is exactly the per-point cos-to-true it has and they lack; Iteration 0 shows the labels' information is *assignment*, concentrated in the rare classes (13, 14, 15, 16, 4), where pseudo-label precision is currently 0.0-0.24.
 
-Success criterion: fog full-scene mIoU moving from ~10% toward 16.6%, and crosstalk from ~12% toward 26.2%, without regressing the geometric conditions beyond their zero-shot level, with a label-free (or clean-only-supervised) estimator.
+Success criterion: fog full-scene mIoU moving from ~10% toward 16.6%, and crosstalk from ~12% toward 26.2%, with the gain concentrated in the rare classes and without regressing the geometric conditions (or Terrain/Car) beyond their zero-shot level, using a label-free (or clean-only-supervised) estimator.
