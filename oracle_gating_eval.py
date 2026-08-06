@@ -442,7 +442,8 @@ def prototype_rebalance(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, pr
         preds = pred_all[keep]
         new_protos = base_protos.clone()
         for i, c in enumerate(proto_lbls.tolist()):
-            sel = keep & (preds == c)
+            sel = keep.clone()
+            sel[keep] = (preds == c)
             if int(sel.sum().item()) >= min_pts:
                 new_protos[i] = torch.sign(val_h[sel].mean(dim=0))
         sims_r = F.normalize(val_h, p=2, dim=1) @ F.normalize(new_protos, p=2, dim=1).T
