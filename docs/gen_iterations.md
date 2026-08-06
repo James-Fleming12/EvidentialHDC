@@ -918,6 +918,41 @@ Full-condition autopsy on the additive retrain (micro encoder) vs the med-plain 
 
 1. **Commit the medium additive run** (26 ep): decides whether capacity rescues the 6 lost conditions. Morning readout: fog LP/mIoU, BinCos, and the 6-condition deltas vs the plain-medium table.
 2. **If the trade persists at medium scale**: the lever is the volumetric injection itself (density 0.05 / per-sample), because the "balanced mix" is already largely in place: beam-drop (50% of scan lines) and 20% density subsampling are in the base `get_augmented_view` for *all* methods. A tuned mix (e.g., lower injection density, per-sample injection probability, or injecting into occupied-voxel neighborhoods to mimic snow/wet_ground rather than empty-space-only fog) is the regime-side fix, informed by the clean-control mIoU: if clean drops at medium scale too, the regime distorts the clean manifold and needs rebalancing, not just per-condition scheduling.
+
+---
+
+## Phase 24.6: The Medium Additive Run and Full Autopsy — the Regime Is Closed, the Collapse Is Regimen-Invariant
+
+The decisive medium-scale test (26 ep, ~10h) completed; full 8-condition autopsy run on the checkpoint. The headroom's fog numbers (53.2% acc / 5.2% mIoU) are a biased subset (`fog_feats[:50000]` majority-class slice); the autopsy (full sample) is the decision metric.
+
+### The same-capacity comparison (medium additive vs plain medium)
+
+| Condition | Plain acc/mIoU | Additive acc/mIoU | LP | BinCos |
+| :--- | :--- | :--- | :--- | :--- |
+| **fog** | 26.4 / **10.1** | 40.4 / **8.4** | 30.6 (vs 36.3) | 0.076 |
+| crosstalk | 33.5 / 12.0 | 35.3 / 10.1 | 35.3 (flat) | 0.124 |
+| snow | 66.6 / 39.4 | 60.1 / 35.5 | 70.8 | 0.293 |
+| wet_ground | 68.8 / 49.0 | 66.7 / 45.4 | 76.2 | 0.358 |
+| incomplete_echo | 78.8 / 41.2 | 77.1 / 40.1 | 84.3 | 0.269 |
+| beam_missing | 77.2 / 53.7 | 75.1 / 52.0 | 83.2 | 0.289 |
+| motion_blur | 73.4 / 44.3 | 71.9 / 43.7 | 79.2 | 0.289 |
+| cross_sensor | 68.9 / 41.5 | 65.4 / 39.7 | 74.3 | 0.311 |
+| clean control | 82.7 / 49.6 | 81.4 / 48.6 | 91.4 (fit) | — |
+
+### The Findings
+
+1. **The additive regimen is closed.** At equal capacity it is worse than plain `supcon_vib` on the paper metric for **every** condition: fog 8.4 (vs 10.1), crosstalk 10.1 (vs 12.0), and 1.6–4.2 pts down on the six geometric conditions. The fog acc gain (+14) is the majority-class artifact (the exact false-high the mIoU columns catch).
+2. **The micro-scale healing did not scale.** Fog LP 30.6% is *below* plain (36.3%), far below micro-additive's 57.0%; the poison band is back (91.5% of fog points in norm ≥ 4, matching plain's 88%); BinCos 0.076 (the 10kD fog means remain near-orthogonal to clean). Convergence did not fix the 128D→10kD transfer; it reverted the micro's norm healing.
+3. **The class-conditional collapse is regimen-invariant.** Fog per-class IoU: Terrain 0.51, Truck 0.079, Vegetation 0.061 survive; Building 0.012, Road 0.007, Other-ground 0.001, Traffic-sign 0.0005, Bicycle 0.0 dead. Identical casualty list to the plain encoder (Phase 24.2). The encoder family (`supcon_vib` ± additive) cannot make the collapsing classes separable under fog.
+4. **Clean control held** (81.4/48.6 vs 82.7/49.6) — the trade is condition-specific, not clean-manifold distortion (answers the Phase 24.5 watchpoint in the affirmative direction).
+5. **Alignment probe reproduces Phase 24.1** with slightly larger fog/crosstalk gains: fog 8.4→11.7 (+3.3), crosstalk 10.1→15.7 (+5.6), wet_ground −6.2. Still far below the 20 mIoU target; wet-ground caution stands.
+6. **Fog errors became less artifact-like** (ArtFrac 0.375 vs plain 0.487) and mostly recoverable in principle (3681/4986 ≈ 74% of non-artifacts), yet the decoder and label-free gates still cannot reach them — the same access problem as before.
+
+### Next Steps
+
+1. **The encoder-pretraining family is exhausted for fog at this stage.** The remaining lever that has *not* been tried is the **learned loss-estimator head** (Phase 24.4 #3): a small head trained on clean/self-supervised signal to predict cos-to-true at test time, targeting the label-free gate gap (11% label-free vs 55% oracle on plain features). This is decoder-side but operates where all prior decode levers failed, because it estimates the *perceptron loss* the gates need.
+2. **Crosstalk is the remaining paper-worthy win**: plain encoder + margin gate hits 23.1% mIoU @ 52% retention label-free (Phase 23); alignment adds +3.1. Worth consolidating for the paper if fog stays pinned.
+3. **Fog options ranked for a future encoder change**: per-class objectives on the collapsing classes (Road/Building/Other-ground/Traffic-sign/Bicycle) as the concrete target list, and testing the volumetric injection pattern (near-occupied-voxel noise) only if a regime-side retry is ever warranted.
 3. **The learned loss-estimator head** (Phase 24.4 #3) remains the standing plan for the label-free gate gap (11% → 67%), independent of the regime decision.
 
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)

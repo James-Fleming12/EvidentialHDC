@@ -333,7 +333,20 @@ The current encoder (plain `supcon_vib`, 26 epochs on 100% data ≈ 83k steps, c
 | **Cross Sensor** | 56.6% | **68.9%** | 4.4% | **41.5%** |
 | **Mean (8 conditions)** | 65.0% | 61.7% | 13.2% | **36.4%** |
 
-*Protocols differ across the "Old" columns (DualGate-era: converged clean backbone with adaptation, full-sequence eval; atlas-era: original model, mIoU) and the "Ours" columns (frozen plain medium encoder, oracle-calibrated 100k-point val). The within-column comparisons are the meaningful ones: mIoU improves on every condition (mean ×2.75), and the Fog/Crosstalk gains are robust across both metrics — while the geometric-corruption accuracy is semi-equivalent (within ~10 points, lower on some, higher on Cross Sensor) and their mIoU is substantially higher.*
+*Protocols differ across the "Old" columns (DualGate-era: converged clean backbone with adaptation, full-sequence eval; atlas-era: original model, mIoU) and the "Ours" columns (frozen plain medium encoder, oracle-calibrated 100k-point val). The within-column comparisons are the meaningful ones: mIoU improves on every condition (mean ×2.75), and the Fog/Crosstalk gains are robust across both metrics, while the geometric-corruption accuracy is semi-equivalent (within ~10 points, lower on some, higher on Cross Sensor) and their mIoU is substantially higher.*
+
+#### The gating asymmetry: crosstalk recovers label-free, fog does not
+
+The same label-free gate (margin + cosine thresholds on the frozen clean prototypes, Phase 23) produces opposite outcomes on the two collapsed conditions:
+
+| | Zero-shot mIoU | Best label-free gate | Oracle-loss bound | BN alignment |
+| :--- | :--- | :--- | :--- | :--- |
+| **Crosstalk** | 12.0% | **23.1% mIoU @ 51.6% retention** | n/a | +3.1 (12.0 → 15.1) |
+| **Fog** | 10.1% | 11–17% (≥20% only below 10% retention) | 55% @ 28% retention | +0.6 (noise) |
+
+*Crosstalk is effectively recoverable with a decode-side lever: gating the retained ~52% of the scene recovers 23.1% mIoU label-free (~2× the zero-shot, into the range of the weaker healthy conditions), and BN-statistic alignment adds another +3.1. The gate works because crosstalk's artifacts are sparse, localized wrong-beam returns whose margin/cosine geometry is separable from the correct points, so a large, high-precision subpopulation can be carved off without labels.*
+
+*Fog is the exception that breaks the pattern. Its errors are confident artifacts: 99.96% of fog misclassifications fail even the artifact filters (Phase 22.2), dense scattering inflates the feature magnitude of ~88% of all fog points, and even the correct classifications have collapsed margins (0.29 vs 0.40–0.50 for the geometric conditions). The misclassified points are thus geometrically indistinguishable from correct points without the true label: the oracle-loss bound reaches 55% @ 28% retention, proving the information exists but is not estimable from confidence geometry alone. The collapse is additionally class-conditional (Road, Building, Other-ground, Traffic-sign, Bicycle die while Terrain and Truck survive), and no decode-side lever tested to date (gates, alignment, adaptation, oracle retraining, buffer selection) moves fog's mIoU above ~10%. The residual sits in the representation: the fog features of the collapsing classes are separable in principle (the plain 128D linear probe reaches 36–49%), but the 10kD binarized decode cannot exploit them, and no pretraining regimen tested so far (plain, strong-vib, additive volumetric) has fixed that.*
 
 ### 7.4 Why the decoder, not the encoder, is the current bottleneck
 
