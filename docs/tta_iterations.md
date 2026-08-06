@@ -135,22 +135,39 @@ ReAct-style clipping of the 128D feature norms (thresholds 3/4/5/6/8/inf) before
 
 **Finding: Sign() is invariant to positive per-point scaling.** `sign(s·(x @ proj)) == sign(x @ proj)`, so the binarized vectors are bit-for-bit identical and the decode cannot change. The autopsy's magnitude inflation is a *correlate* of the fog artifacts (useful as a gating signal), not the *mechanism* of the binarized-decode failure: the direction (angle) of the corrupted features is what is wrong. The norm-based retention gate works because it *removes* points, not because it alters their vectors.
 
-### Iteration 4 (planned): what the labels carry that the features cannot derive
+### Iteration 4: what the labels carry that the features cannot derive
 
-The remaining question is not "can we reach the oracle" but "precisely what information do the labels provide that the feature space and the 10kD prototypes cannot, and where does it live?" Implemented as `--deep_label_analysis` (keeps the clean features; use `--corruptions fog,crosstalk` first, a full 8-condition run is fine at a few hours). Three analysis tracks, all per condition:
+`--deep_label_analysis` on the plain medium encoder (fog + crosstalk). Three tracks: feature geometry (survivor vs collapser), pseudo-label error/contamination, and recoverability (which label-free signals separate oracle-rescued from oracle-stuck points).
 
-**A. Feature geometry: why do classes collapse under corruption but not under supervised clean training?**
-- Per class (clean vs corrupt): centroid cosine shift, norm inflation, intra-class tightness (mean cosine to own centroid), and **inter-class absorption** (distance to the nearest *other* clean centroid, clean vs corrupt).
-- The hypothesis this tests: the collapsing classes (Road, Building, Other-ground, Traffic-sign, Bicycle) sit close to a majority neighbor in clean space, so under corruption their shifted features get absorbed; survivors (Terrain, Truck) sit far from competitors. Also reports the LP's per-class clean vs corrupt accuracy to confirm the collapse is corruption-specific, not a clean-decodability difference.
+**A. Feature geometry: the collapse is not dispersion, not drift magnitude, and not LP-separability in 128D.**
 
-**B. Pseudo-label error analysis: how wrong, why wrong, and the impact of being wrong.**
-- Per true class: the top-3 destinations of its points under the 10kD zs assignment (the confusion structure).
-- Per class and per source (zs, LP): prototype contamination (assignment precision + cosine of the pseudo re-estimated prototype to the oracle prototype).
-- Per-class IoU of the zs re-estimate, the LP re-estimate, and the oracle re-estimate: which classes' assignment errors cost the most.
+- **Every class decodes fine under supervised clean training** (LP clean acc 0.72-0.98 for classes 4, 11, 13, 14, 15, 16), so the collapse is corruption-specific.
+- **The surviving class is Terrain (11), and it is distinguished by isolation, not stability**: its clean nearest-other-class distance is 0.989 (nearly orthogonal to every competitor) and it stays far after drifting. The collapsing classes sit closer to neighbors in clean space and several move *into* a neighbor under corruption (Traffic-sign 13: 0.677 → 0.598/0.479; Other-ground 14: 0.517 → 0.507).
+- **Drift magnitude is NOT the killer**: Terrain has the *largest* centroid shift (cos_shift 0.513 fog / 0.715 crosstalk) and survives; Traffic-sign/Vegetation/Other-ground drift almost not at all (cos_shift 0.007-0.061) and collapse. The collapsers' clusters stay tight under corruption (tight_corrupt 0.90-0.97): they do not disperse, they shift as coherent clusters.
+- **The LP's "36% fog accuracy" is almost entirely Terrain**: per-class LP corrupt accuracy is near-zero for every other class (Car 0.005, Road 0.000, Building 0.006, Traffic-sign 0.000, Vegetation 0.025). The continuous 128D space is not actually linearly separable for the collapsing classes under corruption; the LP figure overstates the representational headroom.
 
-**C. Recoverability / confidence: why does the oracle retrieve good results when no confidence signal can?**
-- Split the val points the oracle rescues (zs-wrong, oracle-right) from the points wrong even under the oracle.
-- AUROC of every label-free signal (norm, margin, LP confidence, oracle perceptron loss) for separating the two groups. **If all AUROCs ≈ 0.5, the recovered points are feature-space-indistinguishable from the stuck ones: the label information is genuinely inaccessible from the features, which is the precise sense in which the oracle is label-gated.**
+**B. Pseudo-label errors: the re-estimate prototypes are majority-contaminated.**
+
+- zs-assignment precision on the collapsing classes is 0.10-0.25 (Traffic-sign 0.102, Other-ground 0.148, Building 0.100, Vegetation 0.254); the pseudo re-estimated prototypes are mostly wrong-class points, and their cosine to the oracle prototype (0.71-0.91) is not close enough.
+- Per-class impact confirms it: the oracle recovers Traffic-sign 0.002 → 0.234, Other-ground 0.005 → 0.159, Vegetation 0.070 → 0.185, Car 0.120 → 0.193, while the LP re-estimate is *worse* than the zs re-estimate on Car (0.027 vs 0.120) and Vegetation (0.056 vs 0.070), consistent with Iteration 1.
+
+**C. Recoverability: crosstalk is label-only; fog has a real, exploitable signal.**
+
+AUROC of each label-free signal for separating oracle-rescued (zs-wrong, oracle-right) from oracle-stuck points:
+
+| Signal | fog AUC | fog mean rec/stuck | crosstalk AUC |
+| :--- | :--- | :--- | :--- |
+| norm | **0.747** | 8.2 / 6.5 | 0.544 |
+| margin | 0.588 | 0.110 / 0.116 | 0.423 |
+| LP confidence | 0.577 | 0.907 / 0.887 | 0.597 |
+| oracle loss | 0.436 | 0.161 / 0.207 | 0.397 |
+
+- **Crosstalk: genuinely label-only** (all AUROCs 0.40-0.60): no label-free signal separates the points the oracle rescues from the points it cannot. This is the precise sense in which the crosstalk oracle is label-gated.
+- **Fog: the recovered points are the HIGH-norm zs-wrong points** (norm AUC 0.747, means 8.2 vs 6.5). This is a new, actionable lead: among zs-wrong fog points, higher norm predicts oracle-recoverability. It is the first label-free signal shown to carry information about which fog errors are fixable, and it inverts the naive "high norm = dead artifact" reading for the recoverable set.
+
+**Implication**: the labels provide the per-point cluster assignment that no decoder follows because the collapsing classes shift as tight clusters toward neighbors while the clean prototypes stay stale (and the LP never saw the corrupted clusters). The fog norm-AUROC result suggests a norm-conditioned re-estimate or weighting could recover part of the fog gap label-free; the crosstalk case has no such lead.
+
+**Extension for the both-conditions goal**: Part C was extended with a signal battery + a joint classifier to look for a mechanism that separates oracle-recovered from oracle-stuck points on BOTH conditions, not just fog. New signals: cos128 (nearest clean-prototype cosine), per-class z-scored norm (norm_z), LP softmax entropy and top-2 margin, kNN local agreement (fraction of 128D neighbors sharing the assignment), plus a logistic-regression combination of all label-free signals (trained/evaluated on halves of the recovered/stuck sets). A high *combined* AUROC on crosstalk would mean a joint label-free signal exists even though no single signal clears 0.6. Re-run `--deep_label_analysis` on fog + crosstalk for the extended results.
 
 ### Candidate mechanisms: all closed or judged not worth running
 

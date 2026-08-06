@@ -576,8 +576,11 @@ def main():
             print("   -> Recoverability AUROC (1 = signal separates recovered from stuck; "
                   "0.5 = no information):")
             for k, v in da['recover'].items():
-                print(f"      {k:<12}: AUC {v['auc']:.3f} | mean recovered {v['mean_recovered']:.4f} | "
-                      f"mean stuck {v['mean_stuck']:.4f}")
+                if k == 'combined_lr':
+                    print(f"      {'combined_lr':<12}: AUC {v['auc']:.3f}  (joint label-free signal)")
+                else:
+                    print(f"      {k:<12}: AUC {v['auc']:.3f} | mean recovered {v['mean_recovered']:.4f} | "
+                          f"mean stuck {v['mean_stuck']:.4f}")
             all_results[corruption] = res
             continue
         res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,

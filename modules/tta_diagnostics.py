@@ -1011,15 +1011,44 @@ def deep_label_analysis(base_protos, proto_lbls, clean_feats, clean_lbls, corrup
     recovered = (zs0_val_preds != val_l) & (oracle_val_preds == val_l)
     if recovered.sum() > 50 and both_wrong.sum() > 50:
         norm = torch.norm(val_f, p=2, dim=1)
-        top2 = torch.topk(F.normalize(val_h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T, 2, dim=1)
+        sims10 = F.normalize(val_h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T
+        top2 = torch.topk(sims10, 2, dim=1)
         margin = (top2.values[:, 0] - top2.values[:, 1]).clamp(min=0)
-        lp_conf = torch.tensor(clf.predict_proba(val_f.cpu().numpy()).max(axis=1)).to(device)
+        lp_probs = torch.tensor(clf.predict_proba(val_f.cpu().numpy())).to(device)
+        lp_conf = lp_probs.max(dim=1).values
+        lp_margin = (torch.topk(lp_probs, 2, dim=1).values[:, 0]
+                     - torch.topk(lp_probs, 2, dim=1).values[:, 1]).clamp(min=0)
+        lp_entropy = -(lp_probs * torch.log(lp_probs.clamp(min=1e-12))).sum(dim=1)
         ti = torch.searchsorted(proto_lbls, val_l)
-        cos_true = (F.normalize(val_h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T)[torch.arange(len(val_l), device=device), ti]
+        cos_true = sims10[torch.arange(len(val_l), device=device), ti]
         loss = (top2.values[:, 0] - cos_true).clamp(min=0)
+        # 128D clean-prototype signals (need clean 128D means; recompute from the pool's
+        # class assignment is not available here, so use the val's own clean-side geometry
+        # via the LP's class-conditional mean is skipped; use cos128 from the 10kD sims' top-1)
+        cos128 = top2.values[:, 0]
+        # per-class z-scored norm (relative magnitude within the predicted class)
+        norm_z = torch.zeros_like(norm)
+        for c in proto_lbls.tolist():
+            m = zs0_val_preds == c
+            if int(m.sum().item()) > 10:
+                norm_z[m] = (norm[m] - norm[m].mean()) / (norm[m].std() + 1e-8)
+        # kNN local agreement: fraction of k nearest 128D neighbors sharing the zs prediction
+        # (subsample for the cdist cost; recovered/stuck balance kept by sampling equally)
+        knn_agree = torch.zeros(len(val_f), device=device)
+        kn = min(20000, len(val_f))
+        torch.manual_seed(0)
+        sub = torch.randperm(len(val_f))[:kn]
+        sub_f = val_f[sub]
+        d = torch.cdist(sub_f, sub_f)
+        nb = torch.topk(d, 11, dim=1, largest=False).indices[:, 1:]
+        agree = (zs0_val_preds[sub][nb] == zs0_val_preds[sub].unsqueeze(1)).float().mean(dim=1)
+        knn_agree[sub] = agree
+
+        signals = [('norm', norm), ('margin', margin), ('cos128', cos128), ('lp_conf', lp_conf),
+                   ('lp_margin', lp_margin), ('lp_entropy', lp_entropy),
+                   ('norm_z', norm_z), ('knn_agree', knn_agree), ('oracle_loss', loss)]
         y = torch.cat([torch.ones(recovered.sum()), torch.zeros(both_wrong.sum())]).numpy()
-        for name, sig in [('norm', norm), ('margin', margin), ('lp_conf', lp_conf),
-                          ('oracle_loss', loss)]:
+        for name, sig in signals:
             x = torch.cat([sig[recovered], sig[both_wrong]]).cpu().numpy()
             if x.std() > 0:
                 auc = roc_auc_score(y, x)
@@ -1030,6 +1059,18 @@ def deep_label_analysis(base_protos, proto_lbls, clean_feats, clean_lbls, corrup
                 'mean_recovered': float(sig[recovered].mean().item()),
                 'mean_stuck': float(sig[both_wrong].mean().item()),
             }
+        # combined signal: logistic regression over the label-free signals (oracle labels
+        # used only as the diagnostic target; trains on half, evaluates on the other half).
+        # A high AUROC here means a JOINT label-free signal separates recovered from stuck.
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.model_selection import train_test_split
+        X_all = torch.stack([torch.cat([s[recovered], s[both_wrong]]) for s in
+                             [norm, margin, cos128, lp_conf, lp_margin, lp_entropy,
+                              norm_z, knn_agree]], dim=1).cpu().numpy()
+        X_tr, X_te, y_tr, y_te = train_test_split(X_all, y, test_size=0.5, random_state=0)
+        lr = LogisticRegression(max_iter=1000)
+        lr.fit(X_tr, y_tr)
+        recover['combined_lr'] = {'auc': float(roc_auc_score(y_te, lr.decision_function(X_te)))}
 
     return {
         'geometry': geometry,
