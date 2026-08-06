@@ -167,7 +167,23 @@ AUROC of each label-free signal for separating oracle-rescued (zs-wrong, oracle-
 
 **Implication**: the labels provide the per-point cluster assignment that no decoder follows because the collapsing classes shift as tight clusters toward neighbors while the clean prototypes stay stale (and the LP never saw the corrupted clusters). The fog norm-AUROC result suggests a norm-conditioned re-estimate or weighting could recover part of the fog gap label-free; the crosstalk case has no such lead.
 
-**Extension for the both-conditions goal**: Part C was extended with a signal battery + a joint classifier to look for a mechanism that separates oracle-recovered from oracle-stuck points on BOTH conditions, not just fog. New signals: cos128 (nearest clean-prototype cosine), per-class z-scored norm (norm_z), LP softmax entropy and top-2 margin, kNN local agreement (fraction of 128D neighbors sharing the assignment), plus a logistic-regression combination of all label-free signals (trained/evaluated on halves of the recovered/stuck sets). A high *combined* AUROC on crosstalk would mean a joint label-free signal exists even though no single signal clears 0.6. Re-run `--deep_label_analysis` on fog + crosstalk for the extended results.
+**Extension for the both-conditions goal**: Part C was extended with a signal battery + a joint classifier to look for a mechanism that separates oracle-recovered from oracle-stuck points on BOTH conditions, not just fog. New signals: cos128 (nearest clean-prototype cosine), per-class z-scored norm (norm_z), LP softmax entropy and top-2 margin, kNN local agreement (fraction of 128D neighbors sharing the assignment), plus a logistic-regression combination of all label-free signals (trained/evaluated on halves of the recovered/stuck sets).
+
+**Extended recoverability AUROCs (recovered vs stuck):**
+
+| Signal | fog AUC | crosstalk AUC |
+| :--- | :--- | :--- |
+| norm | **0.747** | 0.544 |
+| norm_z | 0.619 | 0.545 |
+| LP confidence | 0.576 | 0.595 |
+| LP margin | 0.577 | **0.593** |
+| margin | 0.588 | 0.423 |
+| cos128 | 0.479 | 0.393 |
+| kNN agreement | 0.505 | 0.496 |
+| LP entropy | 0.425 | 0.399 |
+| **combined (all signals)** | **0.799** | **0.680** |
+
+**Finding: a joint label-free signal separates recovered from stuck points on BOTH conditions.** Single signals are weak on crosstalk (best 0.60), but the combined classifier reaches 0.799 on fog and 0.680 on crosstalk. The recoverability information is present in the *joint* label-free feature space on both conditions, not just fog. The two conditions lean on different features (fog on the magnitude signals norm/norm_z, crosstalk on the probe-confidence signals LP-conf/LP-margin), so a shared mechanism must combine both families, exactly the feature set a learned per-point recoverability/loss-estimator head would take as input. This is the first evidence that a both-conditions label-free mechanism is reachable in principle; the open question is whether the combiner can be learned without oracle labels (clean/self-supervised training).
 
 ### Candidate mechanisms: all closed or judged not worth running
 

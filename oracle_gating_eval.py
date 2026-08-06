@@ -40,6 +40,7 @@ from modules.tta_diagnostics import (
     iter2_balanced_reestimate,
     react_test,
     deep_label_analysis,
+    combined_gate_sweep,
     VIEW_CONFIGS,
 )
 
@@ -146,6 +147,14 @@ def main():
                              "every label-free signal for separating oracle-recovered from "
                              "oracle-stuck points. Can run for hours; use "
                              "--corruptions to scope it.")
+    parser.add_argument("--combined_gate_sweep", action="store_true",
+                        help="Path-validation sweep: does a COMBINED label-free recoverability "
+                             "gate (fixed z-scored linear combos of norm/norm_z/LP-conf/"
+                             "LP-margin/cos128/LP-entropy/margin, no oracle) produce full-scene "
+                             "gains on fog/crosstalk without collapsing the other conditions? "
+                             "Reports decode-side retained mIoU and re-estimate-side weighted "
+                             "full-scene mIoU per config, plus zero-shot/zs-reest/oracle "
+                             "references. Run on all 8 conditions for the collapse check.")
     parser.add_argument("--autopsy", action="store_true",
                         help="Run the per-condition hyperspace/decode autopsy (Phase 24) for "
                              "each corruption and print the comparison table: artifact profile, "
@@ -581,6 +590,28 @@ def main():
                 else:
                     print(f"      {k:<12}: AUC {v['auc']:.3f} | mean recovered {v['mean_recovered']:.4f} | "
                           f"mean stuck {v['mean_stuck']:.4f}")
+            all_results[corruption] = res
+            continue
+        if args.combined_gate_sweep:
+            res = {}
+            print("      -> Running Combined-Signal Gate Sweep...")
+            cg = combined_gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
+                                     clf, proj, device)
+            res['combined_gate_sweep'] = cg
+            m = cg['metrics']
+            print("   -> Full-scene mIoU: zero-shot {:.4f} | zs-pseudo-reest {:.4f} | oracle {:.4f}"
+                  .format(m['zero_shot']['miou'], m['zs_pseudo_reestimate']['miou'],
+                          m['oracle']['miou']))
+            print("   -> Re-estimate weighted full-scene mIoU per config:")
+            for cname, cfg in cg['configs'].items():
+                rs = cfg['reestimate']
+                print(f"      {cname:<13}: " + " | ".join(
+                    f"w{w} {rs[f'w{w}']['miou']:.4f}" for w in (0.5, 1.0, 2.0)))
+            print("   -> Decode-side retained mIoU per config (top25/50/75):")
+            for cname, cfg in cg['configs'].items():
+                dc = cfg['decode_retained']
+                print(f"      {cname:<13}: " + " | ".join(
+                    f"{k} {v:.4f}" for k, v in dc.items()))
             all_results[corruption] = res
             continue
         res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,

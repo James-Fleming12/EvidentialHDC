@@ -1082,3 +1082,100 @@ def deep_label_analysis(base_protos, proto_lbls, clean_feats, clean_lbls, corrup
         'class_impact': class_impact,
         'recover': recover,
     }
+
+def combined_gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj, device,
+                        pool_size=500000, val_size=100000, seed=42, strengths=(0.5, 1.0, 2.0)):
+    """Path-validation sweep (tta_iterations.md): does a COMBINED label-free recoverability
+    gate produce full-scene gains on fog/crosstalk without collapsing the other conditions?
+
+    The recoverability battery (deep_label_analysis Part C) showed a JOINT label-free
+    signal separates oracle-recovered from oracle-stuck points on both conditions (combined
+    AUROC fog 0.799, crosstalk 0.680). This tests whether that joint signal is exploitable:
+    it builds FIXED z-scored linear-combination configs (no oracle labels) and, for each,
+    weights the prototype re-estimate toward the recoverable points, measuring the
+    FULL-SCENE mIoU (the deployable direction). Decode-side retained mIoU is also reported
+    as the older diagnostic framing. The all-conditions sweep is the collapse check.
+    """
+    torch.manual_seed(seed)
+    perm = torch.randperm(len(corrupt_feats))
+    pool_idx = perm[:pool_size]
+    val_idx = perm[-val_size:]
+    pool_f = corrupt_feats[pool_idx].to(device)
+    pool_l = corrupt_lbls[pool_idx].to(device)
+    val_f = corrupt_feats[val_idx].to(device)
+    val_l = corrupt_lbls[val_idx].to(device)
+    val_h = torch.sign(val_f @ proj)
+    w_one = torch.ones(len(pool_f), device=device)
+
+    def decode(protos):
+        sims = F.normalize(val_h, p=2, dim=1) @ F.normalize(protos, p=2, dim=1).T
+        preds = proto_lbls[sims.argmax(dim=1)]
+        return {'acc': float((preds == val_l).float().mean().item()),
+                'miou': compute_miou(preds, val_l)}
+
+    # ---- signal battery on the pool (chunked projection to bound memory) ----
+    base_norm = F.normalize(base_protos, p=2, dim=1)
+    sims = []
+    for start in range(0, len(pool_f), 50000):
+        hc = torch.sign(pool_f[start:start + 50000] @ proj)
+        sims.append(F.normalize(hc, p=2, dim=1) @ base_norm.T)
+    sims = torch.cat(sims, dim=0)
+    zs_pseudo = proto_lbls[sims.argmax(dim=1)]
+    protos_zs = weighted_mean_update(base_protos, proto_lbls, pool_f, zs_pseudo, w_one, proj, device)
+
+    norm = torch.norm(pool_f, p=2, dim=1)
+    top2 = torch.topk(sims, 2, dim=1)
+    margin = (top2.values[:, 0] - top2.values[:, 1]).clamp(min=0)
+    cos128 = top2.values[:, 0]
+    lp_probs = torch.tensor(clf.predict_proba(pool_f.cpu().numpy())).to(device)
+    lp_conf = lp_probs.max(dim=1).values
+    lp_margin = (torch.topk(lp_probs, 2, dim=1).values[:, 0]
+                 - torch.topk(lp_probs, 2, dim=1).values[:, 1]).clamp(min=0)
+    lp_entropy = -(lp_probs * torch.log(lp_probs.clamp(min=1e-12))).sum(dim=1)
+    norm_z = torch.zeros_like(norm)
+    for c in proto_lbls.tolist():
+        m = zs_pseudo == c
+        if int(m.sum().item()) > 10:
+            norm_z[m] = (norm[m] - norm[m].mean()) / (norm[m].std() + 1e-8)
+
+    def z(sig):
+        return (sig - sig.mean()) / (sig.std() + 1e-8)
+
+    # configs: signed z-scored linear combos (signs from the Part C AUROC means)
+    configs = {
+        'norm': z(norm_z),
+        'lp': z(lp_conf) + z(lp_margin),
+        'norm+lp': z(norm_z) + z(lp_conf) + z(lp_margin),
+        'full': z(norm_z) + z(lp_conf) + z(lp_margin) - z(cos128) - z(lp_entropy) - z(margin),
+        'full_no_norm': z(lp_conf) + z(lp_margin) - z(cos128) - z(lp_entropy) - z(margin),
+    }
+
+    results = {}
+    for cname, score in configs.items():
+        # (a) decode-side retained mIoU at top-25/50/75%
+        dec = {}
+        for frac in (0.25, 0.50, 0.75):
+            k = max(int(len(score) * frac), 1)
+            keep = torch.topk(score, k).indices
+            preds = proto_lbls[sims[keep].argmax(dim=1)]
+            lbl = pool_l[keep]
+            dec[f'top{int(frac*100)}'] = compute_miou(preds, lbl)
+        # (b) re-estimate-side weighting (full-scene)
+        s_min, s_max = score.min(), score.max()
+        w_norm = (score - s_min) / (s_max - s_min + 1e-9)
+        reest = {}
+        for w in strengths:
+            weights = 1.0 + w * w_norm
+            protos = weighted_mean_update(base_protos, proto_lbls, pool_f, zs_pseudo,
+                                          weights, proj, device)
+            reest[f'w{w}'] = decode(protos)
+        results[cname] = {'decode_retained': dec, 'reestimate': reest}
+
+    zs = decode(base_protos)
+    zs_reest = decode(protos_zs)
+    oracle = decode(weighted_mean_update(base_protos, proto_lbls, pool_f, pool_l, w_one, proj, device))
+
+    return {
+        'metrics': {'zero_shot': zs, 'zs_pseudo_reestimate': zs_reest, 'oracle': oracle},
+        'configs': results,
+    }
