@@ -646,6 +646,89 @@ def oracle_pool_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj
         rows.append({'pool_size': ps, **decode(protos)})
     return {'zero_shot': decode(base_protos), 'rows': rows}
 
+def iteration0_label_info(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, device,
+                          pool_size=500000, val_size=100000, seed=42):
+    """Iteration 0 diagnostic (tta_iterations.md): WHAT information do the labels give?
+
+    naive EMA and the full-label oracle use the SAME weighted-mean prototype operator;
+    the only difference is the per-point class assignment. So the labels' information
+    is assignment, and this quantifies it per class on the pool:
+      - pseudo-label precision/recall per class (how contaminated the label-free
+        re-estimate's prototypes are),
+      - the top contamination source per prototype (which true classes land in it),
+      - per-class val IoU for zero-shot / naive EMA / full-label oracle (which classes
+        the correct assignment rescues).
+    """
+    torch.manual_seed(seed)
+    perm = torch.randperm(len(corrupt_feats))
+    pool_idx = perm[:pool_size]
+    val_idx = perm[-val_size:]
+    pool_f = corrupt_feats[pool_idx].to(device)
+    pool_l = corrupt_lbls[pool_idx].to(device)
+    val_f = corrupt_feats[val_idx].to(device)
+    val_l = corrupt_lbls[val_idx].to(device)
+    val_h = torch.sign(val_f @ proj)
+
+    def decode(protos):
+        sims = F.normalize(val_h, p=2, dim=1) @ F.normalize(protos, p=2, dim=1).T
+        preds = proto_lbls[sims.argmax(dim=1)]
+        return preds, {'acc': float((preds == val_l).float().mean().item()),
+                       'miou': compute_miou(preds, val_l)}
+
+    zs_preds, zs_metrics = decode(base_protos)
+    w_one = torch.ones(len(pool_f), device=device)
+
+    pool_h = torch.sign(pool_f @ proj)
+    pool_sims = F.normalize(pool_h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T
+    pool_zs = proto_lbls[pool_sims.argmax(dim=1)]
+
+    class_info = {}
+    for c in proto_lbls.tolist():
+        t_true = int((pool_l == c).sum().item())
+        t_pred = int((pool_zs == c).sum().item())
+        correct = int(((pool_l == c) & (pool_zs == c)).sum().item())
+        prec = correct / t_pred if t_pred > 0 else 0.0
+        rec = correct / t_true if t_true > 0 else 0.0
+        contam = {}
+        mask = pool_zs == c
+        for cc in proto_lbls.tolist():
+            n = int((pool_l[mask] == cc).sum().item())
+            if n > 0 and cc != c:
+                contam[cc] = n
+        top_contam = sorted(contam.items(), key=lambda kv: -kv[1])[:3]
+        class_info[c] = {'true': t_true, 'pred': t_pred, 'prec': prec, 'rec': rec,
+                         'top_contam': dict(top_contam)}
+
+    def per_class_iou(preds):
+        present = set(val_l.tolist())
+        out = {}
+        for c in range(1, 17):
+            if c not in present:
+                continue
+            tp = int(((preds == c) & (val_l == c)).sum().item())
+            fp = int(((preds == c) & (val_l != c)).sum().item())
+            fn = int(((preds != c) & (val_l == c)).sum().item())
+            d = tp + fp + fn
+            out[c] = tp / d if d > 0 else 0.0
+        return out
+
+    protos_oracle = weighted_mean_update(base_protos, proto_lbls, pool_f, pool_l, w_one, proj, device)
+    o_preds, o_metrics = decode(protos_oracle)
+    protos_naive = weighted_mean_update(base_protos, proto_lbls, pool_f, pool_zs, w_one, proj, device)
+    n_preds, n_metrics = decode(protos_naive)
+
+    return {
+        'metrics': {'zero_shot': zs_metrics, 'naive_ema': n_metrics,
+                    'full_label_oracle': o_metrics},
+        'pool_pseudo_label_acc': float((pool_zs == pool_l).float().mean().item()),
+        'class_info': class_info,
+        'per_class_val_iou': {
+            'zero_shot': per_class_iou(zs_preds),
+            'naive_ema': per_class_iou(n_preds),
+            'full_label_oracle': per_class_iou(o_preds),
+        },
+    }
+
 CLASS_NAMES = {1: 'car', 2: 'bicycle', 3: 'motorcycle', 4: 'truck', 5: 'other-vehicle',
                6: 'person', 7: 'road', 8: 'fence', 9: 'vegetation', 10: 'trunk',
                11: 'terrain', 12: 'pole', 13: 'traffic-sign', 14: 'other-ground',
@@ -1206,6 +1289,12 @@ def main():
                              "discrepancy: full-label prototypes from the corrupted pool at "
                              "pool sizes 200k / 500k / 1M, same shared val subset, "
                              "full-scene acc + mIoU.")
+    parser.add_argument("--iter0_label_info", action="store_true",
+                        help="Iteration 0 diagnostic (tta_iterations.md): quantify what "
+                             "information the labels give over the label-free TTA methods. "
+                             "Per-class pool pseudo-label precision/recall + contamination "
+                             "source, and per-class val IoU for zero-shot / naive EMA / "
+                             "full-label oracle.")
     parser.add_argument("--autopsy", action="store_true",
                         help="Run the per-condition hyperspace/decode autopsy (Phase 24) for "
                              "each corruption and print the comparison table: artifact profile, "
@@ -1501,6 +1590,30 @@ def main():
                   f"(zero-shot acc {zs['acc']:.4f} | mIoU {zs['miou']:.4f}):")
             for r in ops['rows']:
                 print(f"      pool {r['pool_size']:>8}: acc {r['acc']:.4f} | mIoU {r['miou']:.4f}")
+            all_results[corruption] = res
+            continue
+        if args.iter0_label_info:
+            res = {}
+            print("      -> Running Iteration-0 Label-Information Diagnostic...")
+            i0 = iteration0_label_info(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
+                                       proj, device)
+            res['iter0_label_info'] = i0
+            m = i0['metrics']
+            print(f"   -> Full-scene: zero-shot acc {m['zero_shot']['acc']:.4f} mIoU {m['zero_shot']['miou']:.4f} | "
+                  f"naive_ema acc {m['naive_ema']['acc']:.4f} mIoU {m['naive_ema']['miou']:.4f} | "
+                  f"oracle acc {m['full_label_oracle']['acc']:.4f} mIoU {m['full_label_oracle']['miou']:.4f}")
+            print(f"   -> Pool pseudo-label accuracy (10kD zero-shot vs true): "
+                  f"{i0['pool_pseudo_label_acc']:.4f}")
+            pci = i0['per_class_val_iou']
+            print("   -> Per-class val IoU: zs | naive | oracle  (pool true/pred, prec, rec):")
+            for c in proto_lbls.tolist():
+                ci = i0['class_info'][c]
+                z = pci['zero_shot'].get(c, float('nan'))
+                n = pci['naive_ema'].get(c, float('nan'))
+                o = pci['full_label_oracle'].get(c, float('nan'))
+                print(f"      class {c:<2}: IoU {z:.3f} | {n:.3f} | {o:.3f} | "
+                      f"pool {ci['true']}/{ci['pred']} prec {ci['prec']:.3f} rec {ci['rec']:.3f} | "
+                      f"top contam {ci['top_contam']}")
             all_results[corruption] = res
             continue
         res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,
