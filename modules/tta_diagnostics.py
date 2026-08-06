@@ -1454,9 +1454,11 @@ def iter7_knn_reassign(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf
                 nb = torch.tensor(nb)
                 nb_labels = lp_pool[nb]                       # [n_sel, k]
                 nb_conf = lp_conf[nb]                         # [n_sel, k]
-                votes = torch.zeros(n_sel, len(proto_lbls), device=device)
-                votes.scatter_add_(1, nb_labels.long(), nb_conf.float())
-                new_label = proto_lbls[votes.argmax(dim=1)]
+                votes = torch.zeros(n_sel, 17, device=device)
+                votes.scatter_add_(1, nb_labels.long().clamp(0, 16), nb_conf.float())
+                c_new = votes.argmax(dim=1)
+                valid_c = torch.isin(c_new, proto_lbls)
+                new_label = torch.where(valid_c, c_new, zs_pseudo[sel])
                 pseudo = zs_pseudo.clone()
                 pseudo[sel] = new_label
             else:
