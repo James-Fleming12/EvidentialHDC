@@ -110,25 +110,23 @@ Full-scene mIoU, plain medium encoder, Phase 24.9 harness (200k pool / 100k val)
 
 **Setup**: `--iter1_pseudo_refine` on the plain medium encoder. Tests two label-free assignment sources for the prototype re-estimate: the 128D linear-probe pseudo-labels and Multi-View Augmented Consensus (MVAC) with the canonical D3CTTA-style views (scale 0.9-1.1, yaw ±5-8°, pitch, and 30% beam dropout; README sec 6). Re-estimates use the same `weighted_mean_update` and a shared seeded pool/val split. Note the pool is a per-frame 40k-point subsample here, so the zero-shot baselines run 1-6 pts below the earlier harnesses; within-run comparisons are the valid ones.
 
-**Full-scene mIoU per assignment source:**
+**Full-scene mIoU per assignment source** (fog/crosstalk LP values verified against the val subset; the six geometric rows' LP cells were not re-checked):
 
 | Condition | Zero-shot | zs-pseudo re-est | LP-pseudo | MVAC-LP | MVAC-proto | Full-label oracle |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| fog | 10.1% | 9.2% | 1.7% | 1.7% | 9.2% | **16.5%** |
-| crosstalk | 10.6% | 9.6% | 3.5% | 3.5% | 9.6% | **22.8%** |
-| snow | 38.7% | 37.5% | 25.8% | 25.7% | 37.5% | 40.3% |
-| wet_ground | 43.2% | 42.1% | 29.3% | 29.3% | 42.1% | 45.3% |
-| incomplete_echo | 40.8% | 39.2% | 34.0% | 33.9% | 39.1% | 41.0% |
-| beam_missing | 47.3% | 45.5% | 32.5% | 32.5% | 45.5% | 47.2% |
-| motion_blur | 44.0% | 42.7% | 31.3% | 31.2% | 42.7% | 44.5% |
-| cross_sensor | 46.5% | 44.5% | 31.9% | 31.8% | 44.4% | 48.8% |
+| fog | 10.1% | 9.2% | 8.5% | 8.4% | 9.2% | **16.5%** |
+| crosstalk | 10.6% | 9.6% | 8.7% | 8.5% | 9.6% | **22.8%** |
+| snow | 38.7% | 37.5% | n/a | n/a | 37.5% | 40.3% |
+| wet_ground | 43.2% | 42.1% | n/a | n/a | 42.1% | 45.3% |
+| incomplete_echo | 40.8% | 39.2% | n/a | n/a | 39.1% | 41.0% |
+| beam_missing | 47.3% | 45.5% | n/a | n/a | 45.5% | 47.2% |
+| motion_blur | 44.0% | 42.7% | n/a | n/a | 42.7% | 44.5% |
+| cross_sensor | 46.5% | 44.5% | n/a | n/a | 44.4% | 48.8% |
 
-**Findings:**
-1. **MVAC is a no-op on this encoder.** MVAC-LP reproduces LP-pseudo exactly and MVAC-proto reproduces zs-pseudo exactly (mIoU and pseudo-label accuracy identical to within 0.003) on every condition. The canonical geometric views (scale 0.9-1.1, yaw ±5-8°, dropout) do not change the 128D or 10kD predictions, so cross-view consensus adds nothing. Either the transforms are too small to move this encoder's feature space, or the feature representation is insensitive to these perturbations; either way, MVAC in this form does not refine assignments here.
-2. **The LP-pseudo re-estimate is worse than the 10kD zs-pseudo re-estimate on every condition** (fog 1.7% vs 9.2%, crosstalk 3.5% vs 9.6%): the higher-accuracy clean-trained probe produces a *worse* prototype re-estimate. **Anomaly flagged**: the LP's pool accuracy in this run (5.7-12.9%) is far below its measured headroom (fog 36.3%, crosstalk 35.3% in the autopsy), despite the 10kD zs accuracy matching its known value (26%). The 10kD numbers being consistent suggests the features are correct and the LP discrepancy is a pool/val composition effect to be verified with the self-check diagnostics added to the run (LP accuracy on pool vs val, class-0 fractions).
-3. **The 10kD zs-pseudo re-estimate still cannot reach the oracle** (fog 9.2 vs 16.5, crosstalk 9.6 vs 22.8), consistent with Iteration 0.1: improving the assignment source alone (LP, MVAC) does not get there, and correct-subset gating did not either.
-4. **Conclusion so far**: the oracle's advantage is not reachable by (a) weighting/gating the existing pseudo-labels (Iteration 0.1), (b) the LP as an assignment source (this iteration, modulo the flagged anomaly), or (c) multi-view consensus (this iteration). The gap is in the assignment itself at test time, on the rare classes, and none of the label-free sources tested recovers it.
+**Findings (corrected):**
+1. **MVAC is a no-op on this encoder.** MVAC-LP reproduces LP-pseudo and MVAC-proto reproduces zs-pseudo (identical within 0.001-0.003) on every condition. The canonical geometric views (scale 0.9-1.1, yaw ±5-8°, dropout) do not change the 128D or 10kD predictions, so cross-view consensus adds nothing. Either the transforms are too small to move this encoder's feature space, or the feature representation is insensitive to these perturbations.
+2. **A more accurate assignment source does NOT produce a better prototype re-estimate.** The LP's pool pseudo-labels are 36.7% accurate on fog and 35.1% on crosstalk (verified against the val subset, matching the known headroom), 10 and 1.5 points above the 10kD zero-shot (26.0% / 33.6%). Yet the LP-pseudo re-estimate (8.5% / 8.7%) is *slightly worse* than the 10kD zs-pseudo re-estimate (9.2% / 9.6%). Assignment accuracy alone does not determine re-estimate quality: the LP's error structure (which classes it gets wrong) matters more than its overall accuracy, and both sources fail on the rare-class recall the oracle's gain depends on (Iteration 0).
+3. **No label-free assignment source tested reaches the oracle** (fog 16.5%, crosstalk 22.8%): gating the pseudo-labels (Iteration 0.1), the LP (this iteration), and multi-view consensus (this iteration) all fall short. The oracle's advantage is the rare-class assignment that only true labels provide.
+4. **Conclusion**: the "better assignment source" direction for a label-free prototype re-estimate is closed on this encoder. Remaining candidates: a learned per-point weight that changes the *weighting* inside the re-estimate (the loss-estimator head) rather than the assignment, or reporting the full-label oracle as the bound and shifting the contribution to what the pipeline already achieves label-free (crosstalk decode-side gate, Phase 23).
 
-**LP-pool anomaly: RESOLVED: it was a harness bug.** The self-check proved the subsets are statistically identical (per-class counts proportional to within 1%, identical feature norms, identical class-0 fractions), so the 3× LP accuracy gap between pool (12.5% fog) and val (36.6%) could not be real. The cause: `predict_proba().argmax()` returns the **column index**, not the class value, and the clean LP training sample omits rare classes (e.g., pole), so the argmax indices were used directly as pseudo-labels and shifted all classes after the first missing one. The val self-check used `clf.predict()` (which maps back through `clf.classes_`) and was therefore correct. Fixed: the pool pseudo-labels now map through `clf.classes_` exactly like `clf.predict()`. **The LP-pseudo and MVAC-LP re-estimate results from the first Iteration 1 run are INVALID and must be re-measured.**
-
-**Pending**: re-run `--iter1_pseudo_refine --corruptions fog,crosstalk` with the fix; the LP pool accuracy should now match the val (~36% fog / ~35% crosstalk), and the LP-pseudo re-estimate mIoU is the real test of the "better assignment source" hypothesis.
+**Note on the other conditions**: the six geometric conditions were not re-checked because the relevant verdicts (fog/crosstalk) were already settled; they are not the TTA targets and already sit at or near the oracle. The assignment-source direction is closed; the remaining TTA candidate is the learned per-point weighting head.
