@@ -908,14 +908,17 @@ def iter1_pseudo_refine(base_protos, proto_lbls, corrupt_feats, corrupt_views, c
     # view features on the pool (aligned to pool base indices)
     pool_views = [v[pool_idx].to(device) for v in corrupt_views]
 
-    # 1. LP-pseudo (base view)
+    # 1. LP-pseudo (base view). NOTE: predict_proba().argmax() returns the COLUMN INDEX,
+    # not the class value (misaligned if classes_ omits a rare class); map back through
+    # clf.classes_ exactly like clf.predict() does.
     lp_probs = [torch.tensor(clf.predict_proba(vf.cpu().numpy())) for vf in pool_views]
-    lp_pseudo = lp_probs[0].argmax(dim=1).to(device)
+    classes = torch.tensor(clf.classes_)
+    lp_pseudo = classes[lp_probs[0].argmax(dim=1)].to(device)
     lp_res = decode(reestimate(lp_pseudo))
 
     # 2. MVAC-LP: average LP probabilities across views
     avg_lp = torch.stack(lp_probs, dim=0).mean(dim=0)
-    mvac_lp_pseudo = avg_lp.argmax(dim=1).to(device)
+    mvac_lp_pseudo = classes[avg_lp.argmax(dim=1)].to(device)
     mvac_lp_res = decode(reestimate(mvac_lp_pseudo))
 
     # 3. MVAC-proto: average cosine-softmax over views in 10kD
