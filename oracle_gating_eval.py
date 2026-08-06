@@ -42,6 +42,7 @@ from modules.tta_diagnostics import (
     deep_label_analysis,
     combined_gate_sweep,
     assignment_gap_diag,
+    iter7_knn_reassign,
     VIEW_CONFIGS,
 )
 
@@ -165,6 +166,14 @@ def main():
                              "bound (top-R recoverable zs-wrong points set to their TRUE class) "
                              "and the gated-LP reassign (deployable), and recovered-set cluster "
                              "purity (kNN coherence / within-vs-between cosine).")
+    parser.add_argument("--iter7_knn_reassign", action="store_true",
+                        help="Iteration 7 test: recoverability-gated kNN label-propagation "
+                             "reassignment. Detect the recoverable subset (combined signal), "
+                             "reassign those points by a confidence-weighted kNN vote over "
+                             "neighbors' LP labels (local structure, not a global classifier), "
+                             "re-estimate prototypes, full-scene mIoU. Sweeps R (0.1/0.25/0.5) "
+                             "x k (5/20/50). Run on all 8 conditions: the collapse check is "
+                             "that healthy conditions stay near-identity (tiny recoverable set).")
     parser.add_argument("--autopsy", action="store_true",
                         help="Run the per-condition hyperspace/decode autopsy (Phase 24) for "
                              "each corruption and print the comparison table: artifact profile, "
@@ -648,6 +657,21 @@ def main():
             print("   -> Recovered-set cluster purity: kNN true-label acc {:.3f} | "
                   "within-cos {:.3f} | between-cos {:.3f} | n {}".format(
                       cl['knn_true_label_acc'], cl['within_cos'], cl['between_cos'], cl['n']))
+            all_results[corruption] = res
+            continue
+        if args.iter7_knn_reassign:
+            res = {}
+            print("      -> Running Iteration-7 kNN Reassignment...")
+            i7 = iter7_knn_reassign(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
+                                    clf, proj, device)
+            res['iter7_knn_reassign'] = i7
+            m = i7['metrics']
+            print("   -> Full-scene mIoU: zero-shot {:.4f} | zs-reest {:.4f} | oracle {:.4f} | "
+                  "pool zs-wrong {}".format(m['zero_shot'], m['zs_reestimate'], m['oracle'],
+                                            i7['n_wrong_pool']))
+            print("   -> kNN reassignment mIoU (R x k):")
+            for kk, v in i7['results'].items():
+                print(f"      {kk:<10}: {v['miou']:.4f} | n_reassigned {v['n_reassigned']}")
             all_results[corruption] = res
             continue
         res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,

@@ -1343,3 +1343,134 @@ def assignment_gap_diag(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, cl
         'gated': gated,
         'cluster': cluster,
     }
+
+def iter7_knn_reassign(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj, device,
+                       pool_size=500000, val_size=100000, seed=42,
+                       R=(0.1, 0.25, 0.5), k=(5, 20, 50), knn_pool=100000):
+    """Iteration 7: recoverability-gated kNN label-propagation reassignment.
+
+    Mechanism (from Iteration 6): the recoverable points cluster by true class (kNN acc
+    0.76-0.95) even though no global classifier can name them. So: (1) detect the
+    recoverable subset with the combined recoverability signal; (2) reassign those points
+    by their LOCAL structure, a confidence-weighted kNN vote over neighbors' LP labels;
+    (3) re-estimate the prototypes with the mixed assignment and measure FULL-SCENE mIoU.
+
+    The all-conditions sweep is the collapse check: on healthy conditions the recoverable
+    set is tiny and its neighborhoods are mostly correct, so the mechanism should be
+    near-identity there.
+    """
+    torch.manual_seed(seed)
+    perm = torch.randperm(len(corrupt_feats))
+    pool_idx = perm[:pool_size]
+    val_idx = perm[-val_size:]
+    # subsample the pool for the kNN graph + re-estimate (bounded memory)
+    torch.manual_seed(1)
+    ps_idx = pool_idx[torch.randperm(len(pool_idx))[:knn_pool]]
+    pool_f = corrupt_feats[ps_idx].to(device)
+    pool_l = corrupt_lbls[ps_idx].to(device)
+    val_f = corrupt_feats[val_idx].to(device)
+    val_l = corrupt_lbls[val_idx].to(device)
+    w_one = torch.ones(len(pool_f), device=device)
+    base_norm = F.normalize(base_protos, p=2, dim=1)
+
+    def decode(protos):
+        sims = F.normalize(torch.sign(val_f @ proj), p=2, dim=1) @ F.normalize(protos, p=2, dim=1).T
+        preds = proto_lbls[sims.argmax(dim=1)]
+        return preds, compute_miou(preds, val_l)
+
+    def per_class_iou(preds):
+        present = set(val_l.tolist())
+        out = {}
+        for c in range(1, 17):
+            if c not in present:
+                continue
+            tp = int(((preds == c) & (val_l == c)).sum().item())
+            fp = int(((preds == c) & (val_l != c)).sum().item())
+            fn = int(((preds != c) & (val_l == c)).sum().item())
+            d = tp + fp + fn
+            out[c] = tp / d if d > 0 else 0.0
+        return out
+
+    # pool zs pseudo + signals
+    pool_sims = []
+    for start in range(0, len(pool_f), 50000):
+        hc = torch.sign(pool_f[start:start + 50000] @ proj)
+        pool_sims.append(F.normalize(hc, p=2, dim=1) @ base_norm.T)
+    pool_sims = torch.cat(pool_sims, dim=0)
+    zs_pseudo = proto_lbls[pool_sims.argmax(dim=1)]
+    lp_pool = torch.tensor(clf.predict(pool_f.cpu().numpy())).long().to(device)
+    lp_probs = torch.tensor(clf.predict_proba(pool_f.cpu().numpy())).to(device)
+    lp_conf = lp_probs.max(dim=1).values
+
+    # recoverability detector (oracle-LR trained on val, applied to pool_s)
+    val_sims = F.normalize(torch.sign(val_f @ proj), p=2, dim=1) @ base_norm.T
+    val_zs = proto_lbls[val_sims.argmax(dim=1)]
+    protos_oracle = weighted_mean_update(base_protos, proto_lbls, pool_f, pool_l, w_one, proj, device)
+    oracle_val_preds, _ = decode(protos_oracle)
+    recovered = (val_zs != val_l) & (oracle_val_preds == val_l)
+    stuck = (val_zs != val_l) & (oracle_val_preds != val_l)
+
+    def sig_tensor(feats, sims, lp_probs_t):
+        norm = torch.norm(feats, p=2, dim=1)
+        t2 = torch.topk(sims, 2, dim=1)
+        margin = (t2.values[:, 0] - t2.values[:, 1]).clamp(min=0)
+        conf = lp_probs_t.max(dim=1).values
+        entropy = -(lp_probs_t * torch.log(lp_probs_t.clamp(min=1e-12))).sum(dim=1)
+        return torch.stack([norm, margin, conf, entropy], dim=1)
+
+    Xp = sig_tensor(pool_f, pool_sims, lp_probs)
+    mu, sd = Xp.mean(dim=0), Xp.std(dim=0) + 1e-8
+    Xp_n = (Xp - mu) / sd
+    v_lp = torch.tensor(clf.predict_proba(val_f.cpu().numpy())).to(device)
+    Xv = sig_tensor(val_f, val_sims, v_lp)
+    Xv_n = (Xv - mu) / sd
+    from sklearn.linear_model import LogisticRegression
+    det = LogisticRegression(max_iter=1000)
+    use = (recovered | stuck)
+    yv = torch.zeros(len(val_f), device=device)
+    yv[recovered] = 1
+    det.fit(Xv_n[use].cpu().numpy(), yv[use].cpu().numpy())
+    det_score = torch.tensor(det.decision_function(Xp_n.cpu().numpy())).to(device)
+
+    pool_wrong = zs_pseudo != pool_l
+    n_wrong = int(pool_wrong.sum().item())
+
+    from sklearn.neighbors import NearestNeighbors
+    nn_model = NearestNeighbors(n_neighbors=max(k) + 1, metric='cosine', algorithm='brute')
+    nn_model.fit(F.normalize(pool_f, p=2, dim=1).cpu().numpy())
+
+    zs_metrics = decode(weighted_mean_update(base_protos, proto_lbls, pool_f, zs_pseudo,
+                                             w_one, proj, device))[1]
+    results = {}
+    for Rval in R:
+        for kval in k:
+            n_sel = max(int(n_wrong * Rval), 1)
+            det_wrong = torch.full_like(det_score, -1e9)
+            det_wrong[pool_wrong] = det_score[pool_wrong]
+            sel = torch.topk(det_wrong, n_sel).indices
+            if n_sel > 0:
+                nb = nn_model.kneighbors(F.normalize(pool_f[sel], p=2, dim=1).cpu().numpy(),
+                                         n_neighbors=kval + 1)[1][:, 1:]
+                nb = torch.tensor(nb)
+                nb_labels = lp_pool[nb]                       # [n_sel, k]
+                nb_conf = lp_conf[nb]                         # [n_sel, k]
+                votes = torch.zeros(n_sel, len(proto_lbls), device=device)
+                votes.scatter_add_(1, nb_labels.long(), nb_conf.float())
+                new_label = proto_lbls[votes.argmax(dim=1)]
+                pseudo = zs_pseudo.clone()
+                pseudo[sel] = new_label
+            else:
+                pseudo = zs_pseudo
+            preds, miou = decode(weighted_mean_update(base_protos, proto_lbls, pool_f,
+                                                      pseudo, w_one, proj, device))
+            results[f'R{Rval}_k{kval}'] = {'miou': miou, 'n_reassigned': n_sel,
+                                           'per_class': per_class_iou(preds)}
+
+    zs0 = decode(base_protos)[1]
+    oracle = decode(protos_oracle)[1]
+
+    return {
+        'metrics': {'zero_shot': zs0, 'zs_reestimate': zs_metrics, 'oracle': oracle},
+        'n_wrong_pool': n_wrong,
+        'results': results,
+    }
