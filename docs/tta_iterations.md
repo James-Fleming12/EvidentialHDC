@@ -146,9 +146,19 @@ Full-scene mIoU, plain medium encoder, Phase 24.9 harness (200k pool / 100k val)
 
 **Closed**: the Sinkhorn/balance direction, and with it the SHOT-diversity mechanism at the assignment level. The remaining candidate from the mechanism list is ReAct (norm clipping before projection), the highest-value untested idea; LAME's affinity term is only worth adding if some mechanism first gives the balanced assignment something to build on.
 
+### Iteration 3: ReAct norm clipping before projection: COMPLETE, non-starter (sign() is scale-invariant)
+
+**Setup**: `--react_test` on the plain medium encoder. Clips each point's 128D feature norm at thresholds [3, 4, 5, 6, 8, inf] before the HDC projection + Sign() binarization, measuring the frozen-prototype decode and the binarized clean<->fog mean cosine per threshold.
+
+**Results: the clip threshold has ZERO effect on anything, at every threshold, on every condition.** Fog mIoU is 0.1011, acc 0.2639, and bin_cos 0.1586 identically at clip=3 (98.4% of points clipped), clip=5 (70.4%), and no-clip; crosstalk, snow, wet_ground likewise identical across all thresholds.
+
+**Finding: ReAct cannot affect the 10kD binarized decode, because Sign() is invariant to positive per-point scaling.** Clipping by norm multiplies each feature vector by a positive scalar s; `sign(s·(x @ proj)) == sign(x @ proj)`, so the binarized vectors are bit-for-bit identical and the decode cannot change. The magnitude inflation from the autopsy is a *correlate* of the fog artifacts (a useful separation/selection signal for gating), not the *mechanism* of the binarized-decode failure: the direction (angle) of the corrupted features is what is wrong, and no magnitude-based intervention can fix it in sign space. The norm-based retention gate works because it *removes* points, not because it alters their vectors.
+
+**Closed**: ReAct (and any magnitude-based intervention) for the binarized HDC decode. This closes the candidate-mechanism list: gating (Iteration 0.1), assignment sources (Iteration 1), balanced forcing (Iteration 2), and magnitude clipping (Iteration 3) all fail to reach the full-label oracle (fog 16.5%, crosstalk 26.2%). The oracle remains label-gated: the rare classes' features are directionally collapsed under fog, and no label-free forward-pass mechanism tested recovers their assignment.
+
 ### Candidate mechanisms (evaluated, not yet implemented)
 
-**1. ReAct (rectified activations / 128D norm clipping before projection): HIGH value, recommended next.** The autopsy's lead discriminator is magnitude inflation (fog norm 7.3 vs clean 4.8; 88% of fog points in the norm ≥ 4 poison band), and Phase 24.3/24.6 tied the 10kD decode failure (BinCos 0.05-0.08) to the magnitude-affected projection+binarization. ReAct (Sun et al., NeurIPS 2021) clips the 128D feature norms at a threshold derived from clean statistics *before* the HDC projection and Sign() binarization, directly testing whether high-norm artifacts overpower the angular structure of the binarized prototypes. Zero-training, forward-pass, cheap. Placeholder: fog zs mIoU _10.1%_ → ReAct-clipped decode _TBD_ (per norm-clip threshold); BinCos _0.05-0.08_ → _TBD_.
+**1. ReAct (rectified activations / 128D norm clipping before projection): CLOSED, non-starter (Iteration 3).** The autopsy's magnitude inflation is a *correlate* of fog artifacts, not the mechanism of the binarized-decode failure: Sign() is invariant to positive per-point scaling, so clipping the 128D norms before projection changes nothing in the 10kD sign space (verified empirically: identical decode at every threshold).
 
 **2. LAME (latent-space marginalization, Boudiaf et al. CVPR 2022): folded into the Sinkhorn option.** LAME is the forward-pass local-affinity + global-diversity correction; the local-affinity term (points close in 128D get similar assignments) is a natural add-on to the Iteration 2 Sinkhorn (which currently does global diversity only). If Iteration 2 is flat, add the affinity term and re-run rather than treating LAME as a separate method. Placeholder: balanced-hard _TBD_ → balanced+affinity _TBD_.
 
