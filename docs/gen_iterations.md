@@ -1017,6 +1017,51 @@ Decision-level prior correction (README Pillar 3, sec 5.2): `score(q, c) = kappa
 1. **Prior correction: closed** (remove from the candidate list).
 2. **Crosstalk full-scene gains remain open**: the remaining untried levers are the per-class objective on the encoder side and the learned loss-estimator head (which targets the label-free *access* gap, not full-scene decode).
 
+---
+
+## Phase 24.9: The TTA Battery and Prototype-Oracle Bounds: No Self-Supervised TTA Helps; the Full-Label Oracle Reopens, Pool-Size-Sensitive
+
+`--tta_oracle` on the plain medium encoder: TTA battery (self-supervised: naive EMA, soft-dual-weight EMA, BN-stat alignment) plus prototype-oracle bounds (true labels: full-label prototypes from the corrupted pool, and artifact-free oracle prototypes in 10 filter configs). All full-scene acc + mIoU, shared 200k-pool / 100k-val seeded split.
+
+### TTA battery (full-scene mIoU vs zero-shot)
+
+| Condition | Zero-shot | naive EMA | SDW | BN-align |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | 10.1% | 9.3% | 9.4% | 10.7% |
+| crosstalk | 12.0% | 10.7% | 10.6% | 15.1% |
+| snow | 39.4% | 38.1% | 37.9% | 39.9% |
+| wet_ground | 49.0% | 47.7% | 47.4% | 40.5% |
+| incomplete_echo | 41.2% | 39.4% | 39.2% | 40.6% |
+| beam_missing | 53.7% | 51.6% | 51.4% | 53.6% |
+| motion_blur | 44.3% | 43.0% | 42.8% | 44.8% |
+| cross_sensor | 41.5% | 39.7% | 39.4% | 42.6% |
+
+### Prototype-oracle bounds (full-scene mIoU)
+
+| Condition | Zero-shot | Full-label oracle | Best artifact-free |
+| :--- | :--- | :--- | :--- |
+| fog | 10.1% | **16.3%** | 16.1% (margin≥0.02, 91% kept) |
+| crosstalk | 12.0% | **26.2%** | 26.1% (margin≥0.02, 90% kept) |
+| snow | 39.4% | 40.7% | 41.0% (loss≤0.15, 96% kept) |
+| wet_ground | 49.0% | 51.4% | 51.3% (loss≤0.15, 96% kept) |
+| incomplete_echo | 41.2% | 41.4% | 41.5% |
+| beam_missing | 53.7% | 54.0% | 54.0% |
+| motion_blur | 44.3% | 44.7% | 44.6% |
+| cross_sensor | 41.5% | 43.5% | 43.3% |
+
+### The Findings
+
+1. **No self-supervised TTA helps any condition.** EMA/SDW (re-estimating prototypes from pseudo-labeled corrupted points) lose 0.7–2.1 mIoU everywhere; BN-stat alignment is flat except the known exceptions, and it reproduces the Phase 24.1 numbers exactly (crosstalk +3.1, wet_ground −8.5), which validates the harness. Full-scene crosstalk stays ~12% without labels.
+2. **The full-label oracle beats zero-shot on fog and crosstalk for the first time** (fog 10.1 → 16.3, crosstalk 12.0 → 26.2), with point accuracy roughly doubling (fog 26% → 51%, crosstalk 34% → 49%). Re-estimated true-labeled prototypes genuinely capture the fog/crosstalk feature shift.
+3. **Artifact-free does NOT beat full-label.** The best artifact-free configs (margin≥0.02, which keeps ~90% of points) are statistically identical to full-label; the aggressive artifact filters (loss≤0.02, norm<4) are *worse*. Excluding confident hallucinations from the prototype estimate does not help; the artifacts are not the limiter, the labels are.
+4. **Critical open discrepancy**: this 200k-pool full-label result (fog 16.3) **contradicts the Phase 21 1M-pool ladder oracle (fog 4.9 mIoU)** on the same val subset and same `weighted_mean_update` operator. The only difference is pool size (200k vs 1M), so the full-label oracle is *pool-size-sensitive*: either the 1M pool's estimate is poisoned by the massive majority-class mass in the poison band, or the 200k estimate is underpowered. The "does prototype adaptation help" question is therefore REOPENED and cannot be settled until a controlled pool-size sweep reconciles the two.
+
+### Next Steps
+
+1. **Reconcile the oracle discrepancy with a pool-size sweep** (200k / 500k / 1M) on fog and crosstalk using the ladder protocol; if the 1M-pool oracle truly crashes fog to ~5%, the full-label "win" is a pool artifact and the Phase 21 conclusion stands; if it holds above zero-shot, prototype adaptation deserves a real (label-free) attempt.
+2. **TTA is closed as a lever** (no self-supervised variant beats zero-shot full-scene).
+3. **Artifact-free prototype estimation is closed as a lever** (does not beat full-label; the artifacts are not the estimate's limiter).
+
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
 The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *possible* (batch 2–4, one-line Parser change, loop already batch-agnostic). This is parked for three reasons:

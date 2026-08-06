@@ -614,6 +614,38 @@ def tta_oracle_decode(base_protos, proto_lbls, clean_stats, corrupt_feats, corru
         rows['oracle_' + name] = oracle_masked(mask)
     return rows
 
+def oracle_pool_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, device,
+                      pool_sizes=(200000, 500000, 1000000), val_size=100000, seed=42):
+    """Pool-size reconciliation for the full-label oracle (Phase 24.9 finding 4).
+
+    The val subset is IDENTICAL across pool sizes (same seeded perm, perm[-val_size:]),
+    so any full-label mIoU difference is purely a pool-size effect. Uses
+    weighted_mean_update (chunked projection) so the 1M-pool case is memory-safe.
+    """
+    torch.manual_seed(seed)
+    perm = torch.randperm(len(corrupt_feats))
+    val_idx = perm[-val_size:]
+    val_f = corrupt_feats[val_idx].to(device)
+    val_l = corrupt_lbls[val_idx].to(device)
+    val_h = torch.sign(val_f @ proj)
+
+    def decode(protos):
+        sims = F.normalize(val_h, p=2, dim=1) @ F.normalize(protos, p=2, dim=1).T
+        preds = proto_lbls[sims.argmax(dim=1)]
+        return {'acc': float((preds == val_l).float().mean().item()),
+                'miou': compute_miou(preds, val_l)}
+
+    rows = []
+    for ps in pool_sizes:
+        pool_idx = perm[:ps]
+        pool_f = corrupt_feats[pool_idx].to(device)
+        pool_l = corrupt_lbls[pool_idx].to(device)
+        w_one = torch.ones(len(pool_f), device=device)
+        protos = weighted_mean_update(base_protos, proto_lbls, pool_f, pool_l, w_one,
+                                      proj, device)
+        rows.append({'pool_size': ps, **decode(protos)})
+    return {'zero_shot': decode(base_protos), 'rows': rows}
+
 CLASS_NAMES = {1: 'car', 2: 'bicycle', 3: 'motorcycle', 4: 'truck', 5: 'other-vehicle',
                6: 'person', 7: 'road', 8: 'fence', 9: 'vegetation', 10: 'trunk',
                11: 'terrain', 12: 'pole', 13: 'traffic-sign', 14: 'other-ground',
@@ -1169,6 +1201,11 @@ def main():
                              "plus full-label and artifact-free oracle prototypes from the "
                              "corrupted pool (true labels, multiple artifact filter configs), "
                              "all full-scene acc + mIoU.")
+    parser.add_argument("--oracle_pool_sweep", action="store_true",
+                        help="Reconcile the Phase 24.9 full-label oracle pool-size "
+                             "discrepancy: full-label prototypes from the corrupted pool at "
+                             "pool sizes 200k / 500k / 1M, same shared val subset, "
+                             "full-scene acc + mIoU.")
     parser.add_argument("--autopsy", action="store_true",
                         help="Run the per-condition hyperspace/decode autopsy (Phase 24) for "
                              "each corruption and print the comparison table: artifact profile, "
@@ -1451,6 +1488,19 @@ def main():
             for name, v in td.items():
                 frac = f" | frac {v['frac']*100:5.1f}%" if 'frac' in v else ""
                 print(f"      {name:<26}: acc {v['acc']:.4f} | mIoU {v['miou']:.4f}{frac}")
+            all_results[corruption] = res
+            continue
+        if args.oracle_pool_sweep:
+            res = {}
+            print("      -> Running Full-Label Oracle Pool-Size Sweep...")
+            ops = oracle_pool_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
+                                    proj, device)
+            res['oracle_pool_sweep'] = ops
+            zs = ops['zero_shot']
+            print(f"   -> Full-scene acc | mIoU per full-label oracle pool size "
+                  f"(zero-shot acc {zs['acc']:.4f} | mIoU {zs['miou']:.4f}):")
+            for r in ops['rows']:
+                print(f"      pool {r['pool_size']:>8}: acc {r['acc']:.4f} | mIoU {r['miou']:.4f}")
             all_results[corruption] = res
             continue
         res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,
