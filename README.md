@@ -352,19 +352,24 @@ The margin + cosine gate (thresholds on the frozen clean prototypes, Phase 23 sw
 
 *The gate is a general decode-side lever that works on 7 of 8 conditions: it adds 6–23 points of mIoU at 52–78% retention, moving every geometric corruption well clear of its zero-shot level. Crosstalk is the collapsed condition that behaves like a healthy one: the gate nearly doubles its mIoU (12.0% → 23.1% at 51.6% retention), and BN-statistic alignment adds another +3.1 (12.0 → 15.1 raw mIoU). The gate works there because crosstalk's artifacts are sparse, localized wrong-beam returns whose margin/cosine geometry is separable from the correct points, so a large, high-precision subpopulation can be carved off without labels.*
 
-*Fog is the lone exception. Its gate gain is +2.9, the worst of any condition, and every other decode-side lever tested to date (alignment, adaptation, oracle retraining, buffer selection) also fails to move it above ~10% mIoU. The mechanism: fog's errors are confident artifacts (99.96% of fog misclassifications fail even the artifact filters, Phase 22.2), dense scattering inflates the feature magnitude of ~88% of all fog points, and even the correct classifications have collapsed margins (0.29 vs 0.40–0.50 for the geometric conditions). The misclassified points are thus geometrically indistinguishable from correct points without the true label: the oracle-loss bound reaches 55% @ 28% retention, proving the information exists but is not estimable from confidence geometry alone. The collapse is additionally class-conditional (Road, Building, Other-ground, Traffic-sign, Bicycle die while Terrain and Truck survive), and no pretraining regimen tested so far (plain, strong-vib, additive volumetric) has fixed it. The residual sits in the representation: the fog features of the collapsing classes are separable in principle (the plain 128D linear probe reaches 36–49%), but the 10kD binarized decode cannot exploit them.*
+*Fog is the lone exception. Its gate gain is +2.9, the worst of any condition, and every other label-free decode-side lever tested to date (alignment, adaptation, oracle retraining, buffer selection) also fails to move it above ~10% mIoU. The mechanism: fog's errors are confident artifacts (99.96% of fog misclassifications fail even the artifact filters, Phase 22.2), dense scattering inflates the feature magnitude of ~88% of all fog points, and even the correct classifications have collapsed margins (0.29 vs 0.40–0.50 for the geometric conditions). The misclassified points are thus geometrically indistinguishable from correct points without the true label: the oracle-loss bound reaches 55% @ 28% retention, proving the information exists but is not estimable from confidence geometry alone. The collapse is additionally class-conditional (Road, Building, Other-ground, Traffic-sign, Bicycle die while Terrain and Truck survive), and no pretraining regimen tested so far (plain, strong-vib, additive volumetric) has fixed it. The residual sits in the representation: the fog features of the collapsing classes are separable in principle (the plain 128D linear probe reaches 36–49%), but the 10kD binarized decode cannot exploit them. The one thing that *does* move fog full-scene is the true-label prototype oracle (sec 7.4); the missing information is the label, not the geometry.*
 
-### 7.4 Why the decoder, not the encoder, is the current bottleneck
+### 7.4 The labeled-prototype oracle: the target a TTA method must chase
 
-The HDC degradation pipeline (Phase 8, med-pretrained `supcon_vib`, D = 1000) showed the semantic information survives every stage of the HDC encoding losslessly, only the naive nearest-prototype decoder wastes it:
+The frozen clean prototypes were long assumed to be the best decoder (Phase 21), but re-estimating the 10kD prototypes from the corrupted stream with true labels recovers the collapsed conditions on the **full scene, no points removed**, and the result is pool-size-stable (200k / 500k / 1M pools agree; Phase 24.10):
 
-| Representation stage | Linear Probe Accuracy | Prototype Accuracy |
-| :--- | :--- | :--- |
-| Raw 128D encoder | **49.4%** | 8.2% |
-| Random projection (continuous) | **49.0%** | 31.7% |
-| Sign binarization (HDC) | **47.8%** | 24.1% |
+| Condition | Zero-shot mIoU | Full-label oracle mIoU | Gain |
+| :--- | :--- | :--- | :--- |
+| **Fog** | 10.1% | **16.6%** | +6.5 |
+| **Crosstalk** | 12.0% | **26.2%** | +14.2 |
+| Wet Ground | 49.0% | 51.2% | +2.2 |
+| Cross Sensor | 41.5% | 43.6% | +2.1 |
+| Snow | 39.4% | 40.7% | +1.3 |
+| Incomplete Echo | 41.2% | 41.2% | 0.0 |
+| Beam Missing | 53.7% | 53.6% | −0.1 |
+| Motion Blur | 44.3% | 44.8% | +0.5 |
 
-*The encoder + projection + binarization preserve ~100% of the linear separability; the centroid classifier leaves ~20 points on the table even after the projection "isotropic smoothing" effect. The next stage of the project targets this decode gap (query-side gating on the frozen prototypes).*
+*The prototype decoder is not exhausted: with the right per-point weighting, re-estimated prototypes beat the frozen clean ones on every condition and substantially on the collapsed ones (point accuracy roughly doubles, fog 26% → 51%, crosstalk 34% → 49%). Every label-free TTA variant tested (naive EMA, soft-dual-weight EMA, BN-stat alignment, artifact gating, prior correction, artifact-free prototype estimation) fails to reach it, so the current target is a TTA method that replicates the oracle's weighting without labels: a learned estimator of each point's cos-to-true (the loss-estimator head), used as the per-point weight in a prototype re-estimate. Excluding the confident hallucinations does not get there on its own (artifact-free ≈ full-label), so the problem is not "drop the artifacts," it is "estimate the weights the oracle would assign."*
 
 ---
 

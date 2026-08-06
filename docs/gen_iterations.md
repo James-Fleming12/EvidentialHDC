@@ -1062,6 +1062,38 @@ Decision-level prior correction (README Pillar 3, sec 5.2): `score(q, c) = kappa
 2. **TTA is closed as a lever** (no self-supervised variant beats zero-shot full-scene).
 3. **Artifact-free prototype estimation is closed as a lever** (does not beat full-label; the artifacts are not the estimate's limiter).
 
+---
+
+## Phase 24.10: The Pool-Size Reconciliation: the Full-Label Oracle Is Real and Stable; Phase 21's "4.9%" Is Not Reproduced
+
+`--oracle_pool_sweep` on the plain medium encoder: full-label prototypes from the corrupted pool at 200k / 500k / 1M points, all on the *identical* seeded val subset (perm[-100k]), full-scene mIoU.
+
+### Full-label oracle vs pool size (mIoU)
+
+| Condition | Zero-shot | 200k | 500k | 1M |
+| :--- | :--- | :--- | :--- | :--- |
+| **fog** | 10.1% | 16.3% | 16.4% | 16.6% |
+| **crosstalk** | 12.0% | 26.2% | 26.2% | 26.2% |
+| snow | 39.4% | 40.7% | 40.7% | 40.7% |
+| wet_ground | 49.0% | 51.4% | 51.5% | 51.2% |
+| incomplete_echo | 41.2% | 41.4% | 41.2% | 41.2% |
+| beam_missing | 53.7% | 54.0% | 53.7% | 53.6% |
+| motion_blur | 44.3% | 44.7% | 44.8% | 44.8% |
+| cross_sensor | 41.5% | 43.5% | 43.5% | 43.6% |
+
+### The Findings
+
+1. **The full-label oracle is pool-size-stable.** Fog holds 16.3 → 16.6 and crosstalk is flat at 26.2 across 200k → 1M. The Phase 24.9 "win" is real, not a small-pool artifact: the large-pool contamination hypothesis is refuted.
+2. **Phase 21's documented "oracle crashes fog to 4.9% mIoU" is NOT reproduced by the current harness.** The Phase 21 fog oracle had nearly identical point accuracy (48.2% acc) to the current run (50.8% acc), yet mIoU differs 3.3× (4.9% vs 16.6%). Same update operator, same acc ballpark, wildly different mIoU: the discrepancy is in the metric aggregation or the val split of the Phase 21 run, not in the adaptation itself. Phase 21's oracle mIoU needs a controlled re-check (same protocol as the current harness) before the "crashes to 4.9%" claim is relied on.
+3. **Prototype adaptation is a real, label-gated target again.** With true labels, re-estimating prototypes from the corrupted pool recovers fog 10.1 → 16.6 and crosstalk 12.0 → 26.2 (full-scene, no points removed). Every label-free TTA variant fails to reach it (naive EMA 9.3, SDW 9.4, BN-align 10.7 on fog). The gap to close is label-free: weight the prototype re-estimate toward the points a true-label oracle would use.
+4. **Artifact-free estimation does not change the oracle** (margin≥0.02 ≈ full-label, Phase 24.9), so the label-free target is not "exclude artifacts" per se; it is "estimate the per-point weight the oracle would assign."
+
+### Next Steps
+
+1. **Reconcile the Phase 21 mIoU definition**: re-run the v4 ladder (or the pool sweep at 1M) on fog and crosstalk with the current harness and confirm the oracle mIoU; if it holds at ~16%, correct the Phase 21/7.x documentation, which currently overstates the oracle's failure.
+2. **Move toward the label-free re-estimate** (the direction the user prioritized): the full-label oracle (fog 16.6, crosstalk 26.2) is the target. The concrete mechanism is the learned loss-estimator head: a small head trained on clean/self-supervised signal to predict cos-to-true at test time, used as the per-point weight in a prototype re-estimate (Phase 24.4 #3). A supervised-oracle-free version is the end goal.
+3. **TTA and artifact-free prototype estimation stay closed** (Phases 24.8/24.9).
+
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
 The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *possible* (batch 2–4, one-line Parser change, loop already batch-agnostic). This is parked for three reasons:
