@@ -43,6 +43,26 @@ Full-scene mIoU, plain medium encoder, Phase 24.9 harness (200k pool / 100k val)
 
 ## Iteration Log
 
+### Consolidated iteration table
+
+All full-scene mIoU (no points removed) on the plain medium encoder. The pool/val split varies slightly between harnesses, so the oracle baseline reads 16.4-16.6% (fog) and 22.8-26.2% (crosstalk) depending on the run; **within-row comparisons are the valid ones**, and the canonical oracle target is the pool-size-stable 16.6% / 26.2% (Phase 24.10).
+
+| Iteration | Method | fog mIoU | crosstalk mIoU | Verdict |
+| :--- | :--- | :--- | :--- | :--- |
+| baseline | Zero-shot (frozen clean prototypes) | 10.1% | 12.0% | reference |
+| target | Full-label oracle (true assignment) | **16.6%** | **26.2%** | the goal; label-gated |
+| 0 | Labels = correct assignment (diagnostic) | n/a | n/a | rare classes starved: pseudo acc 26.4% / 33.7%; oracle gain is rare-class recall |
+| 0.1 | Correct-subset gate bound (perfect gating of pseudo-labels) | 10.3% | 13.3% | gating closed: correct pseudo points too few to re-estimate |
+| 1 | zs-pseudo prototype re-estimate | 9.2% | 9.6% | flat, below zero-shot |
+| 1 | LP-pseudo re-estimate (36.7% / 35.1% acc) | 8.5% | 8.7% | assignment accuracy ≠ re-estimate quality: closed |
+| 1 | MVAC-LP / MVAC-proto consensus | 8.4% / 9.2% | 8.5% / 9.6% | no-op: canonical views don't change predictions |
+| 2 | Balanced (Sinkhorn) hard / soft | 3.9% / 8.5% | 5.6% / 7.2% | hurts: forcing rare-class support assigns wrong points |
+| 3 | ReAct norm clipping (all thresholds) | 10.1% | 12.0% | non-starter: Sign() is scale-invariant |
+| 4 | Deep label analysis (diagnostic) | n/a | n/a | labels = tight shifted clusters; fog norm AUC 0.75, crosstalk label-only |
+| 5 | Combined-recoverability gate (weighted re-estimate / retention) | 9.4% | 10.9% | not validated: AUROC does not transfer to full-scene decode gains |
+
+**Bottom line**: every label-free route to the oracle is tested and closed. The full-label oracle (fog 16.6%, crosstalk 26.2%) remains the only thing that recovers the collapsed conditions; its information is the rare-class *assignment* the features cannot provide label-free under fog/crosstalk.
+
 ### Iteration 0: the labels' information is assignment
 
 The full-label oracle and naive EMA use the **same weighted-mean prototype operator**; the only difference is the per-point class assignment. The oracle's advantage is therefore *assignment*, and this section quantifies that information.
@@ -184,6 +204,30 @@ AUROC of each label-free signal for separating oracle-rescued (zs-wrong, oracle-
 | **combined (all signals)** | **0.799** | **0.680** |
 
 **Finding: a joint label-free signal separates recovered from stuck points on BOTH conditions.** Single signals are weak on crosstalk (best 0.60), but the combined classifier reaches 0.799 on fog and 0.680 on crosstalk. The recoverability information is present in the *joint* label-free feature space on both conditions, not just fog. The two conditions lean on different features (fog on the magnitude signals norm/norm_z, crosstalk on the probe-confidence signals LP-conf/LP-margin), so a shared mechanism must combine both families, exactly the feature set a learned per-point recoverability/loss-estimator head would take as input. This is the first evidence that a both-conditions label-free mechanism is reachable in principle; the open question is whether the combiner can be learned without oracle labels (clean/self-supervised training).
+
+### Iteration 5: the combined-recoverability path is not validated
+
+`--combined_gate_sweep` on all 8 conditions: does the joint recoverability signal (Part C combined AUROC 0.68-0.80) translate into decode gains? Five fixed z-scored configs (norm, lp, norm+lp, full, full_no_norm; no oracle) were applied two ways: (a) re-estimate-side weighting (weight the prototype re-estimate toward high-recoverability points, full-scene mIoU) and (b) decode-side retention (top-25/50/75% retained mIoU).
+
+**Results (full-scene mIoU):**
+
+| Condition | Zero-shot | zs-pseudo re-est | **Best weighted** | Oracle |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | 10.1% | 9.3% | **9.4%** | 16.4% |
+| crosstalk | 12.0% | 10.7% | **10.9%** | 26.2% |
+| snow | 39.4% | 38.1% | 38.2% | 40.7% |
+| wet_ground | 49.0% | 47.7% | 47.7% | 51.5% |
+| beam_missing | 53.7% | 51.6% | 51.7% | 53.7% |
+| motion_blur | 44.3% | 43.0% | 43.1% | 44.8% |
+| cross_sensor | 41.5% | 39.7% | 39.8% | 43.5% |
+
+Decode-side retention was flat-to-worse: the best recoverability config reached fog 9.6% and crosstalk 12.2% at top-50%, *below* the Phase 23 margin+cosine gate (crosstalk 23.1% @ 51.6%).
+
+**Findings:**
+1. **Weighting the re-estimate by the recoverability score changes nothing** (fog 9.3 → 9.4, crosstalk 10.7 → 10.9). The reason is structural and reconfirms Iteration 1: weighting cannot change the *assignment*, and the recoverable points are assigned to the wrong prototypes regardless of their weight.
+2. **The recoverability configs are worse retention gates than the old margin+cos gate** on crosstalk (12.2% vs 23.1% @ ~50%). The joint signal separates *recovered from stuck* (a classification of the val) but is a weaker *artifact-rejection* signal than the Phase 23 margin/cosine geometry.
+3. **The one positive: no collapse in the geometric conditions** (all hold at the plain re-estimate level), so the weighting mechanism is safe even if useless.
+4. **Conclusion: the combined-recoverability path is not validated.** The Part C AUROC did not transfer to full-scene decode gains through either weighting or retention. This is consistent with the arc across all iterations: the oracle's information is the rare-class *assignment*, and no label-free weighting, gating, balancing, assignment-source, or magnitude intervention of the existing assignment reaches it. The recoverability signal identifies *which* points are recoverable but not *what class* they should carry, and the decode cannot use the former without the latter.
 
 ### Candidate mechanisms: all closed or judged not worth running
 
