@@ -60,6 +60,7 @@ All full-scene mIoU (no points removed) on the plain medium encoder. The pool/va
 | 3 | ReAct norm clipping (all thresholds) | 10.1% | 12.0% | non-starter: Sign() is scale-invariant |
 | 4 | Deep label analysis (diagnostic) | n/a | n/a | labels = tight shifted clusters; fog norm AUC 0.75, crosstalk label-only |
 | 5 | Combined-recoverability gate (weighted re-estimate / retention) | 9.4% | 10.9% | not validated: AUROC does not transfer to full-scene decode gains |
+| 6 | Assignment-gap diagnostic | n/a | n/a | detection strong (gated-oracle ≈ oracle on crosstalk); assignment is the gap; the recoverable set clusters by class (kNN 0.76-0.95) |
 
 **Bottom line**: every label-free route to the oracle is tested and closed. The full-label oracle (fog 16.6%, crosstalk 26.2%) remains the only thing that recovers the collapsed conditions; its information is the rare-class *assignment* the features cannot provide label-free under fog/crosstalk.
 
@@ -228,6 +229,22 @@ Decode-side retention was flat-to-worse: the best recoverability config reached 
 2. **The recoverability configs are worse retention gates than the old margin+cos gate** on crosstalk (12.2% vs 23.1% @ ~50%). The joint signal separates *recovered from stuck* (a classification of the val) but is a weaker *artifact-rejection* signal than the Phase 23 margin/cosine geometry.
 3. **The one positive: no collapse in the geometric conditions** (all hold at the plain re-estimate level), so the weighting mechanism is safe even if useless.
 4. **Conclusion: the combined-recoverability path is not validated.** The Part C AUROC did not transfer to full-scene decode gains through either weighting or retention. This is consistent with the arc across all iterations: the oracle's information is the rare-class *assignment*, and no label-free weighting, gating, balancing, assignment-source, or magnitude intervention of the existing assignment reaches it. The recoverability signal identifies *which* points are recoverable but not *what class* they should carry, and the decode cannot use the former without the latter.
+
+### Iteration 6: the gap is assignment of the recoverable set, and the recoverable set clusters by class
+
+`--assignment_gap_diag` on fog + crosstalk: decomposes detection (which points are fixable) from assignment (what class they carry), and probes whether the gap is bridgeable.
+
+**A. The recoverable points' true class is far down the similarity ordering.** Rank of the true class in the clean-prototype ordering: recovered fog points have it at rank 3.7 on average (2.2% at rank 2), recovered crosstalk at rank 4.8 (9.5% at rank 2); the stuck points are similar (4.0 / 4.8). A boundary/second-choice correction cannot work: the features genuinely do not point at the true class in clean-prototype space.
+
+**B. No label-free classifier can name the recoverable points.** LP accuracy on the recovered set is 5.5% (fog) and 7.7% (crosstalk); on fog it is *worse* than on the stuck set (29.2%). The recoverable points are exactly the ones whose class no global classifier knows.
+
+**C. Detection is strong; the gated-oracle bound nearly reaches the oracle.** Correcting only the top-50% recoverable zs-wrong points to their *true* class reaches **crosstalk 0.2608 vs the full oracle 0.2617** (and fog 0.1348 vs 0.1642). The recoverability detector is essentially finding the right points on crosstalk; the oracle gain is concentrated in the detected subset.
+
+**D. The binding constraint is assignment, not detection.** With the same selection, the LP-assigned leg reaches only crosstalk 0.127 (vs oracle-assigned 0.261) and fog 0.098 (vs 0.135). Perfect detection without a way to name the classes is wasted, because (B) the LP cannot classify the recoverable set.
+
+**E. The recoverable set clusters by class: the concrete fix.** kNN (oracle-labeled) accuracy within the top-recoverability set is **0.947 (fog) and 0.760 (crosstalk)**; within-class cosine 0.98/0.90 vs between-class 0.95/0.84. The recoverable points form locally class-coherent clusters that no global classifier or clean prototype captures.
+
+**Implication: the mechanism is now concrete and local.** (1) detect the recoverable subset with the combined signal (AUC 0.68-0.80, and C shows it concentrates the oracle gain); (2) reassign the detected points by their *local* structure (kNN/clustering within the recoverable set), not by any global classifier or clean prototype. Part E shows the clusters exist and are highly coherent; the missing ingredient is a label-free clustering/consensus that runs *inside* the detected subset. This is the first mechanism that addresses the "what class" gap rather than the "which points" gap, and it is the natural Iteration 7 (recoverability-gated local clustering reassignment).
 
 ### Candidate mechanisms: all closed or judged not worth running
 
