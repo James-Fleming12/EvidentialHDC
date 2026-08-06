@@ -1077,6 +1077,45 @@ def iter2_balanced_reestimate(base_protos, proto_lbls, prior_vec, corrupt_feats,
         'support': {'zs': counts_zs, 'balanced': counts_bal, 'prior': prior_counts},
     }
 
+def react_test(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, device,
+               thresholds=(3.0, 4.0, 5.0, 6.0, 8.0, 1e9), val_size=100000, seed=42):
+    """ReAct test (Sun et al., NeurIPS 2021): clip the 128D feature norms before the
+    HDC projection + Sign() binarization.
+
+    The autopsy's lead discriminator is magnitude inflation (fog/crosstalk 128D norms
+    ~7 vs clean ~4.8, 88% in the norm >= 4 poison band), and the binarized decode fails
+    (BinCos 0.05-0.08). ReAct tests whether the high-norm artifacts overpower the angular
+    structure of the projection: clipping the features to each threshold preserves the
+    direction but caps the magnitude, and we measure the frozen-prototype decode and the
+    binarized clean<->fog mean cosine per threshold. Zero-training, forward-pass.
+    """
+    torch.manual_seed(seed)
+    perm = torch.randperm(len(corrupt_feats))
+    val_idx = perm[-val_size:]
+    val_f = corrupt_feats[val_idx].to(device)
+    val_l = corrupt_lbls[val_idx].to(device)
+    norms = torch.norm(val_f, p=2, dim=1)
+    rows = []
+    for t in thresholds:
+        scale = torch.clamp(t / norms, max=1.0).unsqueeze(1)
+        clipped = val_f * scale
+        h = torch.sign(clipped @ proj)
+        sims = F.normalize(h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T
+        preds = proto_lbls[sims.argmax(dim=1)]
+        acc = float((preds == val_l).float().mean().item())
+        miou = compute_miou(preds, val_l)
+        bcs = []
+        for i, c in enumerate(proto_lbls.tolist()):
+            mask = val_l == c
+            if int(mask.sum().item()) >= 500:
+                bh = torch.sign(clipped[mask][:20000] @ proj).float().mean(dim=0)
+                bcs.append(F.normalize(bh, p=2, dim=0) @ F.normalize(base_protos[i], p=2, dim=0))
+        bin_cos = float(torch.stack(bcs).mean().item()) if bcs else 0.0
+        rows.append({'threshold': float('inf') if t == 1e9 else float(t),
+                     'acc': acc, 'miou': miou, 'bin_cos': bin_cos,
+                     'frac_clipped': float((norms > t).float().mean().item()) if t != 1e9 else 0.0})
+    return {'rows': rows}
+
 def condition_autopsy(base_protos, proto_lbls, clean_means128, corrupt_feats, corrupt_lbls, proj,
                       device, clf=None, clean_stats=None, corrupt_depths=None, seed=42):
     """Per-condition hyperspace + decode signature (Phase 24).
@@ -1661,6 +1700,13 @@ def main():
                              "marginals to match the source frequencies, countering the "
                              "rare-class recall starvation (Iteration 0). Reports hard and "
                              "soft balanced re-estimates vs zero-shot / zs-pseudo / oracle.")
+    parser.add_argument("--react_test", action="store_true",
+                        help="ReAct test (Sun et al., NeurIPS 2021): clip the 128D feature "
+                             "norms at thresholds [3,4,5,6,8,inf] before the HDC projection "
+                             "+ Sign() binarization. Tests whether the fog/crosstalk magnitude "
+                             "inflation overpowers the angular structure of the binarized "
+                             "prototypes (BinCos 0.05-0.08). Reports frozen-prototype decode "
+                             "acc/mIoU and the binarized clean<->fog mean cosine per threshold.")
     parser.add_argument("--autopsy", action="store_true",
                         help="Run the per-condition hyperspace/decode autopsy (Phase 24) for "
                              "each corruption and print the comparison table: artifact profile, "
@@ -2072,6 +2118,18 @@ def main():
             for c in proto_lbls.tolist():
                 print(f"      class {c:<2}: {i2['support']['zs'][str(c)]:>7} / "
                       f"{i2['support']['balanced'][str(c)]:>7} / {i2['support']['prior'][str(c)]:>7}")
+            all_results[corruption] = res
+            continue
+        if args.react_test:
+            res = {}
+            print("      -> Running ReAct Norm-Clipping Test (before projection)...")
+            rt = react_test(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, device)
+            res['react_test'] = rt
+            print("   -> Frozen-prototype decode per clip threshold: acc | mIoU | bin_cos | frac_clipped:")
+            for r in rt['rows']:
+                t = f"{r['threshold']:.1f}" if r['threshold'] != float('inf') else "inf"
+                print(f"      clip {t:>5}: acc {r['acc']:.4f} | mIoU {r['miou']:.4f} | "
+                      f"bin_cos {r['bin_cos']:.4f} | frac_clipped {r['frac_clipped']:.3f}")
             all_results[corruption] = res
             continue
         res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,
