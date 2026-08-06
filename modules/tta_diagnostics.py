@@ -1476,3 +1476,118 @@ def iter7_knn_reassign(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf
         'n_wrong_pool': n_wrong,
         'results': results,
     }
+
+def iter8_bootstrap(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj, device,
+                    pool_size=500000, val_size=100000, seed=42,
+                    R=0.25, k=20, T=6, knn_pool=100000):
+    """Iteration 8: EM-style bootstrap of the recoverability-gated kNN reassignment.
+
+    Iteration 7 showed the bottleneck is the neighbor label source (LP ~35%). This
+    iterates the mechanism: each round re-decodes the pool with the latest prototypes
+    (improving the pseudo-labels), re-selects the recoverable subset by the fixed
+    detector, kNN-reassigns it (voting over the CURRENT pseudo-labels, confidence-
+    weighted by the current prototype similarity), and re-estimates. The improved
+    prototypes give the next round better labels to vote over. Tracks the full-scene
+    mIoU trajectory to show convergence.
+    """
+    torch.manual_seed(seed)
+    perm = torch.randperm(len(corrupt_feats))
+    pool_idx = perm[:pool_size]
+    val_idx = perm[-val_size:]
+    torch.manual_seed(1)
+    ps_idx = pool_idx[torch.randperm(len(pool_idx))[:knn_pool]]
+    pool_f = corrupt_feats[ps_idx].to(device)
+    pool_l = corrupt_lbls[ps_idx].to(device)
+    val_f = corrupt_feats[val_idx].to(device)
+    val_l = corrupt_lbls[val_idx].to(device)
+    w_one = torch.ones(len(pool_f), device=device)
+    base_norm = F.normalize(base_protos, p=2, dim=1)
+
+    def decode(protos):
+        sims = F.normalize(torch.sign(val_f @ proj), p=2, dim=1) @ F.normalize(protos, p=2, dim=1).T
+        preds = proto_lbls[sims.argmax(dim=1)]
+        return preds, compute_miou(preds, val_l)
+
+    def pool_decode(protos):
+        sims = []
+        for start in range(0, len(pool_f), 50000):
+            hc = torch.sign(pool_f[start:start + 50000] @ proj)
+            sims.append(F.normalize(hc, p=2, dim=1) @ F.normalize(protos, p=2, dim=1).T)
+        sims = torch.cat(sims, dim=0)
+        return sims, proto_lbls[sims.argmax(dim=1)]
+
+    # round-0 zs pseudo + signals for the detector
+    pool_sims0, zs_pseudo = pool_decode(base_protos)
+    lp_probs = torch.tensor(clf.predict_proba(pool_f.cpu().numpy())).to(device)
+
+    # detector (oracle-LR on round-0 val recovered/stuck)
+    val_sims = F.normalize(torch.sign(val_f @ proj), p=2, dim=1) @ base_norm.T
+    val_zs = proto_lbls[val_sims.argmax(dim=1)]
+    protos_oracle = weighted_mean_update(base_protos, proto_lbls, pool_f, pool_l, w_one, proj, device)
+    oracle_val_preds, oracle_miou = decode(protos_oracle)
+    recovered = (val_zs != val_l) & (oracle_val_preds == val_l)
+    stuck = (val_zs != val_l) & (oracle_val_preds != val_l)
+
+    def sig_tensor(feats, sims, lp_probs_t):
+        norm = torch.norm(feats, p=2, dim=1)
+        t2 = torch.topk(sims, 2, dim=1)
+        margin = (t2.values[:, 0] - t2.values[:, 1]).clamp(min=0)
+        conf = lp_probs_t.max(dim=1).values
+        entropy = -(lp_probs_t * torch.log(lp_probs_t.clamp(min=1e-12))).sum(dim=1)
+        return torch.stack([norm, margin, conf, entropy], dim=1)
+
+    Xp = sig_tensor(pool_f, pool_sims0, lp_probs)
+    mu, sd = Xp.mean(dim=0), Xp.std(dim=0) + 1e-8
+    Xp_n = (Xp - mu) / sd
+    v_lp = torch.tensor(clf.predict_proba(val_f.cpu().numpy())).to(device)
+    Xv_n = (sig_tensor(val_f, val_sims, v_lp) - mu) / sd
+    from sklearn.linear_model import LogisticRegression
+    det = LogisticRegression(max_iter=1000)
+    use = (recovered | stuck)
+    yv = torch.zeros(len(val_f), device=device)
+    yv[recovered] = 1
+    det.fit(Xv_n[use].cpu().numpy(), yv[use].cpu().numpy())
+    det_score = torch.tensor(det.decision_function(Xp_n.cpu().numpy())).to(device)
+    n_sel = max(int(len(pool_f) * R), 1)
+
+    # kNN graph over the pool (fixed across rounds)
+    from sklearn.neighbors import NearestNeighbors
+    nn_model = NearestNeighbors(n_neighbors=k + 1, metric='cosine', algorithm='brute')
+    nn_model.fit(F.normalize(pool_f, p=2, dim=1).cpu().numpy())
+    nb_all = torch.tensor(nn_model.kneighbors(
+        F.normalize(pool_f, p=2, dim=1).cpu().numpy(), n_neighbors=k + 1)[1][:, 1:])
+
+    # EM loop
+    protos = base_protos.clone()
+    pseudo = zs_pseudo.clone()
+    trajectory = []
+    for t in range(T):
+        sel = torch.topk(det_score, n_sel).indices
+        # current prototype-sim confidence of the SELECTED points
+        sims_cur, pseudo_cur = pool_decode(protos)
+        conf_cur = sims_cur.max(dim=1).values
+        # vote over neighbors' CURRENT pseudo-labels, weighted by neighbor confidence
+        nb_lbl = pseudo_cur[nb_all]                    # [n_pool, k]
+        nb_conf = conf_cur[nb_all]                     # [n_pool, k]
+        votes = torch.zeros(len(pool_f), 17, device=device)
+        votes.scatter_add_(1, nb_lbl.long().clamp(0, 16), nb_conf.float())
+        c_new = votes.argmax(dim=1)
+        valid_c = torch.isin(c_new, proto_lbls)
+        reassigned = torch.where(valid_c, c_new, pseudo_cur)
+        pseudo = pseudo_cur.clone()
+        pseudo[sel] = reassigned[sel]
+        protos = weighted_mean_update(base_protos, proto_lbls, pool_f, pseudo, w_one, proj, device)
+        preds, miou = decode(protos)
+        trajectory.append({'round': t + 1, 'miou': miou,
+                           'n_reassigned': int(len(sel)),
+                           'pool_pseudo_acc': float((pseudo == pool_l).float().mean().item())})
+
+    return {
+        'metrics': {'zero_shot': decode(base_protos)[1],
+                    'zs_reestimate': decode(weighted_mean_update(base_protos, proto_lbls,
+                                                                 pool_f, zs_pseudo, w_one,
+                                                                 proj, device))[1],
+                    'oracle': oracle_miou},
+        'trajectory': trajectory,
+        'config': {'R': R, 'k': k, 'T': T},
+    }

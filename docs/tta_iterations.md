@@ -61,6 +61,7 @@ All full-scene mIoU (no points removed) on the plain medium encoder. The pool/va
 | 4 | Deep label analysis (diagnostic) | n/a | n/a | labels = tight shifted clusters; fog norm AUC 0.75, crosstalk label-only |
 | 5 | Combined-recoverability gate (weighted re-estimate / retention) | 9.4% | 10.9% | not validated: AUROC does not transfer to full-scene decode gains |
 | 6 | Assignment-gap diagnostic | n/a | n/a | detection strong (gated-oracle ≈ oracle on crosstalk); assignment is the gap; the recoverable set clusters by class (kNN 0.76-0.95) |
+| 7 | Recoverability-gated kNN reassign | 9.8% | 12.7% | safe + directionally correct (first label-free crosstalk re-estimate above zero-shot), small gains; neighbor-label source is the bottleneck |
 
 **Bottom line**: every label-free route to the oracle is tested and closed. The full-label oracle (fog 16.6%, crosstalk 26.2%) remains the only thing that recovers the collapsed conditions; its information is the rare-class *assignment* the features cannot provide label-free under fog/crosstalk.
 
@@ -245,6 +246,31 @@ Decode-side retention was flat-to-worse: the best recoverability config reached 
 **E. The recoverable set clusters by class: the concrete fix.** kNN (oracle-labeled) accuracy within the top-recoverability set is **0.947 (fog) and 0.760 (crosstalk)**; within-class cosine 0.98/0.90 vs between-class 0.95/0.84. The recoverable points form locally class-coherent clusters that no global classifier or clean prototype captures.
 
 **Implication: the mechanism is now concrete and local.** (1) detect the recoverable subset with the combined signal (AUC 0.68-0.80, and C shows it concentrates the oracle gain); (2) reassign the detected points by their *local* structure (kNN/clustering within the recoverable set), not by any global classifier or clean prototype. Part E shows the clusters exist and are highly coherent; the missing ingredient is a label-free clustering/consensus that runs *inside* the detected subset. This is the first mechanism that addresses the "what class" gap rather than the "which points" gap, and it is the natural Iteration 7 (recoverability-gated local clustering reassignment).
+
+### Iteration 7: recoverability-gated kNN reassignment: safe and directionally correct, but small gains
+
+`--iter7_knn_reassign` on all 8 conditions: detect the recoverable subset (combined signal), reassign those points by a confidence-weighted kNN vote over neighbors' LP labels, re-estimate, full-scene mIoU. Swept R ∈ {0.1, 0.25, 0.5} x k ∈ {5, 20, 50}.
+
+**Results (best config vs references):**
+
+| Condition | Zero-shot | zs-pseudo re-est | **Best kNN reassign** | Oracle |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | 10.1% | 9.3% | **9.8%** (R0.5, k50) | 17.1% |
+| crosstalk | 12.0% | 10.7% | **12.7%** (R0.5, k5) | 26.2% |
+| snow | 39.4% | 38.1% | 39.5% | 40.6% |
+| wet_ground | 49.0% | 47.7% | 48.1% | 51.4% |
+| incomplete_echo | 41.2% | 39.4% | 40.5% | 40.9% |
+| beam_missing | 53.7% | 51.6% | 52.9% | 49.4% |
+| motion_blur | 44.3% | 43.0% | 43.9% | 44.8% |
+| cross_sensor | 41.5% | 39.8% | 41.2% | 43.5% |
+
+**Findings:**
+1. **No collapse anywhere**: every geometric condition ends at or near its zero-shot level (within 0.5-0.9 pts), recovering the 1-2 pts the plain re-estimate lost. The mechanism is safe; the "don't degrade the others" check passes.
+2. **Crosstalk: the first label-free re-estimate to beat zero-shot** (12.7 vs 12.0, from the plain re-estimate's 10.7). Small but real, and it is the first time the label-free decode exceeds the frozen-prototype reference via a re-estimate.
+3. **Fog: still below zero-shot** (9.8 vs 10.1). Per-class, the reassignment helps the mid-tier casualties (fog Car 0.166, Building 0.021, Vegetation 0.079) but the most starved classes stay dead (Traffic-sign 0.000, Other-ground 0.001 in fog).
+4. **The bottleneck is the neighbor label source, not the detection or the local structure.** The recoverable set clusters by class (Iteration 6E: kNN-oracle 0.76-0.95), but the kNN vote reads the neighbors' LP labels, which are only ~35-36% accurate on fog/crosstalk. The vote cannot name the rarest classes, whose correct points are too few to dominate even their own neighborhoods.
+
+**Verdict**: the mechanism is validated as safe and directionally correct (it works, breaks the re-estimate-degrades barrier on crosstalk, and never collapses the healthy conditions), but the gains are far below the oracle (crosstalk 12.7 vs 26.2, fog 9.8 vs 17.1). The natural continuation is to iterate the bootstrap: round-1 kNN-reassign -> re-estimate -> re-decode -> round-2 with the improved prototypes as the neighbors' label source (EM-style), which attacks the LP-label bottleneck directly.
 
 ### Candidate mechanisms: all closed or judged not worth running
 

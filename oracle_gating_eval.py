@@ -43,6 +43,7 @@ from modules.tta_diagnostics import (
     combined_gate_sweep,
     assignment_gap_diag,
     iter7_knn_reassign,
+    iter8_bootstrap,
     VIEW_CONFIGS,
 )
 
@@ -174,6 +175,18 @@ def main():
                              "re-estimate prototypes, full-scene mIoU. Sweeps R (0.1/0.25/0.5) "
                              "x k (5/20/50). Run on all 8 conditions: the collapse check is "
                              "that healthy conditions stay near-identity (tiny recoverable set).")
+    parser.add_argument("--iter8_bootstrap", action="store_true",
+                        help="Iteration 8 test: EM-style bootstrap of the recoverability-gated "
+                             "kNN reassignment. Each round re-decodes the pool with the latest "
+                             "prototypes (improving pseudo-labels), re-selects the recoverable "
+                             "subset, kNN-reassigns it voting over the CURRENT pseudo-labels, "
+                             "and re-estimates; tracks the full-scene mIoU trajectory. "
+                             "Config: --iter8_R (default 0.25), --iter8_k (default 20), "
+                             "--iter8_T (default 6). Run on all 8 conditions for the "
+                             "collapse check.")
+    parser.add_argument("--iter8_R", type=float, default=0.25)
+    parser.add_argument("--iter8_k", type=int, default=20)
+    parser.add_argument("--iter8_T", type=int, default=6)
     parser.add_argument("--autopsy", action="store_true",
                         help="Run the per-condition hyperspace/decode autopsy (Phase 24) for "
                              "each corruption and print the comparison table: artifact profile, "
@@ -672,6 +685,22 @@ def main():
             print("   -> kNN reassignment mIoU (R x k):")
             for kk, v in i7['results'].items():
                 print(f"      {kk:<10}: {v['miou']:.4f} | n_reassigned {v['n_reassigned']}")
+            all_results[corruption] = res
+            continue
+        if args.iter8_bootstrap:
+            res = {}
+            print("      -> Running Iteration-8 EM Bootstrap...")
+            i8 = iter8_bootstrap(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
+                                 clf, proj, device, R=args.iter8_R, k=args.iter8_k,
+                                 T=args.iter8_T)
+            res['iter8_bootstrap'] = i8
+            m = i8['metrics']
+            print("   -> Full-scene mIoU: zero-shot {:.4f} | zs-reest {:.4f} | oracle {:.4f}"
+                  .format(m['zero_shot'], m['zs_reestimate'], m['oracle']))
+            print("   -> EM trajectory (round | mIoU | pool pseudo acc | n_reassigned):")
+            for r in i8['trajectory']:
+                print(f"      round {r['round']}: {r['miou']:.4f} | pseudo_acc {r['pool_pseudo_acc']:.4f} | "
+                      f"n_reassigned {r['n_reassigned']}")
             all_results[corruption] = res
             continue
         res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,
