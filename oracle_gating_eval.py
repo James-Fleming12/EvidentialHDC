@@ -967,6 +967,90 @@ def iter1_pseudo_refine(base_protos, proto_lbls, corrupt_feats, corrupt_views, c
         'views': [name for name, _ in VIEW_CONFIGS],
     }
 
+def iter2_balanced_reestimate(base_protos, proto_lbls, prior_vec, corrupt_feats, corrupt_lbls,
+                              proj, device, pool_size=500000, val_size=200000, seed=42,
+                              tau=2.0, n_sinkhorn_iters=100):
+    """Iteration 2 diagnostic (tta_iterations.md): source-prior-balanced pseudo-assignment
+    for the prototype re-estimate (SHOT diversity / Sinkhorn-Knopp, no backprop).
+
+    Iteration 0 showed the oracle's gain is rare-class assignment recall (73k true
+    Traffic-sign points, 32 correct pseudo-assignments); argmax pseudo-labels starve the
+    rare classes. Sinkhorn forces the re-estimate pool's class marginals to match the
+    source class frequencies, guaranteeing rare-class support. Both a hard (argmax of the
+    balanced matrix) and a soft (P_bal-weighted prototype mean) re-estimate are evaluated
+    against zero-shot, zs-pseudo, and the full-label oracle.
+    """
+    torch.manual_seed(seed)
+    perm = torch.randperm(len(corrupt_feats))
+    pool_idx = perm[:pool_size]
+    val_idx = perm[-val_size:]
+    pool_f = corrupt_feats[pool_idx].to(device)
+    pool_l = corrupt_lbls[pool_idx].to(device)
+    val_f = corrupt_feats[val_idx].to(device)
+    val_l = corrupt_lbls[val_idx].to(device)
+    val_h = torch.sign(val_f @ proj)
+    w_one = torch.ones(len(pool_f), device=device)
+
+    def decode(protos):
+        sims = F.normalize(val_h, p=2, dim=1) @ F.normalize(protos, p=2, dim=1).T
+        preds = proto_lbls[sims.argmax(dim=1)]
+        return {'acc': float((preds == val_l).float().mean().item()),
+                'miou': compute_miou(preds, val_l)}
+
+    def reestimate(pseudo):
+        return weighted_mean_update(base_protos, proto_lbls, pool_f, pseudo, w_one, proj, device)
+
+    zs = decode(base_protos)
+    oracle = decode(reestimate(pool_l))
+
+    pool_h = torch.sign(pool_f @ proj)
+    sims = F.normalize(pool_h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T
+    zs_pseudo = proto_lbls[sims.argmax(dim=1)]
+    zs_res = decode(reestimate(zs_pseudo))
+
+    # Sinkhorn-Knopp: force column marginals toward the source prior over the pool.
+    K = len(proto_lbls)
+    n = len(pool_f)
+    pri = prior_vec.to(device).float()
+    pri = pri.clamp(min=1e-6)
+    b = (pri / pri.sum()) * n
+    P = F.softmax(tau * sims, dim=1)
+    u = torch.ones(n, device=device)
+    for _ in range(n_sinkhorn_iters):
+        v = b / (P.T @ u + 1e-9)
+        u = 1.0 / (P @ v + 1e-9)
+    P_bal = P * (u[:, None] * v[None, :])
+
+    bal_hard_pseudo = proto_lbls[P_bal.argmax(dim=1)]
+    bal_hard_res = decode(reestimate(bal_hard_pseudo))
+
+    # soft re-estimate: prototype_c = normalize(sum_i P_bal[i,c] * sign(z_i @ proj))
+    S = torch.zeros(K, proj.shape[1], device=device)
+    for c in range(K):
+        S[c] = (P_bal[:, c].unsqueeze(1) * pool_h).sum(dim=0)
+    protos_soft = F.normalize(S, p=2, dim=1)
+    sup = P_bal.sum(dim=0)
+    keep_base = sup < 1.0
+    protos_soft[keep_base] = F.normalize(base_protos[keep_base], p=2, dim=1)
+    bal_soft_res = decode(protos_soft)
+
+    # verify the guardrail: balanced assignment's per-class support vs the prior
+    counts_zs = {str(c): int((zs_pseudo == c).sum().item()) for c in proto_lbls.tolist()}
+    counts_bal = {str(c): int((bal_hard_pseudo == c).sum().item()) for c in proto_lbls.tolist()}
+    prior_counts = {str(c): int(round((pri[i] / pri.sum() * n).item()))
+                    for i, c in enumerate(proto_lbls.tolist())}
+
+    return {
+        'metrics': {'zero_shot': zs, 'zs_pseudo_reestimate': zs_res,
+                    'balanced_hard': bal_hard_res, 'balanced_soft': bal_soft_res,
+                    'oracle': oracle},
+        'pseudo_acc': {
+            'zs': float((pool_l == zs_pseudo).float().mean().item()),
+            'balanced_hard': float((pool_l == bal_hard_pseudo).float().mean().item()),
+        },
+        'support': {'zs': counts_zs, 'balanced': counts_bal, 'prior': prior_counts},
+    }
+
 def condition_autopsy(base_protos, proto_lbls, clean_means128, corrupt_feats, corrupt_lbls, proj,
                       device, clf=None, clean_stats=None, corrupt_depths=None, seed=42):
     """Per-condition hyperspace + decode signature (Phase 24).
@@ -1544,6 +1628,13 @@ def main():
                              "pitch / dropout, LP-probability and 10kD cosine-softmax "
                              "averages) against the 10kD zero-shot pseudo-labels and the "
                              "full-label oracle.")
+    parser.add_argument("--iter2_balanced_reestimate", action="store_true",
+                        help="Iteration 2 diagnostic: source-prior-balanced pseudo-assignment "
+                             "(Sinkhorn-Knopp, SHOT diversity guardrail, no backprop) for the "
+                             "prototype re-estimate. Forces the re-estimate pool's class "
+                             "marginals to match the source frequencies, countering the "
+                             "rare-class recall starvation (Iteration 0). Reports hard and "
+                             "soft balanced re-estimates vs zero-shot / zs-pseudo / oracle.")
     parser.add_argument("--autopsy", action="store_true",
                         help="Run the per-condition hyperspace/decode autopsy (Phase 24) for "
                              "each corruption and print the comparison table: artifact profile, "
@@ -1930,6 +2021,26 @@ def main():
                 cc = f"{ci['cos_correct_oracle']:.3f}" if ci['cos_correct_oracle'] is not None else "  n/a"
                 print(f"      class {c:<2}: prec {ci['prec']:.3f} | {ci['n_correct']}/{ci['n_assigned']} | "
                       f"{cn} | {cc}")
+            all_results[corruption] = res
+            continue
+        if args.iter2_balanced_reestimate:
+            res = {}
+            print("      -> Running Iteration-2 Balanced Re-Estimate (Sinkhorn)...")
+            i2 = iter2_balanced_reestimate(base_protos, proto_lbls, prior_vec,
+                                           corrupt_feats, corrupt_lbls, proj, device)
+            res['iter2_balanced_reestimate'] = i2
+            m = i2['metrics']
+            print("   -> Full-scene mIoU: zero-shot {:.4f} | zs-pseudo-reest {:.4f} | "
+                  "balanced-hard {:.4f} | balanced-soft {:.4f} | oracle {:.4f}"
+                  .format(m['zero_shot']['miou'], m['zs_pseudo_reestimate']['miou'],
+                          m['balanced_hard']['miou'], m['balanced_soft']['miou'],
+                          m['oracle']['miou']))
+            pa = i2['pseudo_acc']
+            print(f"   -> Pseudo acc: zs {pa['zs']:.4f} | balanced_hard {pa['balanced_hard']:.4f}")
+            print("   -> Support (zs / balanced / prior):")
+            for c in proto_lbls.tolist():
+                print(f"      class {c:<2}: {i2['support']['zs'][str(c)]:>7} / "
+                      f"{i2['support']['balanced'][str(c)]:>7} / {i2['support']['prior'][str(c)]:>7}")
             all_results[corruption] = res
             continue
         res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,

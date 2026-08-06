@@ -130,3 +130,19 @@ Full-scene mIoU, plain medium encoder, Phase 24.9 harness (200k pool / 100k val)
 4. **Conclusion**: the "better assignment source" direction for a label-free prototype re-estimate is closed on this encoder. Remaining candidates: a learned per-point weight that changes the *weighting* inside the re-estimate (the loss-estimator head) rather than the assignment, or reporting the full-label oracle as the bound and shifting the contribution to what the pipeline already achieves label-free (crosstalk decode-side gate, Phase 23).
 
 **Note on the other conditions**: the six geometric conditions were not re-checked because the relevant verdicts (fog/crosstalk) were already settled; they are not the TTA targets and already sit at or near the oracle. The assignment-source direction is closed; the remaining TTA candidate is the learned per-point weighting head.
+
+### Iteration 2: source-prior-balanced pseudo-assignment (Sinkhorn, SHOT diversity guardrail): implemented, pending run
+
+**Rationale**: Iteration 0 showed the oracle's gain is rare-class assignment recall; argmax pseudo-labels starve the rare classes. Sinkhorn-Knopp forces the re-estimate pool's class marginals to match the source frequencies, guaranteeing rare-class support (SHOT's diversity term without the entropy-minimization or backprop). Implemented as `--iter2_balanced_reestimate`: hard (argmax of the balanced matrix) and soft (P_bal-weighted prototype mean) re-estimates vs zero-shot / zs-pseudo / oracle.
+
+**Placeholder results** (pending the run): fog zs-pseudo-reest _9.2%_ → balanced-hard _TBD_ / balanced-soft _TBD_ vs oracle _16.5%_; crosstalk _9.6%_ → _TBD_ / _TBD_ vs _22.8%_.
+
+**Hypothesis to test**: does forcing rare-class support in the re-estimate pool move the re-estimate toward the oracle, or does the balanced assignment trade recall for precision (assigning wrong points to rare classes) and stay flat? Iteration 0.1's recall-starvation result predicts the former is possible but bounded by how separable the rare classes actually are in the features.
+
+### Candidate mechanisms (evaluated, not yet implemented)
+
+**1. ReAct (rectified activations / 128D norm clipping before projection): HIGH value, recommended next.** The autopsy's lead discriminator is magnitude inflation (fog norm 7.3 vs clean 4.8; 88% of fog points in the norm ≥ 4 poison band), and Phase 24.3/24.6 tied the 10kD decode failure (BinCos 0.05-0.08) to the magnitude-affected projection+binarization. ReAct (Sun et al., NeurIPS 2021) clips the 128D feature norms at a threshold derived from clean statistics *before* the HDC projection and Sign() binarization, directly testing whether high-norm artifacts overpower the angular structure of the binarized prototypes. Zero-training, forward-pass, cheap. Placeholder: fog zs mIoU _10.1%_ → ReAct-clipped decode _TBD_ (per norm-clip threshold); BinCos _0.05-0.08_ → _TBD_.
+
+**2. LAME (latent-space marginalization, Boudiaf et al. CVPR 2022): folded into the Sinkhorn option.** LAME is the forward-pass local-affinity + global-diversity correction; the local-affinity term (points close in 128D get similar assignments) is a natural add-on to the Iteration 2 Sinkhorn (which currently does global diversity only). If Iteration 2 is flat, add the affinity term and re-run rather than treating LAME as a separate method. Placeholder: balanced-hard _TBD_ → balanced+affinity _TBD_.
+
+**3. Black-box label shift (Lipton et al., ICML 2018): LOW value, cheap test.** This estimates the test class distribution from the confusion matrix + predicted distribution and reweights the decode. It is a data-driven variant of the decision-level prior correction (Phase 24.8), which was flat-to-negative on every condition; since the true test class frequencies under fog are ≈ source frequencies (same scenes), the correction is expected to be small. Placeholder: prior correction fog _9.7%_ → label-shift decode _TBD_. Only run if the others fail.
