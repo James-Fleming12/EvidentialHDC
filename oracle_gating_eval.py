@@ -808,10 +808,138 @@ def iteration0_update_diag(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
         'class_info': class_info,
     }
 
-CLASS_NAMES = {1: 'car', 2: 'bicycle', 3: 'motorcycle', 4: 'truck', 5: 'other-vehicle',
-               6: 'person', 7: 'road', 8: 'fence', 9: 'vegetation', 10: 'trunk',
-               11: 'terrain', 12: 'pole', 13: 'traffic-sign', 14: 'other-ground',
-               15: 'building', 16: 'other-object'}
+def _view_beam_drop(in_vol, p):
+    bs, C, h, w = in_vol.shape
+    out = in_vol.clone()
+    num_drop = int(h * p)
+    for b in range(bs):
+        idx = torch.randperm(h, device=in_vol.device)[:num_drop]
+        out[b, :, idx, :] = 0
+    return out
+
+def _rot_z(th):
+    c, s = float(np.cos(th)), float(np.sin(th))
+    return torch.tensor([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+def _rot_x(th):
+    c, s = float(np.cos(th)), float(np.sin(th))
+    return torch.tensor([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
+
+# Canonical multi-view TTA augmentation set (D3CTTA-style, README sec 6): point-cloud
+# scale (0.9-1.1), yaw/rotation (+-pi/20), translation, plus a beam-dropout view.
+# Applied pixel-aligned on the projected xyz (each pixel keeps its grid position;
+# its 3D coordinates are transformed and the range channel recomputed), which is
+# exact for small rotations and keeps per-pixel correspondence across views.
+VIEW_CONFIGS = [
+    ('base', dict(scale=1.0, yaw=0.0, pitch=0.0, trans=(0.0, 0.0, 0.0), dropout=0.0)),
+    ('scale095_yaw5', dict(scale=0.95, yaw=5.0, pitch=0.0, trans=(0.0, 0.0, 0.0), dropout=0.0)),
+    ('scale105_yawm5', dict(scale=1.05, yaw=-5.0, pitch=0.0, trans=(0.0, 0.0, 0.0), dropout=0.0)),
+    ('yaw2_pitch4', dict(scale=1.0, yaw=2.0, pitch=4.0, trans=(0.0, 0.0, 0.0), dropout=0.0)),
+    ('scale09_yawm8', dict(scale=0.9, yaw=-8.0, pitch=0.0, trans=(0.0, 0.0, 0.0), dropout=0.0)),
+    ('dropout30', dict(scale=1.0, yaw=0.0, pitch=0.0, trans=(0.0, 0.0, 0.0), dropout=0.3)),
+]
+
+def build_mv_views(batch, means, stds, device):
+    """Build the multi-view volumes for one batch. batch[0]=in_vol (normalized),
+    batch[1]=proj_mask, batch[10]=proj_xyz (raw), batch[12]=proj_remission (raw).
+    Returns a list of (name, view_volume) aligned to the base mask."""
+    views = []
+    for name, p in VIEW_CONFIGS:
+        if p['dropout'] > 0.0:
+            views.append((name, _view_beam_drop(batch[0].to(device), p['dropout'])))
+            continue
+        R = (_rot_x(np.deg2rad(p['pitch'])) @ _rot_z(np.deg2rad(p['yaw']))).to(device)
+        xyz = batch[10].float().to(device)  # [B,H,W,3]
+        rem = batch[12].float().to(device)  # [B,H,W]
+        t = torch.tensor(p['trans'], device=device, dtype=torch.float32).view(1, 1, 1, 3)
+        xyz_t = torch.einsum('bhwc,dc->bhwd', xyz, R) * p['scale'] + t
+        rng = xyz_t.norm(dim=-1, keepdim=True).permute(0, 3, 1, 2)   # [B,1,H,W]
+        ch_xyz = xyz_t.permute(0, 3, 1, 2)                            # [B,3,H,W]
+        ch_rem = rem.unsqueeze(1)                                     # [B,1,H,W]
+        raw = torch.cat([rng, ch_xyz, ch_rem], dim=1)                 # [B,5,H,W]
+        mask = (batch[1].to(device) > 0).float().unsqueeze(1)
+        views.append((name, ((raw - means) / stds) * mask))
+    return views
+
+def iter1_pseudo_refine(base_protos, proto_lbls, corrupt_feats, corrupt_views, corrupt_lbls,
+                        clf, proj, device, pool_size=500000, val_size=200000, seed=42):
+    """Iteration 1 diagnostic (tta_iterations.md): better label-free ASSIGNMENT sources.
+
+    Iteration 0.1 showed gating the existing pseudo-labels cannot reach the oracle
+    (rare-class recall starvation); the re-estimate needs better assignments. This
+    tests two label-free refinements over the 10kD zero-shot pseudo-labels:
+      1. LP-pseudo: the 128D linear probe's assignments (clean-trained, label-free).
+      2. Multi-view augmented consensus (MVAC): decode each augmented view (jitter /
+         beam-drop / density) with the LP (probability average) and with the 10kD
+         prototypes (cosine-softmax average); the averaged assignment is the refined
+         pseudo-label.
+    All re-estimates use the SAME weighted_mean_update operator and a shared seeded
+    pool/val split, so any mIoU difference is purely the assignment source.
+    """
+    torch.manual_seed(seed)
+    perm = torch.randperm(len(corrupt_feats))
+    pool_idx = perm[:pool_size]
+    val_idx = perm[-val_size:]
+    pool_f = corrupt_feats[pool_idx].to(device)
+    pool_l = corrupt_lbls[pool_idx].to(device)
+    val_f = corrupt_feats[val_idx].to(device)
+    val_l = corrupt_lbls[val_idx].to(device)
+    val_h = torch.sign(val_f @ proj)
+    w_one = torch.ones(len(pool_f), device=device)
+
+    def decode(protos):
+        sims = F.normalize(val_h, p=2, dim=1) @ F.normalize(protos, p=2, dim=1).T
+        preds = proto_lbls[sims.argmax(dim=1)]
+        return {'acc': float((preds == val_l).float().mean().item()),
+                'miou': compute_miou(preds, val_l)}
+
+    def reestimate(pseudo):
+        return weighted_mean_update(base_protos, proto_lbls, pool_f, pseudo, w_one, proj, device)
+
+    zs = decode(base_protos)
+    oracle = decode(reestimate(pool_l))
+
+    # 10kD zero-shot pseudo-labels on the pool (the baseline assignment source)
+    pool_h = torch.sign(pool_f @ proj)
+    pool_sims = F.normalize(pool_h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T
+    zs_pseudo = proto_lbls[pool_sims.argmax(dim=1)]
+    zs_res = decode(reestimate(zs_pseudo))
+
+    # view features on the pool (aligned to pool base indices)
+    pool_views = [v[pool_idx].to(device) for v in corrupt_views]
+
+    # 1. LP-pseudo (base view)
+    lp_probs = [torch.tensor(clf.predict_proba(vf.cpu().numpy())) for vf in pool_views]
+    lp_pseudo = lp_probs[0].argmax(dim=1).to(device)
+    lp_res = decode(reestimate(lp_pseudo))
+
+    # 2. MVAC-LP: average LP probabilities across views
+    avg_lp = torch.stack(lp_probs, dim=0).mean(dim=0)
+    mvac_lp_pseudo = avg_lp.argmax(dim=1).to(device)
+    mvac_lp_res = decode(reestimate(mvac_lp_pseudo))
+
+    # 3. MVAC-proto: average cosine-softmax over views in 10kD
+    def proto_probs(feat):
+        h = F.normalize(torch.sign(feat @ proj), p=2, dim=1)
+        s = h @ F.normalize(base_protos, p=2, dim=1).T
+        return F.softmax(10.0 * s, dim=1)
+    avg_pp = torch.stack([proto_probs(vf) for vf in pool_views], dim=0).mean(dim=0)
+    mvac_proto_pseudo = proto_lbls[avg_pp.argmax(dim=1)]
+    mvac_proto_res = decode(reestimate(mvac_proto_pseudo))
+
+    pseudo_acc = {
+        '10kD_zero_shot': float((pool_l == zs_pseudo).float().mean().item()),
+        'LP_base': float((pool_l == lp_pseudo).float().mean().item()),
+        'MVAC_LP': float((pool_l == mvac_lp_pseudo).float().mean().item()),
+        'MVAC_proto': float((pool_l == mvac_proto_pseudo).float().mean().item()),
+    }
+
+    return {
+        'metrics': {'zero_shot': zs, 'zs_pseudo_reestimate': zs_res, 'LP_pseudo': lp_res,
+                    'MVAC_LP': mvac_lp_res, 'MVAC_proto': mvac_proto_res, 'oracle': oracle},
+        'pseudo_acc': pseudo_acc,
+        'views': [name for name, _ in VIEW_CONFIGS],
+    }
 
 def condition_autopsy(base_protos, proto_lbls, clean_means128, corrupt_feats, corrupt_lbls, proj,
                       device, clf=None, clean_stats=None, corrupt_depths=None, seed=42):
@@ -1382,6 +1510,14 @@ def main():
                              "cosine of the naive / correct-subset prototype to the oracle "
                              "prototype, and val mIoU for zero-shot / naive / correct-subset "
                              "(perfect-gating bound) / full-label oracle.")
+    parser.add_argument("--iter1_pseudo_refine", action="store_true",
+                        help="Iteration 1 diagnostic: better label-free ASSIGNMENT sources "
+                             "for the prototype re-estimate. Tests the 128D linear-probe "
+                             "pseudo-labels and Multi-View Augmented Consensus (MVAC, "
+                             "canonical D3CTTA-style views: point-cloud scale / yaw / "
+                             "pitch / dropout, LP-probability and 10kD cosine-softmax "
+                             "averages) against the 10kD zero-shot pseudo-labels and the "
+                             "full-label oracle.")
     parser.add_argument("--autopsy", action="store_true",
                         help="Run the per-condition hyperspace/decode autopsy (Phase 24) for "
                              "each corruption and print the comparison table: artifact profile, "
@@ -1545,6 +1681,10 @@ def main():
         corrupt_loader = corrupt_parser.get_train_set()
         
         corrupt_feats, corrupt_lbls, corrupt_depths = [], [], []
+        if args.iter1_pseudo_refine:
+            corrupt_views = [[] for _ in VIEW_CONFIGS]
+            mv_means = corrupt_parser.sensor_img_means.view(5, 1, 1).to(device)
+            mv_stds = corrupt_parser.sensor_img_stds.view(5, 1, 1).to(device)
         
         with torch.no_grad():
             for i, batch in enumerate(tqdm(corrupt_loader, total=NUM_BATCHES, desc=f"   Ext. {corruption}")):
@@ -1559,13 +1699,48 @@ def main():
                 else:
                     _, z8 = out_tuple
                 z_flat = z8.permute(0, 2, 3, 1).reshape(-1, z8.shape[1])[mask]
-                corrupt_feats.append(z_flat.cpu())
-                corrupt_lbls.append(labels[mask].cpu())
-                corrupt_depths.append(in_vol[:, 0, :, :].reshape(-1)[mask].cpu())  # range channel, same mask order
+                
+                if args.iter1_pseudo_refine:
+                    torch.manual_seed(0)
+                    n = z_flat.shape[0]
+                    idx = torch.randperm(n, device=z_flat.device)[: min(n, 40000)]
+                    corrupt_feats.append(z_flat[idx].cpu())
+                    corrupt_lbls.append(labels[mask][idx].cpu())
+                    corrupt_depths.append(in_vol[:, 0, :, :].reshape(-1)[mask][idx].cpu())
+                    corrupt_views[0].append(z_flat[idx].cpu())
+                    for k, (vname, vfn) in enumerate(build_mv_views(batch, mv_means, mv_stds, device)):
+                        if k == 0:
+                            continue
+                        _, _, z8v = model(vfn)
+                        z_flat_v = z8v.permute(0, 2, 3, 1).reshape(-1, z8v.shape[1])[mask]
+                        corrupt_views[k].append(z_flat_v[idx].cpu())
+                else:
+                    corrupt_feats.append(z_flat.cpu())
+                    corrupt_lbls.append(labels[mask].cpu())
+                    corrupt_depths.append(in_vol[:, 0, :, :].reshape(-1)[mask].cpu())  # range channel, same mask order
                 
         corrupt_feats = torch.cat(corrupt_feats, dim=0)
         corrupt_lbls = torch.cat(corrupt_lbls, dim=0)
         corrupt_depths = torch.cat(corrupt_depths, dim=0)
+        
+        if args.iter1_pseudo_refine:
+            corrupt_views = [torch.cat(v, dim=0) for v in corrupt_views]
+            res = {}
+            print("      -> Running Iteration-1 Pseudo-Label Refinement (LP + Multi-View Consensus)...")
+            i1 = iter1_pseudo_refine(base_protos, proto_lbls, corrupt_feats, corrupt_views,
+                                     corrupt_lbls, clf, proj, device)
+            res['iter1_pseudo_refine'] = i1
+            m = i1['metrics']
+            pa = i1['pseudo_acc']
+            print("   -> Full-scene mIoU: zero-shot {:.4f} | zs-pseudo-reest {:.4f} | "
+                  "LP-pseudo {:.4f} | MVAC-LP {:.4f} | MVAC-proto {:.4f} | oracle {:.4f}"
+                  .format(m['zero_shot']['miou'], m['zs_pseudo_reestimate']['miou'],
+                          m['LP_pseudo']['miou'], m['MVAC_LP']['miou'],
+                          m['MVAC_proto']['miou'], m['oracle']['miou']))
+            print("   -> Pool pseudo-label accuracy: "
+                  + " | ".join(f"{k} {v:.4f}" for k, v in pa.items()))
+            all_results[corruption] = res
+            continue
         
         if args.whiten:
             corrupt_feats = (corrupt_feats - whiten[0]) @ whiten[1]
