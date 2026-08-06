@@ -43,6 +43,12 @@ from modules.tta_diagnostics import (
     VIEW_CONFIGS,
 )
 
+CLASS_NAMES = {1: 'car', 2: 'bicycle', 3: 'motorcycle', 4: 'truck', 5: 'other-vehicle',
+               6: 'person', 7: 'road', 8: 'fence', 9: 'vegetation', 10: 'trunk',
+               11: 'terrain', 12: 'pole', 13: 'traffic-sign', 14: 'other-ground',
+               15: 'building', 16: 'other-object'}
+
+
 CORRUPTIONS = [
     'fog', 'snow', 'wet_ground', 'incomplete_echo', 
     'crosstalk', 'beam_missing', 'motion_blur', 'cross_sensor'
@@ -691,3 +697,6 @@ def main():
     with open(out_path, 'w') as f:
         json.dump(all_results, f, indent=4)
     print(f"Saved Oracle Gating Results ({len(all_results)} corruptions) to {out_path}")
+
+if __name__ == "__main__":
+    main()

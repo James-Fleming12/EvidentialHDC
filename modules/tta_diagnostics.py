@@ -312,7 +312,6 @@ def tta_oracle_decode(base_protos, proto_lbls, clean_stats, corrupt_feats, corru
         probs = clf.predict_proba(pool_f.cpu().numpy())
         pool_conf = torch.tensor(probs.max(axis=1), device=device)
         n_z = (pool_norm - pool_norm.mean()) / (pool_norm.std() + 1e-8)
-        c_z = (pool_conf - pool_conf.mean()) / (pool_conf.std() + 1e-8)
         u_epi = 1.0 - pool_conf.clamp(0.0, 1.0)
         w_sdw = fuse_uncertainties(u_epi, n_z, method='soft_dual_weight', cfg=gate_cfg)
         protos = weighted_mean_update(base_protos, proto_lbls, pool_f, zs_preds, w_sdw, proj, device)
@@ -1015,8 +1014,6 @@ def deep_label_analysis(base_protos, proto_lbls, clean_feats, clean_lbls, corrup
         top2 = torch.topk(F.normalize(val_h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T, 2, dim=1)
         margin = (top2.values[:, 0] - top2.values[:, 1]).clamp(min=0)
         lp_conf = torch.tensor(clf.predict_proba(val_f.cpu().numpy()).max(axis=1))
-        cos128 = None
-        sims128 = None
         ti = torch.searchsorted(proto_lbls, val_l)
         cos_true = (F.normalize(val_h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T)[torch.arange(len(val_l), device=device), ti]
         loss = (top2.values[:, 0] - cos_true).clamp(min=0)
