@@ -1303,7 +1303,7 @@ def assignment_gap_diag(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, cl
         k = max(int(pool_wrong.sum().item() * R), 1)
         sel = torch.topk(det_score, k).indices
         pseudo_oracle = zs_pseudo.clone()
-        pseudo_oracle[sel] = pool_l[sel]
+        pseudo_oracle[sel] = pool_l[sel].long()
         pseudo_lp = zs_pseudo.clone()
         pseudo_lp[sel] = lp_pool[sel]
         _, miou_oracle = decode(weighted_mean_update(base_protos, proto_lbls, pool_f,
