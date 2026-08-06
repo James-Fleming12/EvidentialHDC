@@ -986,6 +986,37 @@ The "balancer" hypothesis for the label-free gate (select *which points recomput
 1. **README**: keep the decode-side gating table as the operative result; add the one-line note that update-side prototype rebalancing was tested label-free *and* with oracle selection and is flat; preempts the natural "why not recompute prototypes from confident points?" question.
 2. **Gate role is settled as selective/deferral only**; fog remains pinned at ~10% mIoU, with the fix still representation-side (per-class objectives on the collapsing classes, or the learned loss-estimator head for the label-free access gap).
 
+---
+
+## Phase 24.8: The Source-Prior Correction Test: Flat to Negative on Every Condition
+
+Decision-level prior correction (README Pillar 3, sec 5.2): `score(q, c) = kappa·cos(q, P_c) + tau·log pi_c`, prediction-only (never in the gate or the updates), full-scene acc + mIoU, τ = −1.0 reference config with a κ sweep (5/10/20/50/100) plus τ = −0.5/κ=10 and τ = −2/κ=20 spot checks. π_c from clean class frequencies.
+
+### Full-scene mIoU vs the prior config
+
+| Condition | Zero-shot | Best prior config | Delta |
+| :--- | :--- | :--- | :--- |
+| crosstalk | 12.0% | 12.9% @ κ=50 | +0.9 |
+| fog | 10.1% | 9.7% @ κ=100 | −0.4 |
+| snow | 39.4% | 38.5% @ κ=100 | −0.9 |
+| wet_ground | 49.0% | 48.3% @ κ=100 | −0.7 |
+| incomplete_echo | 41.2% | 40.5% @ κ=100 | −0.7 |
+| beam_missing | 53.7% | 52.6% @ κ=100 | −1.1 |
+| motion_blur | 44.3% | 43.6% @ κ=100 | −0.7 |
+| cross_sensor | 41.5% | 39.6% @ κ=100 | −1.9 |
+
+### The Findings
+
+1. **Null to negative on every condition.** No prior config beats zero-shot on any condition; the best is crosstalk +0.9 mIoU @ κ=50, which is noise level. Strong priors (κ ≤ 20) degrade both acc and mIoU substantially (the boundary translation `(tau/kappa)·log(pi_b/pi_a)` over-corrects the rare classes).
+2. **Bug caught first**: the initial sweep used κ=1, so `log(1/π)≈7` for a rare class swamped the ~0.05 top-2 cosine margin and collapsed every decode onto a single class (acc/mIoU exactly 0). The README's boundary-translation form makes the strength `(τ/κ)`; κ must scale the cosine term. The fixed sweep does not collapse.
+3. **Does not reproduce the old-project claims** (Wet Ground +11.7, Echo gains): the frozen clean prototypes on this encoder are already the best decoder on every condition (Phase 21), so boundary translation only takes away; the old gains came from a different backbone and κ calibration.
+4. **Consequence**: full-scene crosstalk stays pinned at ~12% without point removal. Prior correction is closed as a lever; the only demonstrated crosstalk win remains the label-free decode-side gate (23.1% @ 51.6% retention).
+
+### Next Steps
+
+1. **Prior correction: closed** (remove from the candidate list).
+2. **Crosstalk full-scene gains remain open**: the remaining untried levers are the per-class objective on the encoder side and the learned loss-estimator head (which targets the label-free *access* gap, not full-scene decode).
+
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
 The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *possible* (batch 2–4, one-line Parser change, loop already batch-agnostic). This is parked for three reasons:
@@ -1002,7 +1033,6 @@ The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *pos
 
 1. **The learned loss-estimator head** (Phases 24.4 #3, 24.6 #1): a small head trained on clean/self-supervised signal to predict cos-to-true at test time, targeting the label-free gate gap on fog (11% label-free vs 55% oracle on the plain features). Decoder-side, but it estimates the perceptron loss the gates need.
 2. **Per-class weighting for the fog casualties** (classes 2, 7, 13, 14, 15) in the pretraining objective: the concrete target list from Phase 24.2; the collapse is class-conditional and regimen-invariant (Phase 24.6), so the objective must target these classes specifically.
-3. **Prior correction test** (still unrun): static source prior (τ = −1.0), both point accuracy and mIoU, per condition, with the phase-separation rule (prediction-only; never in the gate or update). The benign-condition mIoU recovery question.
-4. **Crosstalk stack to finish the 20-target**: the label-free margin gate (23.1% mIoU @ 52% retention) combined with the BN-statistic alignment (+3.1 raw mIoU): evaluate the combined decode.
-5. **Intra-class balance checks** (open thread): per-class hard selection behaved differently from global selection (Phase 22.1), so the intra-class balance question is not yet settled; the subcluster ledger and per-class buffer variants remain to be evaluated.
-6. **Optional decode-thread closure**: `--update_strength 1 --buffer_frac 0.20` on the oracle retrain: low prior that it stabilizes the loop; cheap, closes Phase 22.
+3. **Crosstalk stack to finish the 20-target**: the label-free margin gate (23.1% mIoU @ 52% retention) combined with the BN-statistic alignment (+3.1 raw mIoU): evaluate the combined decode. (Prior correction is closed as a lever, Phase 24.8.)
+4. **Intra-class balance checks** (open thread): per-class hard selection behaved differently from global selection (Phase 22.1), so the intra-class balance question is not yet settled; the subcluster ledger and per-class buffer variants remain to be evaluated.
+5. **Optional decode-thread closure**: `--update_strength 1 --buffer_frac 0.20` on the oracle retrain: low prior that it stabilizes the loop; cheap, closes Phase 22.
