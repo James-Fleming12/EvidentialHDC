@@ -1116,6 +1116,196 @@ def react_test(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, devic
                      'frac_clipped': float((norms > t).float().mean().item()) if t != 1e9 else 0.0})
     return {'rows': rows}
 
+def deep_label_analysis(base_protos, proto_lbls, clean_feats, clean_lbls, corrupt_feats,
+                        corrupt_lbls, clf, proj, device, seed=42, max_pts_per_class=30000):
+    """Iteration 4 (deep label-information analysis, tta_iterations.md).
+
+    Three parts, all aimed at WHAT the ground-truth labels carry that the features
+    and the 10kD prototypes cannot derive:
+
+      A. Feature geometry, clean vs corrupt, per class: centroid cosine shift, norm
+         inflation, intra-class tightness, and inter-class absorption (distance to the
+         nearest OTHER class centroid, clean vs corrupt). Split classes into survivors
+         (corrupt decode keeps them) and collapsers (corrupt decode kills them) to see
+         what makes the fragile classes fragile under corruption yet fine under
+         supervised clean training.
+      B. Pseudo-label error analysis: per-true-class confusion for the 10kD zs and LP
+         assignment sources, prototype contamination (precision + cosine to the oracle
+         prototype per class), and the per-class IoU impact of the assignment errors on
+         the re-estimate.
+      C. Recoverability / confidence: does ANY label-free signal (norm, margin, LP
+         confidence, cos128, oracle perceptron loss) separate the points the oracle
+         rescues (zs-wrong, oracle-right) from the points wrong even under the oracle?
+         AUROC ~0.5 on every signal proves the recoverability information is label-only.
+    """
+    torch.manual_seed(seed)
+
+    # ---- subsample clean per class ----
+    clean_parts_f, clean_parts_l = [], []
+    for c in proto_lbls.tolist():
+        idx = torch.nonzero(clean_lbls == c).flatten()
+        if len(idx) > max_pts_per_class:
+            idx = idx[torch.randperm(len(idx))[:max_pts_per_class]]
+        clean_parts_f.append(clean_feats[idx])
+        clean_parts_l.append(clean_lbls[idx])
+    clean_f = torch.cat(clean_parts_f, dim=0)
+    clean_l = torch.cat(clean_parts_l, dim=0)
+
+    # ---- corrupt pool / val (shared split) ----
+    perm = torch.randperm(len(corrupt_feats))
+    pool_idx = perm[:500000]
+    val_idx = perm[-100000:]
+    pool_f = corrupt_feats[pool_idx].to(device)
+    pool_l = corrupt_lbls[pool_idx].to(device)
+    val_f = corrupt_feats[val_idx].to(device)
+    val_l = corrupt_lbls[val_idx].to(device)
+    val_h = torch.sign(val_f @ proj)
+    pool_h = torch.sign(pool_f @ proj)
+    w_one = torch.ones(len(pool_f), device=device)
+
+    def decode(protos):
+        sims = F.normalize(val_h, p=2, dim=1) @ F.normalize(protos, p=2, dim=1).T
+        preds = proto_lbls[sims.argmax(dim=1)]
+        return preds, compute_miou(preds, val_l)
+
+    def per_class_iou(preds):
+        present = set(val_l.tolist())
+        out = {}
+        for c in range(1, 17):
+            if c not in present:
+                continue
+            tp = int(((preds == c) & (val_l == c)).sum().item())
+            fp = int(((preds == c) & (val_l != c)).sum().item())
+            fn = int(((preds != c) & (val_l == c)).sum().item())
+            d = tp + fp + fn
+            out[c] = tp / d if d > 0 else 0.0
+        return out
+
+    # ---- A. per-class geometry + survivor/collapser split ----
+    clean_centers = {}
+    corrupt_centers = {}
+    geometry = {}
+    lp_cls = torch.tensor(clf.predict(clean_f.numpy()))  # LP per-class clean acc
+    lp_pool_preds = torch.tensor(clf.predict(pool_f.cpu().numpy())).to(device)
+
+    for c in proto_lbls.tolist():
+        cm = clean_l == c
+        pm = pool_l == c
+        cf_c = clean_f[cm]
+        pf_c = pool_f[pm]
+        if len(cf_c) < 200 or len(pf_c) < 200:
+            geometry[str(c)] = None
+            continue
+        c_center = F.normalize(cf_c.mean(dim=0), p=2, dim=0)
+        p_center = F.normalize(pf_c.mean(dim=0), p=2, dim=0)
+        clean_centers[c] = c_center
+        corrupt_centers[c] = p_center
+        c_tight = float((F.normalize(cf_c, p=2, dim=1) @ c_center).mean().item())
+        p_tight = float((F.normalize(pf_c, p=2, dim=1) @ p_center).mean().item())
+        # inter-class absorption: clean/corrupt distance to nearest OTHER clean centroid
+        others = [clean_centers[o] for o in clean_centers if o != c]
+        if others:
+            other_m = F.normalize(torch.stack(others), p=2, dim=1)
+            c_d = float((1.0 - other_m @ c_center).min().item())
+            p_d = float((1.0 - other_m @ p_center).min().item())
+        else:
+            c_d = p_d = None
+        geometry[str(c)] = {
+            'cos_shift': float((c_center @ p_center).item()),
+            'norm_clean': float(cf_c.norm(dim=1).mean().item()),
+            'norm_corrupt': float(pf_c.norm(dim=1).mean().item()),
+            'tight_clean': c_tight, 'tight_corrupt': p_tight,
+            'nearest_other_clean_dist': c_d, 'nearest_other_corrupt_dist': p_d,
+            'lp_clean_acc': float((lp_cls[cm] == c).float().mean().item()),
+            'lp_corrupt_acc': float((lp_pool_preds[pm] == c).float().mean().item()),
+        }
+
+    # ---- B. pseudo-label confusion + re-estimate impact ----
+    pool_sims = F.normalize(pool_h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T
+    zs_pseudo = proto_lbls[pool_sims.argmax(dim=1)]
+    protos_oracle = weighted_mean_update(base_protos, proto_lbls, pool_f, pool_l, w_one, proj, device)
+    protos_zs = weighted_mean_update(base_protos, proto_lbls, pool_f, zs_pseudo, w_one, proj, device)
+    protos_lp = weighted_mean_update(base_protos, proto_lbls, pool_f, lp_pool_preds, w_one, proj, device)
+
+    zs_val_preds, zs_miou = decode(protos_zs)
+    lp_val_preds, lp_miou = decode(protos_lp)
+    oracle_val_preds, oracle_miou = decode(protos_oracle)
+    zs0_val_preds, _ = decode(base_protos)
+
+    confusion = {}
+    contamination = {}
+    for c in proto_lbls.tolist():
+        true_mask = pool_l == c
+        n_true = int(true_mask.sum().item())
+        if n_true == 0:
+            continue
+        # top-3 destinations of this class's points under zs
+        dest = zs_pseudo[true_mask]
+        counts = torch.bincount(dest, minlength=len(proto_lbls))
+        top = sorted(zip(proto_lbls.tolist(), counts.tolist()), key=lambda kv: -kv[1])[:3]
+        confusion[str(c)] = {'n_true': n_true,
+                             'top_dest': [(d, n) for d, n in top if n > 0]}
+        # prototype contamination from the zs assignment
+        for src_name, src_preds, protos in [('zs', zs_pseudo, protos_zs),
+                                           ('lp', lp_pool_preds, protos_lp)]:
+            assigned = src_preds == c
+            n_assigned = int(assigned.sum().item())
+            prec = float(((pool_l[assigned] == c).float().mean().item())) if n_assigned > 0 else 0.0
+            idx = (proto_lbls == c).nonzero(as_tuple=True)[0]
+            if len(idx) > 0:
+                cos_proto = float((F.normalize(protos[idx[0]], p=2, dim=0)
+                                   @ F.normalize(protos_oracle[idx[0]], p=2, dim=0)).item())
+            else:
+                cos_proto = 0.0
+            contamination.setdefault(src_name, {})[str(c)] = {'prec': prec, 'cos_to_oracle_proto': cos_proto}
+
+    class_impact = {
+        'zs_reestimate': per_class_iou(zs_val_preds),
+        'lp_reestimate': per_class_iou(lp_val_preds),
+        'oracle': per_class_iou(oracle_val_preds),
+    }
+
+    # ---- C. recoverability / confidence ----
+    recover = {}
+    # oracle-recovered = zs-wrong but oracle-right on the val
+    both_wrong = (zs0_val_preds != val_l) & (oracle_val_preds != val_l)
+    recovered = (zs0_val_preds != val_l) & (oracle_val_preds == val_l)
+    if recovered.sum() > 50 and both_wrong.sum() > 50:
+        norm = torch.norm(val_f, p=2, dim=1)
+        top2 = torch.topk(F.normalize(val_h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T, 2, dim=1)
+        margin = (top2.values[:, 0] - top2.values[:, 1]).clamp(min=0)
+        lp_conf = torch.tensor(clf.predict_proba(val_f.cpu().numpy()).max(axis=1))
+        cos128 = None
+        sims128 = None
+        ti = torch.searchsorted(proto_lbls, val_l)
+        cos_true = (F.normalize(val_h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T)[torch.arange(len(val_l), device=device), ti]
+        loss = (top2.values[:, 0] - cos_true).clamp(min=0)
+        from sklearn.metrics import roc_auc_score
+        y = torch.cat([torch.ones(recovered.sum()), torch.zeros(both_wrong.sum())]).numpy()
+        for name, sig in [('norm', norm), ('margin', margin), ('lp_conf', lp_conf),
+                          ('oracle_loss', loss)]:
+            x = torch.cat([sig[recovered], sig[both_wrong]]).cpu().numpy()
+            if x.std() > 0:
+                auc = roc_auc_score(y, x)
+            else:
+                auc = 0.5
+            recover[name] = {
+                'auc': float(auc),
+                'mean_recovered': float(sig[recovered].mean().item()),
+                'mean_stuck': float(sig[both_wrong].mean().item()),
+            }
+
+    return {
+        'geometry': geometry,
+        'pseudo': {'zs_acc_pool': float((pool_l == zs_pseudo).float().mean().item()),
+                   'lp_acc_pool': float((pool_l == lp_pool_preds).float().mean().item()),
+                   'zs_miou': zs_miou, 'lp_miou': lp_miou, 'oracle_miou': oracle_miou},
+        'confusion': confusion,
+        'contamination': contamination,
+        'class_impact': class_impact,
+        'recover': recover,
+    }
+
 def condition_autopsy(base_protos, proto_lbls, clean_means128, corrupt_feats, corrupt_lbls, proj,
                       device, clf=None, clean_stats=None, corrupt_depths=None, seed=42):
     """Per-condition hyperspace + decode signature (Phase 24).
@@ -1707,6 +1897,16 @@ def main():
                              "inflation overpowers the angular structure of the binarized "
                              "prototypes (BinCos 0.05-0.08). Reports frozen-prototype decode "
                              "acc/mIoU and the binarized clean<->fog mean cosine per threshold.")
+    parser.add_argument("--deep_label_analysis", action="store_true",
+                        help="Iteration 4 deep analysis: what the ground-truth labels carry "
+                             "that the features and prototypes cannot derive. Per-class clean "
+                             "vs corrupt geometry (centroid shift, norm inflation, tightness, "
+                             "inter-class absorption) with a survivor/collapser split; "
+                             "pseudo-label confusion + prototype contamination + per-class "
+                             "re-estimate impact for the zs and LP sources; and AUROC of "
+                             "every label-free signal for separating oracle-recovered from "
+                             "oracle-stuck points. Can run for hours; use "
+                             "--corruptions to scope it.")
     parser.add_argument("--autopsy", action="store_true",
                         help="Run the per-condition hyperspace/decode autopsy (Phase 24) for "
                              "each corruption and print the comparison table: artifact profile, "
@@ -1844,8 +2044,9 @@ def main():
                 print(f"      {k:<16}: {v:.4f}")
     
     # We no longer need the massive clean_feats tensor
-    del clean_feats
-    del clean_lbls
+    if not args.deep_label_analysis:
+        del clean_feats
+        del clean_lbls
     
     corruptions = CORRUPTIONS if not args.corruptions else [c.strip() for c in args.corruptions.split(',')]
     all_results = {}
@@ -2130,6 +2331,35 @@ def main():
                 t = f"{r['threshold']:.1f}" if r['threshold'] != float('inf') else "inf"
                 print(f"      clip {t:>5}: acc {r['acc']:.4f} | mIoU {r['miou']:.4f} | "
                       f"bin_cos {r['bin_cos']:.4f} | frac_clipped {r['frac_clipped']:.3f}")
+            all_results[corruption] = res
+            continue
+        if args.deep_label_analysis:
+            res = {}
+            print("      -> Running Deep Label-Information Analysis...")
+            da = deep_label_analysis(base_protos, proto_lbls, clean_feats, clean_lbls,
+                                     corrupt_feats, corrupt_lbls, clf, proj, device)
+            res['deep_label_analysis'] = da
+            print("   -> Pool pseudo acc: zs {:.4f} | LP {:.4f} | re-est mIoU: zs {:.4f} | "
+                  "LP {:.4f} | oracle {:.4f}".format(
+                      da['pseudo']['zs_acc_pool'], da['pseudo']['lp_acc_pool'],
+                      da['pseudo']['zs_miou'], da['pseudo']['lp_miou'],
+                      da['pseudo']['oracle_miou']))
+            print("   -> Per-class geometry (cos_shift | norm cl/cr | tight cl/cr | "
+                  "nearest-other cl/cr | LP acc cl/cr):")
+            for c in proto_lbls.tolist():
+                g = da['geometry'].get(str(c))
+                if g is None:
+                    continue
+                print(f"      class {c:<2}: {g['cos_shift']:.3f} | {g['norm_clean']:.2f}/{g['norm_corrupt']:.2f} | "
+                      f"{g['tight_clean']:.3f}/{g['tight_corrupt']:.3f} | "
+                      f"{g['nearest_other_clean_dist'] if g['nearest_other_clean_dist'] is not None else -1:.3f}/"
+                      f"{g['nearest_other_corrupt_dist'] if g['nearest_other_corrupt_dist'] is not None else -1:.3f} | "
+                      f"{g['lp_clean_acc']:.3f}/{g['lp_corrupt_acc']:.3f}")
+            print("   -> Recoverability AUROC (1 = signal separates recovered from stuck; "
+                  "0.5 = no information):")
+            for k, v in da['recover'].items():
+                print(f"      {k:<12}: AUC {v['auc']:.3f} | mean recovered {v['mean_recovered']:.4f} | "
+                      f"mean stuck {v['mean_stuck']:.4f}")
             all_results[corruption] = res
             continue
         res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,

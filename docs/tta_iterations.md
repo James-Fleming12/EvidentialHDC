@@ -43,11 +43,11 @@ Full-scene mIoU, plain medium encoder, Phase 24.9 harness (200k pool / 100k val)
 
 ## Iteration Log
 
-### Iteration 0: what the labels give (complete)
+### Iteration 0: the labels' information is assignment
 
-**Setup**: `--iter0_label_info` on the plain medium encoder (500k pool / 100k val). naive EMA and the full-label oracle use the **same weighted-mean prototype operator**; the only difference is the per-point class assignment. So the labels' information is *assignment*, and this run quantifies it.
+The full-label oracle and naive EMA use the **same weighted-mean prototype operator**; the only difference is the per-point class assignment. The oracle's advantage is therefore *assignment*, and this section quantifies that information.
 
-**Overall: pseudo-label accuracy on the collapsed conditions is near-random.**
+**Pseudo-label accuracy on the collapsed conditions is near-random:**
 
 | Condition | Zero-shot mIoU | naive EMA | Full-label oracle | Pool pseudo-label acc |
 | :--- | :--- | :--- | :--- | :--- |
@@ -60,7 +60,7 @@ Full-scene mIoU, plain medium encoder, Phase 24.9 harness (200k pool / 100k val)
 | motion_blur | 44.3% | 43.0% | 44.8% | 73.3% |
 | cross_sensor | 41.5% | 39.7% | 43.5% | 68.8% |
 
-**Per-class: the labels rescue exactly the class-conditional casualties** (per-class val IoU: zero-shot → naive → oracle):
+**The labels rescue exactly the class-conditional casualties** (per-class val IoU: zero-shot → naive → oracle):
 
 | Class | fog | crosstalk |
 | :--- | :--- | :--- |
@@ -73,18 +73,16 @@ Full-scene mIoU, plain medium encoder, Phase 24.9 harness (200k pool / 100k val)
 | Road (7) | 0.003 → 0.003 → 0.014 | 0.022 → 0.016 → 0.035 |
 
 **Findings:**
-1. **The labels' information is correct class assignment, and it is currently near-missing entirely**: pool pseudo-label accuracy is 26.4% (fog) and 33.7% (crosstalk) versus 66-79% on the geometric conditions. Every label-free prototype re-estimate is built from majority-contaminated means (e.g., fog Road's pseudo-prototype has precision 0.003, with 160k unlabeled points assigned into it).
+1. **The labels' information is correct class assignment, currently near-missing entirely**: pool pseudo-label accuracy is 26.4% (fog) and 33.7% (crosstalk) versus 66-79% on the geometric conditions. Every label-free prototype re-estimate is built from majority-contaminated means (fog Road's pseudo-prototype has precision 0.003, with 160k unlabeled points assigned into it).
 2. **The oracle's full-scene gain is concentrated in the class-conditional casualties**: Traffic-sign, Other-ground, Vegetation, Building, and Car all jump dramatically under correct assignment (Traffic-sign 0.000 → 0.24-0.31, Vegetation up to 0.434). Road stays dead even with labels (features too collapsed); Bicycle is absent from the pool.
 3. **naive EMA does not merely fail, it actively degrades**: classes the zero-shot decode handles OK (Car, Vegetation) get *worse* under pseudo-label re-estimation (fog Car 0.157 → 0.114, Vegetation 0.093 → 0.062), because the majority-wrong assignments contaminate their prototypes.
 4. **The geometric conditions are assignment-healthy** (66-79% pseudo accuracy): their prototypes are only mildly contaminated, which is why they sit at or near the oracle already.
 
-**Implication for Iteration 1**: the loss-estimator head does not need to solve assignment globally; it needs to recover the *rare-class* assignments (13, 14, 15, 16, and to a lesser extent 4) where pseudo-label precision is currently 0.0-0.24, and it must not degrade the already-correct majority assignments (Terrain, Car).
+**Consequence**: recovering the oracle needs the *rare-class* assignments (13, 14, 15, 16, and to a lesser extent 4), where pseudo-label precision is currently 0.0-0.24, without degrading the already-correct majority assignments (Terrain, Car).
 
-### Iteration 0.1: how the prototypes should be updated: gating is NOT the path (complete)
+### Iteration 0.1: gating the pseudo-labels cannot reach the oracle
 
-**Setup**: `--iter0_update_diag` on the plain medium encoder (500k pool / 100k val). Distinguishes a gating problem (correctly-assigned pseudo points are informative but drowned out) from an overrun problem (minority classes swamped by majority artifacts regardless of weighting). Key number: the **correct-subset gate bound** (re-estimate prototypes from pseudo-assigned points restricted to the *correct* subset, i.e., perfect gating of pseudo-labels).
-
-**The gate-bound ladder (full-scene mIoU): zero-shot → naive pseudo → gate bound → full-label oracle**
+The **correct-subset gate bound** (re-estimating prototypes from pseudo-assigned points restricted to the *correct* subset, i.e., perfect gating of the pseudo-labels) lands at zero-shot, not the oracle:
 
 | Condition | Zero-shot | naive pseudo | **Gate bound** | Full-label oracle |
 | :--- | :--- | :--- | :--- | :--- |
@@ -98,68 +96,64 @@ Full-scene mIoU, plain medium encoder, Phase 24.9 harness (200k pool / 100k val)
 | cross_sensor | 41.5% | 39.7% | 42.0% | 43.5% |
 
 **Findings:**
-1. **Perfect gating of pseudo-labels does NOT reach the oracle**: the gate bound is 10.3% on fog and 13.3% on crosstalk, essentially at zero-shot, while the oracle is 16.4% and 26.2%. The gating hypothesis is falsified; even keeping only the correct pseudo-assigned points cannot re-estimate the prototypes well enough.
-2. **The reason is recall starvation, not weighting.** The dying classes' points are overwhelmingly mis-assigned elsewhere, so the pseudo-decoder sees almost none of them and their correct-subset is tiny: fog Traffic-sign (13) has 73,193 true pool points but only 32 correct pseudo-assignments; crosstalk Traffic-sign has 101,158 true but 74 correct; Other-ground (14) 38-82k true but 198-327 correct; Vegetation (16) 26-76k true but 3.4k-3.9k correct. A 10kD prototype cannot be re-estimated from 32-198 points, so gating the existing assignments has nothing to work with.
-3. **The oracle's power is assignment recall on the rare classes**: it assigns the bulk of each class's points to the right prototype (Traffic-sign 0.000 → 0.24-0.31 IoU, Vegetation up to 0.434). No weight or gate on the current pseudo-labels can recover this; the assignments themselves must be fixed.
+1. **Perfect gating of pseudo-labels does NOT reach the oracle** (fog 10.3%, crosstalk 13.3% vs 16.4%/26.2%): even keeping only the correct pseudo-assigned points cannot re-estimate the prototypes well enough.
+2. **The reason is recall starvation, not weighting.** The dying classes' points are overwhelmingly mis-assigned elsewhere, so the pseudo-decoder sees almost none of them and their correct-subset is tiny: fog Traffic-sign (13) has 73,193 true pool points but only 32 correct pseudo-assignments; crosstalk Traffic-sign has 101,158 true but 74 correct; Other-ground (14) 38-82k true but 198-327 correct; Vegetation (16) 26-76k true but 3.4k-3.9k correct. A 10kD prototype cannot be re-estimated from 32-198 points.
+3. **The oracle's power is assignment recall on the rare classes**: it assigns the bulk of each class's points to the right prototype. No weight or gate on the current pseudo-labels can recover this; the assignments themselves must be fixed.
 4. **The healthy classes are gating-fixable but don't need it**: Road/Terrain/Car/Building have large correct subsets and their naive prototypes already sit at cosine 0.91-1.0 to the oracle; their problem is not prototype estimation.
-5. **The 128D linear probe is a strictly better assignment source than the 10kD zero-shot** (fog LP 36.3% vs zs 26.4%, and 57% under the additive regimen), so an improved assignment source is available label-free; whether it is enough to approach the oracle is the next test.
 
-**Revised implication for Iteration 1**: a *weighting* head on the existing pseudo-labels is closed. Iteration 1 must **improve rare-class assignment** (recall on classes 13, 14, 16, 15, 4), i.e., the head's role is to produce better pseudo-labels (a better label-free decoder), not to weight them. The natural first test is the 128D-probe-based re-estimate (the LP's assignments are already ~10 points more accurate than the 10kD zero-shot).
+**Consequence**: a *weighting* head on the existing pseudo-labels is closed; the fix must improve the assignments themselves (a better label-free decoder).
 
-### Iteration 1: better assignment sources: LP-pseudo and Multi-View Consensus (complete)
+### Iteration 1: no better label-free assignment source helps
 
-**Setup**: `--iter1_pseudo_refine` on the plain medium encoder. Tests two label-free assignment sources for the prototype re-estimate: the 128D linear-probe pseudo-labels and Multi-View Augmented Consensus (MVAC) with the canonical D3CTTA-style views (scale 0.9-1.1, yaw ±5-8°, pitch, and 30% beam dropout; README sec 6). Re-estimates use the same `weighted_mean_update` and a shared seeded pool/val split. Note the pool is a per-frame 40k-point subsample here, so the zero-shot baselines run 1-6 pts below the earlier harnesses; within-run comparisons are the valid ones.
-
-**Full-scene mIoU per assignment source** (fog/crosstalk LP values verified against the val subset; the six geometric rows' LP cells were not re-checked):
+The two candidate assignment sources for the re-estimate (the 128D linear probe, which is ~10 points more accurate on fog, and Multi-View Augmented Consensus with the canonical D3CTTA-style views) are no better than the 10kD zero-shot pseudo-labels:
 
 | Condition | Zero-shot | zs-pseudo re-est | LP-pseudo | MVAC-LP | MVAC-proto | Full-label oracle |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | fog | 10.1% | 9.2% | 8.5% | 8.4% | 9.2% | **16.5%** |
 | crosstalk | 10.6% | 9.6% | 8.7% | 8.5% | 9.6% | **22.8%** |
-| snow | 38.7% | 37.5% | n/a | n/a | 37.5% | 40.3% |
-| wet_ground | 43.2% | 42.1% | n/a | n/a | 42.1% | 45.3% |
-| incomplete_echo | 40.8% | 39.2% | n/a | n/a | 39.1% | 41.0% |
-| beam_missing | 47.3% | 45.5% | n/a | n/a | 45.5% | 47.2% |
-| motion_blur | 44.0% | 42.7% | n/a | n/a | 42.7% | 44.5% |
-| cross_sensor | 46.5% | 44.5% | n/a | n/a | 44.4% | 48.8% |
 
-**Findings (corrected):**
-1. **MVAC is a no-op on this encoder.** MVAC-LP reproduces LP-pseudo and MVAC-proto reproduces zs-pseudo (identical within 0.001-0.003) on every condition. The canonical geometric views (scale 0.9-1.1, yaw ±5-8°, dropout) do not change the 128D or 10kD predictions, so cross-view consensus adds nothing. Either the transforms are too small to move this encoder's feature space, or the feature representation is insensitive to these perturbations.
-2. **A more accurate assignment source does NOT produce a better prototype re-estimate.** The LP's pool pseudo-labels are 36.7% accurate on fog and 35.1% on crosstalk (verified against the val subset, matching the known headroom), 10 and 1.5 points above the 10kD zero-shot (26.0% / 33.6%). Yet the LP-pseudo re-estimate (8.5% / 8.7%) is *slightly worse* than the 10kD zs-pseudo re-estimate (9.2% / 9.6%). Assignment accuracy alone does not determine re-estimate quality: the LP's error structure (which classes it gets wrong) matters more than its overall accuracy, and both sources fail on the rare-class recall the oracle's gain depends on (Iteration 0).
-3. **No label-free assignment source tested reaches the oracle** (fog 16.5%, crosstalk 22.8%): gating the pseudo-labels (Iteration 0.1), the LP (this iteration), and multi-view consensus (this iteration) all fall short. The oracle's advantage is the rare-class assignment that only true labels provide.
-4. **Conclusion**: the "better assignment source" direction for a label-free prototype re-estimate is closed on this encoder. Remaining candidates: a learned per-point weight that changes the *weighting* inside the re-estimate (the loss-estimator head) rather than the assignment, or reporting the full-label oracle as the bound and shifting the contribution to what the pipeline already achieves label-free (crosstalk decode-side gate, Phase 23).
+**Findings:**
+1. **MVAC is a no-op on this encoder.** MVAC-LP reproduces LP-pseudo and MVAC-proto reproduces zs-pseudo (identical within 0.001-0.003). The canonical geometric views (scale 0.9-1.1, yaw ±5-8°, dropout) do not change the 128D or 10kD predictions, so cross-view consensus adds nothing.
+2. **A more accurate assignment source does NOT produce a better prototype re-estimate.** The LP's pseudo-labels are 36.7% accurate on fog and 35.1% on crosstalk (10 and 1.5 points above the 10kD zero-shot's 26.0%/33.6%), yet the LP-pseudo re-estimate (8.5%/8.7%) is *slightly worse* than the zs-pseudo one (9.2%/9.6%). Assignment accuracy alone does not determine re-estimate quality: the LP's error structure (which classes it gets wrong) matters more than its overall accuracy, and both sources fail on the rare-class recall the oracle's gain depends on.
 
-**Note on the other conditions**: the six geometric conditions were not re-checked because the relevant verdicts (fog/crosstalk) were already settled; they are not the TTA targets and already sit at or near the oracle. The assignment-source direction is closed; the remaining TTA candidate is the learned per-point weighting head.
+**Consequence**: the "better assignment source" direction is closed. The oracle's advantage (rare-class assignment) is not reachable by any label-free classifier tested.
 
-### Iteration 2: source-prior-balanced pseudo-assignment (Sinkhorn, SHOT diversity guardrail): COMPLETE, negative
+### Iteration 2: forcing rare-class support hurts the re-estimate
 
-**Rationale**: Iteration 0 showed the oracle's gain is rare-class assignment recall; argmax pseudo-labels starve the rare classes. Sinkhorn-Knopp forces the re-estimate pool's class marginals to match the source frequencies, guaranteeing rare-class support (SHOT's diversity term without the entropy-minimization or backprop). Implemented as `--iter2_balanced_reestimate`: hard (argmax of the balanced matrix) and soft (P_bal-weighted prototype mean) re-estimates vs zero-shot / zs-pseudo / oracle.
-
-**Results (full-scene mIoU, τ swept on `exp(τ·sims)`, prior enforced to a support-match of 0.5):**
+Sinkhorn-Knopp balanced the re-estimate pool's class marginals toward the source prior (SHOT's diversity guardrail without entropy-min or backprop) to counter the rare-class recall starvation. The prior was enforced (support-match 0.5; all small τ converge to the same prior-support fixed point), and the result is worse:
 
 | | Zero-shot | zs-pseudo re-est | balanced-hard | balanced-soft | Full-label oracle |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | fog | 10.1% | 9.4% | **3.9%** | **8.5%** | 16.5% |
 | crosstalk | 12.0% | 10.7% | **5.6%** | **7.2%** | 26.2% |
 
-**Finding: the SHOT diversity guardrail applied at the assignment level does NOT help; it hurts.** Forcing rare-class support assigns *wrong* points into the rare classes (the features cannot separate them), contaminating their prototypes and dropping the re-estimate to 3.9-8.5% (fog) and 5.6-7.2% (crosstalk), below the already-weak zs-pseudo re-estimate. The prior was at least partially enforced (support-match 0.5; all small τ converge to the same prior-support fixed point), so the negative is not a harness failure. This confirms: the oracle's gain requires *correct* assignment (true labels), and no label-free assignment scheme (argmax, LP, balanced, MVAC) reaches it because the features genuinely cannot separate the rare classes.
+**Finding: the diversity guardrail at the assignment level hurts.** Forcing rare-class support assigns *wrong* points into the rare classes (the features cannot separate them), contaminating their prototypes and dropping the re-estimate below the already-weak zs-pseudo baseline. The oracle's gain requires *correct* assignment; balance-forcing cannot substitute for it.
 
-**Closed**: the Sinkhorn/balance direction, and with it the SHOT-diversity mechanism at the assignment level. The remaining candidate from the mechanism list is ReAct (norm clipping before projection), the highest-value untested idea; LAME's affinity term is only worth adding if some mechanism first gives the balanced assignment something to build on.
+### Iteration 3: magnitude clipping cannot touch the binarized decode
 
-### Iteration 3: ReAct norm clipping before projection: COMPLETE, non-starter (sign() is scale-invariant)
+ReAct-style clipping of the 128D feature norms (thresholds 3/4/5/6/8/inf) before the HDC projection + Sign() binarization had **zero effect at every threshold, on every condition** (fog mIoU 0.1011, bin_cos 0.1586 identical at clip=3 with 98.4% clipped and at no-clip).
 
-**Setup**: `--react_test` on the plain medium encoder. Clips each point's 128D feature norm at thresholds [3, 4, 5, 6, 8, inf] before the HDC projection + Sign() binarization, measuring the frozen-prototype decode and the binarized clean<->fog mean cosine per threshold.
+**Finding: Sign() is invariant to positive per-point scaling.** `sign(s·(x @ proj)) == sign(x @ proj)`, so the binarized vectors are bit-for-bit identical and the decode cannot change. The autopsy's magnitude inflation is a *correlate* of the fog artifacts (useful as a gating signal), not the *mechanism* of the binarized-decode failure: the direction (angle) of the corrupted features is what is wrong. The norm-based retention gate works because it *removes* points, not because it alters their vectors.
 
-**Results: the clip threshold has ZERO effect on anything, at every threshold, on every condition.** Fog mIoU is 0.1011, acc 0.2639, and bin_cos 0.1586 identically at clip=3 (98.4% of points clipped), clip=5 (70.4%), and no-clip; crosstalk, snow, wet_ground likewise identical across all thresholds.
+### Iteration 4 (planned): what the labels carry that the features cannot derive
 
-**Finding: ReAct cannot affect the 10kD binarized decode, because Sign() is invariant to positive per-point scaling.** Clipping by norm multiplies each feature vector by a positive scalar s; `sign(s·(x @ proj)) == sign(x @ proj)`, so the binarized vectors are bit-for-bit identical and the decode cannot change. The magnitude inflation from the autopsy is a *correlate* of the fog artifacts (a useful separation/selection signal for gating), not the *mechanism* of the binarized-decode failure: the direction (angle) of the corrupted features is what is wrong, and no magnitude-based intervention can fix it in sign space. The norm-based retention gate works because it *removes* points, not because it alters their vectors.
+The remaining question is not "can we reach the oracle" but "precisely what information do the labels provide that the feature space and the 10kD prototypes cannot, and where does it live?" Implemented as `--deep_label_analysis` (keeps the clean features; use `--corruptions fog,crosstalk` first, a full 8-condition run is fine at a few hours). Three analysis tracks, all per condition:
 
-**Closed**: ReAct (and any magnitude-based intervention) for the binarized HDC decode. This closes the candidate-mechanism list: gating (Iteration 0.1), assignment sources (Iteration 1), balanced forcing (Iteration 2), and magnitude clipping (Iteration 3) all fail to reach the full-label oracle (fog 16.5%, crosstalk 26.2%). The oracle remains label-gated: the rare classes' features are directionally collapsed under fog, and no label-free forward-pass mechanism tested recovers their assignment.
+**A. Feature geometry: why do classes collapse under corruption but not under supervised clean training?**
+- Per class (clean vs corrupt): centroid cosine shift, norm inflation, intra-class tightness (mean cosine to own centroid), and **inter-class absorption** (distance to the nearest *other* clean centroid, clean vs corrupt).
+- The hypothesis this tests: the collapsing classes (Road, Building, Other-ground, Traffic-sign, Bicycle) sit close to a majority neighbor in clean space, so under corruption their shifted features get absorbed; survivors (Terrain, Truck) sit far from competitors. Also reports the LP's per-class clean vs corrupt accuracy to confirm the collapse is corruption-specific, not a clean-decodability difference.
 
-### Candidate mechanisms (evaluated, not yet implemented)
+**B. Pseudo-label error analysis: how wrong, why wrong, and the impact of being wrong.**
+- Per true class: the top-3 destinations of its points under the 10kD zs assignment (the confusion structure).
+- Per class and per source (zs, LP): prototype contamination (assignment precision + cosine of the pseudo re-estimated prototype to the oracle prototype).
+- Per-class IoU of the zs re-estimate, the LP re-estimate, and the oracle re-estimate: which classes' assignment errors cost the most.
 
-**1. ReAct (rectified activations / 128D norm clipping before projection): CLOSED, non-starter (Iteration 3).** The autopsy's magnitude inflation is a *correlate* of fog artifacts, not the mechanism of the binarized-decode failure: Sign() is invariant to positive per-point scaling, so clipping the 128D norms before projection changes nothing in the 10kD sign space (verified empirically: identical decode at every threshold).
+**C. Recoverability / confidence: why does the oracle retrieve good results when no confidence signal can?**
+- Split the val points the oracle rescues (zs-wrong, oracle-right) from the points wrong even under the oracle.
+- AUROC of every label-free signal (norm, margin, LP confidence, oracle perceptron loss) for separating the two groups. **If all AUROCs ≈ 0.5, the recovered points are feature-space-indistinguishable from the stuck ones: the label information is genuinely inaccessible from the features, which is the precise sense in which the oracle is label-gated.**
 
-**2. LAME (latent-space marginalization, Boudiaf et al. CVPR 2022): folded into the Sinkhorn option.** LAME is the forward-pass local-affinity + global-diversity correction; the local-affinity term (points close in 128D get similar assignments) is a natural add-on to the Iteration 2 Sinkhorn (which currently does global diversity only). If Iteration 2 is flat, add the affinity term and re-run rather than treating LAME as a separate method. Placeholder: balanced-hard _TBD_ → balanced+affinity _TBD_.
+### Candidate mechanisms: all closed or judged not worth running
 
-**3. Black-box label shift (Lipton et al., ICML 2018): LOW value, cheap test.** This estimates the test class distribution from the confusion matrix + predicted distribution and reweights the decode. It is a data-driven variant of the decision-level prior correction (Phase 24.8), which was flat-to-negative on every condition; since the true test class frequencies under fog are ≈ source frequencies (same scenes), the correction is expected to be small. Placeholder: prior correction fog _9.7%_ → label-shift decode _TBD_. Only run if the others fail.
+- **ReAct (norm clipping before projection): CLOSED (Iteration 3).** Sign() is scale-invariant, so magnitude clipping cannot change the binarized decode (verified empirically: identical at every threshold).
+- **LAME (latent-space marginalization): not worth running.** Its precondition (Iteration 2 being at least flat) failed; the balanced assignment it would build on assigns wrong points to rare classes, and affinity smoothing would only spread that further.
+- **Black-box label shift: not worth running.** It is a data-driven variant of the decision-level prior correction (Phase 24.8, flat-to-negative everywhere) whose test distribution is ≈ the source distribution under fog; the distribution-forcing mechanism was additionally tested in Iteration 2 and hurt.
