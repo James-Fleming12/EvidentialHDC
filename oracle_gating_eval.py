@@ -520,6 +520,100 @@ def prior_correction_sweep(base_protos, proto_lbls, prior_vec, corrupt_feats, co
                      'miou': compute_miou(preds, val_l)})
     return {'rows': rows}
 
+def tta_oracle_decode(base_protos, proto_lbls, clean_stats, corrupt_feats, corrupt_lbls,
+                      clf, proj, device, gate_cfg=None, pool_size=200000, val_size=100000,
+                      seed=42):
+    """TTA battery + prototype-oracle bounds, full-scene acc + mIoU on a shared val subset.
+
+    TTA methods (self-supervised, no true labels): naive EMA over all pool points,
+    soft-dual-weight EMA (uncertainty-weighted), and BN-statistic alignment decode.
+
+    Oracle bounds (true labels, analysis only): full-label prototypes re-estimated
+    from the corrupted pool, plus artifact-free oracle prototypes that EXCLUDE
+    confident hallucinations (perceptron loss), high-magnitude points, and
+    low-margin points, in several filter configurations. Every oracle row also
+    reports the pool fraction that survives the filter.
+    """
+    torch.manual_seed(seed)
+    perm = torch.randperm(len(corrupt_feats))
+    pool_idx = perm[:pool_size]
+    val_idx = perm[-val_size:]
+    pool_f = corrupt_feats[pool_idx].to(device)
+    pool_l = corrupt_lbls[pool_idx].to(device)
+    val_f = corrupt_feats[val_idx].to(device)
+    val_l = corrupt_lbls[val_idx].to(device)
+    val_h = torch.sign(val_f @ proj)
+
+    def decode(protos):
+        sims = F.normalize(val_h, p=2, dim=1) @ F.normalize(protos, p=2, dim=1).T
+        preds = proto_lbls[sims.argmax(dim=1)]
+        return {'acc': float((preds == val_l).float().mean().item()),
+                'miou': compute_miou(preds, val_l)}
+
+    rows = {'zero_shot': decode(base_protos)}
+
+    # pool signals (artifact filters are relative to the clean-base decode)
+    pool_norm = torch.norm(pool_f, p=2, dim=1)
+    pool_h = torch.sign(pool_f @ proj)
+    pool_sims = F.normalize(pool_h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T
+    top2 = torch.topk(pool_sims, 2, dim=1)
+    cos_top1 = top2.values[:, 0]
+    margin = (top2.values[:, 0] - top2.values[:, 1]).clamp(min=0)
+    ti = torch.searchsorted(proto_lbls, pool_l)
+    cos_true = pool_sims[torch.arange(len(pool_l), device=device), ti]
+    loss = (cos_top1 - cos_true).clamp(min=0)
+    zs_preds = proto_lbls[pool_sims.argmax(dim=1)]
+    w_one = torch.ones(len(pool_f), device=device)
+
+    # --- TTA: self-supervised prototype adaptation (no true labels) ---
+    protos = weighted_mean_update(base_protos, proto_lbls, pool_f, zs_preds, w_one, proj, device)
+    rows['tta_naive_ema'] = decode(protos)
+    if clf is not None:
+        probs = clf.predict_proba(pool_f.cpu().numpy())
+        pool_conf = torch.tensor(probs.max(axis=1), device=device)
+        n_z = (pool_norm - pool_norm.mean()) / (pool_norm.std() + 1e-8)
+        c_z = (pool_conf - pool_conf.mean()) / (pool_conf.std() + 1e-8)
+        u_epi = 1.0 - pool_conf.clamp(0.0, 1.0)
+        w_sdw = fuse_uncertainties(u_epi, n_z, method='soft_dual_weight', cfg=gate_cfg)
+        protos = weighted_mean_update(base_protos, proto_lbls, pool_f, zs_preds, w_sdw, proj, device)
+        rows['tta_sdw'] = decode(protos)
+    if clean_stats is not None:
+        cmean, cstd = clean_stats[0].to(device), clean_stats[1].to(device)
+        fmean = val_f.mean(dim=0)
+        fstd = val_f.std(dim=0) + 1e-6
+        aligned = (val_f - fmean) / fstd * cstd + cmean
+        ah = torch.sign(aligned @ proj)
+        asims = F.normalize(ah, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T
+        apreds = proto_lbls[asims.argmax(dim=1)]
+        rows['tta_bn_align'] = {'acc': float((apreds == val_l).float().mean().item()),
+                                'miou': compute_miou(apreds, val_l)}
+
+    # --- Oracle bounds: full-label prototypes from the corrupted pool ---
+    protos = weighted_mean_update(base_protos, proto_lbls, pool_f, pool_l, w_one, proj, device)
+    rows['oracle_full_label'] = decode(protos)
+
+    # --- Artifact-free oracle prototypes (true labels, artifact points excluded) ---
+    def oracle_masked(mask):
+        protos = weighted_mean_update(base_protos, proto_lbls, pool_f, pool_l, w_one,
+                                      proj, device, mask=mask.float())
+        return {**decode(protos), 'frac': float(mask.float().mean().item())}
+
+    masks = {
+        'af_loss<=0.15': loss <= 0.15,
+        'af_loss<=0.05': loss <= 0.05,
+        'af_loss<=0.02': loss <= 0.02,
+        'af_norm<4': pool_norm < 4.0,
+        'af_norm<6': pool_norm < 6.0,
+        'af_loss0.15+norm<6': (loss <= 0.15) & (pool_norm < 6.0),
+        'af_loss0.02+norm<6': (loss <= 0.02) & (pool_norm < 6.0),
+        'af_margin>=0.02': margin >= 0.02,
+        'af_margin>=0.05': margin >= 0.05,
+        'af_loss0.15+margin0.02': (loss <= 0.15) & (margin >= 0.02),
+    }
+    for name, mask in masks.items():
+        rows['oracle_' + name] = oracle_masked(mask)
+    return rows
+
 CLASS_NAMES = {1: 'car', 2: 'bicycle', 3: 'motorcycle', 4: 'truck', 5: 'other-vehicle',
                6: 'person', 7: 'road', 8: 'fence', 9: 'vegetation', 10: 'trunk',
                11: 'terrain', 12: 'pole', 13: 'traffic-sign', 14: 'other-ground',
@@ -1069,6 +1163,12 @@ def main():
                              "(README sec 5.2): score = kappa*cos + tau*log(pi_c) over "
                              "(tau, kappa) configs, full-scene acc + mIoU, "
                              "prediction-only (never in the gate or updates).")
+    parser.add_argument("--tta_oracle", action="store_true",
+                        help="Run the TTA battery + prototype-oracle bounds: naive EMA, "
+                             "soft-dual-weight EMA, and BN-stat alignment (self-supervised), "
+                             "plus full-label and artifact-free oracle prototypes from the "
+                             "corrupted pool (true labels, multiple artifact filter configs), "
+                             "all full-scene acc + mIoU.")
     parser.add_argument("--autopsy", action="store_true",
                         help="Run the per-condition hyperspace/decode autopsy (Phase 24) for "
                              "each corruption and print the comparison table: artifact profile, "
@@ -1338,6 +1438,19 @@ def main():
                 marker = " (baseline)" if r['tau'] == 0.0 else ""
                 print(f"      tau={r['tau']:>5} kappa={r['kappa']:>5}: acc {r['acc']:.4f} | "
                       f"mIoU {r['miou']:.4f}{marker}")
+            all_results[corruption] = res
+            continue
+        if args.tta_oracle:
+            res = {}
+            print("      -> Running TTA Battery + Prototype-Oracle Bounds...")
+            td = tta_oracle_decode(base_protos, proto_lbls, clean_stats,
+                                   corrupt_feats, corrupt_lbls, clf, proj, device,
+                                   gate_cfg=gate_cfg)
+            res['tta_oracle'] = td
+            print("   -> Full-scene acc | mIoU:")
+            for name, v in td.items():
+                frac = f" | frac {v['frac']*100:5.1f}%" if 'frac' in v else ""
+                print(f"      {name:<26}: acc {v['acc']:.4f} | mIoU {v['miou']:.4f}{frac}")
             all_results[corruption] = res
             continue
         res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,
