@@ -337,7 +337,7 @@ The current encoder (plain `supcon_vib`, 26 epochs on 100% data ≈ 83k steps, c
 
 #### The label-free artifact gate: real performance on every condition
 
-The margin + cosine gate (thresholds on the frozen clean prototypes, Phase 23 sweep) is evaluated label-free on all 8 corruptions. Reported per condition: the best label-free config at usable retention (≥ 50%), mIoU and retention. *Retention is the fraction of points the gate keeps; the reported mIoU is computed on that retained subset only, so a high-retention gate is preferred.*
+The margin + cosine gate (thresholds on the frozen clean prototypes, Phase 23 sweep) is evaluated label-free on all 8 corruptions. Reported per condition: the best label-free config at usable retention (≥ 50%), mIoU and retention. *Retention is the fraction of points the gate keeps; the reported mIoU is computed on that retained subset only, so a high-retention gate is preferred. This is selective prediction / risk-coverage (Geifman & El-Yaniv, 2017), not cherry-picking: the gate does not discard information, it defers low-confidence points to a fallback (leave unlabeled, a second decoder, another sensor) at deployment, and mIoU@retention is that confident branch's operating point. The gain column is thus a selective-prediction gain over the full-coverage baseline, not a coverage-normalized comparison.*
 
 | Condition | Zero-shot mIoU | Best label-free gate (mIoU @ retention) | Gate gain |
 | :--- | :--- | :--- | :--- |

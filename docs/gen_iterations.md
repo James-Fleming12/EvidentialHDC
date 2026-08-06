@@ -955,6 +955,37 @@ The decisive medium-scale test (26 ep, ~10h) completed; full 8-condition autopsy
 3. **Fog options ranked for a future encoder change**: per-class objectives on the collapsing classes (Road/Building/Other-ground/Traffic-sign/Bicycle) as the concrete target list, and testing the volumetric injection pattern (near-occupied-voxel noise) only if a regime-side retry is ever warranted.
 3. **The learned loss-estimator head** (Phase 24.4 #3) remains the standing plan for the label-free gate gap (11% → 67%), independent of the regime decision.
 
+---
+
+## Phase 24.7: The Prototype-Rebalancing Test: Flat Even with Oracle Selection
+
+The "balancer" hypothesis for the label-free gate (select *which points recompute the prototypes*, like buffer selection but artifact-filtered, rather than decode-side removal) implemented as `--rebalance` in `oracle_gating_eval.py`: sweep the gate grid per condition; per config, recompute each class's 10kD prototype as the sign-mean of the selected points (keeping the clean prototype for classes with < 50 selected); evaluate **full-scene** mIoU. The oracle-loss selector is swept as the upper bound. All 8 conditions on the plain medium encoder.
+
+### Full-scene mIoU (zero-shot vs after rebalancing)
+
+| Condition | Zero-shot | Best label-free @ selection | Oracle-loss @ selection |
+| :--- | :--- | :--- | :--- |
+| **fog** | 9.4% | 9.6% @ 40% | 9.4% @ 64% |
+| **crosstalk** | 10.7% | 10.8% @ 62% | 11.4% @ 35% |
+| snow | 37.9% | 38.3% @ 61% | 38.3% @ 68% |
+| wet_ground | 47.5% | 47.6% @ 79% | 47.6% @ 70% |
+| incomplete_echo | 39.3% | 39.6% @ 86% | 39.5% @ 80% |
+| beam_missing | 51.4% | 52.0% @ 72% | 51.2% @ 86% |
+| motion_blur | 42.8% | 44.3% @ 70% | 42.6% @ 75% |
+| cross_sensor | 39.4% | 40.1% @ 49% | 39.2% @ 74% |
+
+### The Findings
+
+1. **Null result across the board.** Full-scene mIoU moves ≤ 1.5 pts on every condition (fog +0.2, crosstalk +0.1). Recomputing prototypes from any gate-selected subset of the corrupted data does not beat the frozen clean prototypes.
+2. **The oracle-loss bound is equally flat** (fog 9.4%, crosstalk 11.4%). This is structural, not a gate-precision limitation: even a *perfectly selected* corrupted subset cannot re-estimate prototypes better than the clean ones, because the selected points carry the same class-conditional collapse as the full scene; re-centering on them re-embeds the contamination.
+3. **Confirms the standing conclusion in a new, label-free form**: frozen clean prototypes remain the best mIoU decoder on every condition (Phase 21), and decode-side prototype movement never helps (Phase 22); now shown for prototype recomputation driven by the label-free gate, not just oracle buffer-selection retraining.
+4. **Closes the "balancer" role for the gate.** The label-free gate's only demonstrated value is decode-side selective prediction (retained-subset mIoU, works on 7/8 conditions). Its update-side role is a dead end, now measured rather than assumed.
+
+### Next Steps
+
+1. **README**: keep the decode-side gating table as the operative result; add the one-line note that update-side prototype rebalancing was tested label-free *and* with oracle selection and is flat; preempts the natural "why not recompute prototypes from confident points?" question.
+2. **Gate role is settled as selective/deferral only**; fog remains pinned at ~10% mIoU, with the fix still representation-side (per-class objectives on the collapsing classes, or the learned loss-estimator head for the label-free access gap).
+
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
 The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *possible* (batch 2–4, one-line Parser change, loop already batch-agnostic). This is parked for three reasons:
@@ -969,10 +1000,9 @@ The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *pos
 
 ### Current Next Steps (consolidated)
 
-1. **The additive medium run (the fog training-regimen test)**: `supcon_vib_additive`, 26 epochs on 100% data (~10h), the only variant with usable fog means at micro scale (oracle headroom 45.3%). Measure fog mIoU + the autopsy signature; the target is moving fog off the 10.1% plateau.
-2. **The depth/range-correlation diagnostic** (intrinsic fog property): correlate the poison-band points' feature norms with their range values, testing the far-field-destruction hypothesis from Phase 24.2 (the dying classes (Road, Building, Other-ground) are planar surfaces whose range texture scattering destroys, while Terrain/Truck survive).
-3. **Per-class weighting for the fog casualties** (classes 2, 7, 13, 14, 15) in the pretraining objective: the concrete target list from Phase 24.2, whether applied to the additive regimen or a variant of it.
-4. **Intra-class balance checks** (open thread): per-class hard selection behaved differently from global selection (Phase 22.1), so the intra-class balance question is not yet settled; the subcluster ledger and per-class buffer variants remain to be evaluated.
-5. **Prior correction test** (still unrun): static source prior (τ = −1.0), both point accuracy and mIoU, per condition, with the phase-separation rule (prediction-only; never in the gate or update). The benign-condition mIoU recovery question.
-6. **Crosstalk stack to finish the 20-target**: the label-free margin gate (23.1% mIoU @ 52% retention) combined with the BN-statistic alignment (+3.1 raw mIoU): evaluate the combined decode.
-7. **Optional decode-thread closure**: `--update_strength 1 --buffer_frac 0.20` on the oracle retrain: low prior that it stabilizes the loop; cheap, closes Phase 22.
+1. **The learned loss-estimator head** (Phases 24.4 #3, 24.6 #1): a small head trained on clean/self-supervised signal to predict cos-to-true at test time, targeting the label-free gate gap on fog (11% label-free vs 55% oracle on the plain features). Decoder-side, but it estimates the perceptron loss the gates need.
+2. **Per-class weighting for the fog casualties** (classes 2, 7, 13, 14, 15) in the pretraining objective: the concrete target list from Phase 24.2; the collapse is class-conditional and regimen-invariant (Phase 24.6), so the objective must target these classes specifically.
+3. **Prior correction test** (still unrun): static source prior (τ = −1.0), both point accuracy and mIoU, per condition, with the phase-separation rule (prediction-only; never in the gate or update). The benign-condition mIoU recovery question.
+4. **Crosstalk stack to finish the 20-target**: the label-free margin gate (23.1% mIoU @ 52% retention) combined with the BN-statistic alignment (+3.1 raw mIoU): evaluate the combined decode.
+5. **Intra-class balance checks** (open thread): per-class hard selection behaved differently from global selection (Phase 22.1), so the intra-class balance question is not yet settled; the subcluster ledger and per-class buffer variants remain to be evaluated.
+6. **Optional decode-thread closure**: `--update_strength 1 --buffer_frac 0.20` on the oracle retrain: low prior that it stabilizes the loop; cheap, closes Phase 22.
