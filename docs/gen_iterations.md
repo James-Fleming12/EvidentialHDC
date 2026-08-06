@@ -829,6 +829,67 @@ Two new autopsy dimensions on fog: the **learned-decoder ceiling** (LP mIoU and 
 3. **Why this matters for the training regimen**: the collapse is *not* intrinsic to fog — the encoder can represent fog-surviving classes (Terrain's poison-band points at 90% accuracy prove it). The objective needs to rescue the *collapsing* classes specifically. The natural hypothesis is geometric: the dying classes (Road, Building, Other-ground) are large planar surfaces whose features rely on fine range texture that scattering destroys, while Terrain (near-field ground) and Truck (large solid) retain structure — testable via a depth/range correlation of the poison-band points (far-field destruction).
 4. **Actionable target list for the pretraining objective**: classes 7 (Road), 15 (Building), 14 (Other-ground), 13 (Traffic-sign), 2 (Bicycle) are the fog casualties — the additive volumetric augmentation and any per-class weighting must focus on keeping *these* classes' fog features separable, with Terrain/Truck as the proof that the representation can do it.
 
+---
+
+## Phase 24.3: The Additive Retrain Autopsy — the Continuous Space Heals, the HDC Decode Doesn't
+
+The retrained additive micro (30 epochs, volumetric-noise augmentation) was autopsied on fog and compared to the Phase 24 med-plain signature.
+
+### Additive Retrain vs Med-Plain (fog)
+
+| Metric | Med plain | Additive retrain | Δ |
+| :--- | :--- | :--- | :--- |
+| Proto Acc / mIoU | 26.4% / 10.1% | 27.3% / 9.2% | ≈ flat |
+| **LP acc** | 36.3% | **57.0%** | **+20.7** |
+| LP mIoU | 7.2% | 10.0% | +2.8 |
+| **ArtSurv (recoverable hard examples)** | 2335 (3.2%) | **8810 (12.1%)** | **3.8×** |
+| Margin (correct / mis) | 0.29 / 0.11 | **0.50 / 0.27** | healed |
+| Norm (correct / mis) | 4.8 / 7.3 | **4.5 / 4.9** | gap gone |
+| Cos shift | 0.821 | 0.738 | improved |
+| Ellipticity | 0.762 | 0.658 | improved |
+| Binarized mean cos | 0.111 | **0.046** | **worse** |
+| Alignment | 25.2% / 10.7% | 27.3% / 10.7% | flat |
+
+### The Findings
+
+1. **The additive regimen heals the continuous 128D representation dramatically**: LP acc 36.3 → 57.0, healthy correct-point margins (0.50 vs 0.29), the clean/fog magnitude gap collapsed (4.5/4.9 vs 4.8/7.3), and the recoverable hard-example fraction **tripled to 12.1%** — the decoder ceiling is 3.8× higher. This is the strongest representation-level fix yet measured.
+2. **But the HDC decode is flat — and the binarized means got *more* orthogonal (0.046).** Proto mIoU 9.2% ≈ 10.1%; the 10kD sign-space decode does not capture the healed continuous geometry. This is the 128D→10kD divergence at its starkest: the information exists in the continuous space (LP 57%) but the binarized prototypes cannot reach it. **The medium additive run is therefore the decisive test: if convergence fixes the BinCos/10kD transfer, the regimen is the answer; if not, the HDC encode side (projection/binarization) needs attention even with a healed space.**
+3. **The far-field hypothesis is partially refuted.** The depth diagnostic (now working, relative median split) shows the *survivors* degrade with range (Terrain 0.99 → 0.80, Truck 0.99 → 0.95) — but the *dying* classes (Building, Other-ground, Traffic-sign, Other-object) are dead at **both near and far range** (near_acc 0.00). Their collapse is not far-field destruction; it is range-independent. The far-field intuition explains the survivors' mild degradation, not the casualties' death.
+4. **Fog norm↔depth correlation is weakly negative (−0.40)** — fog points at higher range carry slightly *lower* feature norms, opposite to the "far-field inflation" story; the magnitude structure is not range-driven.
+
+### Next Steps
+
+1. **The medium additive run is now the pivotal test**: the continuous-space heal is proven at micro scale; whether it survives the 128D→10kD transfer at convergence decides the regimen. If BinCos stays low, the HDC encode (projection/binarization) becomes a target — e.g., learning the projection or normalizing before binarization.
+2. **The gate sweep on the additive fog** (pending) — with ArtSurv at 12.1% and margins 0.50/0.27, the label-free gate should perform better than the plain encoder's 11–17% ceiling; run `--gate_sweep --corruptions fog` on the retrained checkpoint.
+3. **Drop the far-field training-target idea** — the casualties die at all ranges, so range-conditioning (Cylinder3D-style) would not rescue them; the collapse is class-intrinsic, not distance-driven.
+
+---
+
+## Phase 24.4: The Additive Gate Sweep — the Oracle Bound Jumps to 67%, the Label-Free Ceiling Does Not
+
+The gate sweep on the additive retrain's fog vs the Phase 23 med-plain sweep:
+
+### The Pareto (additive retrain)
+
+| Band | Best config | mIoU | Acc | Retention |
+| :--- | :--- | :--- | :--- | :--- |
+| ≥75% | label-free (n<6, cos1≥0.2, cos128≥0.3, conf≥0.5) | 9.8% | 31.3% | 84.1% |
+| 50–75% | label-free (n<6, cos1≥0.3, cos128≥0.4, conf≥0.5) | 11.0% | 39.2% | 65.0% |
+| 25–50% | **oracle loss≤0.02** | **67.3%** | 97.5% | 28.0% |
+| 10–25% / <10% | label-free | 9.2–9.3% | ~31–35% | 7–14% |
+
+### The Findings
+
+1. **The label-free gate is still capped at ~11% mIoU at usable retention** — the healed continuous representation (LP 57%, ArtSurv 12.1%) does not translate to label-free gateability in the 10kD cosine space. The confident-artifact problem persists: label-free signals (margin, cos128, confidence, norm) still cannot separate the additive's recoverable points from its artifacts.
+2. **The oracle-loss bound jumped 55.3% → 67.3% @ 28% retention (97.5% acc)** — with perfect labels, the additive features gate to the best fog mIoU ever measured. The information is emphatically *there*: the additive space is highly gateable in principle; the gap between the label-free ceiling (11%) and the oracle bound (67%) is now the single largest untapped margin in the project.
+3. **The missing piece is unchanged**: a label-free estimator of the perceptron loss (cos-to-true). The additive representation makes the prize bigger (67% vs 55%), but the access problem is the same one Phase 23 identified. The medium additive run's key question sharpens: does convergence improve the *signals* (margin/confidence discriminability) as well as the representation?
+
+### Next Steps
+
+1. **Full 8-condition autopsy on the additive retrain** (~30 min) — the "keeps others high" check: per-condition acc/mIoU and signature vs the med-plain table.
+2. **Commit the medium additive run** — the oracle-bound jump (67%) makes it the strongest regime candidate; the decision hinges on whether the label-free signals sharpen at convergence.
+3. **If the label-free gap persists at medium scale**: the fix is a *learned* loss estimator — a small head trained (on clean/self-supervised signal) to predict cos-to-true, or per-class calibrated margins — targeting the 11% → 67% gap directly.
+
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
 The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *possible* (batch 2–4, one-line Parser change, loop already batch-agnostic). This is parked for three reasons:

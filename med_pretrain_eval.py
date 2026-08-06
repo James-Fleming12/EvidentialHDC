@@ -14,6 +14,16 @@ from modules.headroom_diag import deep_headroom_diagnostics, print_deep_summary
 
 NUM_CLASSES = 17
 
+def fast_hist(pred, label, n):
+    k = (label >= 0) & (label < n)
+    return np.bincount(n * label[k].astype(int) + pred[k], minlength=n ** 2).reshape(n, n)
+
+def calculate_iou(hist):
+    with np.errstate(divide='ignore', invalid='ignore'):
+        iou = np.diag(hist) / (hist.sum(axis=1) + hist.sum(axis=0) - np.diag(hist))
+    iou[np.isnan(iou)] = 0.0
+    return iou
+
 def evaluate_headroom(model, clean_loader, corrupt_loader, device, num_frames=50):
     model.eval()
     
@@ -95,6 +105,7 @@ def evaluate_headroom(model, clean_loader, corrupt_loader, device, num_frames=50
     dists = torch.cdist(sub_fog.unsqueeze(0), proto_tensor.unsqueeze(0)).squeeze(0)
     proto_preds = proto_labels[dists.argmin(dim=1)]
     hdc_fog_acc = (proto_preds == sub_fog_lbls).float().mean().item()
+    hdc_fog_miou = calculate_iou(fast_hist(proto_preds.cpu().numpy(), sub_fog_lbls.cpu().numpy(), NUM_CLASSES)).mean().item()
     
     # 2. Cross-Domain Retrieval (Fog -> Clean)
     print("  -> Calculating Cross-Domain Retrieval...")
@@ -119,6 +130,7 @@ def evaluate_headroom(model, clean_loader, corrupt_loader, device, num_frames=50
     clf = LogisticRegression(max_iter=1000).fit(X_train, y_train)
     probe_clean_acc = clf.score(X_train, y_train)
     probe_fog_acc = clf.score(X_test, y_test)
+    probe_fog_miou = calculate_iou(fast_hist(clf.predict(X_test), y_test, NUM_CLASSES)).mean().item()
     
     # 4. Magnitude Segregation
     print("  -> Calculating Magnitude Segregation...")
@@ -197,8 +209,10 @@ def evaluate_headroom(model, clean_loader, corrupt_loader, device, num_frames=50
         "Avg Cosine Shift": avg_cosine_shift,
         "Cross-Domain Retrieval": cross_domain_retrieval,
         "HDC Prototype Accuracy (Fog)": hdc_fog_acc,
+        "HDC Prototype mIoU (Fog)": hdc_fog_miou,
         "Linear Probe (Clean)": probe_clean_acc,
         "Linear Probe (Fog)": probe_fog_acc,
+        "Linear Probe mIoU (Fog)": probe_fog_miou,
         "Linear Robustness Gap": probe_clean_acc - probe_fog_acc,
         "Average L2 Norm (Clean)": clean_mag,
         "Average L2 Norm (Fog)": fog_mag,
