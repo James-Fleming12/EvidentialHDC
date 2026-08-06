@@ -351,6 +351,17 @@ def gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, devic
             best = max(cand, key=lambda r: r[2])
             pareto.append({'band': name, 'retention': best[0], 'acc': best[1],
                            'miou': best[2], 'cfg': (best[3], best[4], best[5], best[6], best[7])})
+    # Label-free Pareto: best mIoU per retention band among non-oracle (non-loss) configs.
+    # The oracle-loss configs dominate the plain Pareto on healthy conditions, so this is
+    # the table the paper needs: what a label-free gate alone achieves per condition.
+    pareto_label_free = []
+    for lo, hi, name in bands:
+        cand = [r for r in rows if r[3] != 'loss' and lo <= r[0] < hi]
+        if cand:
+            best = max(cand, key=lambda r: r[2])
+            pareto_label_free.append({'band': name, 'retention': best[0], 'acc': best[1],
+                                      'miou': best[2],
+                                      'cfg': (best[3], best[4], best[5], best[6], best[7])})
     # oracle-loss bound at 25-50% and 50-75% bands
     loss_band = {}
     for lo, hi, name in bands:
@@ -378,7 +389,8 @@ def gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, devic
         fn = int(((preds != c) & (lbl == c)).sum().item())
         d = tp + fp + fn
         per_class[c] = tp / d if d > 0 else 0.0
-    return {'pareto': pareto, 'loss_band': loss_band,
+    return {'pareto': pareto, 'pareto_label_free': pareto_label_free,
+            'loss_band': loss_band,
             'best': {'retention': best[0], 'acc': best[1], 'miou': best[2],
                      'cfg': (best[3], best[4], best[5])},
             'per_class_iou': per_class}
@@ -1123,7 +1135,14 @@ def main():
             gs = gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, device,
                             clf=clf, clean_means128=clean_means128)
             res['gate_sweep'] = gs
-            print("   -> Gate-Sweep Pareto (best mIoU per retention band):")
+            print("   -> Label-Free Gate Pareto (best mIoU per retention band, no oracle):")
+            for b in gs['pareto_label_free']:
+                cfg = b['cfg']
+                desc = (f"norm<{cfg[0]} marg>={cfg[1]} cos1>={cfg[2]} "
+                        f"cos128>={cfg[3]} conf>={cfg[4]}")
+                print(f"      {b['band']:<8}: ret {b['retention']*100:5.1f}% | acc {b['acc']:.4f} | "
+                      f"mIoU {b['miou']:.4f} | {desc}")
+            print("   -> Gate-Sweep Pareto (best mIoU per retention band, incl. oracle):")
             for b in gs['pareto']:
                 cfg = b['cfg']
                 if cfg[0] == 'loss':
