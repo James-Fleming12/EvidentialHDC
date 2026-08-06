@@ -1229,7 +1229,7 @@ def assignment_gap_diag(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, cl
     val_sims = project(val_f)
     val_zs = proto_lbls[val_sims.argmax(dim=1)]
     lp_val = torch.tensor(clf.predict(val_f.cpu().numpy())).to(device)
-    lp_pool = torch.tensor(clf.predict(pool_f.cpu().numpy())).to(device)
+    lp_pool = torch.tensor(clf.predict(pool_f.cpu().numpy())).long().to(device)
 
     protos_oracle = weighted_mean_update(base_protos, proto_lbls, pool_f, pool_l, w_one, proj, device)
     oracle_val_preds, oracle_miou = decode(protos_oracle)
@@ -1305,7 +1305,7 @@ def assignment_gap_diag(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, cl
         pseudo_oracle = zs_pseudo.clone()
         pseudo_oracle[sel] = pool_l[sel].long()
         pseudo_lp = zs_pseudo.clone()
-        pseudo_lp[sel] = lp_pool[sel]
+        pseudo_lp[sel] = lp_pool[sel].long()
         _, miou_oracle = decode(weighted_mean_update(base_protos, proto_lbls, pool_f,
                                                      pseudo_oracle, w_one, proj, device))
         _, miou_lp = decode(weighted_mean_update(base_protos, proto_lbls, pool_f,
