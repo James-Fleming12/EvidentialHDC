@@ -921,7 +921,7 @@ Full-condition autopsy on the additive retrain (micro encoder) vs the med-plain 
 
 ---
 
-## Phase 24.6: The Medium Additive Run and Full Autopsy — the Regime Is Closed, the Collapse Is Regimen-Invariant
+## Phase 24.6: The Medium Additive Run and Full Autopsy: the Regime Is Closed, the Collapse Is Regimen-Invariant
 
 The decisive medium-scale test (26 ep, ~10h) completed; full 8-condition autopsy run on the checkpoint. The headroom's fog numbers (53.2% acc / 5.2% mIoU) are a biased subset (`fog_feats[:50000]` majority-class slice); the autopsy (full sample) is the decision metric.
 
@@ -937,16 +937,16 @@ The decisive medium-scale test (26 ep, ~10h) completed; full 8-condition autopsy
 | beam_missing | 77.2 / 53.7 | 75.1 / 52.0 | 83.2 | 0.289 |
 | motion_blur | 73.4 / 44.3 | 71.9 / 43.7 | 79.2 | 0.289 |
 | cross_sensor | 68.9 / 41.5 | 65.4 / 39.7 | 74.3 | 0.311 |
-| clean control | 82.7 / 49.6 | 81.4 / 48.6 | 91.4 (fit) | — |
+| clean control | 82.7 / 49.6 | 81.4 / 48.6 | 91.4 (fit) | n/a |
 
 ### The Findings
 
 1. **The additive regimen is closed.** At equal capacity it is worse than plain `supcon_vib` on the paper metric for **every** condition: fog 8.4 (vs 10.1), crosstalk 10.1 (vs 12.0), and 1.6–4.2 pts down on the six geometric conditions. The fog acc gain (+14) is the majority-class artifact (the exact false-high the mIoU columns catch).
 2. **The micro-scale healing did not scale.** Fog LP 30.6% is *below* plain (36.3%), far below micro-additive's 57.0%; the poison band is back (91.5% of fog points in norm ≥ 4, matching plain's 88%); BinCos 0.076 (the 10kD fog means remain near-orthogonal to clean). Convergence did not fix the 128D→10kD transfer; it reverted the micro's norm healing.
 3. **The class-conditional collapse is regimen-invariant.** Fog per-class IoU: Terrain 0.51, Truck 0.079, Vegetation 0.061 survive; Building 0.012, Road 0.007, Other-ground 0.001, Traffic-sign 0.0005, Bicycle 0.0 dead. Identical casualty list to the plain encoder (Phase 24.2). The encoder family (`supcon_vib` ± additive) cannot make the collapsing classes separable under fog.
-4. **Clean control held** (81.4/48.6 vs 82.7/49.6) — the trade is condition-specific, not clean-manifold distortion (answers the Phase 24.5 watchpoint in the affirmative direction).
+4. **Clean control held** (81.4/48.6 vs 82.7/49.6), so the trade is condition-specific, not clean-manifold distortion (answers the Phase 24.5 watchpoint in the affirmative direction).
 5. **Alignment probe reproduces Phase 24.1** with slightly larger fog/crosstalk gains: fog 8.4→11.7 (+3.3), crosstalk 10.1→15.7 (+5.6), wet_ground −6.2. Still far below the 20 mIoU target; wet-ground caution stands.
-6. **Fog errors became less artifact-like** (ArtFrac 0.375 vs plain 0.487) and mostly recoverable in principle (3681/4986 ≈ 74% of non-artifacts), yet the decoder and label-free gates still cannot reach them — the same access problem as before.
+6. **Fog errors became less artifact-like** (ArtFrac 0.375 vs plain 0.487) and mostly recoverable in principle (3681/4986 ≈ 74% of non-artifacts), yet the decoder and label-free gates still cannot reach them; the same access problem as before.
 
 ### Next Steps
 

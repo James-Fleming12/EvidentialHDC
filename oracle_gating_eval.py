@@ -395,6 +395,97 @@ def gate_sweep(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, devic
                      'cfg': (best[3], best[4], best[5])},
             'per_class_iou': per_class}
 
+def prototype_rebalance(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, proj, device,
+                        clf=None, clean_means128=None, min_pts=50, seed=42):
+    """Update-side prototype rebalancing (the 'balancer' role).
+
+    Distinct from decode-side gating (retained-subset mIoU): here the label-free
+    gate selects WHICH points are allowed to update the prototypes, and the metric
+    is the FULL-SCENE mIoU with the rebalanced prototypes. A class keeps its clean
+    prototype when the gate retains too few of its points (the class-conditional
+    collapse case). The oracle-loss selector is also swept as an upper bound.
+
+    Returns per-config full-scene (acc, mIoU, selection fraction) and the best
+    label-free config + the oracle-loss bound.
+    """
+    torch.manual_seed(seed)
+    perm = torch.randperm(len(corrupt_feats))
+    val_idx = perm[-100000:]
+    val_f = corrupt_feats[val_idx].to(device)
+    val_l = corrupt_lbls[val_idx].to(device)
+    val_h = torch.sign(val_f @ proj)
+    norms = torch.norm(val_f, p=2, dim=1)
+    sims = F.normalize(val_h, p=2, dim=1) @ F.normalize(base_protos, p=2, dim=1).T
+    top2 = torch.topk(sims, 2, dim=1)
+    margin = (top2.values[:, 0] - top2.values[:, 1]).clamp(min=0)
+    cos_top1 = top2.values[:, 0]
+    ti = torch.searchsorted(proto_lbls, val_l)
+    cos_true = sims[torch.arange(len(val_l), device=device), ti]
+    loss = (cos_top1 - cos_true).clamp(min=0)
+    if clean_means128 is not None:
+        cm = torch.stack([clean_means128[c] for c in sorted(clean_means128)]).to(device)
+        cos128 = F.normalize(val_f, p=2, dim=1) @ F.normalize(cm, p=2, dim=1).T
+        cos128 = cos128.max(dim=1).values
+    else:
+        cos128 = torch.full((len(val_l),), -1.0, device=device)
+    if clf is not None:
+        conf = torch.tensor(clf.predict_proba(val_f.cpu().numpy()).max(axis=1), device=device)
+    else:
+        conf = torch.zeros(len(val_l), device=device)
+
+    pred_all = proto_lbls[sims.argmax(dim=1)]
+
+    def full_scene_metrics(keep):
+        nk = int(keep.sum().item())
+        if nk < 1000:
+            return None
+        preds = pred_all[keep]
+        new_protos = base_protos.clone()
+        for i, c in enumerate(proto_lbls.tolist()):
+            sel = keep & (preds == c)
+            if int(sel.sum().item()) >= min_pts:
+                new_protos[i] = torch.sign(val_h[sel].mean(dim=0))
+        sims_r = F.normalize(val_h, p=2, dim=1) @ F.normalize(new_protos, p=2, dim=1).T
+        preds_r = proto_lbls[sims_r.argmax(dim=1)]
+        return {'selection': nk / len(val_l), 'acc': float((preds_r == val_l).float().mean().item()),
+                'miou': compute_miou(preds_r, val_l)}
+
+    rows = []
+    for max_norm in [1e9, 8.0, 6.0, 5.0, 4.0]:
+        for min_margin in [0.0, 0.02, 0.05, 0.1, 0.2]:
+            for min_cos1 in [-1.0, 0.0, 0.1, 0.2, 0.3]:
+                for min_cos128 in [-1.0, 0.2, 0.3, 0.4]:
+                    for min_conf in [0.0, 0.3, 0.5]:
+                        keep = ((norms < max_norm) & (margin >= min_margin)
+                                & (cos_top1 >= min_cos1) & (cos128 >= min_cos128)
+                                & (conf >= min_conf))
+                        m = full_scene_metrics(keep)
+                        if m:
+                            rows.append((m['selection'], m['acc'], m['miou'],
+                                         'free', max_norm, min_margin, min_cos1, min_cos128, min_conf))
+    loss_rows = []
+    for max_loss in [0.15, 0.1, 0.05, 0.02]:
+        m = full_scene_metrics(loss <= max_loss)
+        if m:
+            loss_rows.append((m['selection'], m['acc'], m['miou'], max_loss))
+
+    # best label-free rebalance: maximize full-scene mIoU with selection >= 25%
+    usable = [r for r in rows if r[0] >= 0.25]
+    best_free = max(usable, key=lambda r: r[2]) if usable else max(rows, key=lambda r: r[2])
+    # oracle-loss bound at selection >= 25%
+    usable_l = [r for r in loss_rows if r[0] >= 0.25]
+    best_loss = max(usable_l, key=lambda r: r[2]) if usable_l else max(loss_rows, key=lambda r: r[2])
+    zero = full_scene_metrics(torch.ones(len(val_l), dtype=torch.bool, device=device))
+    return {
+        'rows_label_free': [{'selection': r[0], 'acc': r[1], 'miou': r[2], 'cfg': r[3:]} for r in rows],
+        'rows_oracle': [{'selection': r[0], 'acc': r[1], 'miou': r[2], 'max_loss': r[3]} for r in loss_rows],
+        'zero_shot': zero,
+        'best_label_free': {'selection': best_free[0], 'acc': best_free[1], 'miou': best_free[2],
+                            'cfg': best_free[3:]},
+        'best_oracle': {'selection': best_loss[0], 'acc': best_loss[1], 'miou': best_loss[2],
+                        'max_loss': best_loss[3]},
+    }
+
 CLASS_NAMES = {1: 'car', 2: 'bicycle', 3: 'motorcycle', 4: 'truck', 5: 'other-vehicle',
                6: 'person', 7: 'road', 8: 'fence', 9: 'vegetation', 10: 'trunk',
                11: 'terrain', 12: 'pole', 13: 'traffic-sign', 14: 'other-ground',
@@ -934,6 +1025,11 @@ def main():
                         help="Run the in-memory artifact-gate sweep (Phase 23) and skip the "
                              "ladder: extract per-point signals once, sweep threshold space, "
                              "report acc/mIoU Pareto bands + oracle-loss bound + per-class IoU.")
+    parser.add_argument("--rebalance", action="store_true",
+                        help="Run update-side prototype rebalancing: the label-free gate "
+                             "selects which points recompute each class prototype, and the "
+                             "rebalanced prototypes are evaluated over the FULL scene. "
+                             "Distinct from decode-side gating (retained-subset mIoU).")
     parser.add_argument("--autopsy", action="store_true",
                         help="Run the per-condition hyperspace/decode autopsy (Phase 24) for "
                              "each corruption and print the comparison table: artifact profile, "
@@ -1165,6 +1261,25 @@ def main():
             if pc:
                 print("   -> Per-class IoU at best config: "
                       + ", ".join(f"{c}:{v:.2f}" for c, v in sorted(pc.items())))
+            all_results[corruption] = res
+            continue
+        if args.rebalance:
+            res = {}
+            print("      -> Running Update-Side Prototype Rebalancing...")
+            rb = prototype_rebalance(base_protos, proto_lbls, corrupt_feats, corrupt_lbls,
+                                     proj, device, clf=clf, clean_means128=clean_means128)
+            res['rebalance'] = rb
+            zs = rb['zero_shot']
+            print(f"   -> Full-scene baseline: acc {zs['acc']:.4f} | mIoU {zs['miou']:.4f}")
+            bf = rb['best_label_free']
+            cfg = bf['cfg']
+            print(f"   -> Best label-free rebalance (selection>={bf['selection']*100:.1f}%): "
+                  f"full-scene acc {bf['acc']:.4f} | mIoU {bf['miou']:.4f} | "
+                  f"selection {bf['selection']*100:.1f}% | "
+                  f"norm<{cfg[1]} m>={cfg[2]} c1>={cfg[3]} c128>={cfg[4]} conf>={cfg[5]}")
+            bo = rb['best_oracle']
+            print(f"   -> Oracle-loss bound: full-scene mIoU {bo['miou']:.4f} | "
+                  f"selection {bo['selection']*100:.1f}% | loss<={bo['max_loss']}")
             all_results[corruption] = res
             continue
         res = evaluate_oracle_gating(base_protos, proto_lbls, corrupt_feats, corrupt_lbls, clf, proj,
