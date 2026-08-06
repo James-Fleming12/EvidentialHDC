@@ -924,7 +924,7 @@ def deep_label_analysis(base_protos, proto_lbls, clean_feats, clean_lbls, corrup
     for c in proto_lbls.tolist():
         cm = clean_l == c
         pm = pool_l == c
-        cf_c = clean_f[cm]
+        cf_c = clean_f[cm].to(device)
         pf_c = pool_f[pm]
         if len(cf_c) < 200 or len(pf_c) < 200:
             geometry[str(c)] = None
