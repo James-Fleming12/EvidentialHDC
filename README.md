@@ -371,6 +371,34 @@ The frozen clean prototypes were long assumed to be the best decoder (Phase 21),
 
 *The prototype decoder is not exhausted: with the right per-point weighting, re-estimated prototypes beat the frozen clean ones on every condition and substantially on the collapsed ones (point accuracy roughly doubles, fog 26% → 51%, crosstalk 34% → 49%). Every label-free TTA variant tested (naive EMA, soft-dual-weight EMA, BN-stat alignment, artifact gating, prior correction, artifact-free prototype estimation) fails to reach it, so the current target is a TTA method that replicates the oracle's weighting without labels: a learned estimator of each point's cos-to-true (the loss-estimator head), used as the per-point weight in a prototype re-estimate. Excluding the confident hallucinations does not get there on its own (artifact-free ≈ full-label), so the problem is not "drop the artifacts," it is "estimate the weights the oracle would assign."*
 
+### 7.5 The kNN reassignment: the best label-free re-estimate, and why local structure is the only source of the missing labels
+
+The best label-free TTA so far is a single-round, recoverability-gated kNN reassignment (Iteration 7, `--iter7_knn_reassign`): detect the recoverable subset with the combined label-free signal, then reassign those points by a confidence-weighted kNN vote over their neighbors' LP labels, and re-estimate the prototypes. Full-scene mIoU:
+
+| Condition | Zero-shot | zs-pseudo re-est | **kNN reassign (best)** | Full-label oracle |
+| :--- | :--- | :--- | :--- | :--- |
+| **Fog** | 10.1% | 9.3% | **9.8%** | 17.1% |
+| **Crosstalk** | 12.0% | 10.7% | **12.7%** | 26.2% |
+| Snow | 39.4% | 38.1% | 39.5% | 40.6% |
+| Wet Ground | 49.0% | 47.7% | 48.1% | 51.5% |
+| Incomplete Echo | 41.2% | 39.5% | 40.5% | 40.9% |
+| Beam Missing | 53.7% | 51.6% | 53.0% | 49.4% |
+| Motion Blur | 44.3% | 43.0% | 43.9% | 44.8% |
+| Cross Sensor | 41.5% | 39.8% | 41.2% | 43.5% |
+
+*The honest framing: BN-stat alignment is still the best single label-free *full-scene* result on crosstalk (15.1%, sec 7.3), and kNN is the best **re-estimate** (the first label-free prototype re-estimate to beat the frozen zero-shot decoder on crosstalk, and the best at not collapsing the geometric conditions, which all stay within 0.5-0.9 pts of zero-shot). The kNN method is cheap (one kNN graph + one prototype re-estimate), which keeps it in the TTA category.*
+
+**Why the kNN captures information the other gates and classifiers do not:**
+- **Detection is solvable; assignment is the hard part.** The combined recoverability signal separates fixable from unfixable points (AUROC 0.68-0.80 on fog/crosstalk), but it says *which* points are fixable, not *what class* they belong to. Every other mechanism tested (artifact gates, LP assignment, MVAC consensus, Sinkhorn balance, ReAct clipping, recoverability reweighting) operates on the decode or the existing assignment and cannot change the assignment.
+- **The recoverable points' true class is invisible to every global signal.** Their true class sits at rank 3.7-4.8 in the clean-prototype similarity ordering, and the linear probe gets only 5-8% on them (worse than on unfixable points). No global classifier or clean prototype can name them.
+- **The local structure can.** The recoverable set clusters by class in the 128D space (kNN true-label agreement 0.76-0.95), and the kNN vote exploits exactly that: the assignment information that global geometry throws away is present locally. This is why gating (which only selects) and reweighting (which only scales) fail, while a local consensus reassignment recovers some of it.
+
+**What a TTA method should learn from the failure modes (full detail in `docs/tta_iterations.md`):**
+- **Spend capacity on "what class", not "which points".** Detection is achievable label-free; the binding constraint is naming the fixable points' classes, which requires local structure.
+- **The label source feeding the local vote is the ceiling.** The kNN vote is only as good as the labels it reads (the LP, ~35%); the local clusters exist but cannot be exploited beyond the label source. This is why the EM bootstrap diverged (Iteration 8): iterating the vote over the current pseudo-labels adds no new information and compounds error.
+- **Only reassign the points you are confident are wrong.** Reassigning correct points (the bootstrap's top-25%-of-everything selection) actively degrades the healthy majority.
+- **A better method needs a label source that is locally more accurate than the LP** (e.g., clustering the recoverable set before labeling it, or a per-cluster consensus that does not depend on the probe), which is the direction a learned head should pursue.
+
 ---
 
 ## 8. Order of work (current state)
