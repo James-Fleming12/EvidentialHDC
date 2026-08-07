@@ -62,6 +62,7 @@ All full-scene mIoU (no points removed) on the plain medium encoder. The pool/va
 | 5 | Combined-recoverability gate (weighted re-estimate / retention) | 9.4% | 10.9% | not validated: AUROC does not transfer to full-scene decode gains |
 | 6 | Assignment-gap diagnostic | n/a | n/a | detection strong (gated-oracle ≈ oracle on crosstalk); assignment is the gap; the recoverable set clusters by class (kNN 0.76-0.95) |
 | 7 | Recoverability-gated kNN reassign | 9.8% | 12.7% | safe + directionally correct (first label-free crosstalk re-estimate above zero-shot), small gains; neighbor-label source is the bottleneck |
+| 8 | EM bootstrap of the kNN reassign | 8.6% | 8.0% | diverges: iterating the vote over current pseudo-labels compounds error; single-round LP-label kNN (Iter 7) is the efficient form |
 
 **Bottom line**: every label-free route to the oracle is tested and closed. The full-label oracle (fog 16.6%, crosstalk 26.2%) remains the only thing that recovers the collapsed conditions; its information is the rare-class *assignment* the features cannot provide label-free under fog/crosstalk.
 
@@ -271,6 +272,34 @@ Decode-side retention was flat-to-worse: the best recoverability config reached 
 4. **The bottleneck is the neighbor label source, not the detection or the local structure.** The recoverable set clusters by class (Iteration 6E: kNN-oracle 0.76-0.95), but the kNN vote reads the neighbors' LP labels, which are only ~35-36% accurate on fog/crosstalk. The vote cannot name the rarest classes, whose correct points are too few to dominate even their own neighborhoods.
 
 **Verdict**: the mechanism is validated as safe and directionally correct (it works, breaks the re-estimate-degrades barrier on crosstalk, and never collapses the healthy conditions), but the gains are far below the oracle (crosstalk 12.7 vs 26.2, fog 9.8 vs 17.1). The natural continuation is to iterate the bootstrap: round-1 kNN-reassign -> re-estimate -> re-decode -> round-2 with the improved prototypes as the neighbors' label source (EM-style), which attacks the LP-label bottleneck directly.
+
+### Iteration 8: the EM bootstrap diverges; iterating the kNN vote compounds label error
+
+`--iter8_bootstrap` on all 8 conditions (R=0.25, k=20, T=6): each round re-decodes the pool with the latest prototypes, re-selects the top-R% by recoverability, kNN-reassigns voting over the CURRENT pseudo-labels, re-estimates.
+
+**The trajectory degrades monotonically on every condition (round 1 -> round 6):**
+
+| Condition | round-1 | round-6 | pool pseudo-acc round-1 -> 6 |
+| :--- | :--- | :--- | :--- |
+| fog | 9.2% | **8.6%** | 0.261 -> 0.213 |
+| crosstalk | 10.6% | **8.0%** | 0.335 -> 0.227 |
+| snow | 38.2% | 37.8% | 0.669 -> 0.638 |
+| wet_ground | 47.8% | 47.1% | 0.691 -> 0.623 |
+| incomplete_echo | 39.5% | 38.1% | 0.794 -> 0.742 |
+| beam_missing | 51.7% | 50.4% | 0.776 -> 0.725 |
+| motion_blur | 43.1% | 42.2% | 0.736 -> 0.695 |
+| cross_sensor | 39.9% | 39.0% | 0.693 -> 0.642 |
+
+**Findings:**
+1. **The EM loop compounds label error instead of correcting it.** The pseudo-label accuracy falls every round on every condition (fog 0.261 -> 0.213, crosstalk 0.335 -> 0.227). The kNN vote over the current labels is no more accurate than the labels themselves, so reassignment just shuffles ~equally-weak labels, and the re-estimated prototypes decay.
+2. **Two design regressions vs Iteration 7 explain the divergence.** Iteration 7 (which reached crosstalk 12.7) reassigned only zs-WRONG points using LP labels (35%); Iteration 8 reassigns the top-25% of ALL points (including correct ones, which get overwritten by noisy votes) using the current zs pseudo-labels (26-33%, no better than the LP and sometimes worse). Reassigning correct points actively degrades the healthy majority.
+3. **The "improving labels" premise of the bootstrap did not materialize**: no new information enters the vote each round, so the loop cannot climb.
+
+**What makes the kNN method work (the efficiency analysis):**
+- **Target the zs-wrong subset only** (Iteration 7): reassigning correct points hurts.
+- **Use the LP as the neighbor label source** (35%, Iteration 7): the current-pseudo labels in the bootstrap are not better.
+- **Single round is enough**: iteration adds compute without benefit and diverges.
+- The single-round kNN is already cheap (one kNN graph + one re-estimate); it is the efficient form and the one to keep in the TTA category. Its ceiling is set by the label source (the LP), not the mechanism.
 
 ### Candidate mechanisms: all closed or judged not worth running
 
