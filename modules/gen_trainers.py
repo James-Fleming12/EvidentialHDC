@@ -40,8 +40,10 @@ class GenTrainer(Trainer):
         if self.method == 'supcon_vib_evidential':
             self.evidence_head = nn.Conv2d(128, self.parser.get_n_classes(), kernel_size=1).to(self.device)
             self.optimizer.add_param_group({'params': self.evidence_head.parameters()})
+            self._edl_accum = {}
         else:
             self.evidence_head = None
+            self._edl_accum = None
             
         # Now manually load the checkpoint
         self.path = path
@@ -131,6 +133,8 @@ class GenTrainer(Trainer):
         losses = AverageMeter()
         acc = AverageMeter()
         iou = AverageMeter()
+        if self.method == 'supcon_vib_evidential':
+            self._edl_accum = {}
 
         if self.gpu:
             torch.cuda.empty_cache()
@@ -356,6 +360,14 @@ class GenTrainer(Trainer):
                                       + torch.lgamma(torch.tensor(Kc, device=al.device))).mean()
                             lam_kl = min(1.0, epoch / 10.0)
                             loss_total = loss_total + 0.1 * (loss_edl + loss_edl_aug) + lam_kl * kl_aug
+                            # running loss-component log (KL-domination diagnostic)
+                            for k, v in [('edl', loss_edl.item()), ('edl_aug', loss_edl_aug.item()),
+                                         ('kl_aug', kl_aug.item()), ('kl_w', lam_kl),
+                                         ('edl_ratio', (loss_edl.item() + loss_edl_aug.item()) /
+                                          max(loss_sem.item(), 1e-6)),
+                                         ('kl_ratio', (kl_aug.item() * lam_kl) /
+                                          max(loss_sem.item(), 1e-6))]:
+                                self._edl_accum[k] = self._edl_accum.get(k, 0.0) + v
 
                 elif self.method == 'smoothness':
                     # Local Smoothness (Dirichlet Energy)
@@ -392,6 +404,10 @@ class GenTrainer(Trainer):
                 print(f'Epoch: [{epoch}][{i}/{len(train_loader)}] '
                       f'Loss {losses.val:.4f} ({losses.avg:.4f}) '
                       f'IoU {iou.val:.3f} ({iou.avg:.3f})')
+                if self.method == 'supcon_vib_evidential' and self._edl_accum:
+                    n = max(i + 1, 1)
+                    comp = " ".join(f"{k} {v / n:.4f}" for k, v in self._edl_accum.items())
+                    print(f"    [evidential] {comp}")
 
         return acc.avg, iou.avg, losses.avg
 
