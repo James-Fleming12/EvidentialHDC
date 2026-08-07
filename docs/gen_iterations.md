@@ -1149,3 +1149,31 @@ The TTA diagnostics (Iterations 4-8, `docs/tta_iterations.md`) converged on a se
 - **The additive regimen's failure mode (Phase 24.6)**: corrupted-view objectives can re-embed contamination at medium scale. Mitigation: keep the corruption views mild (the base beam-drop/density/jitter, not volumetric injection), and keep the KL at 0.01. If Addition 1 alone regresses clean, drop it and run Addition 2 (evidential) alone.
 - **Evidential heads can be miscalibrated in the wrong direction** if the hard points are not identifiable during training; the augmentation provides the supervision (augmented = hard), which is the testable assumption.
 - The 10h budget allows one decisive run; the plan should be staged (Addition 1 first, Addition 2 on top) so a regression is attributable to one lever.
+
+## Phase 25.1: the probe kills Addition 1 as a both-conditions lever (fog/clean up, crosstalk down)
+
+Micro-scale probe of `supcon_vib_fragile` (per-anchor SupCon weighting, 3x on the casualties 2/7/13/14/15) vs plain `supcon_vib`, at cutoff 0.1. Three runs: w=3/3ep, w=6/2ep, and the consistent w=3/3ep with crosstalk. The consistent config is the decision:
+
+| Metric | plain (w=0) | fragile (w=3, 3 ep) | Delta |
+| :--- | :--- | :--- | :--- |
+| clean proto mIoU | 36.1% | **38.9%** | +2.8 |
+| clean LP acc | 83.0% | 85.2% | +2.1 |
+| fog proto mIoU | 2.5% | **3.4%** | +34% |
+| **crosstalk proto mIoU** | 5.6% | **3.7%** | **−34%** |
+| crosstalk LP acc | 31.3% | 24.8% | −6.5 |
+| snow proto mIoU | 28.2% | 30.1% | +1.9 |
+
+**Findings:**
+1. **No clean regression; clean actually improves** (+2.8 proto mIoU, +2.1 LP). The additive-regimen concern does not materialize.
+2. **Fog improves** (+34% proto mIoU), and the fog gain reproduced across the w=3/3ep runs (probe1 +71%, probe3 +34%; both positive).
+3. **Crosstalk gets worse** (proto mIoU 5.6 → 3.7, LP 31.3 → 24.8). The same casualty classes the weighting targets under fog are hurt under crosstalk.
+4. **The lever is sensitive**: w=6/2ep went negative even on fog (probe2), so the weighting is not a stable win even where it helps.
+
+**Conclusion: the blanket fragile-class SupCon weighting is a fog/clean-positive but crosstalk-negative lever.** Since crosstalk is the larger oracle target (26.2 vs 17.1) and the goal is a method that works on both conditions, **Addition 1 as designed is disqualified from the 10h run.** The probe did its job cheaply (~40 min across three runs) before a 10h commit.
+
+**Revised Phase 25 plan:**
+1. **Drop Addition 1** (fragile-class blanket SupCon weighting) from the 10h script.
+2. **Lead with Addition 2 (the evidential uncertainty head)** on the plain `supcon_vib` base, which has the stronger evidence (the hand-built recoverability combiner already reaches AUROC 0.68-0.80 on label-free signals, so a learned head has a target) and no representation-regression risk (it is a head on the frozen bottleneck).
+3. If a fog-only variant of Addition 1 is ever wanted separately (e.g., a fog-specific deployment), it is available, but it is not a both-conditions mechanism and does not belong in the main 10h bet.
+
+**The overnight run (implemented): `supcon_vib_evidential`.** Base `supcon_vib` (KL 0.01, SupCon tau=0.1) plus an evidential head: a 1x1 conv on the 128D bottleneck outputting per-pixel Dirichlet evidence. Two added loss terms on valid pixels: (a) evidential cross-entropy (expected log-likelihood under the Dirichlet) on both clean and augmented views, so the head classifies; (b) a KL-to-uniform regularizer on the AUGMENTED view only, forcing high epistemic uncertainty on the corruption-hard points (the Phase 22.2 confident-and-wrong failure), annealed in per Sensoy et al. (lam_kl = min(1, epoch/10)). The evidential gradients flow into z8, shaping the representation; the head itself is saved via the optimizer state (like `logvar_head`) and provides the intrinsic uncertainty signal at decode. Verify with the standard medium harness: `med_pretrain_eval.py --methods supcon_vib_evidential --epochs 26`.

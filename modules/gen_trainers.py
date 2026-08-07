@@ -32,6 +32,16 @@ class GenTrainer(Trainer):
             self.optimizer.add_param_group({'params': self.logvar_head.parameters()})
         else:
             self.logvar_head = None
+
+        # Phase 25 Addition 2 (evidential head): a 1x1 conv on the 128D bottleneck outputting
+        # per-pixel Dirichlet evidence. Trained so the augmented (corruption-hard) views carry
+        # high epistemic uncertainty, giving the model intrinsic calibrated uncertainty for
+        # pseudo-label gating. Saved via the optimizer state (like logvar_head).
+        if self.method == 'supcon_vib_evidential':
+            self.evidence_head = nn.Conv2d(128, self.parser.get_n_classes(), kernel_size=1).to(self.device)
+            self.optimizer.add_param_group({'params': self.evidence_head.parameters()})
+        else:
+            self.evidence_head = None
             
         # Now manually load the checkpoint
         self.path = path
@@ -315,6 +325,37 @@ class GenTrainer(Trainer):
                     kl_weight = {'supcon_vib_strongvib': 0.05,
                                  'supcon_vib_midvib': 0.03}.get(self.method, 0.01)
                     loss_total = loss_sem + kl_weight * loss_kl + 0.1 * loss_supcon
+
+                    # Phase 25 Addition 2 (evidential head): Dirichlet evidence on the 128D
+                    # bottleneck. Two terms on the valid pixels:
+                    #   - evidential cross-entropy (expected log-likelihood under the Dirichlet)
+                    #     on BOTH views, so the head classifies;
+                    #   - a KL-to-uniform regularizer on the AUGMENTED view ONLY, forcing high
+                    #     epistemic uncertainty on the corruption-hard points (the Phase 22.2
+                    #     confident-and-wrong failure). Annealed in per Sensoy et al.
+                    if self.method == 'supcon_vib_evidential':
+                        m = proj_labels > 0
+                        al = (F.softplus(self.evidence_head(z8)) + 1.0).permute(0, 2, 3, 1)[m]
+                        al_a = (F.softplus(self.evidence_head(z8_aug)) + 1.0).permute(0, 2, 3, 1)[m]
+                        lbl_e = proj_labels[m]
+                        if len(lbl_e) > 0:
+                            S = al.sum(dim=1)
+                            Sa = al_a.sum(dim=1)
+                            al_t = al.gather(1, lbl_e.unsqueeze(1)).squeeze(1)
+                            al_a_t = al_a.gather(1, lbl_e.unsqueeze(1)).squeeze(1)
+                            loss_edl = (torch.digamma(S) - torch.digamma(al_t)).mean()
+                            loss_edl_aug = (torch.digamma(Sa) - torch.digamma(al_a_t)).mean()
+                            y_onehot = F.one_hot(lbl_e, num_classes=al_a.shape[1]).float()
+                            atilde = al_a * (1 - y_onehot) + 1.0
+                            St = atilde.sum(dim=1, keepdim=True)
+                            Kc = al_a.shape[1]
+                            kl_aug = (torch.lgamma(St)
+                                      - torch.lgamma(atilde).sum(dim=1, keepdim=True)
+                                      + ((atilde - 1) * (torch.digamma(atilde)
+                                                         - torch.digamma(St))).sum(dim=1, keepdim=True)
+                                      + torch.lgamma(torch.tensor(Kc, device=al.device))).mean()
+                            lam_kl = min(1.0, epoch / 10.0)
+                            loss_total = loss_total + 0.1 * (loss_edl + loss_edl_aug) + lam_kl * kl_aug
 
                 elif self.method == 'smoothness':
                     # Local Smoothness (Dirichlet Energy)
