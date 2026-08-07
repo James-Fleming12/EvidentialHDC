@@ -27,7 +27,7 @@ from modules.oracle_core import get_hdc_projection, build_hdc_prototypes, comput
 FRAGILE = [2, 7, 13, 14, 15]
 
 
-def extract_features(model, parser, device, num_frames=40):
+def extract_features(model, parser, device, num_frames=25):
     feats, lbls = [], []
     model.eval()
     with torch.no_grad():
@@ -75,7 +75,11 @@ def main():
     parser.add_argument("--config", type=str, default="config/labels/semantic-kitti-all.yaml")
     parser.add_argument("--arch", type=str, default="config/arch/senet-2048p.yml")
     parser.add_argument("--log_dir", type=str, default="logs/phase25_probe")
-    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument("--frames", type=int, default=25,
+                        help="frames per condition for evaluation (runtime ~ epochs x frames)")
+    parser.add_argument("--fragile_w", type=float, default=3.0,
+                        help="SupCon anchor weight for the casualty classes (Phase 25 Addition 1)")
     parser.add_argument("--cutoff", type=float, default=0.1)
     parser.add_argument("--methods", type=str, default="supcon_vib,supcon_vib_fragile")
     args = parser.parse_args()
@@ -91,10 +95,14 @@ def main():
     snow_dir = os.path.join(args.kittic_dir, 'snow', 'heavy')
     if not os.path.exists(snow_dir):
         snow_dir = os.path.join(args.kittic_dir, 'snow', 'moderate')
+    cross_dir = os.path.join(args.kittic_dir, 'crosstalk', 'heavy')
+    if not os.path.exists(cross_dir):
+        cross_dir = os.path.join(args.kittic_dir, 'crosstalk', 'moderate')
 
     clean_parser = build_parser(args.kitti_dir, DATA, ARCH)
     fog_parser = build_parser(fog_dir, DATA, ARCH)
     snow_parser = build_parser(snow_dir, DATA, ARCH)
+    cross_parser = build_parser(cross_dir, DATA, ARCH)
 
     methods = [m.strip() for m in args.methods.split(',') if m.strip()]
     results = {}
@@ -103,13 +111,14 @@ def main():
         os.makedirs(log_dir, exist_ok=True)
         print(f"\n=== Training {method} (cutoff {args.cutoff}, {args.epochs} epochs) ===")
         trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, method=method,
-                             cutoff_percent=args.cutoff)
+                             cutoff_percent=args.cutoff, fragile_w=args.fragile_w)
         trainer.train(epochs=args.epochs)
 
         print(f"=== Evaluating {method} ===")
-        clean_f, clean_l = extract_features(trainer.model, clean_parser, device)
-        fog_f, fog_l = extract_features(trainer.model, fog_parser, device)
-        snow_f, snow_l = extract_features(trainer.model, snow_parser, device)
+        clean_f, clean_l = extract_features(trainer.model, clean_parser, device, args.frames)
+        fog_f, fog_l = extract_features(trainer.model, fog_parser, device, args.frames)
+        snow_f, snow_l = extract_features(trainer.model, snow_parser, device, args.frames)
+        cross_f, cross_l = extract_features(trainer.model, cross_parser, device, args.frames)
 
         proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
         base_protos, proto_lbls = build_hdc_prototypes(clean_f, clean_l, proj, device=device)
@@ -131,14 +140,17 @@ def main():
             'clean_proto_miou': proto_miou(clean_f, clean_l),
             'fog_proto_miou': proto_miou(fog_f, fog_l),
             'snow_proto_miou': proto_miou(snow_f, snow_l),
+            'cross_proto_miou': proto_miou(cross_f, cross_l),
+            'cross_lp_acc': float(clf.score(cross_f.numpy(), cross_l.numpy())),
             'clean_lp_acc': float(clf.score(clean_f.numpy(), clean_l.numpy())),
             'fog_lp_acc': float(clf.score(fog_f.numpy(), fog_l.numpy())),
             'fog_lp_per_class': per_class_lp_acc(clf, fog_f, fog_l),
         }
         results[method] = r
         print(f"  clean proto mIoU {r['clean_proto_miou']:.4f} | fog proto mIoU "
-              f"{r['fog_proto_miou']:.4f} | snow {r['snow_proto_miou']:.4f} | "
-              f"clean LP {r['clean_lp_acc']:.4f} | fog LP {r['fog_lp_acc']:.4f}")
+              f"{r['fog_proto_miou']:.4f} | cross proto mIoU {r['cross_proto_miou']:.4f} | "
+              f"snow {r['snow_proto_miou']:.4f} | clean LP {r['clean_lp_acc']:.4f} | "
+              f"fog LP {r['fog_lp_acc']:.4f} | cross LP {r['cross_lp_acc']:.4f}")
         frag_acc = {c: r['fog_lp_per_class'].get(c) for c in FRAGILE}
         print("  fog LP per-class (casualties): " + ", ".join(
             f"{c}:{v:.3f}" if v is not None else f"{c}:n/a" for c, v in frag_acc.items()))

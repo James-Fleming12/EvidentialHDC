@@ -16,9 +16,11 @@ FRAGILE_CLASSES = {2, 7, 13, 14, 15}
 FRAGILE_SUPCON_W = 3.0
 
 class GenTrainer(Trainer):
-    def __init__(self, ARCH, DATA, datadir, logdir, path=None, method='baseline', cutoff_percent=1.0):
+    def __init__(self, ARCH, DATA, datadir, logdir, path=None, method='baseline', cutoff_percent=1.0,
+                 fragile_w=None):
         self.method = method
         self.cutoff_percent = cutoff_percent
+        self.fragile_w = fragile_w if fragile_w is not None else FRAGILE_SUPCON_W
         
         # Call super with path=None to prevent it from immediately loading the checkpoint
         super().__init__(ARCH, DATA, datadir, logdir, None)
@@ -302,7 +304,7 @@ class GenTrainer(Trainer):
                             # per-class fog LP corrupt accuracy off ~0 (Iteration 4B).
                             frag = torch.tensor(sorted(FRAGILE_CLASSES), device=lbl.device)
                             anchor_w = torch.where(torch.isin(lbl, frag),
-                                                   FRAGILE_SUPCON_W, 1.0).float()
+                                                   self.fragile_w, 1.0).float()
                             loss_supcon = (-(anchor_w * torch.log(pos_sum / (all_sum + 1e-8)))
                                            .sum() / anchor_w.sum())
                         else:
