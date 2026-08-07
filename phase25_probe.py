@@ -48,10 +48,10 @@ def extract_features(model, parser, device, num_frames=40):
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
 
-def build_parser(root, arch):
+def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
-                  test_sequences=None, labels=arch["labels"], color_map=arch["color_map"],
-                  learning_map=arch["learning_map"], learning_map_inv=arch["learning_map_inv"],
+                  test_sequences=None, labels=data["labels"], color_map=data["color_map"],
+                  learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
 
@@ -92,9 +92,9 @@ def main():
     if not os.path.exists(snow_dir):
         snow_dir = os.path.join(args.kittic_dir, 'snow', 'moderate')
 
-    clean_parser = build_parser(args.kitti_dir, ARCH)
-    fog_parser = build_parser(fog_dir, ARCH)
-    snow_parser = build_parser(snow_dir, ARCH)
+    clean_parser = build_parser(args.kitti_dir, DATA, ARCH)
+    fog_parser = build_parser(fog_dir, DATA, ARCH)
+    snow_parser = build_parser(snow_dir, DATA, ARCH)
 
     methods = [m.strip() for m in args.methods.split(',') if m.strip()]
     results = {}
