@@ -1177,3 +1177,15 @@ Micro-scale probe of `supcon_vib_fragile` (per-anchor SupCon weighting, 3x on th
 3. If a fog-only variant of Addition 1 is ever wanted separately (e.g., a fog-specific deployment), it is available, but it is not a both-conditions mechanism and does not belong in the main 10h bet.
 
 **The overnight run (implemented): `supcon_vib_evidential`.** Base `supcon_vib` (KL 0.01, SupCon tau=0.1) plus an evidential head: a 1x1 conv on the 128D bottleneck outputting per-pixel Dirichlet evidence. Two added loss terms on valid pixels: (a) evidential cross-entropy (expected log-likelihood under the Dirichlet) on both clean and augmented views, so the head classifies; (b) a KL-to-uniform regularizer on the AUGMENTED view only, forcing high epistemic uncertainty on the corruption-hard points (the Phase 22.2 confident-and-wrong failure), annealed in per Sensoy et al. (lam_kl = min(1, epoch/10)). The evidential gradients flow into z8, shaping the representation; the head itself is saved via the optimizer state (like `logvar_head`) and provides the intrinsic uncertainty signal at decode. Verify with the standard medium harness: `med_pretrain_eval.py --methods supcon_vib_evidential --epochs 26`.
+
+## Phase 25.2: the first evidential run failed; the KL weight was 255x the CE, and the diagnostics caught it precisely
+
+The 26-epoch `supcon_vib_evidential` run completed. The in-training loss-component log showed `kl_ratio` = **255** (the KL-to-uniform term was 255x `loss_sem`, and `kl_aug` froze at 63.3), and the total loss sat at ~64 (essentially the KL) while the backbone still trained normally (train IoU 0.448, val IoU 0.391, comparable to plain). The headroom confirmed the damage: fog LP 17.1% -> 9.3%, fog proto mIoU 5.2% -> 1.5%, clean LP 91.4% -> 91.7% (clean unaffected).
+
+`evidential_eval.py` (loads the checkpoint via GenTrainer) confirmed the collapsed-head signature:
+- **Mean uncertainty uniform across conditions** (0.586-0.591 on clean, fog, crosstalk, snow, wet_ground, cross_sensor): the head makes no clean-vs-corrupted distinction.
+- **Correct-vs-wrong uncertainty AUROC < 0.5 everywhere** (fog 0.403, crosstalk 0.363): the uncertainty is anti-calibrated, higher uncertainty predicts *correct*.
+- **Per-class fog uncertainty flat** (0.587-0.590 for every class): casualties not distinguished from survivors.
+- The head's own classifier is near-random (acc 1.6-5.1%).
+
+**Diagnosis and fix**: the KL cap of 1.0 (with `kl_aug` ~63) swamped every useful gradient by ~250x, freezing the head at a degenerate high-uncertainty fixed point. The cap is now configurable (`--edl_kl_cap`, default 0.005, annealed `min(cap, epoch/100)`), which lands `kl_aug`*cap near `loss_sem` (the correct regime, ~1x not 255x). Retry: `med_pretrain_eval.py --methods supcon_vib_evidential --epochs 26` with the default cap; if the correct-vs-wrong AUROC on fog is still < 0.5 at the end, sweep `--edl_kl_cap` in {0.001, 0.005, 0.02} and re-run `evidential_eval.py` each time (no retrain of the backbone needed to read the AUROC, but the head itself is frozen in this run, so a retrain is required to move it).

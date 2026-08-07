@@ -241,6 +241,10 @@ def main():
     parser.add_argument("--log_dir", type=str, default="logs")
     parser.add_argument("--epochs", type=int, default=5, help="Number of medium-scale epochs to run from scratch (100% data, ~21 min/epoch on this GPU)")
     parser.add_argument("--continue_training", type=int, default=0, help="If > 0, resume from log_dir weights and train for this many extra epochs")
+    parser.add_argument("--edl_kl_cap", type=float, default=0.005,
+                        help="KL-to-uniform weight cap for the evidential head. "
+                             "Phase 25.2: cap 1.0 was 255x the CE and collapsed the head; "
+                             "0.005 lands it near loss_sem.")
     parser.add_argument("--methods", type=str, default="baseline,supcon_vib",
                         help="Comma-separated subset of methods to run (e.g. supcon_vib, supcon_vib_strongvib)")
     args = parser.parse_args()
@@ -286,7 +290,8 @@ def main():
             print(f" [Resuming training from {load_path} for {epochs_to_run} epochs]")
             
         # Instantiate GenTrainer (100% dataset for safe scheduler convergence)
-        trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, path=load_path, method=method)
+        trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, path=load_path,
+                             method=method, edl_kl_cap=args.edl_kl_cap)
         
         # Run the full PyTorch loop for N epochs
         trainer.train(epochs=epochs_to_run)

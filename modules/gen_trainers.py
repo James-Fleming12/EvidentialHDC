@@ -17,10 +17,11 @@ FRAGILE_SUPCON_W = 3.0
 
 class GenTrainer(Trainer):
     def __init__(self, ARCH, DATA, datadir, logdir, path=None, method='baseline', cutoff_percent=1.0,
-                 fragile_w=None):
+                 fragile_w=None, edl_kl_cap=0.005):
         self.method = method
         self.cutoff_percent = cutoff_percent
         self.fragile_w = fragile_w if fragile_w is not None else FRAGILE_SUPCON_W
+        self.edl_kl_cap = edl_kl_cap
         
         # Call super with path=None to prevent it from immediately loading the checkpoint
         super().__init__(ARCH, DATA, datadir, logdir, None)
@@ -358,7 +359,7 @@ class GenTrainer(Trainer):
                                       + ((atilde - 1) * (torch.digamma(atilde)
                                                          - torch.digamma(St))).sum(dim=1, keepdim=True)
                                       + torch.lgamma(torch.tensor(Kc, device=al.device))).mean()
-                            lam_kl = min(1.0, epoch / 10.0)
+                            lam_kl = min(self.edl_kl_cap, epoch / 100.0)
                             loss_total = loss_total + 0.1 * (loss_edl + loss_edl_aug) + lam_kl * kl_aug
                             # running loss-component log (KL-domination diagnostic)
                             for k, v in [('edl', loss_edl.item()), ('edl_aug', loss_edl_aug.item()),
