@@ -1108,8 +1108,44 @@ The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *pos
 
 ### Current Next Steps (consolidated)
 
-1. **The learned loss-estimator head** (Phases 24.4 #3, 24.6 #1): a small head trained on clean/self-supervised signal to predict cos-to-true at test time, targeting the label-free gate gap on fog (11% label-free vs 55% oracle on the plain features). Decoder-side, but it estimates the perceptron loss the gates need.
+0. **Phase 25 (proposed): the 10-hour training script**: plain `supcon_vib` base + fragile-class corrupted-view SupCon (casualties 2, 7, 13, 14, 15) + an evidential uncertainty head, designed from the TTA diagnostics (per-class LP corrupt acc 0-2.5% off the casualties, nearest-neighbor absorption, confident-and-wrong miscalibration). Verification reuses the existing harness.
+1. **The learned loss-estimator head** (Phases 24.4 #3, 24.6 #1): a small head trained on clean/self-supervised signal to predict cos-to-true at test time, targeting the label-free gate gap on fog (11% label-free vs 55% oracle on the plain features). Decoder-side, but it estimates the perceptron loss the gates need. Note: Phase 25's evidential head is the *encoder-native* version of this idea.
 2. **Per-class weighting for the fog casualties** (classes 2, 7, 13, 14, 15) in the pretraining objective: the concrete target list from Phase 24.2; the collapse is class-conditional and regimen-invariant (Phase 24.6), so the objective must target these classes specifically.
 3. **Crosstalk stack to finish the 20-target**: the label-free margin gate (23.1% mIoU @ 52% retention) combined with the BN-statistic alignment (+3.1 raw mIoU): evaluate the combined decode. (Prior correction is closed as a lever, Phase 24.8.)
 4. **Intra-class balance checks** (open thread): per-class hard selection behaved differently from global selection (Phase 22.1), so the intra-class balance question is not yet settled; the subcluster ledger and per-class buffer variants remain to be evaluated.
 5. **Optional decode-thread closure**: `--update_strength 1 --buffer_frac 0.20` on the oracle retrain: low prior that it stabilizes the loop; cheap, closes Phase 22.
+
+---
+
+## Phase 25 (proposed): the 10-hour training script: fragile-class corrupted-view SupCon + an evidential uncertainty head
+
+The TTA diagnostics (Iterations 4-8, `docs/tta_iterations.md`) converged on a set of *trainable* feature-space properties. This phase designs a medium-scale pretraining script (~10h, 26 epochs at 100% data, same budget as the plain `supcon_vib` run) that keeps the plain regimen's generalization while targeting the specific failures the diagnostics measured. Every design choice is evidence-backed.
+
+### The evidence → objective mapping
+
+1. **The 128D space is not linearly separable for the fragile classes under corruption.** Iteration 4B: per-class LP corrupt accuracy is 0-2.5% for every class except Terrain (0.91); the "LP fog 36%" headline was almost entirely Terrain. The kNN reassignment's label source (LP) is weak precisely because the fragile classes' corrupted features are not separable. *Training lever*: SupCon over clean↔corrupted views with per-class weighting that up-weights the casualties (2, 7, 13, 14, 15 from Phase 24.2), pulling same-class corrupted points together and different-class apart. If this moves the fragile classes' per-class LP corrupt accuracy off ~0, both the LP assignment and the kNN vote improve.
+2. **The fragile classes get absorbed by neighbors under corruption.** Iteration 4A: Building's clean nearest-other-class distance is 0.042 (essentially merged in clean space); the collapsers sit close to a majority neighbor and several move into it (Traffic-sign 0.677 → 0.479 under crosstalk). Terrain, the survivor, has nearest-other distance 0.989. *Training lever*: a per-class centroid-margin regularizer on the fragile classes against their nearest neighbor, so the absorption has no near-neighbor to fall into.
+3. **The recoverable set clusters by class locally, but no label source can name it.** Iteration 6E: kNN true-label agreement 0.76-0.95 within the recoverable set; yet the LP gets 5-8% on those points (Iteration 6B). The local clusters are already good; the bottleneck is label *separability*. Consistent with lever 1: separability is the fix, not new clustering machinery.
+4. **Every label-free confidence signal is miscalibrated under fog.** Phase 22.2: 99.96% of fog misclassifications are confident artifacts; margin and LP confidence cannot separate correct from wrong (Iterations 4C/5). The only useful detection signal had to be *hand-built* (combined AUROC 0.68-0.80, Iteration 4C extension). *Training lever*: an **evidential head** (Dirichlet/EDL) on the 128D bottleneck that outputs evidence and epistemic uncertainty, trained so that the volumetric/corruption-augmented hard points carry high uncertainty. This gives the model *intrinsic* calibrated uncertainty at decode, replacing the hand-built recoverability combiner with a native signal the gates can use directly.
+5. **Norm inflation is the best fog recoverability signal (AUC 0.75) but weak on crosstalk (0.54).** Iteration 4C. A norm-calibration term under augmented views is a secondary, low-priority lever (the additive regimen's norm fix failed at medium scale, Phase 24.6, so keep this mild or skip it).
+
+### The script design
+
+- **Base**: plain `supcon_vib` (Phase 20/21: the generalization keeper; the additive regimen was closed at medium scale, Phase 24.6). Unchanged loss path, KL 0.01.
+- **Addition 1 (fragile-class corrupted-view SupCon)**: in the existing `get_augmented_view` pipeline (beam-drop + density subsample + jitter, which are already the base augmentation; do NOT add the volumetric injection that failed at medium scale), weight the SupCon positives/negatives per-class so the casualty classes (2, 7, 13, 14, 15) contribute a larger fraction of the contrastive signal across the clean↔corrupted pair. Optionally add the centroid-margin regularizer from lever 2.
+- **Addition 2 (evidential head)**: a small head (e.g., 128 → K evidence) producing a Dirichlet-parameterized class distribution; train with the evidential loss so the model's epistemic uncertainty is high on the augmented hard/artifact points. This is the "intrinsic robust uncertainty" output the user asked for, and it turns the confident-and-wrong failure into a trainable calibration signal.
+- **Budget**: 26 epochs, 100% data, ~10h, same as the plain run; additions are cheap per-step (a margin term + an evidential loss head on the bottleneck).
+
+### Verification (reuse the existing diagnostics, no new harness work)
+
+1. **Per-class LP corrupt accuracy** on the casualties: target moving off 0-2.5% (the assignment/separability metric, Iteration 4B).
+2. **The model's own uncertainty vs the hand-built recoverability combiner**: AUROC for separating recovered from stuck; target >= the 0.68-0.80 hand-built signal with the *intrinsic* head.
+3. **kNN reassign gains** (Iteration 7 harness): does a better label source lift crosstalk past 12.7 and fog past 9.8?
+4. **The 8-condition collapse check**: clean zero-shot and the geometric conditions must not regress (the plain run's 82.7%/49.6 clean is the reference).
+5. **The standard oracle ladder + autopsy** for the full per-class picture.
+
+### Risks
+
+- **The additive regimen's failure mode (Phase 24.6)**: corrupted-view objectives can re-embed contamination at medium scale. Mitigation: keep the corruption views mild (the base beam-drop/density/jitter, not volumetric injection), and keep the KL at 0.01. If Addition 1 alone regresses clean, drop it and run Addition 2 (evidential) alone.
+- **Evidential heads can be miscalibrated in the wrong direction** if the hard points are not identifiable during training; the augmentation provides the supervision (augmented = hard), which is the testable assumption.
+- The 10h budget allows one decisive run; the plan should be staged (Addition 1 first, Addition 2 on top) so a regression is attributable to one lever.

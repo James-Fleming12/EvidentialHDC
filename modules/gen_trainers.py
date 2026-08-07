@@ -8,6 +8,13 @@ import numpy as np
 from modules.trainer import Trainer
 from common.avgmeter import AverageMeter
 
+# Phase 24.2 casualty list: the classes whose corrupted features collapse and absorb
+# into neighbors (Road, Building, Other-ground, Traffic-sign, Bicycle). Phase 25 probe:
+# up-weight these anchors in the SupCon loss so the contrastive signal concentrates on
+# the classes that need corrupted-view separability the most.
+FRAGILE_CLASSES = {2, 7, 13, 14, 15}
+FRAGILE_SUPCON_W = 3.0
+
 class GenTrainer(Trainer):
     def __init__(self, ARCH, DATA, datadir, logdir, path=None, method='baseline', cutoff_percent=1.0):
         self.method = method
@@ -288,7 +295,18 @@ class GenTrainer(Trainer):
                         exp_sim = torch.exp(sim_matrix - max_sim.detach())
                         pos_sum = (exp_sim * lbl_matrix).sum(dim=1)
                         all_sum = exp_sim.sum(dim=1)
-                        loss_supcon = -torch.log(pos_sum / (all_sum + 1e-8)).mean()
+                        if self.method == 'supcon_vib_fragile':
+                            # Phase 25 Addition 1: per-anchor weighting that up-weights the
+                            # casualty classes (2/7/13/14/15) so their corrupted-view
+                            # separability gets the contrastive signal. Target: move their
+                            # per-class fog LP corrupt accuracy off ~0 (Iteration 4B).
+                            frag = torch.tensor(sorted(FRAGILE_CLASSES), device=lbl.device)
+                            anchor_w = torch.where(torch.isin(lbl, frag),
+                                                   FRAGILE_SUPCON_W, 1.0).float()
+                            loss_supcon = (-(anchor_w * torch.log(pos_sum / (all_sum + 1e-8)))
+                                           .sum() / anchor_w.sum())
+                        else:
+                            loss_supcon = -torch.log(pos_sum / (all_sum + 1e-8)).mean()
                         
                     # VIB pressure variants (Phase 17: 5x at medium scale over-collapsed
                     # the clean manifold; midvib = 3x as the intermediate probe)
