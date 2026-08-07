@@ -21,6 +21,7 @@ import os
 import yaml
 import argparse
 import torch
+import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score
 
 from dataset.kitti.parser import Parser
@@ -89,7 +90,7 @@ def main():
     # clean baseline
     print("Extracting clean...")
     zc, ec, lc = extract(model, evidence_head, clean_parser, device, args.frames)
-    S_c = torch.softplus(ec).sum(dim=1) + float(evidence_head.out_channels)
+    S_c = F.softplus(ec).sum(dim=1) + float(evidence_head.out_channels)
     unc_c = float(evidence_head.out_channels) / S_c
     correct_c = (ec.argmax(dim=1) == lc).float()
 
@@ -105,7 +106,7 @@ def main():
             cdir = os.path.join(args.kittic_dir, cond, 'moderate')
         print(f"Extracting {name}...")
         zf, ef, lf = extract(model, evidence_head, build_parser(cdir, DATA, ARCH), device, args.frames)
-        S_f = torch.softplus(ef).sum(dim=1) + float(evidence_head.out_channels)
+        S_f = F.softplus(ef).sum(dim=1) + float(evidence_head.out_channels)
         unc_f = float(evidence_head.out_channels) / S_f
         correct_f = (ef.argmax(dim=1) == lf).float()
         print(f"  {name}: n {len(lf)} | mean uncertainty {unc_f.mean().item():.4f} "
