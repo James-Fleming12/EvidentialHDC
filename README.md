@@ -386,7 +386,7 @@ The best label-free TTA so far is a single-round, recoverability-gated kNN reass
 | Motion Blur | 44.3% | 43.0% | 43.9% | 44.8% |
 | Cross Sensor | 41.5% | 39.8% | 41.2% | 43.5% |
 
-*The honest framing: BN-stat alignment is still the best single label-free *full-scene* result on crosstalk (15.1%, sec 7.3), and kNN is the best **re-estimate** (the first label-free prototype re-estimate to beat the frozen zero-shot decoder on crosstalk, and the best at not collapsing the geometric conditions, which all stay within 0.5-0.9 pts of zero-shot). The kNN method is cheap (one kNN graph + one prototype re-estimate), which keeps it in the TTA category.*
+*Note: BN-stat alignment is still the best single label-free *full-scene* result on crosstalk (15.1%, sec 7.3), and kNN is the best **re-estimate** (the first label-free prototype re-estimate to beat the frozen zero-shot decoder on crosstalk, and the best at not collapsing the geometric conditions, which all stay within 0.5-0.9 pts of zero-shot). The kNN method is cheap (one kNN graph + one prototype re-estimate), which keeps it in the TTA category.*
 
 **Why the kNN captures information the other gates and classifiers do not:**
 - **Detection is solvable; assignment is the hard part.** The combined recoverability signal separates fixable from unfixable points (AUROC 0.68-0.80 on fog/crosstalk), but it says *which* points are fixable, not *what class* they belong to. Every other mechanism tested (artifact gates, LP assignment, MVAC consensus, Sinkhorn balance, ReAct clipping, recoverability reweighting) operates on the decode or the existing assignment and cannot change the assignment.
