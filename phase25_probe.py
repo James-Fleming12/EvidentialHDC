@@ -113,11 +113,15 @@ def main():
 
         proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
         base_protos, proto_lbls = build_hdc_prototypes(clean_f, clean_l, proj, device=device)
-        base_norm = F.normalize(base_protos, p=2, dim=1)
-
         def proto_miou(feats, lbls):
-            h = F.normalize(torch.sign(feats.to(device) @ proj), p=2, dim=1)
-            preds = proto_lbls[(h @ base_norm.T).argmax(dim=1)]
+            feats_d = feats.to(device)
+            protos = F.normalize(base_protos, p=2, dim=1)
+            sims = []
+            for start in range(0, len(feats_d), 50000):
+                hc = F.normalize(torch.sign(feats_d[start:start + 50000] @ proj), p=2, dim=1)
+                sims.append(hc @ protos.T)
+            sims = torch.cat(sims, dim=0)
+            preds = proto_lbls[sims.argmax(dim=1)]
             return compute_miou(preds, lbls.to(device))
 
         clf = LogisticRegression(max_iter=1000)
