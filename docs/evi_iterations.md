@@ -101,7 +101,35 @@ The goal: the model's own head outputs calibrated uncertainty (the gating signal
 
 **Decision**: revert to blanket edl_w=1.0 (fog AUROC 0.74 is the keeper); the selective-KL mechanism is abandoned.
 
-## Current direction: direct loss prediction (supcon_vib_losspred)
+## Current direction: hard-negative SupCon (supcon_vib_hardneg): the first crosstalk-positive mechanism
+
+**Design intuition** (fixing Addition 1's failure): instead of pulling the augmented casualty points INTO the clean centroids (which trained the encoder to create confident artifacts), push the EXTREME crosstalk-style-augmented points AWAY from their class's clean centroid (a centroid-repulsion term), carving a distinct artifact sub-cluster. The mild view keeps the robustness attraction.
+
+**Setup**: `supcon_vib_hardneg` (base supcon_vib + extreme sparse-wrong-beam view + `relu(maxcos_to_clean_centroid - margin)` repulsion, weight `--edl_w`). ~1h micro probe (8 epochs). Eval uses the DISTANCE signal (`--signal distance`): uncertainty = -max-cosine to clean 128D centroids, correctness from the semantic output.
+
+**Results** (correct-vs-wrong AUROC, semantic-output reference):
+
+| Condition | mean distance to clean | semantic acc | AUROC |
+| :--- | :--- | :--- | :--- |
+| clean | -0.879 | 67.5% | 0.802 |
+| fog | -0.767 (farther) | 13.6% | 0.471 |
+| **crosstalk** | -0.795 (farther) | 25.2% | **0.588** |
+| snow | -0.850 | 60.8% | 0.797 |
+| wet_ground | -0.852 | 49.2% | 0.661 |
+| cross_sensor | -0.820 | 48.9% | 0.834 |
+
+**Result**: the artifact sub-cluster is real (fog/crosstalk points land farther from clean centroids than clean points; on fog the casualties 16/15/13/14 are farther than the Terrain survivor), and the comparable AUROC series (semantic-output reference) is:
+
+| method | fog AUROC | crosstalk AUROC |
+| :--- | :--- | :--- |
+| losspred (25.6) | 0.390 | 0.397 |
+| **hardneg + distance (25.7)** | **0.471** | **0.588** |
+
+The hardneg mechanism beats losspred on both and is the **first to cross 0.5 on crosstalk**. (Note: the EDL 25.4 fog AUROC 0.74 used the evidence-head argmax reference, not the semantic output, so it is not directly comparable to this series.)
+
+**Verdict**: the mechanism is the most promising direction yet: it changes the FEATURES (artifact separation) rather than only the head, and improves calibration on both conditions over every prior head. The both-conditions goal is still not met (fog 0.471 < 0.5), but the natural next step is to combine: train the loss-prediction (or EDL) HEAD on the hardneg features, so the head reads the separation the encoder now provides.
+
+## Current direction (backup): direct loss prediction (supcon_vib_losspred)
 
 **Design intuition** (from the Bengs et al. analysis and the measured recoverability signal): instead of an indirect Dirichlet-KL, a head that **directly regresses the main classifier's per-point CE** on clean + augmented views. The supervision is the semantic head's own error (no OOD labels), the output is a predicted per-point loss (the gating signal), and it is condition-agnostic. **Crosstalk-style augmentation added** (sparse wrong-beam returns, density 0.005) so the head sees crosstalk-hard points in training.
 
@@ -127,6 +155,6 @@ The goal: the model's own head outputs calibrated uncertainty (the gating signal
 ## Current state
 
 - **Addition 1 is delayed, not closed**: a real fog/clean win (+34% fog, +2.8 clean, no regression) that fails crosstalk as-is; the likely fix is the crosstalk-style augmentation, and it is queued to revisit right after the evidential head resolves.
-- **EDL (Dirichlet-KL) is closed**: the only validated config (blanket edl_w=1.0) gives a fog-calibrated head (0.74) with no crosstalk gain; both cap- and selectivity-based attempts fail on crosstalk.
-- **The direct loss-prediction head (25.6) is closed for point-level fog/crosstalk calibration** (AUROC 0.39/0.40), though its condition-level separation (fog/crosstalk predicted loss >> clean) is a usable coarse signal.
-- **The both-conditions point-level uncertainty goal is not achievable from these designs**: three independent head architectures converge on the finding that fog/crosstalk point-level recoverability is not feature-estimable label-free.
+- **EDL (Dirichlet-KL) is closed**: its best config (blanket edl_w=1.0) is fog-calibrated (0.74 on the old argmax reference) with no crosstalk gain; both cap- and selectivity-based attempts fail on crosstalk.
+- **The direct loss-prediction head (25.6) is closed for point-level fog/crosstalk calibration** (0.39/0.40 on the comparable semantic reference), though its condition-level separation (fog/crosstalk predicted loss >> clean) is a usable coarse signal.
+- **The hard-negative SupCon (25.7) is the open direction**: the only mechanism to beat 0.5 on crosstalk (0.588) with a comparable reference, and it changes the features (artifact sub-cluster) rather than only the head. The immediate next step is to train the loss-prediction head on the hardneg features, targeting both-conditions calibration.
