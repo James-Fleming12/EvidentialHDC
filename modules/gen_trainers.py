@@ -54,7 +54,7 @@ class GenTrainer(Trainer):
         # classifier's per-point loss on clean + augmented views. The per-point CE of the
         # semantic head is the supervision (no OOD labels); the predicted loss is the
         # gating/uncertainty signal. Condition-agnostic and EDL-trap-free.
-        if self.method == 'supcon_vib_losspred':
+        if self.method in ('supcon_vib_losspred', 'supcon_vib_hardneg'):
             self.losspred_head = nn.Conv2d(128, 1, kernel_size=1).to(self.device)
             self.optimizer.add_param_group({'params': self.losspred_head.parameters()})
         else:
@@ -334,6 +334,7 @@ class GenTrainer(Trainer):
                         # same subsample, for the same-class repulsion term.
                         out_ext = model(self.get_extreme_view(in_vol))
                         z8_ext = out_ext[2] if len(out_ext) == 3 else out_ext[1]
+                        output_ext = out_ext[0]
                         z_ext = z8_ext.permute(0, 2, 3, 1)[mask]
                         if subsampled:
                             z_ext = z_ext[idx]
@@ -438,18 +439,26 @@ class GenTrainer(Trainer):
                                           max(loss_sem.item(), 1e-6))]:
                                 self._edl_accum[k] = self._edl_accum.get(k, 0.0) + v
 
-                    # Phase 25.6 (direct loss prediction): regress the main classifier's
-                    # per-point CE on clean + augmented views. The predicted loss is the
-                    # gating/uncertainty signal. No OOD labels, no KL, condition-agnostic.
-                    if self.method == 'supcon_vib_losspred':
+                    # Phase 25.6/25.7 (direct loss prediction): regress the main classifier's
+                    # per-point CE. For the hardneg method, ALSO regress the EXTREME view's CE
+                    # (the artifact-point error), directly tying the head to the separated
+                    # artifact sub-cluster the hard-neg repulsion creates.
+                    if self.method in ('supcon_vib_losspred', 'supcon_vib_hardneg'):
                         m = proj_labels > 0
-                        target_c = F.cross_entropy(output, proj_labels, reduction='none')[m]
-                        target_a = F.cross_entropy(output_aug, proj_labels, reduction='none')[m]
+                        # Targets detached: the head regresses the model's error, it does
+                        # not steer it (canonical loss-prediction, Yoo & Kweon). Undetached
+                        # targets pushed the model to make its loss PREDICTABLE, fighting loss_sem.
+                        target_c = F.cross_entropy(output, proj_labels, reduction='none')[m].detach()
+                        target_a = F.cross_entropy(output_aug, proj_labels, reduction='none')[m].detach()
                         pred_c = F.softplus(self.losspred_head(z8)).permute(0, 2, 3, 1)[m, 0]
                         pred_a = F.softplus(self.losspred_head(z8_aug)).permute(0, 2, 3, 1)[m, 0]
                         if len(target_c) > 0:
                             loss_lp = (F.smooth_l1_loss(pred_c, target_c)
                                        + F.smooth_l1_loss(pred_a, target_a))
+                            if self.method == 'supcon_vib_hardneg':
+                                target_x = F.cross_entropy(output_ext, proj_labels, reduction='none')[m].detach()
+                                pred_x = F.softplus(self.losspred_head(z8_ext)).permute(0, 2, 3, 1)[m, 0]
+                                loss_lp = loss_lp + F.smooth_l1_loss(pred_x, target_x)
                             loss_total = loss_total + self.edl_w * loss_lp
 
                 elif self.method == 'smoothness':

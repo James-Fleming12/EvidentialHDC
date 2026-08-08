@@ -88,7 +88,7 @@ def main():
     trainer = GenTrainer(ARCH, DATA, args.kitti_dir, args.load_path,
                          method=args.method, path=args.load_path)
     model = trainer.model
-    is_losspred = args.method == 'supcon_vib_losspred'
+    is_losspred = getattr(trainer, 'losspred_head', None) is not None
     use_head = args.signal == 'head'
     head = None
     if use_head:
