@@ -1108,7 +1108,7 @@ The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *pos
 
 ### Current Next Steps (consolidated)
 
-0. **Phase 25 (proposed): the 10-hour training script**: plain `supcon_vib` base + fragile-class corrupted-view SupCon (casualties 2, 7, 13, 14, 15) + an evidential uncertainty head, designed from the TTA diagnostics (per-class LP corrupt acc 0-2.5% off the casualties, nearest-neighbor absorption, confident-and-wrong miscalibration). Verification reuses the existing harness.
+0. **The evidential/loss-prediction head (Addition 2)**: the encoder/head-side both-conditions attempt, tracked in docs/evi_iterations.md. Current open bet: `supcon_vib_losspred` (direct per-point loss regression + crosstalk-style augmentation), pending its ~1h probe; Addition 1 (fragile-class SupCon) is delayed, queued for revisit right after.
 1. **The learned loss-estimator head** (Phases 24.4 #3, 24.6 #1): a small head trained on clean/self-supervised signal to predict cos-to-true at test time, targeting the label-free gate gap on fog (11% label-free vs 55% oracle on the plain features). Decoder-side, but it estimates the perceptron loss the gates need. Note: Phase 25's evidential head is the *encoder-native* version of this idea.
 2. **Per-class weighting for the fog casualties** (classes 2, 7, 13, 14, 15) in the pretraining objective: the concrete target list from Phase 24.2; the collapse is class-conditional and regimen-invariant (Phase 24.6), so the objective must target these classes specifically.
 3. **Crosstalk stack to finish the 20-target**: the label-free margin gate (23.1% mIoU @ 52% retention) combined with the BN-statistic alignment (+3.1 raw mIoU): evaluate the combined decode. (Prior correction is closed as a lever, Phase 24.8.)
@@ -1117,115 +1117,15 @@ The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *pos
 
 ---
 
-## Phase 25 (proposed): the 10-hour training script: fragile-class corrupted-view SupCon + an evidential uncertainty head
+## Phase 25: the encoder/head-side both-conditions attempts
 
-The TTA diagnostics (Iterations 4-8, `docs/tta_iterations.md`) converged on a set of *trainable* feature-space properties. This phase designs a medium-scale pretraining script (~10h, 26 epochs at 100% data, same budget as the plain `supcon_vib` run) that keeps the plain regimen's generalization while targeting the specific failures the diagnostics measured. Every design choice is evidence-backed.
+The fragile-class SupCon (Addition 1) and the evidential uncertainty head (Addition 2)
+iterations, including the current direct-loss-prediction direction, are tracked in
+**[docs/evi_iterations.md](evi_iterations.md)**.
 
-### The evidence → objective mapping
+Current state in brief: **Addition 1 is delayed** (a real fog/clean win that fails crosstalk as-is; queued to revisit right after the evidential head);
+**the Dirichlet-KL evidential head is closed** (its best config, blanket edl_w=1.0, is
+fog-calibrated with correct-vs-wrong AUROC 0.74 but no crosstalk gain); the open bet is the
+**direct loss-prediction head** (`supcon_vib_losspred`) with crosstalk-style augmentation,
+pending its ~1h probe.
 
-1. **The 128D space is not linearly separable for the fragile classes under corruption.** Iteration 4B: per-class LP corrupt accuracy is 0-2.5% for every class except Terrain (0.91); the "LP fog 36%" headline was almost entirely Terrain. The kNN reassignment's label source (LP) is weak precisely because the fragile classes' corrupted features are not separable. *Training lever*: SupCon over clean↔corrupted views with per-class weighting that up-weights the casualties (2, 7, 13, 14, 15 from Phase 24.2), pulling same-class corrupted points together and different-class apart. If this moves the fragile classes' per-class LP corrupt accuracy off ~0, both the LP assignment and the kNN vote improve.
-2. **The fragile classes get absorbed by neighbors under corruption.** Iteration 4A: Building's clean nearest-other-class distance is 0.042 (essentially merged in clean space); the collapsers sit close to a majority neighbor and several move into it (Traffic-sign 0.677 → 0.479 under crosstalk). Terrain, the survivor, has nearest-other distance 0.989. *Training lever*: a per-class centroid-margin regularizer on the fragile classes against their nearest neighbor, so the absorption has no near-neighbor to fall into.
-3. **The recoverable set clusters by class locally, but no label source can name it.** Iteration 6E: kNN true-label agreement 0.76-0.95 within the recoverable set; yet the LP gets 5-8% on those points (Iteration 6B). The local clusters are already good; the bottleneck is label *separability*. Consistent with lever 1: separability is the fix, not new clustering machinery.
-4. **Every label-free confidence signal is miscalibrated under fog.** Phase 22.2: 99.96% of fog misclassifications are confident artifacts; margin and LP confidence cannot separate correct from wrong (Iterations 4C/5). The only useful detection signal had to be *hand-built* (combined AUROC 0.68-0.80, Iteration 4C extension). *Training lever*: an **evidential head** (Dirichlet/EDL) on the 128D bottleneck that outputs evidence and epistemic uncertainty, trained so that the volumetric/corruption-augmented hard points carry high uncertainty. This gives the model *intrinsic* calibrated uncertainty at decode, replacing the hand-built recoverability combiner with a native signal the gates can use directly.
-5. **Norm inflation is the best fog recoverability signal (AUC 0.75) but weak on crosstalk (0.54).** Iteration 4C. A norm-calibration term under augmented views is a secondary, low-priority lever (the additive regimen's norm fix failed at medium scale, Phase 24.6, so keep this mild or skip it).
-
-### The script design
-
-- **Base**: plain `supcon_vib` (Phase 20/21: the generalization keeper; the additive regimen was closed at medium scale, Phase 24.6). Unchanged loss path, KL 0.01.
-- **Addition 1 (fragile-class corrupted-view SupCon)**: in the existing `get_augmented_view` pipeline (beam-drop + density subsample + jitter, which are already the base augmentation; do NOT add the volumetric injection that failed at medium scale), weight the SupCon positives/negatives per-class so the casualty classes (2, 7, 13, 14, 15) contribute a larger fraction of the contrastive signal across the clean↔corrupted pair. Optionally add the centroid-margin regularizer from lever 2.
-- **Addition 2 (evidential head)**: a small head (e.g., 128 → K evidence) producing a Dirichlet-parameterized class distribution; train with the evidential loss so the model's epistemic uncertainty is high on the augmented hard/artifact points. This is the "intrinsic robust uncertainty" output the user asked for, and it turns the confident-and-wrong failure into a trainable calibration signal.
-- **Budget**: 26 epochs, 100% data, ~10h, same as the plain run; additions are cheap per-step (a margin term + an evidential loss head on the bottleneck).
-
-### Verification (reuse the existing diagnostics, no new harness work)
-
-1. **Per-class LP corrupt accuracy** on the casualties: target moving off 0-2.5% (the assignment/separability metric, Iteration 4B).
-2. **The model's own uncertainty vs the hand-built recoverability combiner**: AUROC for separating recovered from stuck; target >= the 0.68-0.80 hand-built signal with the *intrinsic* head.
-3. **kNN reassign gains** (Iteration 7 harness): does a better label source lift crosstalk past 12.7 and fog past 9.8?
-4. **The 8-condition collapse check**: clean zero-shot and the geometric conditions must not regress (the plain run's 82.7%/49.6 clean is the reference).
-5. **The standard oracle ladder + autopsy** for the full per-class picture.
-
-### Risks
-
-- **The additive regimen's failure mode (Phase 24.6)**: corrupted-view objectives can re-embed contamination at medium scale. Mitigation: keep the corruption views mild (the base beam-drop/density/jitter, not volumetric injection), and keep the KL at 0.01. If Addition 1 alone regresses clean, drop it and run Addition 2 (evidential) alone.
-- **Evidential heads can be miscalibrated in the wrong direction** if the hard points are not identifiable during training; the augmentation provides the supervision (augmented = hard), which is the testable assumption.
-- The 10h budget allows one decisive run; the plan should be staged (Addition 1 first, Addition 2 on top) so a regression is attributable to one lever.
-
-## Phase 25.1: the probe kills Addition 1 as a both-conditions lever (fog/clean up, crosstalk down)
-
-Micro-scale probe of `supcon_vib_fragile` (per-anchor SupCon weighting, 3x on the casualties 2/7/13/14/15) vs plain `supcon_vib`, at cutoff 0.1. Three runs: w=3/3ep, w=6/2ep, and the consistent w=3/3ep with crosstalk. The consistent config is the decision:
-
-| Metric | plain (w=0) | fragile (w=3, 3 ep) | Delta |
-| :--- | :--- | :--- | :--- |
-| clean proto mIoU | 36.1% | **38.9%** | +2.8 |
-| clean LP acc | 83.0% | 85.2% | +2.1 |
-| fog proto mIoU | 2.5% | **3.4%** | +34% |
-| **crosstalk proto mIoU** | 5.6% | **3.7%** | **−34%** |
-| crosstalk LP acc | 31.3% | 24.8% | −6.5 |
-| snow proto mIoU | 28.2% | 30.1% | +1.9 |
-
-**Findings:**
-1. **No clean regression; clean actually improves** (+2.8 proto mIoU, +2.1 LP). The additive-regimen concern does not materialize.
-2. **Fog improves** (+34% proto mIoU), and the fog gain reproduced across the w=3/3ep runs (probe1 +71%, probe3 +34%; both positive).
-3. **Crosstalk gets worse** (proto mIoU 5.6 → 3.7, LP 31.3 → 24.8). The same casualty classes the weighting targets under fog are hurt under crosstalk.
-4. **The lever is sensitive**: w=6/2ep went negative even on fog (probe2), so the weighting is not a stable win even where it helps.
-
-**Conclusion: the blanket fragile-class SupCon weighting is a fog/clean-positive but crosstalk-negative lever.** Since crosstalk is the larger oracle target (26.2 vs 17.1) and the goal is a method that works on both conditions, **Addition 1 as designed is disqualified from the 10h run.** The probe did its job cheaply (~40 min across three runs) before a 10h commit.
-
-**Revised Phase 25 plan:**
-1. **Drop Addition 1** (fragile-class blanket SupCon weighting) from the 10h script.
-2. **Lead with Addition 2 (the evidential uncertainty head)** on the plain `supcon_vib` base, which has the stronger evidence (the hand-built recoverability combiner already reaches AUROC 0.68-0.80 on label-free signals, so a learned head has a target) and no representation-regression risk (it is a head on the frozen bottleneck).
-3. If a fog-only variant of Addition 1 is ever wanted separately (e.g., a fog-specific deployment), it is available, but it is not a both-conditions mechanism and does not belong in the main 10h bet.
-
-**The overnight run (implemented): `supcon_vib_evidential`.** Base `supcon_vib` (KL 0.01, SupCon tau=0.1) plus an evidential head: a 1x1 conv on the 128D bottleneck outputting per-pixel Dirichlet evidence. Two added loss terms on valid pixels: (a) evidential cross-entropy (expected log-likelihood under the Dirichlet) on both clean and augmented views, so the head classifies; (b) a KL-to-uniform regularizer on the AUGMENTED view only, forcing high epistemic uncertainty on the corruption-hard points (the Phase 22.2 confident-and-wrong failure), annealed in per Sensoy et al. (lam_kl = min(1, epoch/10)). The evidential gradients flow into z8, shaping the representation; the head itself is saved via the optimizer state (like `logvar_head`) and provides the intrinsic uncertainty signal at decode. Verify with the standard medium harness: `med_pretrain_eval.py --methods supcon_vib_evidential --epochs 26`.
-
-## Phase 25.2: the first evidential run failed; the KL weight was 255x the CE, and the diagnostics caught it precisely
-
-The 26-epoch `supcon_vib_evidential` run completed. The in-training loss-component log showed `kl_ratio` = **255** (the KL-to-uniform term was 255x `loss_sem`, and `kl_aug` froze at 63.3), and the total loss sat at ~64 (essentially the KL) while the backbone still trained normally (train IoU 0.448, val IoU 0.391, comparable to plain). The headroom confirmed the damage: fog LP 17.1% -> 9.3%, fog proto mIoU 5.2% -> 1.5%, clean LP 91.4% -> 91.7% (clean unaffected).
-
-`evidential_eval.py` (loads the checkpoint via GenTrainer) confirmed the collapsed-head signature:
-- **Mean uncertainty uniform across conditions** (0.586-0.591 on clean, fog, crosstalk, snow, wet_ground, cross_sensor): the head makes no clean-vs-corrupted distinction.
-- **Correct-vs-wrong uncertainty AUROC < 0.5 everywhere** (fog 0.403, crosstalk 0.363): the uncertainty is anti-calibrated, higher uncertainty predicts *correct*.
-- **Per-class fog uncertainty flat** (0.587-0.590 for every class): casualties not distinguished from survivors.
-- The head's own classifier is near-random (acc 1.6-5.1%).
-
-**Diagnosis and fix**: the KL cap of 1.0 (with `kl_aug` ~63) swamped every useful gradient by ~250x, freezing the head at a degenerate high-uncertainty fixed point. The cap is now configurable (`--edl_kl_cap`, default 0.005, annealed `min(cap, epoch/100)`), which lands `kl_aug`*cap near `loss_sem` (the correct regime, ~1x not 255x). Retry: `med_pretrain_eval.py --methods supcon_vib_evidential --epochs 26` with the default cap; if the correct-vs-wrong AUROC on fog is still < 0.5 at the end, sweep `--edl_kl_cap` in {0.001, 0.005, 0.02} and re-run `evidential_eval.py` each time (no retrain of the backbone needed to read the AUROC, but the head itself is frozen in this run, so a retrain is required to move it).
-
-## Phase 25.3: the evidential head (kl_cap 0.005) is structurally fixed but still not calibrated; the KL design is closed
-
-The retry (cap 0.005) fixed the structural collapse (`kl_ratio` 255 -> 1.28; loss balanced; backbone healthy at plain level, train IoU 0.466) and the head learned to classify (`edl` 2.24 -> 1.19). But `evidential_eval.py` shows the head still does not produce usable uncertainty:
-
-- **Mean uncertainty is uniform across conditions** (0.576-0.587; clean 0.583 vs fog 0.587, only +0.004): the head makes no clean-vs-corrupted distinction.
-- **Correct-vs-wrong AUROC on the target conditions is anti-calibrated**: fog 0.332, crosstalk 0.464 (snow 0.609 and cross_sensor 0.578 are > 0.5, but the collapsed conditions are not).
-- The head's own classifier is broken on fog/crosstalk (acc ~0.06%).
-- Headroom: fog decode still below plain (fog LP 8.0% vs 17.1%; proto mIoU 3.7% vs 5.2%); clean unaffected (LP 91.9%).
-
-**Root cause**: the head never builds meaningful evidence anywhere. Clean uncertainty (0.583) sits at the softplus-zero floor (alpha ~ 1.69 -> u ~ 0.59), i.e. the 0.1 edl-CE weight starves the head, so it outputs near-zero evidence on clean too. The KL-to-uniform-on-augmented regularizer forces uncertainty on the augmented view *indiscriminately*; it does not teach selectivity, so the head cannot distinguish hard from easy corrupted points. Two runs, two failure modes (collapse at cap 1.0; uniform non-selective at cap 0.005).
-
-**Decision: the Dirichlet-KL evidential design is closed.** The "intrinsic uncertainty" goal is better served by the standing **learned loss-estimator head** (Phase 24.4 #3): a head that *directly* regresses the recoverability signal we already measured (combined AUROC 0.68-0.80 on label-free features, Iteration 4C) from z8, trained on clean + augmented views where the augmented points carry the known-hard labels. That is a supervised regression on the actual measured signal rather than an indirect Dirichlet-KL that the experiments show produces no selectivity. If the evidential formulation is ever revisited, it needs (a) a much stronger classification weight (edl ~1.0, not 0.1) so the head builds real clean evidence, and (b) a selective uncertainty target rather than blanket-augmented.
-
-## Phase 25.4: the edl_w=1.0 fix is validated for fog (AUROC 0.74) but not crosstalk
-
-The ~1h validation (micro, 8 epochs, `edl_w=1.0`): the probe decode was healthy (fog proto mIoU 5.1%, clean 42.8% at 8 epochs micro), and `evidential_eval` on the micro checkpoint showed the fix (a) resolved the Phase 25.3 failure mode:
-
-- **Clean uncertainty dropped below the floor** (0.566 vs the 0.583-0.59 the failed runs sat at): the head finally builds evidence on clean.
-- **Clean-vs-fog separation is real** (fog 0.594 vs clean 0.566): the head distinguishes clean from corrupted.
-- **Fog correct-vs-wrong AUROC = 0.740** (vs the anti-calibrated 0.33-0.40 of the failed runs): the head's uncertainty predicts fog errors. Caveat: the head's own fog classifier is weak (acc 0.5%), so the AUROC is over a heavily imbalanced reference; still a strong calibration signal, and the first label-free correct-vs-wrong AUROC well above 0.5 on fog.
-- **Per-class fog uncertainty follows the casualties**: Vegetation/Car/Road/Building/Other-ground/Traffic-sign (0.586-0.599) all above Terrain, the survivor.
-- **Crosstalk is NOT calibrated**: AUROC 0.351 (anti-calibrated), though mean uncertainty is still above clean (0.580 vs 0.566). Clean AUROC is mildly anti-calibrated (0.343) but over a trivial wrong fraction (clean acc 91%+).
-
-**Verdict**: fix (a) (edl_w=1.0) is the correct repair for the "head never builds evidence" failure and produces a genuinely fog-calibrated head. But the validation confirms the head is not selective for crosstalk: the augmented views (beam-drop/density/jitter, which are fog-ish) teach fog calibration, not crosstalk. For the both-conditions goal, the next step before a 10h commit is fix (b): make the uncertainty target selective (apply the KL only to augmented points the head currently predicts wrong / high-loss, so it learns WHICH hard points are uncertain) and/or add crosstalk-style augmentation (sparse wrong-beam returns) to the training views. A 10h run with edl_w=1.0 alone would produce a fog-calibrated head with no crosstalk gain.
-
-## Phase 25.5: the selective KL (fix b) regresses — blanket edl_w=1.0 is the keeper
-
-The ~1h probe of fix (b) (KL applied only to augmented points the head predicts wrong, `edl_kl_selective=1`) made everything worse, not better:
-
-| | blanket edl_w=1.0 | selective edl_w=1.0 |
-| :--- | :--- | :--- |
-| clean mean uncertainty | 0.566 | 0.570 |
-| fog mean uncertainty | **0.594** (above clean) | 0.569 (no separation) |
-| fog correct-vs-wrong AUROC | **0.740** | **0.208** |
-| crosstalk AUROC | 0.351 | 0.309 |
-
-**Why it fails**: the selective KL removes the uncertainty pressure exactly as the head succeeds. Once `edl_aug` pushes the head to classify an augmented point correctly, the KL stops applying to it, so the head never learns uncertainty behavior on the points that matter. The regularizer self-cancels and the head's uncertainty becomes uninformative (AUROC 0.21-0.31 everywhere, fog uncertainty below clean).
-
-**Decision**: revert to the **blanket KL with edl_w=1.0** (fog AUROC 0.74, clean-fog separation, casualty ordering all validated). That config is the 10h-run candidate for a *fog-calibrated* head. The crosstalk gap is not closed by either KL variant; the remaining lever for the both-conditions goal is **crosstalk-style augmentation** (adding sparse wrong-beam returns to the training views so the head learns which crosstalk-hard points are uncertain), to be probed before a 10h commit.
