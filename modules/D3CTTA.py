@@ -120,6 +120,8 @@ class D3CTTA_Decoder:
         if D3CTTA's confident selection is wrong on our features, the difference is the
         feature extractor, not the mechanism)."""
         device = z.device
+        if self.w_rand.device != device:
+            self.w_rand = self.w_rand.to(device)
         domain = self._detect_domain(z)
         if len(self.Q) <= domain:
             self.Q.append(torch.zeros(self.w_rand.shape[1], self.num_classes, device=device))
