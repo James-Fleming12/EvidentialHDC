@@ -89,9 +89,16 @@ class D3CTTA_Decoder:
         n = len(z)
         kn = min(self.k_consistency + 1, n)
         zz = F.normalize(z, p=2, dim=1)
-        sim = zz @ zz.T
-        nb = torch.topk(sim, kn, dim=1).indices[:, 1:]
-        return (pred[nb] == pred.unsqueeze(1)).float().mean(1) > 0.8
+        # Chunked so the (anchor x all) similarity never materializes on the full
+        # frame: the full-frame sim is ~19GB at 68k points and OOMs near-full GPUs.
+        ok = torch.zeros(n, dtype=torch.bool, device=z.device)
+        chunk = 4096
+        for s in range(0, n, chunk):
+            e = min(s + chunk, n)
+            sim = zz[s:e] @ zz.T
+            nb = torch.topk(sim, kn, dim=1).indices[:, 1:]
+            ok[s:e] = (pred[nb] == pred[s:e].unsqueeze(1)).float().mean(1) > 0.8
+        return ok
 
     def _optimise_ridge(self, F_, Y_):
         n = F_.shape[0]
@@ -142,7 +149,7 @@ class D3CTTA_Decoder:
             sel_acc = None
             if true_lbls is not None:
                 sel_acc = float((pred[sel] == true_lbls[sel]).float().mean().item())
-            return feat_h @ wo.T, len(sel), sel_acc
+            return (feat_h @ wo.T).argmax(1), len(sel), sel_acc
         return pred, 0, None
 
     def predict_adapted(self, z):
