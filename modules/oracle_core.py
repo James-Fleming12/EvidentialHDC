@@ -290,6 +290,8 @@ def eval_protos_miou(protos, proto_lbls, val_feats, val_lbls):
 
 def compute_miou(preds, lbls, num_classes=17):
     """Mean IoU over evaluated classes (class 0 ignored; absent classes excluded)."""
+    if preds.device != lbls.device:
+        preds = preds.to(lbls.device)
     present = set(lbls.tolist())
     ious = []
     for c in range(1, num_classes):
