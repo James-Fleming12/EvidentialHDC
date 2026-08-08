@@ -323,9 +323,11 @@ class GenTrainer(Trainer):
                     lbl = proj_labels[mask]
                     
                     loss_supcon = torch.tensor(0.0, device=z8.device)
+                    subsampled = False
                     if len(lbl) > 2000:
                         idx = torch.randperm(len(lbl))[:2000]
                         z_c, z_a, lbl = z_c[idx], z_a[idx], lbl[idx]
+                        subsampled = True
                         
                     if self.method == 'supcon_vib_hardneg':
                         # Phase 25.7: the extreme (crosstalk-injected) view, aligned to the
@@ -333,7 +335,7 @@ class GenTrainer(Trainer):
                         out_ext = model(self.get_extreme_view(in_vol))
                         z8_ext = out_ext[2] if len(out_ext) == 3 else out_ext[1]
                         z_ext = z8_ext.permute(0, 2, 3, 1)[mask]
-                        if len(lbl) > 2000:
+                        if subsampled:
                             z_ext = z_ext[idx]
 
                     if len(lbl) > 0:
