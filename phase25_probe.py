@@ -85,6 +85,9 @@ def main():
     parser.add_argument("--edl_w", type=float, default=0.1,
                         help="Evidential cross-entropy weight (Phase 25.3: 0.1 starves the head; "
                              "1.0 is the candidate fix)")
+    parser.add_argument("--edl_kl_selective", type=int, default=1,
+                        help="Phase 25.4 fix (b): apply the KL only to augmented points the head "
+                             "predicts wrong (1) vs blanket (0)")
     parser.add_argument("--cutoff", type=float, default=0.1)
     parser.add_argument("--methods", type=str, default="supcon_vib,supcon_vib_fragile")
     args = parser.parse_args()
@@ -117,7 +120,8 @@ def main():
         print(f"\n=== Training {method} (cutoff {args.cutoff}, {args.epochs} epochs) ===")
         trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, method=method,
                              cutoff_percent=args.cutoff, fragile_w=args.fragile_w,
-                             edl_kl_cap=args.edl_kl_cap, edl_w=args.edl_w)
+                             edl_kl_cap=args.edl_kl_cap, edl_w=args.edl_w,
+                             edl_kl_selective=bool(args.edl_kl_selective))
         trainer.train(epochs=args.epochs)
 
         print(f"=== Evaluating {method} ===")

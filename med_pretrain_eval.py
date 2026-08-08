@@ -249,6 +249,9 @@ def main():
                         help="Evidential cross-entropy weight. Phase 25.3: 0.1 starves the "
                              "head so it never builds evidence (uniform uncertainty); "
                              "1.0 is the candidate fix.")
+    parser.add_argument("--edl_kl_selective", type=int, default=1,
+                        help="Phase 25.4 fix (b): apply the KL only to augmented points the head "
+                             "predicts wrong (1) vs blanket (0)")
     parser.add_argument("--methods", type=str, default="baseline,supcon_vib",
                         help="Comma-separated subset of methods to run (e.g. supcon_vib, supcon_vib_strongvib)")
     args = parser.parse_args()

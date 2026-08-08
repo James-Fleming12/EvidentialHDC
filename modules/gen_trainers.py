@@ -17,12 +17,13 @@ FRAGILE_SUPCON_W = 3.0
 
 class GenTrainer(Trainer):
     def __init__(self, ARCH, DATA, datadir, logdir, path=None, method='baseline', cutoff_percent=1.0,
-                 fragile_w=None, edl_kl_cap=0.005, edl_w=0.1):
+                 fragile_w=None, edl_kl_cap=0.005, edl_w=0.1, edl_kl_selective=True):
         self.method = method
         self.cutoff_percent = cutoff_percent
         self.fragile_w = fragile_w if fragile_w is not None else FRAGILE_SUPCON_W
         self.edl_kl_cap = edl_kl_cap
         self.edl_w = edl_w
+        self.edl_kl_selective = edl_kl_selective
         
         # Call super with path=None to prevent it from immediately loading the checkpoint
         super().__init__(ARCH, DATA, datadir, logdir, None)
@@ -353,13 +354,25 @@ class GenTrainer(Trainer):
                             loss_edl_aug = (torch.digamma(Sa) - torch.digamma(al_a_t)).mean()
                             y_onehot = F.one_hot(lbl_e, num_classes=al_a.shape[1]).float()
                             atilde = al_a * (1 - y_onehot) + 1.0
+                            if self.edl_kl_selective:
+                                # Fix (b), Phase 25.4: apply the KL only to augmented points the
+                                # head CURRENTLY predicts wrong, so correct points build evidence
+                                # while hard points get pushed to high uncertainty. Condition-
+                                # agnostic ("be uncertain where wrong"), which is the gating signal
+                                # needed on BOTH fog and crosstalk (the blanket KL calibrated fog
+                                # but not crosstalk).
+                                wrong = al_a.argmax(dim=1) != lbl_e
+                                if int(wrong.sum().item()) > 0:
+                                    atilde = atilde[wrong]
+                                else:
+                                    atilde = torch.zeros(0, al_a.shape[1], device=al.device)
                             St = atilde.sum(dim=1, keepdim=True)
                             Kc = al_a.shape[1]
                             kl_aug = (torch.lgamma(St)
                                       - torch.lgamma(atilde).sum(dim=1, keepdim=True)
                                       + ((atilde - 1) * (torch.digamma(atilde)
                                                          - torch.digamma(St))).sum(dim=1, keepdim=True)
-                                      + torch.lgamma(torch.tensor(Kc, device=al.device))).mean()
+                                      + torch.lgamma(torch.tensor(Kc, device=al.device))).mean() if len(atilde) > 0 else torch.tensor(0.0, device=al.device)
                             lam_kl = min(self.edl_kl_cap, epoch / 100.0)
                             loss_total = loss_total + self.edl_w * (loss_edl + loss_edl_aug) + lam_kl * kl_aug
                             # running loss-component log (KL-domination diagnostic)
