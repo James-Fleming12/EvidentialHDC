@@ -129,6 +129,66 @@ The hardneg mechanism beats losspred on both and is the **first to cross 0.5 on 
 
 **Verdict**: the mechanism is the most promising direction yet: it changes the FEATURES (artifact separation) rather than only the head, and improves calibration on both conditions over every prior head. The both-conditions goal is still not met (fog 0.471 < 0.5), but the natural next step is to combine: train the loss-prediction (or EDL) HEAD on the hardneg features, so the head reads the separation the encoder now provides.
 
+## 25.8: the combined medium-scale run (hardneg + loss-prediction head)
+
+**Setup**: the 25.7 next step, at medium scale. `supcon_vib_hardneg` now also carries the loss-prediction head (128 -> 1 conv regressing the per-point CE, weight `--edl_w 1.0`), supervised on clean, mild-aug, AND the extreme view (the artifact-point CE, directly tying the head to the sub-cluster the repulsion carves). Loss-prediction targets are detached so the head reads the model's error instead of steering it. 26 epochs at 100% data (~13h; restarted once within the first ~16 steps, the completed trajectory below is the second attempt).
+
+**Training**: converged smoothly, no instability (running-avg loss 1.15 -> 0.41, train IoU 0.26 -> 0.47 across epochs 1-25).
+
+**Medium headroom results** (`med_pretrain_eval`, fog-heavy, 50 frames):
+
+| metric | value |
+| :--- | :--- |
+| Linear Probe (Clean) | 0.918 |
+| Linear Probe (Fog) | 0.085 |
+| Linear Probe mIoU (Fog) | 0.033 |
+| Linear Robustness Gap | 0.833 |
+| HDC Prototype Accuracy (Fog) | 0.603 |
+| HDC Prototype mIoU (Fog) | 0.069 |
+| Avg Cosine Shift | 0.870 |
+| Cross-Domain Retrieval | 0.475 |
+| L2 Norm clean / fog | 3.73 / 6.86 (mean-norm ratio 1.63; per-class up to 3.78 for class 0, 2.49 for vegetation) |
+| Ellipticity clean / fog | 0.422 / 0.562 |
+| Binarized mean cosine sim | 0.097 |
+
+**Comparison to the other medium-scale head runs (same eval)**:
+
+| run | clean LP | fog LP | fog LP mIoU | HDC proto acc | HDC proto mIoU | cos shift | gap |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| evidential2 (25.4 config) | 0.919 | 0.080 | 0.028 | 0.297 | 0.037 | 0.788 | 0.840 |
+| additive2 | 0.914 | 0.171 | 0.025 | 0.532 | 0.052 | 0.857 | 0.743 |
+| **hardneg + head** | 0.918 | 0.085 | 0.033 | **0.603** | **0.069** | 0.870 | 0.833 |
+
+**Result**: mixed, and the split is exactly the binarized/continuous one.
+
+- The **binarized HDC decode (the actual deployment path) is the best of the three medium-scale runs** (fog proto acc 0.603 vs 0.297 / 0.532, proto mIoU 0.069 vs 0.037 / 0.052). The artifact sub-cluster survives the sign-projection pathway, consistent with the 25.7 hypothesis. Sign binarization is scale-invariant, so it is immune to the fog norm inflation that destroys the continuous probe.
+- The **continuous linear-probe ceiling collapsed** (fog LP 0.085, fog LP mIoU 0.033). The fog features inflate in norm ~2x (per-class ratio up to 3.78), and the clean-trained logistic probe is scale-sensitive, so this is partly a probe artifact; but the inflated fog magnitudes themselves are a real robustness concern, and the robustness gap (0.833) is essentially unchanged vs evidential (0.840). The head did not recover the continuous fog ceiling.
+
+**Not measured here**: this eval reports feature-space headroom, not the head's point-level calibration. The both-conditions point-level verdict requires `evidential_eval.py --method supcon_vib_hardneg --signal head` on this checkpoint (the 25.7 goal was fog 0.471 / crosstalk 0.588 with the distance signal; whether the trained head reads the sub-cluster better than distance is the open question).
+
+### 25.8a: head vs distance readout on the medium checkpoint (the decisive control)
+
+`evidential_eval.py --method supcon_vib_hardneg` with `--signal head` and `--signal distance` on the same 25.8 weights (semantic-output correctness):
+
+| condition | acc | head AUROC | distance AUROC |
+| :--- | :--- | :--- | :--- |
+| clean | 0.824 | 0.597 | 0.844 |
+| fog | 0.044 | 0.454 | 0.964 |
+| crosstalk | 0.209 | 0.440 | 0.880 |
+| snow | 0.700 | 0.477 | 0.798 |
+| wet_ground | 0.698 | 0.413 | 0.807 |
+| cross_sensor | 0.732 | 0.663 | 0.790 |
+
+Per-class (distance, fog / crosstalk): the casualty classes are the strongest separators (fog 15:0.89, 13:0.88, 16:0.96, 14:0.99, 11:0.99, 4:1.00; crosstalk 15:0.93, 16:0.90, 14:0.67, 13:0.61, 11:1.00, 4:1.00). The head's per-class is anti-calibrated on exactly the driver classes (road 11: 0.34/0.16, building 13: 0.18/0.20, truck 4: 0.20/0.08) with only vegetation (15) at 0.72/0.80.
+
+**The head is uninformative.** Its mean predicted loss is nearly constant across all conditions (0.74-0.82) and LOWER on fog than clean (0.751 vs 0.791): the head did not even learn the condition-level separation the 25.6 probe produced (0.94 vs 0.78). AUROC ~0.45 on both target conditions.
+
+**The head-vs-distance control falsifies the trained head**: on identical features, distance (fog 0.964 / crosstalk 0.880) crushes the head (0.454 / 0.440). The head adds nothing over the free cosine signal, and in fact predicts the wrong direction. This is the falsification criterion firing: head <= distance means the head mechanism (as implemented: extreme-view CE target + detached targets, edl_w 1.0) failed, not the features.
+
+**Collapse caveat on the distance numbers**: fog semantic acc fell to 0.044 (vs 13.6% at the 25.7 micro probe), so the high distance AUROC is largely "which of the ~4% correct are cosine-outlier survivors" and is inflated by collapse, not evidence of recoverability (per Iterations 0-8, AUROC != assignment). It is consistent with the fog LP ceiling collapse (0.085) in the headroom eval.
+
+**Verdict (closing the head line)**: the trained loss-prediction / evidential head is CLOSED: uninformative and beaten by the free geometric signal on the same features. The durable asset of the 25.8 run is the hardneg FEATURE separation (best binarized HDC decode at medium scale, and the distance signal reads the artifact sub-cluster strongly), not the trained head. The fog condition itself is nearly destroyed (acc 0.044), which remains the standing ceiling problem.
+
 ## Current direction (backup): direct loss prediction (supcon_vib_losspred)
 
 **Design intuition** (from the Bengs et al. analysis and the measured recoverability signal): instead of an indirect Dirichlet-KL, a head that **directly regresses the main classifier's per-point CE** on clean + augmented views. The supervision is the semantic head's own error (no OOD labels), the output is a predicted per-point loss (the gating signal), and it is condition-agnostic. **Crosstalk-style augmentation added** (sparse wrong-beam returns, density 0.005) so the head sees crosstalk-hard points in training.
@@ -157,4 +217,5 @@ The hardneg mechanism beats losspred on both and is the **first to cross 0.5 on 
 - **Addition 1 is delayed, not closed**: a real fog/clean win (+34% fog, +2.8 clean, no regression) that fails crosstalk as-is; the likely fix is the crosstalk-style augmentation, and it is queued to revisit right after the evidential head resolves.
 - **EDL (Dirichlet-KL) is closed**: its best config (blanket edl_w=1.0) is fog-calibrated (0.74 on the old argmax reference) with no crosstalk gain; both cap- and selectivity-based attempts fail on crosstalk.
 - **The direct loss-prediction head (25.6) is closed for point-level fog/crosstalk calibration** (0.39/0.40 on the comparable semantic reference), though its condition-level separation (fog/crosstalk predicted loss >> clean) is a usable coarse signal.
-- **The hard-negative SupCon (25.7) is the open direction**: the only mechanism to beat 0.5 on crosstalk (0.588) with a comparable reference, and it changes the features (artifact sub-cluster) rather than only the head. The immediate next step is to train the loss-prediction head on the hardneg features, targeting both-conditions calibration.
+- **The trained-head line is now closed** (25.8a): on the medium hardneg checkpoint the loss-prediction head is a near-constant predictor (mean predicted loss 0.74-0.82 across all conditions, lower on fog than clean) with ~0.45 AUROC on both target conditions, and the head-vs-distance control falsifies it decisively (distance fog 0.964 / crosstalk 0.880 vs head 0.454 / 0.440 on identical features). Fog acc collapsed to 0.044, so the high distance AUROC is collapse-inflated, not recoverability.
+- **The hard-negative SupCon FEATURE separation is the surviving asset**: the medium run gave the best binarized fog HDC decode at medium scale (proto acc 0.603 / mIoU 0.069), and the free cosine-distance signal reads the artifact sub-cluster strongly. The head adds nothing; the geometry is the signal. The fog ceiling collapse (acc 0.044, fog LP 0.085) is the standing problem, not the uncertainty readout.
