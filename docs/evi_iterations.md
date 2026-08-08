@@ -30,11 +30,26 @@ The encoder/head-side attempts to close the oracle gap (full-label oracle: fog 1
 
 The goal: the model's own head outputs calibrated uncertainty (the gating signal), replacing the hand-built recoverability combiner (AUROC 0.68-0.80). Iterations in order:
 
+| Iteration | Config | fog AUROC | crosstalk AUROC | fog u vs clean | Verdict |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 25.2 | EDL, KL cap 1.0 | 0.403 | 0.363 | uniform | collapsed (KL 255x) |
+| 25.3 | EDL, cap 0.005 | 0.332 | 0.464 | uniform | fixed structure, not calibrated |
+| 25.4 | EDL, edl_w 1.0 | **0.740** | 0.351 | separated | fog validated, crosstalk not |
+| 25.5 | EDL, selective KL | 0.208 | 0.309 | none | regressed, reverted |
+
 ### 25.2: EDL with KL cap 1.0: collapsed (KL 255x the CE)
 
 **Setup**: `supcon_vib_evidential`: a 1x1-conv Dirichlet head on the 128D bottleneck; evidential CE on clean+augmented views plus a KL-to-uniform regularizer on the augmented view, `lam_kl = min(1, epoch/10)`. 26-epoch medium run.
 
-**Result**: in-training `kl_ratio` = 255 (the KL at ~63 swamped the loss; total loss sat at ~64 while the backbone stayed healthy). Headroom: fog LP 17.1 -> 9.3%. Eval: uncertainty uniform across conditions (0.586-0.591), correct-vs-wrong AUROC < 0.5 everywhere (fog 0.403).
+**Results**:
+
+| Metric | value |
+| :--- | :--- |
+| in-training `kl_ratio` | 255 (KL ~63 dominates; total loss sat at ~64, backbone healthy) |
+| fog LP / proto mIoU | 9.3% / 1.5% (plain 17.1% / 5.2%) |
+| clean LP | 91.7% (plain 91.4%) |
+| mean uncertainty (clean / fog / crosstalk) | 0.586 / 0.589 / 0.588 (uniform) |
+| correct-vs-wrong AUROC (fog / crosstalk) | 0.403 / 0.363 (anti-calibrated) |
 
 **Fix**: the KL cap was the bug (255x). Made configurable (`--edl_kl_cap`, default 0.005, annealed `min(cap, epoch/100)`).
 
@@ -42,7 +57,15 @@ The goal: the model's own head outputs calibrated uncertainty (the gating signal
 
 **Setup**: same, cap 0.005 (26-epoch medium run).
 
-**Result**: `kl_ratio` 1.28 (balanced), backbone healthy, head learned to classify (`edl` 2.24 -> 1.19). But eval still showed uniform uncertainty (clean 0.583 vs fog 0.587) and anti-calibrated AUROC on the targets (fog 0.332, crosstalk 0.464). Fog decode still below plain (LP 8.0 vs 17.1).
+**Results**:
+
+| Metric | value |
+| :--- | :--- |
+| in-training `kl_ratio` | 1.28 (balanced); `edl` 2.24 -> 1.19 (head learned to classify) |
+| fog LP / proto mIoU | 8.0% / 3.7% (plain 17.1% / 5.2%) |
+| clean LP | 91.9% |
+| mean uncertainty (clean / fog / crosstalk) | 0.583 / 0.587 / 0.586 (uniform) |
+| correct-vs-wrong AUROC (fog / crosstalk) | 0.332 / 0.464 (anti-calibrated on targets) |
 
 **Root cause**: the 0.1 evidential-CE weight starved the head, so it never built evidence on clean either (clean uncertainty at the softplus floor ~0.59); and the blanket KL-on-augmented forces uncertainty indiscriminately, teaching no selectivity.
 
@@ -52,7 +75,14 @@ The goal: the model's own head outputs calibrated uncertainty (the gating signal
 
 **Setup**: same EDL, but `edl_w=1.0` (stronger classification weight). ~1h micro probe (8 epochs).
 
-**Result**: clean uncertainty dropped below the floor (0.566), clean-vs-fog separation is real (fog 0.594 vs 0.566), **fog correct-vs-wrong AUROC = 0.740** (first label-free signal well above 0.5 on fog), and per-class fog uncertainty follows the casualties. **Crosstalk is not calibrated** (AUROC 0.351).
+**Results**:
+
+| Metric | value |
+| :--- | :--- |
+| probe decode (clean / fog / cross proto mIoU) | 42.8% / 5.1% / 6.0% |
+| mean uncertainty (clean / fog / crosstalk) | 0.566 / **0.594** / 0.580 (clean-fog separation) |
+| correct-vs-wrong AUROC (fog / crosstalk) | **0.740** / 0.351 |
+| per-class fog uncertainty | casualties (0.586-0.599) > Terrain (survivor) |
 
 **Verdict**: fix (a) works for fog; crosstalk's calibration gap is a coverage problem (the augmented views are fog-ish).
 
@@ -60,7 +90,12 @@ The goal: the model's own head outputs calibrated uncertainty (the gating signal
 
 **Setup**: apply the KL only to augmented points the head currently predicts wrong (the "be uncertain where wrong" idea). ~1h micro probe.
 
-**Result**: fog AUROC collapsed to 0.208, fog uncertainty below clean, everything anti-calibrated.
+**Results**:
+
+| Metric | value |
+| :--- | :--- |
+| mean uncertainty (clean / fog / crosstalk) | 0.570 / 0.569 / 0.572 (no clean-fog separation) |
+| correct-vs-wrong AUROC (fog / crosstalk) | 0.208 / 0.309 (regressed vs blanket) |
 
 **Why**: the selective KL self-cancels: once the head classifies an augmented point correctly, the KL stops applying to it, so it never learns uncertainty behavior (matches the Bengs et al. result that second-order predictors cannot be faithfully optimized without a ground-truth uncertainty target).
 
