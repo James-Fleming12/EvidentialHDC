@@ -83,7 +83,7 @@ class D3CTTA_Decoder:
             return best
         self.domain_params.append({'mu': mu.clone(), 'sigma': z.var(0), 't': 1})
         self.prev_domain = len(self.domain_params) - 1
-        return -1
+        return self.prev_domain
 
     def _knn_consistency(self, z, pred):
         n = len(z)
@@ -154,6 +154,8 @@ class D3CTTA_Decoder:
 
     def predict_adapted(self, z):
         """Predict with the current ridge classifier (no further adaptation)."""
+        if self.w_rand.device != z.device:
+            self.w_rand = self.w_rand.to(z.device)
         feat_h = F.relu(z @ self.w_rand)
         domain = max(self.prev_domain, 0)
         if domain < len(self.Q):
