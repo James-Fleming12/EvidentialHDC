@@ -7,6 +7,7 @@ import numpy as np
 
 from modules.trainer import Trainer
 from common.avgmeter import AverageMeter
+from modules.DGLSS import dglss_sifc_loss, dglss_scc_loss, get_dglss_view
 
 # Phase 24.2 casualty list: the classes whose corrupted features collapse and absorb
 # into neighbors (Road, Building, Other-ground, Traffic-sign, Bicycle). Phase 25 probe:
@@ -16,22 +17,32 @@ FRAGILE_CLASSES = {2, 7, 13, 14, 15}
 FRAGILE_SUPCON_W = 3.0
 # Phase 25.7: same-class (clean, extreme-aug) pairs repel above this cosine margin
 HARDNEG_MARGIN = 0.5
+# DGLSS / DGLSS++ consistency weights (lambda_1 SIFC, lambda_2 SCC in the papers)
+DGLSS_TAU = 0.7
+# DGLSS / DGLSS++ / standard-implementation arms. These are VIB-FREE by construction:
+# they route through their own branch (plain bottleneck, no reparameterization, no KL)
+# so the comparison with the paper implementations is not contaminated by VIB.
+DGLSS_METHODS = {'supcon_vib_dglss', 'supcon_vib_dglsspp', 'supcon_vib_dglss_enc'}
 
 class GenTrainer(Trainer):
     def __init__(self, ARCH, DATA, datadir, logdir, path=None, method='baseline', cutoff_percent=1.0,
-                 fragile_w=None, edl_kl_cap=0.005, edl_w=0.1, edl_kl_selective=True):
+                 fragile_w=None, edl_kl_cap=0.005, edl_w=0.1, edl_kl_selective=True,
+                 dglss_lam1=1.0, dglss_lam2=1.0):
         self.method = method
         self.cutoff_percent = cutoff_percent
         self.fragile_w = fragile_w if fragile_w is not None else FRAGILE_SUPCON_W
         self.edl_kl_cap = edl_kl_cap
         self.edl_w = edl_w
         self.edl_kl_selective = edl_kl_selective
+        # DGLSS / DGLSS++ consistency weights (lambda_1 SIFC, lambda_2 SCC in the papers)
+        self.dglss_lam1 = dglss_lam1
+        self.dglss_lam2 = dglss_lam2
         
         # Call super with path=None to prevent it from immediately loading the checkpoint
         super().__init__(ARCH, DATA, datadir, logdir, None)
         
         # If VIB or any SupCon+VIB variant, initialize logvar_head and add to optimizer BEFORE loading checkpoint
-        if self.method == 'vib' or self.method.startswith('supcon_vib'):
+        if self.method == 'vib' or (self.method.startswith('supcon_vib') and self.method not in DGLSS_METHODS):
             self.logvar_head = nn.Conv2d(128, 128, kernel_size=1).to(self.device)
             # Add to optimizer so it has 2 param groups (matching the saved checkpoint)
             self.optimizer.add_param_group({'params': self.logvar_head.parameters()})
@@ -181,8 +192,12 @@ class GenTrainer(Trainer):
             if self.gpu:
                 in_vol, proj_labels = in_vol.cuda(), proj_labels.cuda().long()
 
-            # Create augmented view for all methods
-            in_vol_aug = self.get_augmented_view(in_vol)
+            # Create augmented view for all methods. DGLSS / DGLSS++ use the pure
+            # sparsity (beam-drop) view their consistency losses are defined on.
+            if self.method in DGLSS_METHODS:
+                in_vol_aug = get_dglss_view(in_vol)
+            else:
+                in_vol_aug = self.get_augmented_view(in_vol)
 
             # SupCon+VIB+SOR: mirror the eval-time SOR pre-filter on both clean and augmented inputs
             if self.method == 'supcon_vib_sor':
@@ -190,8 +205,16 @@ class GenTrainer(Trainer):
                 in_vol_aug = self.sor_filter(in_vol_aug)
 
             with torch.amp.autocast('cuda'):
-                # Forward pass clean
-                if self.ARCH["train"]["aux_loss"]:
+                # Forward pass clean. The standard-implementation arm additionally
+                # requests the deepest encoder stage (x_4) for the encoder-level SIFC.
+                if self.method == 'supcon_vib_dglss_enc':
+                    if self.ARCH["train"]["aux_loss"]:
+                        output, aux_list, z8, x4 = model(in_vol, return_stage4=True)
+                        output_aug, aux_list_aug, z8_aug, x4_aug = model(in_vol_aug, return_stage4=True)
+                    else:
+                        output, z8, x4 = model(in_vol, return_stage4=True)
+                        output_aug, z8_aug, x4_aug = model(in_vol_aug, return_stage4=True)
+                elif self.ARCH["train"]["aux_loss"]:
                     output, aux_list, z8 = model(in_vol)
                     output_aug, aux_list_aug, z8_aug = model(in_vol_aug)
                 else:
@@ -276,6 +299,25 @@ class GenTrainer(Trainer):
                     loss_sem = (loss_ce_clean + loss_ce_aug) / 2.0
                     loss_total = loss_sem + 0.01 * loss_kl
 
+                elif self.method in DGLSS_METHODS:
+                    # DGLSS / DGLSS++ (VIB-free, plain bottleneck, no reparameterization
+                    # and no KL): the representation constraint is SIFC/GMSIFC + SCC/LSCC,
+                    # applied to the 128D bottleneck (the HDC-input space) or, for the
+                    # standard-implementation arm, SIFC on the deepest encoder stage x_4
+                    # with SCC on the decoded bottleneck (matching the paper's split of
+                    # SIFC on Phi_enc(F) and SCC on Psi(Phi_dec(F))).
+                    gmsifc = self.method == 'supcon_vib_dglsspp'
+                    if self.method == 'supcon_vib_dglss_enc':
+                        loss_sifc = dglss_sifc_loss(x4, x4_aug, proj_labels, in_vol, in_vol_aug,
+                                                    masked=False, tau=DGLSS_TAU)
+                    else:
+                        loss_sifc = dglss_sifc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
+                                                    masked=gmsifc, tau=DGLSS_TAU)
+                    loss_scc = dglss_scc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
+                                              local=gmsifc)
+                    loss_total = (loss_sem
+                                  + self.dglss_lam1 * loss_sifc
+                                  + self.dglss_lam2 * loss_scc)
                 elif self.method.startswith('supcon_vib'):
                     # Decoupled SupCon + VIB
                     # 1. VIB Magnitude Bottleneck (Absolute Space)

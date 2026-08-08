@@ -171,7 +171,7 @@ class ResNet_34(nn.Module):
             
         return nn.Sequential(*layers)
 
-    def forward(self, x, only_feat=False, return_enc=False):
+    def forward(self, x, only_feat=False, return_enc=False, return_stage4=False):
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.conv3(x)
@@ -201,10 +201,14 @@ class ResNet_34(nn.Module):
             aux2 = F.softmax(self.aux_head1(res_2), dim=1)
             aux3 = F.softmax(self.aux_head2(res_3), dim=1)
             aux4 = F.softmax(self.aux_head3(res_4), dim=1)
+            if return_stage4:
+                return pred, [aux2, aux3, aux4], out, x_4
             if return_enc:
                 return pred, [aux2, aux3, aux4], out, feat_map
             return pred, [aux2, aux3, aux4], out
 
+        if return_stage4:
+            return pred, out, x_4
         if return_enc:
             return pred, out, feat_map
 

@@ -22,6 +22,12 @@ Usage:
   uv run python d3ctta_diag.py --load_path logs/med_pretrain_supcon_vib_additive --enc additive
 """
 import os
+import sys
+
+# Script lives in robust_diagnostic/, one level below the repo root (modules/,
+# dataset/ are relative to the repo root).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import yaml
 import argparse
 import torch
