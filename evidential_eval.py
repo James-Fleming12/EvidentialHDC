@@ -144,6 +144,20 @@ def main():
         if correct_f.std() > 0 and unc_f.std() > 0:
             print(f"  {name} correct-vs-wrong uncertainty AUROC: "
                   f"{roc_auc_score(correct_f.numpy(), -unc_f.cpu().numpy()):.3f}")
+        # Per-class correct-vs-wrong AUROC: shows whether the head can flag errors ON
+        # the rare classes (traffic-sign, person, bicycle, truck) whose recovery drives
+        # the TTA oracle gains. A high overall AUROC can hide collapse-reads (fog acc
+        # 0.22 with AUROC 0.867) that recover nothing.
+        per_class_auroc = {}
+        for c in range(1, 17):
+            m = (lf == c)
+            if m.sum() > 20 and correct_f[m].std() > 0 and unc_f[m].std() > 0:
+                per_class_auroc[c] = float(roc_auc_score(
+                    correct_f[m].numpy(), -unc_f[m].cpu().numpy()))
+        if per_class_auroc and name in ('fog', 'crosstalk'):
+            srt = sorted(per_class_auroc.items(), key=lambda kv: -kv[1])
+            print(f"  {name} per-class AUROC: " +
+                  ", ".join(f"{c}:{v:.3f}" for c, v in srt))
         if name == 'fog':
             per_class = {}
             for c in range(1, 17):
