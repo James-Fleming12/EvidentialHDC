@@ -47,6 +47,16 @@ class GenTrainer(Trainer):
         else:
             self.evidence_head = None
             self._edl_accum = None
+
+        # Phase 25.6 (direct loss prediction, Yoo & Kweon): a head that regresses the main
+        # classifier's per-point loss on clean + augmented views. The per-point CE of the
+        # semantic head is the supervision (no OOD labels); the predicted loss is the
+        # gating/uncertainty signal. Condition-agnostic and EDL-trap-free.
+        if self.method == 'supcon_vib_losspred':
+            self.losspred_head = nn.Conv2d(128, 1, kernel_size=1).to(self.device)
+            self.optimizer.add_param_group({'params': self.losspred_head.parameters()})
+        else:
+            self.losspred_head = None
             
         # Now manually load the checkpoint
         self.path = path
@@ -129,7 +139,13 @@ class GenTrainer(Trainer):
         
         if self.method == 'supcon_vib_additive':
             out = self.volumetric_noise_injection(out, density=0.05)
-            
+
+        if self.method == 'supcon_vib_losspred':
+            # Crosstalk-style augmentation (Phase 25.6): sparse wrong-beam returns (low
+            # injection density into empty space) so the loss-prediction head sees
+            # crosstalk-hard points during training, not just the fog-ish views.
+            out = self.volumetric_noise_injection(out, density=0.005)
+
         return out
 
     def train_epoch(self, train_loader, model, criterion, optimizer, epoch, evaluator, scheduler, color_fn, report=10, show_scans=False):
@@ -383,6 +399,20 @@ class GenTrainer(Trainer):
                                          ('kl_ratio', (kl_aug.item() * lam_kl) /
                                           max(loss_sem.item(), 1e-6))]:
                                 self._edl_accum[k] = self._edl_accum.get(k, 0.0) + v
+
+                    # Phase 25.6 (direct loss prediction): regress the main classifier's
+                    # per-point CE on clean + augmented views. The predicted loss is the
+                    # gating/uncertainty signal. No OOD labels, no KL, condition-agnostic.
+                    if self.method == 'supcon_vib_losspred':
+                        m = proj_labels > 0
+                        target_c = F.cross_entropy(output, proj_labels, reduction='none')[m]
+                        target_a = F.cross_entropy(output_aug, proj_labels, reduction='none')[m]
+                        pred_c = F.softplus(self.losspred_head(z8)).permute(0, 2, 3, 1)[m, 0]
+                        pred_a = F.softplus(self.losspred_head(z8_aug)).permute(0, 2, 3, 1)[m, 0]
+                        if len(target_c) > 0:
+                            loss_lp = (F.smooth_l1_loss(pred_c, target_c)
+                                       + F.smooth_l1_loss(pred_a, target_a))
+                            loss_total = loss_total + self.edl_w * loss_lp
 
                 elif self.method == 'smoothness':
                     # Local Smoothness (Dirichlet Energy)

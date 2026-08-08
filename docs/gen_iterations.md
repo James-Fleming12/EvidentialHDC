@@ -1214,3 +1214,18 @@ The ~1h validation (micro, 8 epochs, `edl_w=1.0`): the probe decode was healthy 
 - **Crosstalk is NOT calibrated**: AUROC 0.351 (anti-calibrated), though mean uncertainty is still above clean (0.580 vs 0.566). Clean AUROC is mildly anti-calibrated (0.343) but over a trivial wrong fraction (clean acc 91%+).
 
 **Verdict**: fix (a) (edl_w=1.0) is the correct repair for the "head never builds evidence" failure and produces a genuinely fog-calibrated head. But the validation confirms the head is not selective for crosstalk: the augmented views (beam-drop/density/jitter, which are fog-ish) teach fog calibration, not crosstalk. For the both-conditions goal, the next step before a 10h commit is fix (b): make the uncertainty target selective (apply the KL only to augmented points the head currently predicts wrong / high-loss, so it learns WHICH hard points are uncertain) and/or add crosstalk-style augmentation (sparse wrong-beam returns) to the training views. A 10h run with edl_w=1.0 alone would produce a fog-calibrated head with no crosstalk gain.
+
+## Phase 25.5: the selective KL (fix b) regresses — blanket edl_w=1.0 is the keeper
+
+The ~1h probe of fix (b) (KL applied only to augmented points the head predicts wrong, `edl_kl_selective=1`) made everything worse, not better:
+
+| | blanket edl_w=1.0 | selective edl_w=1.0 |
+| :--- | :--- | :--- |
+| clean mean uncertainty | 0.566 | 0.570 |
+| fog mean uncertainty | **0.594** (above clean) | 0.569 (no separation) |
+| fog correct-vs-wrong AUROC | **0.740** | **0.208** |
+| crosstalk AUROC | 0.351 | 0.309 |
+
+**Why it fails**: the selective KL removes the uncertainty pressure exactly as the head succeeds. Once `edl_aug` pushes the head to classify an augmented point correctly, the KL stops applying to it, so the head never learns uncertainty behavior on the points that matter. The regularizer self-cancels and the head's uncertainty becomes uninformative (AUROC 0.21-0.31 everywhere, fog uncertainty below clean).
+
+**Decision**: revert to the **blanket KL with edl_w=1.0** (fog AUROC 0.74, clean-fog separation, casualty ordering all validated). That config is the 10h-run candidate for a *fog-calibrated* head. The crosstalk gap is not closed by either KL variant; the remaining lever for the both-conditions goal is **crosstalk-style augmentation** (adding sparse wrong-beam returns to the training views so the head learns which crosstalk-hard points are uncertain), to be probed before a 10h commit.

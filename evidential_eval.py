@@ -1,21 +1,19 @@
-"""evidential_eval.py: post-run diagnostics for the `supcon_vib_evidential` checkpoint.
+"""evidential_eval.py: post-run diagnostics for the uncertainty heads (supcon_vib_evidential
+and supcon_vib_losspred checkpoints).
 
-Loads the checkpoint via GenTrainer (which reconstructs the evidence_head from the
-optimizer state, the same path logvar_head uses), then measures whether the evidential
-head learned USEFUL uncertainty:
+Loads the checkpoint via GenTrainer (which reconstructs the head from the optimizer state,
+the same path logvar_head uses), then measures whether the head learned USEFUL uncertainty:
 
-  1. Mean uncertainty (K/S) on clean vs corrupted conditions. A calibrated head should
-     give higher uncertainty on fog/crosstalk than on clean.
-  2. AUROC of uncertainty for separating CORRECT from WRONG predictions on each
-     condition (clean and each corruption). AUROC > 0.5 means the head's uncertainty
-     predicts the model's own errors, which is the diagnostic for whether the KL weight
-     is in the right regime: a collapsed head (KL too strong) gives ~0.5, a well-trained
-     one gives > 0.6-0.7.
-  3. Per-class mean uncertainty on fog (the casualties should be more uncertain than the
-     survivors if the head calibrated on corruption-hard points).
+  1. Mean uncertainty on clean vs corrupted conditions. A calibrated head should give
+     higher uncertainty on fog/crosstalk than on clean.
+  2. AUROC of uncertainty for separating CORRECT from WRONG predictions (correctness taken
+     from the model's semantic output) on each condition. AUROC > 0.5 means the head's
+     uncertainty predicts the model's own errors.
+  3. Per-class mean uncertainty on fog (casualties should be more uncertain than survivors).
 
 Usage:
-  uv run python evidential_eval.py --load_path logs/med_pretrain_supcon_vib_evidential
+  uv run python evidential_eval.py --load_path logs/... --method supcon_vib_evidential
+  uv run python evidential_eval.py --load_path logs/... --method supcon_vib_losspred
 """
 import os
 import yaml
@@ -39,8 +37,9 @@ def build_parser(root, data, arch):
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
 
 
-def extract(model, evidence_head, parser, device, num_frames=50):
-    zs, ev, lbls = [], [], []
+def extract(model, head, parser, device, num_frames=50):
+    """Returns z (128D), head output (per-pixel), semantic pred, labels."""
+    zs, ho, ps, lbls = [], [], [], []
     model.eval()
     with torch.no_grad():
         for i, batch in enumerate(parser.get_train_set()):
@@ -51,20 +50,25 @@ def extract(model, evidence_head, parser, device, num_frames=50):
             mask = (batch[1].to(device) > 0).view(-1)
             out_tuple = model(in_vol)
             if len(out_tuple) == 3:
-                _, _, z8 = out_tuple
+                output, _, z8 = out_tuple
             else:
-                _, z8 = out_tuple
+                output, z8 = out_tuple
             z_flat = z8.permute(0, 2, 3, 1).reshape(-1, z8.shape[1])[mask]
-            ev_flat = evidence_head(z8).permute(0, 2, 3, 1).reshape(-1, evidence_head.out_channels)[mask]
+            ho_flat = head(z8).permute(0, 2, 3, 1).reshape(-1, head.out_channels)[mask]
+            pred = output.argmax(dim=1).reshape(-1)[mask]
             zs.append(z_flat.cpu())
-            ev.append(ev_flat.cpu())
+            ho.append(ho_flat.cpu())
+            ps.append(pred.cpu())
             lbls.append(labels[mask].cpu())
-    return (torch.cat(zs, dim=0), torch.cat(ev, dim=0), torch.cat(lbls, dim=0))
+    return (torch.cat(zs, dim=0), torch.cat(ho, dim=0),
+            torch.cat(ps, dim=0), torch.cat(lbls, dim=0))
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--load_path", type=str, default="logs/med_pretrain_supcon_vib_evidential")
+    parser.add_argument("--method", type=str, default="supcon_vib_evidential",
+                        choices=['supcon_vib_evidential', 'supcon_vib_losspred'])
     parser.add_argument("--kitti_dir", type=str, default="/mnt/alpha/jmfleming/KITTI")
     parser.add_argument("--kittic_dir", type=str, default="/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C")
     parser.add_argument("--config", type=str, default="config/labels/semantic-kitti-all.yaml")
@@ -76,44 +80,47 @@ def main():
     ARCH = yaml.safe_load(open(args.arch, 'r'))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    print(f"Loading supcon_vib_evidential checkpoint from {args.load_path}...")
+    print(f"Loading {args.method} checkpoint from {args.load_path}...")
     trainer = GenTrainer(ARCH, DATA, args.kitti_dir, args.load_path,
-                         method='supcon_vib_evidential', path=args.load_path)
+                         method=args.method, path=args.load_path)
     model = trainer.model
-    evidence_head = trainer.evidence_head
-    assert evidence_head is not None, "checkpoint did not reconstruct the evidence_head"
+    is_losspred = args.method == 'supcon_vib_losspred'
+    head = trainer.losspred_head if is_losspred else trainer.evidence_head
+    assert head is not None, f"checkpoint did not reconstruct the {args.method} head"
     model.eval()
-    evidence_head.eval()
+    head.eval()
+
+    def uncertainty(ho):
+        if is_losspred:
+            return F.softplus(ho).squeeze(1)          # predicted loss: higher = more uncertain
+        S = F.softplus(ho).sum(dim=1) + float(head.out_channels)
+        return float(head.out_channels) / S          # K/S: higher = more uncertain
 
     clean_parser = build_parser(args.kitti_dir, DATA, ARCH)
 
-    # clean baseline
     print("Extracting clean...")
-    zc, ec, lc = extract(model, evidence_head, clean_parser, device, args.frames)
-    S_c = F.softplus(ec).sum(dim=1) + float(evidence_head.out_channels)
-    unc_c = float(evidence_head.out_channels) / S_c
-    correct_c = (ec.argmax(dim=1) == lc).float()
-
+    _, ec, pc, lc = extract(model, head, clean_parser, device, args.frames)
+    unc_c = uncertainty(ec)
+    correct_c = (pc == lc).float()
     print(f"  clean: n {len(lc)} | mean uncertainty {unc_c.mean().item():.4f} | "
-          f"acc {correct_c.mean().item():.4f}")
+          f"semantic acc {correct_c.mean().item():.4f}")
     if correct_c.std() > 0 and unc_c.std() > 0:
-        auc = roc_auc_score(correct_c.numpy(), -unc_c.numpy())
-        print(f"  clean correct-vs-wrong uncertainty AUROC: {auc:.3f}")
+        print(f"  clean correct-vs-wrong uncertainty AUROC: "
+              f"{roc_auc_score(correct_c.numpy(), -unc_c.numpy()):.3f}")
 
     for name, cond in CONDS.items():
         cdir = os.path.join(args.kittic_dir, cond, 'heavy')
         if not os.path.exists(cdir):
             cdir = os.path.join(args.kittic_dir, cond, 'moderate')
         print(f"Extracting {name}...")
-        zf, ef, lf = extract(model, evidence_head, build_parser(cdir, DATA, ARCH), device, args.frames)
-        S_f = F.softplus(ef).sum(dim=1) + float(evidence_head.out_channels)
-        unc_f = float(evidence_head.out_channels) / S_f
-        correct_f = (ef.argmax(dim=1) == lf).float()
+        _, ef, pf, lf = extract(model, head, build_parser(cdir, DATA, ARCH), device, args.frames)
+        unc_f = uncertainty(ef)
+        correct_f = (pf == lf).float()
         print(f"  {name}: n {len(lf)} | mean uncertainty {unc_f.mean().item():.4f} "
-              f"(clean {unc_c.mean().item():.4f}) | acc {correct_f.mean().item():.4f}")
+              f"(clean {unc_c.mean().item():.4f}) | semantic acc {correct_f.mean().item():.4f}")
         if correct_f.std() > 0 and unc_f.std() > 0:
-            auc = roc_auc_score(correct_f.numpy(), -unc_f.numpy())
-            print(f"  {name} correct-vs-wrong uncertainty AUROC: {auc:.3f}")
+            print(f"  {name} correct-vs-wrong uncertainty AUROC: "
+                  f"{roc_auc_score(correct_f.numpy(), -unc_f.numpy()):.3f}")
         if name == 'fog':
             per_class = {}
             for c in range(1, 17):
