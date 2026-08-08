@@ -80,6 +80,11 @@ def main():
                         help="frames per condition for evaluation (runtime ~ epochs x frames)")
     parser.add_argument("--fragile_w", type=float, default=3.0,
                         help="SupCon anchor weight for the casualty classes (Phase 25 Addition 1)")
+    parser.add_argument("--edl_kl_cap", type=float, default=0.005,
+                        help="Evidential KL-to-uniform cap (Phase 25.2/25.3)")
+    parser.add_argument("--edl_w", type=float, default=0.1,
+                        help="Evidential cross-entropy weight (Phase 25.3: 0.1 starves the head; "
+                             "1.0 is the candidate fix)")
     parser.add_argument("--cutoff", type=float, default=0.1)
     parser.add_argument("--methods", type=str, default="supcon_vib,supcon_vib_fragile")
     args = parser.parse_args()
@@ -111,7 +116,8 @@ def main():
         os.makedirs(log_dir, exist_ok=True)
         print(f"\n=== Training {method} (cutoff {args.cutoff}, {args.epochs} epochs) ===")
         trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, method=method,
-                             cutoff_percent=args.cutoff, fragile_w=args.fragile_w)
+                             cutoff_percent=args.cutoff, fragile_w=args.fragile_w,
+                             edl_kl_cap=args.edl_kl_cap, edl_w=args.edl_w)
         trainer.train(epochs=args.epochs)
 
         print(f"=== Evaluating {method} ===")

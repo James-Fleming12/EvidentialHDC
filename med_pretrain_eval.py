@@ -245,6 +245,10 @@ def main():
                         help="KL-to-uniform weight cap for the evidential head. "
                              "Phase 25.2: cap 1.0 was 255x the CE and collapsed the head; "
                              "0.005 lands it near loss_sem.")
+    parser.add_argument("--edl_w", type=float, default=0.1,
+                        help="Evidential cross-entropy weight. Phase 25.3: 0.1 starves the "
+                             "head so it never builds evidence (uniform uncertainty); "
+                             "1.0 is the candidate fix.")
     parser.add_argument("--methods", type=str, default="baseline,supcon_vib",
                         help="Comma-separated subset of methods to run (e.g. supcon_vib, supcon_vib_strongvib)")
     args = parser.parse_args()
@@ -291,7 +295,8 @@ def main():
             
         # Instantiate GenTrainer (100% dataset for safe scheduler convergence)
         trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, path=load_path,
-                             method=method, edl_kl_cap=args.edl_kl_cap)
+                             method=method, edl_kl_cap=args.edl_kl_cap,
+                             edl_w=args.edl_w)
         
         # Run the full PyTorch loop for N epochs
         trainer.train(epochs=epochs_to_run)

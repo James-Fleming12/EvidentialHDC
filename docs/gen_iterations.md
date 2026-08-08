@@ -1189,3 +1189,16 @@ The 26-epoch `supcon_vib_evidential` run completed. The in-training loss-compone
 - The head's own classifier is near-random (acc 1.6-5.1%).
 
 **Diagnosis and fix**: the KL cap of 1.0 (with `kl_aug` ~63) swamped every useful gradient by ~250x, freezing the head at a degenerate high-uncertainty fixed point. The cap is now configurable (`--edl_kl_cap`, default 0.005, annealed `min(cap, epoch/100)`), which lands `kl_aug`*cap near `loss_sem` (the correct regime, ~1x not 255x). Retry: `med_pretrain_eval.py --methods supcon_vib_evidential --epochs 26` with the default cap; if the correct-vs-wrong AUROC on fog is still < 0.5 at the end, sweep `--edl_kl_cap` in {0.001, 0.005, 0.02} and re-run `evidential_eval.py` each time (no retrain of the backbone needed to read the AUROC, but the head itself is frozen in this run, so a retrain is required to move it).
+
+## Phase 25.3: the evidential head (kl_cap 0.005) is structurally fixed but still not calibrated; the KL design is closed
+
+The retry (cap 0.005) fixed the structural collapse (`kl_ratio` 255 -> 1.28; loss balanced; backbone healthy at plain level, train IoU 0.466) and the head learned to classify (`edl` 2.24 -> 1.19). But `evidential_eval.py` shows the head still does not produce usable uncertainty:
+
+- **Mean uncertainty is uniform across conditions** (0.576-0.587; clean 0.583 vs fog 0.587, only +0.004): the head makes no clean-vs-corrupted distinction.
+- **Correct-vs-wrong AUROC on the target conditions is anti-calibrated**: fog 0.332, crosstalk 0.464 (snow 0.609 and cross_sensor 0.578 are > 0.5, but the collapsed conditions are not).
+- The head's own classifier is broken on fog/crosstalk (acc ~0.06%).
+- Headroom: fog decode still below plain (fog LP 8.0% vs 17.1%; proto mIoU 3.7% vs 5.2%); clean unaffected (LP 91.9%).
+
+**Root cause**: the head never builds meaningful evidence anywhere. Clean uncertainty (0.583) sits at the softplus-zero floor (alpha ~ 1.69 -> u ~ 0.59), i.e. the 0.1 edl-CE weight starves the head, so it outputs near-zero evidence on clean too. The KL-to-uniform-on-augmented regularizer forces uncertainty on the augmented view *indiscriminately*; it does not teach selectivity, so the head cannot distinguish hard from easy corrupted points. Two runs, two failure modes (collapse at cap 1.0; uniform non-selective at cap 0.005).
+
+**Decision: the Dirichlet-KL evidential design is closed.** The "intrinsic uncertainty" goal is better served by the standing **learned loss-estimator head** (Phase 24.4 #3): a head that *directly* regresses the recoverability signal we already measured (combined AUROC 0.68-0.80 on label-free features, Iteration 4C) from z8, trained on clean + augmented views where the augmented points carry the known-hard labels. That is a supervised regression on the actual measured signal rather than an indirect Dirichlet-KL that the experiments show produces no selectivity. If the evidential formulation is ever revisited, it needs (a) a much stronger classification weight (edl ~1.0, not 0.1) so the head builds real clean evidence, and (b) a selective uncertainty target rather than blanket-augmented.
