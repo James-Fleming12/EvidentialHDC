@@ -79,6 +79,57 @@ def proto_miou_10k(feats, lbls, base_protos, proto_lbls, proj, device):
     return compute_miou(proto_lbls[sims.argmax(dim=1)], lbls.to(device))
 
 
+def clean_centroids(clean_z, clean_l):
+    """Normalized 128D clean class means (aligned to class index)."""
+    means = {}
+    for c in range(1, 17):
+        m = clean_z[clean_l == c]
+        if len(m):
+            means[c] = F.normalize(m.mean(0), p=2, dim=0)
+    return means
+
+
+def feature_recoverability(z_all, l_all, clean_means, k=3):
+    """Feature-extractor issue check: is the recoverable information IN the features?
+
+    For each corrupt point, rank the clean class centroids by 128D cosine. A
+    zero-shot-WRONG point is 'recoverable' if its true class sits in the top-k (the
+    feature space still localizes the right answer) or if its cosine to its true
+    centroid is high (the features still look like the class). 
+
+    Reading:
+      - rec_of_wrong LOW  => the encoder has already destroyed the class identity of
+        the artifact points: NO mechanism (D3CTTA or otherwise) can recover them.
+        That is a FEATURE-EXTRACTOR issue, not a TTA-mechanism issue.
+      - rec_of_wrong HIGH but mechanism mIoU low => the features carry the answer;
+        the failure is the adaptation mechanism.
+      - true_cos LOW => corrupt-wrong points have drifted far from their own class;
+        consistent with the feature extractor being corruption-invariant.
+    """
+    dev = z_all.device
+    sims = F.normalize(z_all, p=2, dim=1) @ F.normalize(
+        torch.stack([clean_means[c] for c in sorted(clean_means)]), p=2, dim=1).T
+    zs_pred = torch.tensor(sorted(clean_means), device=dev)[sims.argmax(1)]
+    wrong = zs_pred != l_all.to(dev)
+    wrong_n = int(wrong.sum().item())
+
+    classes_sorted = torch.tensor(sorted(clean_means), device=dev)[
+        sims.argsort(descending=True, dim=1)]
+    true_in_topk = (classes_sorted[:, :k] == l_all.to(dev).unsqueeze(1)).any(1)
+
+    true_cos = []
+    for c in sorted(clean_means):
+        m = (wrong & (l_all.to(dev) == c))
+        if m.sum() > 0:
+            true_cos.append(float(sims[m, sorted(clean_means).index(c)].mean().item()))
+    rec_of_wrong = (float((wrong & true_in_topk).float().sum().item() / wrong_n)
+                    if wrong_n else float('nan'))
+    return {'wrong_n': wrong_n,
+            'rec_of_wrong': rec_of_wrong,
+            'true_cos': float(np.mean(true_cos)) if true_cos else float('nan')}
+
+
+
 ENCODERS = {
     'plain': ('logs/med_pretrain_supcon_vib', 'supcon_vib'),
     'additive': ('logs/micro_pretrain_additive_retrain/supcon_vib_additive', 'supcon_vib_additive'),
@@ -127,11 +178,13 @@ def main():
 
         proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
         base_protos, proto_lbls = build_hdc_prototypes(clean_z, clean_l, proj, device=device)
+        cmeans = clean_centroids(clean_z, clean_l)
         from modules.oracle_core import weighted_mean_update
 
         conds = [c.strip() for c in args.conditions.split(',')] if args.conditions else CONDS
         header = (f"{'cond':<16} {'zs-LP':>7} {'d3ctta':>7} {'no-cons':>8} "
-                  f"{'selftrain':>9} {'sel-acc':>8} {'domains':>7} {'oracle':>7}")
+                  f"{'selftrain':>9} {'sel-acc':>8} {'domains':>7} {'oracle':>7} "
+                  f"{'rec@3':>7} {'cosT':>6}")
         print(header)
         for cond in conds:
             cdir = os.path.join(args.kittic_dir, cond, 'heavy')
@@ -185,9 +238,19 @@ def main():
             # pick the best ratio for the headline row (by d3ctta mIoU)
             br = max(best, key=lambda r: best[r]['d3'])
             b = best[br]
+            feat = feature_recoverability(z_all, l_all, cmeans)
             print(f"{cond:<16} {zs_miou:>7.4f} {b['d3']:>7.4f} {b['noc']:>8.4f} "
-                  f"{b['st']:>9.4f} {b['sel_acc']:>8.3f} {b['domains']:>7d} {oracle_miou:>7.4f}"
+                  f"{b['st']:>9.4f} {b['sel_acc']:>8.3f} {b['domains']:>7d} {oracle_miou:>7.4f} "
+                  f"{feat['rec_of_wrong']:>7.3f} {feat['true_cos']:>6.3f}"
                   + (f"  [r={br}]" if len(ratios) > 1 else ""))
+            if feat['rec_of_wrong'] < 0.5:
+                print(f"    [features] rec@3 {feat['rec_of_wrong']:.3f} < 0.5: "
+                      f"FEATURE-EXTRACTOR ISSUE ({feat['wrong_n']} zs-wrong pts, "
+                      f"true-cos {feat['true_cos']:.3f})")
+            else:
+                print(f"    [features] rec@3 {feat['rec_of_wrong']:.3f} >= 0.5: "
+                      f"features carry the answer -> mechanism-limited "
+                      f"(true-cos {feat['true_cos']:.3f})")
             for ratio, r in best.items():
                 if len(ratios) > 1 and ratio != br:
                     print(f"{'':<16} {'':>7} {r['d3']:>7.4f} {r['noc']:>8.4f} "
