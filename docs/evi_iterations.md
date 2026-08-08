@@ -105,12 +105,28 @@ The goal: the model's own head outputs calibrated uncertainty (the gating signal
 
 **Design intuition** (from the Bengs et al. analysis and the measured recoverability signal): instead of an indirect Dirichlet-KL, a head that **directly regresses the main classifier's per-point CE** on clean + augmented views. The supervision is the semantic head's own error (no OOD labels), the output is a predicted per-point loss (the gating signal), and it is condition-agnostic. **Crosstalk-style augmentation added** (sparse wrong-beam returns, density 0.005) so the head sees crosstalk-hard points in training.
 
-**Setup**: `supcon_vib_losspred` (128 -> 1 conv, smooth-L1 vs the per-point CE, weight `--edl_w`; `--edl_kl_selective` unused here). ~1h micro probe: `phase25_probe.py --methods supcon_vib_losspred --epochs 8 --edl_w 1.0`, then `evidential_eval.py --method supcon_vib_losspred`.
+**Setup**: `supcon_vib_losspred` (128 -> 1 conv, smooth-L1 vs the per-point CE, weight `--edl_w`; `--edl_kl_selective` unused here). ~1h micro probe (8 epochs).
 
-**Decision rule**: fog AND crosstalk correct-vs-wrong AUROC both > 0.5 -> the both-conditions head is validated and the 10h run is justified. If fog good but crosstalk ~0.5, tune the crosstalk augmentation (density/injection pattern). If both ~0.5, reconsider.
+**Results** (correctness from the semantic output; `evidential_eval.py --method supcon_vib_losspred`):
+
+| Condition | mean predicted loss | semantic acc | correct-vs-wrong AUROC |
+| :--- | :--- | :--- | :--- |
+| clean | 0.776 | 68.8% | 0.447 |
+| **fog** | **0.935** | 13.7% | 0.390 |
+| **crosstalk** | **0.951** | 27.0% | 0.397 |
+| snow | 0.776 | 60.9% | 0.460 |
+| wet_ground | 0.714 | 54.7% | **0.709** |
+| cross_sensor | 0.775 | 49.4% | 0.477 |
+
+**Result**: the head learns **condition-level calibration** strongly (predicted loss 0.94-0.95 on fog/crosstalk vs 0.78 on clean), but **not point-level calibration within the corrupted conditions** (fog AUROC 0.39, crosstalk 0.40, both anti-calibrated). It *does* calibrate point-level on a geometric condition (wet_ground 0.709).
+
+**Verdict**: the direct loss-prediction fails the both-conditions point-level goal for the same root reason everything else does: within fog/crosstalk, the classifier's errors are confident artifacts that no feature-based predictor can anticipate, so regressing the per-point CE cannot transfer a point-level signal to those conditions. The condition-level separation is real and useful as a coarse "I am in a corrupted condition, be conservative" signal.
+
+**Decision**: the intrinsic-uncertainty-head line has now failed the both-conditions point-level goal across three designs (EDL blanket: fog-only; EDL selective: regressed; losspred: condition-only). The training-side evidence converges on the decode-side conclusion: **fog/crosstalk point-level recoverability is not estimable from the features label-free**. The losspred head's condition-level signal is the one useful artifact to keep (condition-level gating/deferral), and a point-level target would require the oracle labels (not label-free).
 
 ## Current state
 
 - **Addition 1 is delayed, not closed**: a real fog/clean win (+34% fog, +2.8 clean, no regression) that fails crosstalk as-is; the likely fix is the crosstalk-style augmentation, and it is queued to revisit right after the evidential head resolves.
 - **EDL (Dirichlet-KL) is closed**: the only validated config (blanket edl_w=1.0) gives a fog-calibrated head (0.74) with no crosstalk gain; both cap- and selectivity-based attempts fail on crosstalk.
-- **The open bet is the direct loss-prediction head** (25.6), pending the ~1h probe; its validation criteria are the fog + crosstalk correct-vs-wrong AUROCs.
+- **The direct loss-prediction head (25.6) is closed for point-level fog/crosstalk calibration** (AUROC 0.39/0.40), though its condition-level separation (fog/crosstalk predicted loss >> clean) is a usable coarse signal.
+- **The both-conditions point-level uncertainty goal is not achievable from these designs**: three independent head architectures converge on the finding that fog/crosstalk point-level recoverability is not feature-estimable label-free.

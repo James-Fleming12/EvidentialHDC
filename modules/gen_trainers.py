@@ -14,6 +14,8 @@ from common.avgmeter import AverageMeter
 # the classes that need corrupted-view separability the most.
 FRAGILE_CLASSES = {2, 7, 13, 14, 15}
 FRAGILE_SUPCON_W = 3.0
+# Phase 25.7: same-class (clean, extreme-aug) pairs repel above this cosine margin
+HARDNEG_MARGIN = 0.5
 
 class GenTrainer(Trainer):
     def __init__(self, ARCH, DATA, datadir, logdir, path=None, method='baseline', cutoff_percent=1.0,
@@ -147,6 +149,14 @@ class GenTrainer(Trainer):
             out = self.volumetric_noise_injection(out, density=0.005)
 
         return out
+
+    def get_extreme_view(self, in_vol):
+        # Phase 25.7 (hard-negative SupCon): the MILD view plus a crosstalk-style sparse
+        # wrong-beam injection. Used ONLY for the same-class repulsion term: extreme-
+        # augmented points are pushed AWAY from the clean anchors of their class, carving
+        # a distinct artifact sub-cluster instead of being absorbed into the class.
+        out = self.get_augmented_view(in_vol)
+        return self.volumetric_noise_injection(out, density=0.005)
 
     def train_epoch(self, train_loader, model, criterion, optimizer, epoch, evaluator, scheduler, color_fn, report=10, show_scans=False):
         losses = AverageMeter()
@@ -317,6 +327,15 @@ class GenTrainer(Trainer):
                         idx = torch.randperm(len(lbl))[:2000]
                         z_c, z_a, lbl = z_c[idx], z_a[idx], lbl[idx]
                         
+                    if self.method == 'supcon_vib_hardneg':
+                        # Phase 25.7: the extreme (crosstalk-injected) view, aligned to the
+                        # same subsample, for the same-class repulsion term.
+                        out_ext = model(self.get_extreme_view(in_vol))
+                        z8_ext = out_ext[2] if len(out_ext) == 3 else out_ext[1]
+                        z_ext = z8_ext.permute(0, 2, 3, 1)[mask]
+                        if len(lbl) > 2000:
+                            z_ext = z_ext[idx]
+
                     if len(lbl) > 0:
                         # CRITICAL FIX: L2 Normalize features for SupCon to prevent gradient tug-of-war with VIB
                         z_c_norm = F.normalize(z_c, p=2, dim=1)
@@ -342,6 +361,23 @@ class GenTrainer(Trainer):
                                            .sum() / anchor_w.sum())
                         else:
                             loss_supcon = -torch.log(pos_sum / (all_sum + 1e-8)).mean()
+
+                        # Phase 25.7 (hard-negative SupCon): push each extreme-augmented point
+                        # AWAY from its class's clean centroid (the clean anchor) above the
+                        # margin, so crosstalk-style artifacts form a distinct sub-cluster
+                        # instead of being absorbed into the class centroid. Keeps the
+                        # mild-view attraction (robustness).
+                        if self.method == 'supcon_vib_hardneg':
+                            z_ext_norm = F.normalize(z_ext, p=2, dim=1)
+                            Kc = int(lbl.max()) + 1
+                            centroid = torch.zeros(Kc, z_c_norm.shape[1], device=z_c_norm.device)
+                            centroid.scatter_add_(0, lbl.unsqueeze(1).expand(-1, z_c_norm.shape[1]),
+                                                  z_c_norm)
+                            counts = torch.bincount(lbl, minlength=Kc).float().unsqueeze(1)
+                            centroid = F.normalize(centroid / counts.clamp(min=1), p=2, dim=1)
+                            sim_centroid = (z_ext_norm * centroid[lbl]).sum(dim=1)
+                            loss_repel = F.relu(sim_centroid - HARDNEG_MARGIN).mean()
+                            loss_total = loss_total + self.edl_w * loss_repel
                         
                     # VIB pressure variants (Phase 17: 5x at medium scale over-collapsed
                     # the clean manifold; midvib = 3x as the intermediate probe)

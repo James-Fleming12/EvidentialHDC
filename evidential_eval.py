@@ -54,7 +54,7 @@ def extract(model, head, parser, device, num_frames=50):
             else:
                 output, z8 = out_tuple
             z_flat = z8.permute(0, 2, 3, 1).reshape(-1, z8.shape[1])[mask]
-            ho_flat = head(z8).permute(0, 2, 3, 1).reshape(-1, head.out_channels)[mask]
+            ho_flat = head(z8).permute(0, 2, 3, 1).reshape(-1, head(z8).shape[1])[mask]
             pred = output.argmax(dim=1).reshape(-1)[mask]
             zs.append(z_flat.cpu())
             ho.append(ho_flat.cpu())
@@ -68,7 +68,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--load_path", type=str, default="logs/med_pretrain_supcon_vib_evidential")
     parser.add_argument("--method", type=str, default="supcon_vib_evidential",
-                        choices=['supcon_vib_evidential', 'supcon_vib_losspred'])
+                        choices=['supcon_vib_evidential', 'supcon_vib_losspred', 'supcon_vib_hardneg'])
+    parser.add_argument("--signal", type=str, default="head", choices=['head', 'distance'],
+                        help="'head' uses the trained uncertainty head; 'distance' uses the 128D "
+                             "distance to the nearest clean class centroid (for headless "
+                             "variants like supcon_vib_hardneg, testing feature-space separation)")
     parser.add_argument("--kitti_dir", type=str, default="/mnt/alpha/jmfleming/KITTI")
     parser.add_argument("--kittic_dir", type=str, default="/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C")
     parser.add_argument("--config", type=str, default="config/labels/semantic-kitti-all.yaml")
@@ -85,42 +89,61 @@ def main():
                          method=args.method, path=args.load_path)
     model = trainer.model
     is_losspred = args.method == 'supcon_vib_losspred'
-    head = trainer.losspred_head if is_losspred else trainer.evidence_head
-    assert head is not None, f"checkpoint did not reconstruct the {args.method} head"
+    use_head = args.signal == 'head'
+    head = None
+    if use_head:
+        head = trainer.losspred_head if is_losspred else trainer.evidence_head
+        assert head is not None, f"checkpoint did not reconstruct the {args.method} head"
+        head.eval()
     model.eval()
-    head.eval()
 
-    def uncertainty(ho):
+    clean_parser = build_parser(args.kitti_dir, DATA, ARCH)
+
+    def uncertainty(z, ho):
+        if not use_head:
+            # distance signal: -max cosine to the nearest clean 128D class centroid
+            zc_n = F.normalize(z, p=2, dim=1)
+            return -(zc_n @ clean_centroids.T).max(dim=1).values
         if is_losspred:
             return F.softplus(ho).squeeze(1)          # predicted loss: higher = more uncertain
         S = F.softplus(ho).sum(dim=1) + float(head.out_channels)
         return float(head.out_channels) / S          # K/S: higher = more uncertain
 
-    clean_parser = build_parser(args.kitti_dir, DATA, ARCH)
-
     print("Extracting clean...")
-    _, ec, pc, lc = extract(model, head, clean_parser, device, args.frames)
-    unc_c = uncertainty(ec)
+    zc, ec, pc, lc = extract(model, head if use_head else torch.nn.Identity(), clean_parser,
+                             device, args.frames)
+    # clean 128D class centroids (for the distance signal)
+    clean_centroids = torch.zeros(17, zc.shape[1])
+    cnt = torch.zeros(17)
+    for c in range(1, 17):
+        m = lc == c
+        if m.sum() > 0:
+            clean_centroids[c] = zc[m].mean(dim=0)
+            cnt[c] = m.sum()
+    clean_centroids = F.normalize(clean_centroids[cnt > 0], p=2, dim=1).to(device)
+
+    unc_c = uncertainty(zc.to(device), ec.to(device))
     correct_c = (pc == lc).float()
     print(f"  clean: n {len(lc)} | mean uncertainty {unc_c.mean().item():.4f} | "
           f"semantic acc {correct_c.mean().item():.4f}")
     if correct_c.std() > 0 and unc_c.std() > 0:
         print(f"  clean correct-vs-wrong uncertainty AUROC: "
-              f"{roc_auc_score(correct_c.numpy(), -unc_c.numpy()):.3f}")
+              f"{roc_auc_score(correct_c.numpy(), -unc_c.cpu().numpy()):.3f}")
 
     for name, cond in CONDS.items():
         cdir = os.path.join(args.kittic_dir, cond, 'heavy')
         if not os.path.exists(cdir):
             cdir = os.path.join(args.kittic_dir, cond, 'moderate')
         print(f"Extracting {name}...")
-        _, ef, pf, lf = extract(model, head, build_parser(cdir, DATA, ARCH), device, args.frames)
-        unc_f = uncertainty(ef)
+        zf, ef, pf, lf = extract(model, head if use_head else torch.nn.Identity(),
+                                 build_parser(cdir, DATA, ARCH), device, args.frames)
+        unc_f = uncertainty(zf.to(device), ef.to(device))
         correct_f = (pf == lf).float()
         print(f"  {name}: n {len(lf)} | mean uncertainty {unc_f.mean().item():.4f} "
               f"(clean {unc_c.mean().item():.4f}) | semantic acc {correct_f.mean().item():.4f}")
         if correct_f.std() > 0 and unc_f.std() > 0:
             print(f"  {name} correct-vs-wrong uncertainty AUROC: "
-                  f"{roc_auc_score(correct_f.numpy(), -unc_f.numpy()):.3f}")
+                  f"{roc_auc_score(correct_f.numpy(), -unc_f.cpu().numpy()):.3f}")
         if name == 'fog':
             per_class = {}
             for c in range(1, 17):
