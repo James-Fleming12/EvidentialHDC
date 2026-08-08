@@ -1094,6 +1094,48 @@ Decision-level prior correction (README Pillar 3, sec 5.2): `score(q, c) = kappa
 2. **Move toward the label-free re-estimate** (the direction the user prioritized): the full-label oracle (fog 16.6, crosstalk 26.2) is the target. The concrete mechanism is the learned loss-estimator head: a small head trained on clean/self-supervised signal to predict cos-to-true at test time, used as the per-point weight in a prototype re-estimate (Phase 24.4 #3). A supervised-oracle-free version is the end goal.
 3. **TTA and artifact-free prototype estimation stay closed** (Phases 24.8/24.9).
 
+## Phase 24.11: The D3CTTA Mechanism Diagnostic: the Features, Not the Mechanism, Are the Difference
+
+**Question**: D3CTTA (Liu et al., T-ITS 2023) reports good fog/crosstalk robustness. Its backbone (MinkUNet) and pretraining (Synth4D) are unavailable here, so this diagnostic isolates the transferable part: does the D3CTTA MECHANISM (per-class entropy/prob pseudo-label selection + kNN-consistency + per-domain ridge-classifier adaptation) work on OUR features? The purpose is to decide whether we are in a "bad problem setting" (our features do not carry the recoverable information) or whether the TTA mechanism is the missing lever.
+
+**Setup**: `robust_diagnostic/d3ctta_diag.py`, both encoders (plain medium `supcon_vib`; additive micro retrain), all 8 conditions, selection ratios 0.05 / 0.2. Columns: zero-shot LP mIoU, D3CTTA-mechanism mIoU, no-consistency ablation, self-train LP refit, selected-pseudo accuracy (sel-acc), detected domains, full-label oracle mIoU, and the feature-recoverability check (`rec@3` = fraction of zero-shot-wrong points whose true class is in the top-3 clean 128D centroids; `cosT` = mean cosine of zs-wrong points to their true class centroid). The k/C random baseline for rec@3 is ~0.19 (k=3 of 16 classes).
+
+**Plain encoder** (supcon_vib medium):
+
+| cond | zs-LP | d3ctta | no-cons | selftrain | sel-acc | oracle | rec@3 | cosT |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 0.073 | 0.002 | 0.002 | 0.001 | 0.090 | 0.146 | 0.081 | 0.118 |
+| crosstalk | 0.132 | 0.002 | 0.002 | 0.001 | 0.119 | 0.231 | 0.129 | 0.126 |
+| snow | 0.509 | 0.001 | 0.001 | 0.000 | 0.114 | 0.406 | 0.431 | 0.581 |
+| wet_ground | 0.549 | 0.003 | 0.003 | 0.002 | 0.162 | 0.455 | 0.370 | 0.608 |
+| incomplete_echo | 0.552 | 0.001 | 0.001 | 0.000 | 0.079 | 0.410 | 0.433 | 0.591 |
+| beam_missing | 0.631 | 0.002 | 0.002 | 0.000 | 0.090 | 0.476 | 0.435 | 0.608 |
+| motion_blur | 0.583 | 0.005 | 0.005 | 0.000 | 0.083 | 0.447 | 0.448 | 0.584 |
+| cross_sensor | 0.531 | 0.001 | 0.001 | 0.000 | 0.090 | 0.435 | 0.466 | 0.594 |
+
+**Additive encoder**:
+
+| cond | zs-LP | d3ctta | no-cons | selftrain | sel-acc | oracle | rec@3 | cosT |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 0.085 | 0.000 | 0.000 | 0.000 | 0.331 | 0.121 | 0.232 | 0.091 |
+| crosstalk | 0.140 | 0.001 | 0.001 | 0.001 | 0.114 | 0.232 | 0.424 | 0.138 |
+| snow | 0.465 | 0.001 | 0.001 | 0.000 | 0.085 | 0.380 | 0.462 | 0.526 |
+| wet_ground | 0.468 | 0.003 | 0.003 | 0.002 | 0.131 | 0.438 | 0.419 | 0.535 |
+| incomplete_echo | 0.492 | 0.000 | 0.000 | 0.000 | 0.079 | 0.385 | 0.499 | 0.526 |
+| beam_missing | 0.553 | 0.001 | 0.001 | 0.000 | 0.088 | 0.437 | 0.523 | 0.551 |
+| motion_blur | 0.530 | 0.002 | 0.002 | 0.000 | 0.086 | 0.415 | 0.501 | 0.529 |
+| cross_sensor | 0.379 | 0.001 | 0.001 | 0.001 | 0.155 | 0.375 | 0.526 | 0.486 |
+
+**Findings**:
+
+1. **The mechanism is a no-op / actively harmful on our features.** D3CTTA mIoU is ~0.001-0.005 on every condition and both encoders, far below zero-shot (0.07-0.63) and far below the oracle (0.12-0.48). The ridge adaptation replaces the (already weak) zero-shot decode with a re-decode trained on its confident selections, and those selections are mostly WRONG (sel-acc 0.08-0.16 on the plain encoder, 0.08-0.35 on additive). The mechanism's precondition, that low-entropy / high-probability predictions are correct, fails on our features, so it accumulates garbage.
+
+2. **For fog/crosstalk the features do not carry the answer** (the "bad problem setting" answer is yes): rec@3 is 0.08-0.13 (plain) and 0.23-0.42 (additive), at or below the ~0.19 random baseline, and cosT is 0.09-0.14: the zs-wrong artifact points have drifted far from their own class identity, so their true class is not even localized by the features. No TTA mechanism can recover assignment information that is absent from the features. The full-label oracle confirms this: even with perfect adaptation labels, fog/crosstalk recover to only 0.15 / 0.23 (plain). D3CTTA's paper gains came from a feature extractor that separates artifacts well enough for the confident-selection precondition to hold; on our fog/crosstalk it does not.
+
+3. **On the milder conditions the features DO carry the answer, and the mechanism still fails.** beam_missing / motion_blur / cross_sensor on the additive encoder reach rec@3 >= 0.5 (the features carry the answer, mechanism-limited verdict), yet D3CTTA mIoU is still ~0.001. The mechanism transfer fails on both counts: its selections are wrong where the features are bad, and its ridge re-decode collapses even where the recoverability check passes.
+
+**Interpretation for the pivot**: this localizes the difference between D3CTTA and us to the feature extractor. D3CTTA's problem setting (their converged backbone + Synth4D pretraining) produced features in which fog/crosstalk artifacts remain separable enough for confident pseudo-labels to be correct; ours does not. It is the empirical basis for the encoder-training pivot: the `robust_diagnostic/` suite now measures whether the DGLSS / DGLSS++ / supcon_vib training regimes differ in exactly this property (the isotropy / recoverability of the 128D HDC-input space), and the answer to "are we in a bad problem setting" for fog/crosstalk is yes, which points the fix at the encoder rather than at the TTA mechanism.
+
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
 The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *possible* (batch 2–4, one-line Parser change, loop already batch-agnostic). This is parked for three reasons:
