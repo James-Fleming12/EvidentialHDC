@@ -164,7 +164,7 @@ def dglss_scc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
                 for c in cls:
                     mm = (ls == c) & m
                     if mm.sum() >= min_pts:
-                        protos[c] = zf[mm].mean(dim=0)
+                        protos[c] = F.normalize(zf[mm].mean(dim=0), p=2, dim=0)
                         present.append(c)
                 if len(present) >= 2:
                     order = sorted(present)
