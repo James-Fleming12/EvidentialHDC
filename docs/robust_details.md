@@ -153,6 +153,17 @@ this matches them. VIB is a `supcon_vib`-only component, isolated by the `vib` a
 
    This matters because the HDC decode is a random projection followed by sign binarization. If the 128D features concentrate along one dominant direction with a strong shared mean, that direction dominates every random projection and the sign codes become near-constant across points: most of the 10000 coordinates saturate (dead-coordinate fraction goes to 1) and the pairwise Hamming distance of the codes goes to 0, so the prototypes collapse. An angularly uniform space lets each random projection receive a balanced mix of points and yields informative binary codes. This is the learned analog of the "isotropic smoothing" observed when random projection improved prototype accuracy at decode time (8.2% to 31.7%): DGLSS leaves the decode to fix the anisotropy, whereas our method bakes the isotropy into the representation. The isotropy diagnostic (`robust_diagnostic/isotropy_diag.py`) measures exactly this: participation ratio / top-5 variance / condition number for the spectrum, and dead-coordinate fraction + Hamming distance on the raw features for the collapse.
 
+### Measured isotropy of the three frameworks
+
+The measured results of the isotropy comparison (tables for clean-space isotropy
+and the corrupted conditions, plus the interpretation) are tracked in
+[`docs/robust_iterations.md`](robust_iterations.md), Iteration 1. In brief: the
+plain DGLSS shows the collapse mechanism firing (10.2% dead HDC coordinates vs
+0.8% for ours), and the dead fraction tracks mean-dominance, not rank, exactly as
+the theoretical analysis predicts; but DGLSS++ decodes best on clean, so the
+"harmful for HDC" claim is only partially confirmed, and the difference shows in
+the binarized decode, not the continuous representation.
+
 3. **Augmentation scope.** DGLSS augments sparsity only (dense-to-sparse); DGLSS++ adds dense augmentation for the sparse-to-dense direction. Our augmentation targets the specific corruption failure modes of the SemanticKITTI-C regime (fog and crosstalk) with depth jitter and volumetric fake-return injection, rather than cross-sensor sparsity.
 
 4. **Supervision form.** DGLSS / DGLSS++ use weighted CE plus unsupervised consistency terms (L1 feature alignment, correlation matrices, and a within-scan InfoNCE in LSCC). Our SupCon term is label-informed (per-point same-class positives and all-other negatives, essentially free at dense LiDAR scale), paired with the VIB magnitude bottleneck and CE. The consistency is cross-view and pairwise-angular, not a correlation-matrix match.

@@ -159,6 +159,8 @@ def main():
                         help="epochs per method at --cutoff data (~10h total for the 3 methods)")
     parser.add_argument("--cutoff", type=float, default=0.1, help="fraction of training data per epoch")
     parser.add_argument("--frames", type=int, default=50, help="frames per condition for evaluation")
+    parser.add_argument("--eval_only", action="store_true",
+                        help="load existing checkpoints from log_dir/<method> instead of training")
     parser.add_argument("--conditions", type=str, default="",
                         help="comma-separated subset; default = all 8")
     parser.add_argument("--ref_load_path", type=str, default="",
@@ -190,10 +192,14 @@ def main():
         else:
             log_dir = os.path.join(args.log_dir, method)
             os.makedirs(log_dir, exist_ok=True)
-            print(f"\n{'='*80}\n=== Training {method} (cutoff {args.cutoff}, {args.epochs} epochs) ===\n{'='*80}")
-            trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, method=method,
-                                 cutoff_percent=args.cutoff)
-            trainer.train(epochs=args.epochs)
+            if args.eval_only:
+                print(f"\n{'='*80}\n=== Loading {method} checkpoint ({log_dir}) ===\n{'='*80}")
+                trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, path=log_dir, method=method)
+            else:
+                print(f"\n{'='*80}\n=== Training {method} (cutoff {args.cutoff}, {args.epochs} epochs) ===\n{'='*80}")
+                trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, method=method,
+                                     cutoff_percent=args.cutoff)
+                trainer.train(epochs=args.epochs)
             label = method
 
         model = trainer.model
