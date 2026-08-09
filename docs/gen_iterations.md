@@ -1136,6 +1136,29 @@ Decision-level prior correction (README Pillar 3, sec 5.2): `score(q, c) = kappa
 
 **Interpretation for the pivot**: this localizes the difference between D3CTTA and us to the feature extractor. D3CTTA's problem setting (their converged backbone + Synth4D pretraining) produced features in which fog/crosstalk artifacts remain separable enough for confident pseudo-labels to be correct; ours does not. It is the empirical basis for the encoder-training pivot: the `robust_diagnostic/` suite now measures whether the DGLSS / DGLSS++ / supcon_vib training regimes differ in exactly this property (the isotropy / recoverability of the 128D HDC-input space), and the answer to "are we in a bad problem setting" for fog/crosstalk is yes, which points the fix at the encoder rather than at the TTA mechanism.
 
+## Phase 24.12: The Class-Count Diagnostic: the 17-class Setup Hurts the HDC Decode
+
+**Question**: does our label granularity (17-class head, ~10 classes present in sequence 08) hurt the HDC pipeline compared to D3CTTA's 7-class setup? D3CTTA / GIPSO evaluate on vehicle, pedestrian, road, sidewalk, terrain, manmade, vegetation, folding the fragile rare classes (bicycle, truck, bus, motorcycle, traffic-sign, pole) into background or broad superclasses. This tests whether part of D3CTTA's apparent fog/crosstalk advantage is simply the label space.
+
+**Setup**: `robust_diagnostic/class_count_diag.py`, supcon_vib trained under both configs at the SAME budget (10 epochs at 50% data), then evaluated on clean / fog / crosstalk with the linear probe and the HDC prototype decode. Configs: `semantic-kitti-all.yaml` (17-class head, classes present [0,2,4,7,11,12,13,14,15,16]) vs `semantic-kitti-7.yaml` (exact D3CTTA map reindexed to 0 = background, 8-class head, 7 evaluated). Train IoU: all17 0.22 -> 0.32, seven 0.59 -> 0.76 (the 7-class task is coarser, not "easier" at the LP level).
+
+**Results** (LP = clean-trained linear probe, PM = HDC prototype mIoU, gap = 1 - corrupt/clean):
+
+| regime | clean LP | clean PM | fog LP | fog PM | fog LP-gap | fog PM-gap | xtalk LP | xtalk PM | xtalk LP-gap | xtalk PM-gap |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| all17 | 0.936 | 0.444 | 0.395 | 0.081 | 0.578 | 0.818 | 0.244 | 0.096 | 0.739 | 0.783 |
+| seven | 0.937 | 0.632 | 0.517 | 0.100 | 0.448 | 0.842 | 0.272 | 0.147 | 0.710 | 0.768 |
+
+**Findings**:
+
+1. **Clean LP is identical** (0.936 vs 0.937): the coarse task is not "easier" at the linear-probe level; both regimes learn clean features equally well.
+2. **Clean HDC prototype mIoU jumps +19 points** (0.444 -> 0.632) with 7 classes. This is the headline: the HDC decode is structurally much healthier with coarse classes, because every prototype has orders-of-magnitude more support and the rare-class prototypes no longer drag the binarized decode down. This is a direct "too many classes hurts the HDC pipeline" signal, on CLEAN data.
+3. **The 7-class regime wins every absolute corrupt number** (fog LP 0.517 vs 0.395, crosstalk LP 0.272 vs 0.244, fog PM 0.100 vs 0.081, crosstalk PM 0.147 vs 0.096).
+4. **The LP robustness gap is smaller for 7 classes on both conditions** (fog 0.448 vs 0.578, crosstalk 0.710 vs 0.739): the apples-to-apples comparison (both probes trained the same way) shows genuinely better fog/crosstalk robustness. (The PM gap is mixed because the clean baseline jumped so much.)
+5. **The corruption collapse is NOT fixed.** Even the 7-class regime loses 45-84% of the decode under fog/crosstalk (PM gaps 0.77-0.84). The higher corrupt mIoU partly reflects that the dead rare classes are no longer in the IoU denominator (road / vegetation / manmade dominate and are the survivors). Class granularity is a real but partial lever; the encoder-level corruption problem remains.
+
+**Verdict**: yes, the 12-class space is hurting the HDC pipeline: it costs +19 clean prototype mIoU and a smaller fog/crosstalk robustness gap, and it is a genuine confound when comparing to D3CTTA (their fog/crosstalk numbers are measured on a 7-class space that excludes the fragile classes from the metric). The 7-class regime should be adopted as the evaluation label space going forward (it is also the protocol the thirdparty papers use). It does not, however, resolve the corruption collapse itself, which remains the encoder problem the isotropy comparison targets. (Run cost: 2 x 10 epochs at 50% data, ~3.9h; per-epoch wall ~14 min vs the 10:26 train + 1:10 valid bars, the gap being the two `empty_cache` calls and three full-state saves per epoch.)
+
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
 The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *possible* (batch 2–4, one-line Parser change, loop already batch-agnostic). This is parked for three reasons:
@@ -1150,12 +1173,13 @@ The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *pos
 
 ### Current Next Steps (consolidated)
 
-0. **The evidential/loss-prediction head (Addition 2)**: the encoder/head-side both-conditions attempt, tracked in docs/evi_iterations.md. Current open bet: `supcon_vib_losspred` (direct per-point loss regression + crosstalk-style augmentation), pending its ~1h probe; Addition 1 (fragile-class SupCon) is delayed, queued for revisit right after.
-1. **The learned loss-estimator head** (Phases 24.4 #3, 24.6 #1): a small head trained on clean/self-supervised signal to predict cos-to-true at test time, targeting the label-free gate gap on fog (11% label-free vs 55% oracle on the plain features). Decoder-side, but it estimates the perceptron loss the gates need. Note: Phase 25's evidential head is the *encoder-native* version of this idea.
-2. **Per-class weighting for the fog casualties** (classes 2, 7, 13, 14, 15) in the pretraining objective: the concrete target list from Phase 24.2; the collapse is class-conditional and regimen-invariant (Phase 24.6), so the objective must target these classes specifically.
-3. **Crosstalk stack to finish the 20-target**: the label-free margin gate (23.1% mIoU @ 52% retention) combined with the BN-statistic alignment (+3.1 raw mIoU): evaluate the combined decode. (Prior correction is closed as a lever, Phase 24.8.)
-4. **Intra-class balance checks** (open thread): per-class hard selection behaved differently from global selection (Phase 22.1), so the intra-class balance question is not yet settled; the subcluster ledger and per-class buffer variants remain to be evaluated.
-5. **Optional decode-thread closure**: `--update_strength 1 --buffer_frac 0.20` on the oracle retrain: low prior that it stabilizes the loop; cheap, closes Phase 22.
+0. **Adopt the 7-class evaluation label space** (Phase 24.12): the D3CTTA/GIPSO map (`semantic-kitti-7.yaml`) gives +19 clean HDC prototype mIoU and a smaller fog/crosstalk robustness gap, and it is the protocol the thirdparty papers use, so it is the fair comparison space going forward. The encoder-level corruption collapse persists regardless (the isotropy comparison is the encoder fix).
+1. **The evidential/loss-prediction head (Addition 2)**: the encoder/head-side both-conditions attempt, tracked in docs/evi_iterations.md. Current open bet: `supcon_vib_losspred` (direct per-point loss regression + crosstalk-style augmentation), pending its ~1h probe; Addition 1 (fragile-class SupCon) is delayed, queued for revisit right after.
+2. **The learned loss-estimator head** (Phases 24.4 #3, 24.6 #1): a small head trained on clean/self-supervised signal to predict cos-to-true at test time, targeting the label-free gate gap on fog (11% label-free vs 55% oracle on the plain features). Decoder-side, but it estimates the perceptron loss the gates need. Note: Phase 25's evidential head is the *encoder-native* version of this idea.
+3. **Per-class weighting for the fog casualties** (classes 2, 7, 13, 14, 15) in the pretraining objective: the concrete target list from Phase 24.2; the collapse is class-conditional and regimen-invariant (Phase 24.6), so the objective must target these classes specifically.
+4. **Crosstalk stack to finish the 20-target**: the label-free margin gate (23.1% mIoU @ 52% retention) combined with the BN-statistic alignment (+3.1 raw mIoU): evaluate the combined decode. (Prior correction is closed as a lever, Phase 24.8.)
+5. **Intra-class balance checks** (open thread): per-class hard selection behaved differently from global selection (Phase 22.1), so the intra-class balance question is not yet settled; the subcluster ledger and per-class buffer variants remain to be evaluated.
+6. **Optional decode-thread closure**: `--update_strength 1 --buffer_frac 0.20` on the oracle retrain: low prior that it stabilizes the loop; cheap, closes Phase 22.
 
 ---
 
