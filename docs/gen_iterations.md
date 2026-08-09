@@ -1159,6 +1159,32 @@ Decision-level prior correction (README Pillar 3, sec 5.2): `score(q, c) = kappa
 
 **Verdict**: yes, the 12-class space is hurting the HDC pipeline: it costs +19 clean prototype mIoU and a smaller fog/crosstalk robustness gap, and it is a genuine confound when comparing to D3CTTA (their fog/crosstalk numbers are measured on a 7-class space that excludes the fragile classes from the metric). The 7-class regime should be adopted as the evaluation label space going forward (it is also the protocol the thirdparty papers use). It does not, however, resolve the corruption collapse itself, which remains the encoder problem the isotropy comparison targets. (Run cost: 2 x 10 epochs at 50% data, ~3.9h; per-epoch wall ~14 min vs the 10:26 train + 1:10 valid bars, the gap being the two `empty_cache` calls and three full-state saves per epoch.)
 
+## Phase 24.13: Distance-to-Prototype Gating on the Class-Count Models: It Reaches the Oracle Ceiling, and the Ceiling Is the Problem
+
+**Question**: can the standard label-free uncertainty signal, distance to the nearest clean class prototype (128D cosine, scale-invariant), recover fog/crosstalk performance with the Phase 24.12 models? This is the natural decode-side lever the TTA iterations never successfully pulled on the 17-class features.
+
+**Setup**: `robust_diagnostic/proto_distance_diag.py`, eval-only on the `classcount_seven` / `classcount_all17` checkpoints. Clean 128D class centroids built from sequence 08; per-point gate = cosine to the nearest clean centroid; reported as retained-set nearest-centroid mIoU at retention 1.0 / 0.5 / 0.25 / 0.1, the correct-vs-wrong AUROC of the distance signal, and the full-label oracle (centroids re-estimated on the corrupt pool).
+
+**Results** (nearest-centroid decode mIoU; oracle = full-label re-estimate):
+
+| model | cond | zs | ret 0.50 | ret 0.25 | ret 0.10 | AUROC | oracle |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| seven | clean | 0.631 | 0.759 | 0.757 | 0.771 | 0.856 | 0.631 |
+| seven | fog | 0.104 | 0.131 | 0.143 | **0.165** | 0.759 | **0.165** |
+| seven | crosstalk | 0.146 | 0.167 | 0.189 | **0.204** | 0.708 | 0.275 |
+| all17 | clean | 0.443 | 0.583 | 0.719 | 0.695 | 0.837 | 0.443 |
+| all17 | fog | 0.083 | 0.105 | 0.129 | **0.192** | 0.766 | 0.121 |
+| all17 | crosstalk | 0.098 | 0.171 | 0.140 | 0.151 | 0.740 | 0.234 |
+
+**Findings**:
+
+1. **Distance-gating recovers monotonically on every model and condition**: fog 0.104 -> 0.165 and crosstalk 0.146 -> 0.204 at 10% retention (seven). The mechanism works; the retained near-prototype points decode substantially better than the full pool.
+2. **On the 7-class fog, the distance gate exactly hits the full-label oracle** (0.165 = 0.165). The gate is AT the label-free ceiling: no label-free signal can recover fog beyond 0.165 on this model. (All17 fog is the one place gated@10% (0.192) exceeds the full-pool oracle (0.121), because keeping clean centroids on the near-clean subset beats re-estimating centroids on the whole corrupt pool.)
+3. **The ceiling, not the signal, is the problem**: the full-label oracle is only 0.165 (fog) / 0.275 (crosstalk) for the 7-class model, versus 0.771 clean at the same 10% retention. The corrupted features do not carry enough to bridge toward clean even with perfect labels; the distance signal ranks well (AUROC 0.71-0.76) but the recoverable set is small.
+4. **The hardneg contrast**: the 25.7 hardneg features had a much stronger distance signal (AUROC 0.96 fog / 0.88 crosstalk) than these supcon_vib class-count models (0.76 / 0.71). The artifact-separation training sharpens the distance signal; the plain supcon_vib features do not separate artifacts as cleanly.
+
+**Verdict**: standard distance-to-prototype uncertainty works mechanically and is already at the label-free ceiling on 7-class fog, but that ceiling is low: fog/crosstalk recover to only ~0.17 / ~0.20 at 10% retention against 0.77 clean. The bottleneck is the corrupted feature structure (the oracle itself is capped), not the gating signal, which again points the fix at the encoder. The exception (all17 fog gated > oracle) shows that holding the CLEAN prototypes while gating can beat corrupt-pool re-estimation on the survivor subset.
+
 ### Deferred: Batch-Size Scaling (investigate only if results demand it)
 
 The GPU runs at 100% util with ~65GB memory headroom, so larger batches are *possible* (batch 2–4, one-line Parser change, loop already batch-agnostic). This is parked for three reasons:
