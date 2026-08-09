@@ -1,13 +1,14 @@
-"""dglss_bug_probe.py: equal-training test of the DGLSS flatline (~20 min, micro scale).
+"""dglss_bug_probe.py: reproduce the old DGLSS flatline (~10 min, micro scale).
 
 Question: was the old DGLSSTrainer (DensityUnsupHyperLidar) flatline an
 implementation bug or inherent to DGLSS? The old code computed the LSCC/SCC
 class-prototype correlations on RAW, UNNORMALIZED means, so the Gram entries scale
 as ||z||^2 and the loss as ||z||^4, which blows up (or, via loss dominance,
 flatlines) during VIB-free training. Our port fixed this by normalizing the
-prototypes (cosine-correlation form). This probe trains the SAME architecture and
-budget with the fixed form vs the raw (old) form and reports whether the raw form
-reproduces the flatline / NaN while the fixed form trains cleanly.
+prototypes. The FIXED form is already trained and measured (supcon_vib_dglss in
+the isotropy run: clean HDC 0.389, fog 0.056, crosstalk 0.099). This probe trains
+only the OLD (raw) form at the same micro budget to check whether it reproduces
+the flatline / NaN while the fixed form trained cleanly.
 
 Usage:
   uv run python robust_diagnostic/dglss_bug_probe.py
@@ -26,10 +27,10 @@ from dataset.kitti.parser import Parser
 from modules.gen_trainers import GenTrainer
 from modules.oracle_core import get_hdc_projection, build_hdc_prototypes, compute_miou
 
-ARMS = {
-    'fixed': {'dglss_scc_norm': True},   # our current (stable) form
-    'raw_old': {'dglss_scc_norm': False},  # reproduces the old DGLSSTrainer loss scale
-}
+# the old (raw, unnormalized) SCC prototype form, i.e. the bug-repro arm
+ARMS = {'raw_old': {'dglss_scc_norm': False}}
+# reference: the FIXED form, already trained at the same budget in the isotropy run
+FIXED_REF = {'clean_hdc_miou': 0.389, 'fog_hdc_miou': 0.056, 'crosstalk_hdc_miou': 0.099}
 
 
 def build_parser(root, data, arch):
@@ -116,10 +117,11 @@ def main():
         print(f"  clean HDC mIoU {res['clean_hdc_miou']:.4f} | "
               f"fog {res['fog_hdc_miou']:.4f} | crosstalk {res['crosstalk_hdc_miou']:.4f}")
 
-    print(f"\n{'='*80}\n=== Comparison ===")
+    print(f"\n{'='*80}\n=== Comparison (old raw form vs fixed form, same budget) ===")
+    print(f"  {'arm':<10} {'clean':>7} {'fog':>7} {'crosstalk':>9}")
+    print(f"  {'fixed(ref)':<10} {FIXED_REF['clean_hdc_miou']:>7.4f} {FIXED_REF['fog_hdc_miou']:>7.4f} {FIXED_REF['crosstalk_hdc_miou']:>9.4f}")
     for name, r in results.items():
-        print(f"  {name:<8} clean {r['clean_hdc_miou']:.4f} | fog {r['fog_hdc_miou']:.4f} | "
-              f"crosstalk {r['crosstalk_hdc_miou']:.4f}")
+        print(f"  {name:<10} {r['clean_hdc_miou']:>7.4f} {r['fog_hdc_miou']:>7.4f} {r['crosstalk_hdc_miou']:>9.4f}")
 
     out = os.path.join(args.log_dir, 'results.json')
     os.makedirs(args.log_dir, exist_ok=True)
