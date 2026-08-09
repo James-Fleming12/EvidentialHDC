@@ -166,6 +166,9 @@ def main():
             rk = ag['rank_of_true_class']
             lp_rec = ag['lp_on']['recovered']
             gated = ag['gated']
+            r_g = 0.25 if 0.25 in gated else next(iter(gated))
+            g_orc = gated[r_g]['oracle_assigned']
+            g_lp = gated[r_g]['lp_assigned']
 
             # --- TTA methods on the frozen features (pool/val split) ---
             torch.manual_seed(42)
@@ -200,15 +203,15 @@ def main():
                    'rank_true': rk['recovered']['mean'],
                    'rank_true_frac3': rk['recovered'].get('frac_rank3', float('nan')),
                    'lp_on_recovered': lp_rec,
-                   'gated_oracle': gated['oracle_assigned'], 'gated_lp': gated['lp_assigned'],
+                   'gated_oracle': g_orc, 'gated_lp': g_lp,
                    'naive_ema': naive, 'conf_gate': conf_gate, 'dist_gate': dist_gate,
                    'bn_align': bn_align, 'knn': knn,
                    'zero_shot': zs, 'oracle': oracle}
             r_cond[cond] = row
             knn_gap = (knn - zs) / (oracle - zs) if oracle > zs else float('nan')
             print(f"{cond:<12} {fr['rec_of_wrong']:>6.3f} {fr['true_cos']:>6.3f} "
-                  f"{rk['recovered']['mean']:>6.2f} {lp_rec:>6.3f} {gated['oracle_assigned']:>6.3f} "
-                  f"{gated['lp_assigned']:>6.3f} | {naive:>7.4f} {conf_gate:>7.4f} "
+                  f"{rk['recovered']['mean']:>6.2f} {lp_rec:>6.3f} {g_orc:>6.3f} "
+                  f"{g_lp:>6.3f} | {naive:>7.4f} {conf_gate:>7.4f} "
                   f"{dist_gate:>7.4f} {bn_align:>7.4f} {knn:>7.4f}  {knn_gap:.2f}")
         results[method] = r_cond
 
