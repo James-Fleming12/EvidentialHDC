@@ -197,7 +197,9 @@ def main():
             knn = i7['metrics']['zs_reestimate']
 
             row = {'rec3': fr['rec_of_wrong'], 'cosT': fr['true_cos'],
-                   'rank_true': rk['mean'], 'lp_on_recovered': lp_rec,
+                   'rank_true': rk['recovered']['mean'],
+                   'rank_true_frac3': rk['recovered'].get('frac_rank3', float('nan')),
+                   'lp_on_recovered': lp_rec,
                    'gated_oracle': gated['oracle_assigned'], 'gated_lp': gated['lp_assigned'],
                    'naive_ema': naive, 'conf_gate': conf_gate, 'dist_gate': dist_gate,
                    'bn_align': bn_align, 'knn': knn,
@@ -205,7 +207,7 @@ def main():
             r_cond[cond] = row
             knn_gap = (knn - zs) / (oracle - zs) if oracle > zs else float('nan')
             print(f"{cond:<12} {fr['rec_of_wrong']:>6.3f} {fr['true_cos']:>6.3f} "
-                  f"{rk['mean']:>6.2f} {lp_rec:>6.3f} {gated['oracle_assigned']:>6.3f} "
+                  f"{rk['recovered']['mean']:>6.2f} {lp_rec:>6.3f} {gated['oracle_assigned']:>6.3f} "
                   f"{gated['lp_assigned']:>6.3f} | {naive:>7.4f} {conf_gate:>7.4f} "
                   f"{dist_gate:>7.4f} {bn_align:>7.4f} {knn:>7.4f}  {knn_gap:.2f}")
         results[method] = r_cond
