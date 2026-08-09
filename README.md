@@ -1,8 +1,19 @@
-# Robust Feature Pretraining and Adaptive Hyperdimensional Prototypes for LiDAR Test-Time Adaptation
+# Robust Feature Pretraining for Adaptive Hyperdimensional Prototypes: from Active Learning to Label-Free LiDAR Test-Time Adaptation
 
 ---
 
 ## 1. What we established
+
+The ultimate goal is **label-free adaptation for prototype updates**: at
+deployment, the decoder should update its prototypes from the corrupted stream
+without any labels. That goal is currently bounded by a measured wall (a
+label-free signal can say which points are wrong, but not what class they belong
+to). The current target is therefore one step short of it: a feature extractor
+robust enough to work really well inside an **active learning framework**, where
+the uncertainty signal picks a small set of the hard-condition points, a small
+budget of labels is spent on exactly those, and the prototypes are updated from
+them. The robust encoder is what makes both the label budget tiny and the
+resulting update ceiling high.
 
 This project started by trying to build a better geometric confidence gate in
 hyperdimensional space. That line of work is closed, and its failure is well
@@ -67,22 +78,35 @@ The method rests on three pillars, each attacking one measured failure mode:
 
 ## 2. The (potential) adaptive learning framework
 
-The framework has two threads, now evaluated in the 7-class setting.
+The framework has two threads, now evaluated in the 7-class setting. Together they
+support a path from the current target (active learning) to the ultimate goal
+(label-free prototype adaptation).
 
-The first thread is **robust feature-extractor training**. The goal is a feature
-space whose fog and crosstalk recoverable ceiling approaches clean. The working
-hypothesis is angular isotropy: our contrastive training keeps the classes spread
-evenly over the unit hypersphere, which stops the space from collapsing into a
-low-rank anisotropic manifold that would saturate the HDC sign-projection. This is
-being tested directly against the DGLSS and DGLSS++ generalization frameworks
-(Section 3).
+The first thread is **robust feature-extractor training**, and it is the current
+focus. The goal is a feature space whose fog and crosstalk recoverable ceiling
+approaches clean. The working hypothesis is angular isotropy: our contrastive
+training keeps the classes spread evenly over the unit hypersphere, which stops
+the space from collapsing into a low-rank anisotropic manifold that would saturate
+the HDC sign-projection. This is being tested directly against the DGLSS and
+DGLSS++ generalization frameworks (Section 3).
 
-The second thread is **adaptive prototype updates when necessary**. At deployment,
-we use the distance to the nearest clean prototype to decide which points may
-update the prototypes, then re-decode. The measurements bound this thread tightly:
-the label-free update does not move full-coverage mIoU above zero-shot, and the
-perfect-label oracle ceiling is only ~0.15 on fog and ~0.27 on crosstalk. That
-ceiling is the same for every encoder, so only the first thread can move it.
+The second thread is **adaptive prototype updates when necessary**. In the long
+run this is label-free adaptation: at deployment, the distance to the nearest
+clean prototype decides which points may update the prototypes, and the decoder
+re-decodes. The measurements bound this thread tightly: the label-free update
+does not move full-coverage mIoU above zero-shot, and the perfect-label oracle
+ceiling is only ~0.15 on fog and ~0.27 on crosstalk. That ceiling is the same for
+every encoder, so only the first thread can move it.
+
+The near-term bridge between the two threads is **active learning**. The measured
+facts line up for it: the recoverable set of points is identifiable label-free
+(the distance signal ranks it well), the recoverable points cluster by class in
+the local feature structure, and the full-label oracle is well above what any
+label-free update reaches. That means a small budget of labels, spent on exactly
+the ranked hard points, should update the prototypes far more effectively than any
+label-free signal, and the gap to the oracle is what that budget buys. The robust
+encoder is what makes the selection signal informative and the ceiling worth
+reaching.
 
 The key measurement that motivated this framing: the oracle ceiling is set by the
 map and by the corrupted feature structure, not by the gating mechanism and not by
@@ -190,8 +214,13 @@ points with AUROC 0.71-0.82.
 
 ### The target
 
-The oracle ceiling is the wall. The TTA thread's job is to approach it; only the
-encoder thread can raise it.
+The oracle ceiling is the wall. The long-term goal is to approach it label-free,
+which the encoder thread is the only lever that raises. The near-term path is
+active learning: the distance signal picks the ranked hard points, a small label
+budget is spent on exactly those, and the prototypes update from them. Because the
+recoverable points cluster by class in the local feature structure, the small
+label budget can name what the label-free signal cannot, and the update should
+land well above any label-free re-estimate and close most of the oracle gap.
 
 ### A design rule
 
@@ -368,14 +397,19 @@ What a TTA method should learn from the failure modes:
    encoders (no retraining needed). The 14-class middle ground is closed: it is
    strictly worse because it keeps the fragile classes in the metric. Background
    results are tracked in the seven-class iterations doc.
-2. The encoder thread is the standing target. The fog and crosstalk oracle ceiling
+2. The encoder thread is the current target. The fog and crosstalk oracle ceiling
    under the 7-class map is ~0.15 / ~0.27 and is encoder-independent. The isotropy
    comparison trains DGLSS, DGLSS++ and our method at equal budget to measure
    whether any regime pushes the space below our baseline or moves the ceiling.
-3. The TTA thread is bounded. The label-free gated update is flat in full-coverage
-   mIoU, and the oracle ceiling is the wall only true labels cross. Any remaining
-   TTA work is subordinated to the ceiling the encoder sets.
-4. Balanced update allocation remains planned, to be engaged if a regime produces
-   headroom the TTA thread can harvest.
+3. The active-learning path is next: use the distance signal to rank the hard
+   points, spend a small label budget on the ranked recoverable set, and update
+   the prototypes from those labels. This is the near-term mechanism that should
+   close most of the oracle gap (Fog 16.6, Crosstalk 26.2 in the 17-class metric).
+4. The label-free TTA thread is the long-term goal and is bounded: the label-free
+   gated update is flat in full-coverage mIoU, and the oracle ceiling is the wall
+   only labels cross. It becomes reachable only if the encoder thread moves the
+   ceiling.
+5. Balanced update allocation remains planned, to be engaged once the encoder or
+   the active-learning updates produce headroom to harvest.
 5. Prototype adaptation becomes viable only if the encoder thread raises the
    ceiling.
