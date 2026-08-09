@@ -87,7 +87,7 @@ def decode_and_gate(z, lbls, centroids, retention):
     highest cosine (smallest distance). Returns (mIoU, correct_mask, maxcos)."""
     dev = z.device
     order = sorted(centroids)
-    cm = F.normalize(torch.stack([centroids[c] for c in order]), p=2, dim=1)
+    cm = F.normalize(torch.stack([centroids[c] for c in order]), p=2, dim=1).to(dev)
     sims = F.normalize(z, p=2, dim=1) @ cm.T                      # (N, C)
     maxcos, best = sims.max(dim=1)
     preds = torch.tensor(order, device=dev)[best]
