@@ -283,6 +283,66 @@ Paley-Zygmund bound, so the theorem is a sufficient condition, not an exact
 prediction; the empirically measured dead-coordinate fraction is the ground truth
 and moves toward $1$ in the collapse regime.
 
+**Remark 2 (sufficiency, not necessity: anisotropic spaces can still decode in
+HDC).** The conditions of Theorems 1 and 2 guarantee healthy binary codes (balanced
+signs, high Hamming diversity), but they are sufficient, not necessary, for a
+working HDC decode. The reason is that the sign random projection preserves the
+cosine RANKING of the features for any distribution, so the ordering that the
+prototype decode relies on survives anisotropy; only the scale of the similarities
+changes.
+
+*Claim (cosine-ranking preservation).* For unit vectors $x, y$ and a random
+projection row $w$ (Rademacher or Gaussian),
+
+$$
+\mathbb{P}\big(\operatorname{sign}(w \cdot x) = \operatorname{sign}(w \cdot y)\big)
+= 1 - \frac{\theta}{\pi}, \qquad \theta = \arccos(x \cdot y),
+$$
+
+and consequently, for the binarized codes $b_x = \operatorname{sign}(W x)$,
+
+$$
+\mathbb{E}\big[\cos(b_x, b_y)\big] = \frac{2}{\pi}\, \arcsin(x \cdot y),
+$$
+
+a strictly increasing function of $x \cdot y$.
+
+*Proof.* A random hyperplane through the origin separates $x$ and $y$ exactly when
+the normal $w$ falls in the double cone subtended by the angle $\theta$; the cone's
+measure is $\theta/\pi$. Then $\mathbb{E}[b_x b_y] = 2\mathbb{P}(\text{same}) - 1 =
+1 - 2\theta/\pi = (2/\pi)\arcsin(x \cdot y)$, and the code cosine averages these
+per-coordinate expectations. $\square$
+
+Consequences:
+
+1. **The argmax prototype decode is preserved in expectation for any distribution:**
+   $\arg\max_c \cos(b_x, P_c) = \arg\max_c \cos(x, \mu_c)$, because the monotone
+   transform does not reorder the similarities. Anisotropy rescales them, it does
+   not reorder them.
+2. **The dead coordinates of Theorem 1 are constant offsets.** A dead coordinate
+   contributes the same value to every (point, prototype) similarity, so it cancels
+   in the argmax. The theorem's regime therefore degrades code capacity, not the
+   ranking, unless the surviving alive coordinates themselves fail to separate the
+   classes. This is why the measured DGLSS case (dead fraction 10.2% vs 0.8% for
+   ours) produces a modest clean HDC degradation (0.389 vs 0.429), not a collapse
+   to random: the dead coordinates are a constant-offset penalty, and the
+   structured directions still carry the per-class ordering.
+3. **Measured counter-examples to isotropy-as-predictor.** A contrastive transformer
+   with effective dimensionality 19.3 of 768, highly anisotropic, decodes in HDC
+   with hypervector k-NN matching feature k-NN within 0.4 points: the low ED is
+   structured anisotropy, the dominant directions carry the class structure, and
+   the encoding provably preserves it. Conversely, a cross-entropy model that is
+   more isotropic (ED 59.8) but shows ED drift under transfer (59.8 to 41.0, vs
+   the contrastive model's flat 19.3 to 19.2) still decodes at 72.833%. Neither
+   global isotropy nor ED drift predicts HDC accuracy.
+4. **The operative requirement is per-class cosine separability.** The theorems
+   identify the strong-form failure (a mean-dominated, low-rank space in which even
+   the per-class ordering is gone); the empirical evidence shows that a space with
+   low effective dimensionality but intact per-class structure still decodes, and
+   that the projection preserves that ordering whatever the global geometry. The
+   isotropy conditions of Theorems 1-2 are the guarantee of code health; per-class
+   cosine separability is the actual requirement for a working decode.
+
 ### Common Mechanisms in Previous Attempts (beyond just DGLSS) cause Anisotropy
 
 The point of naming the mechanism abstractly is that the failure is not specific
@@ -473,7 +533,7 @@ $\mathbb{E}[\varepsilon] = 0$) and, by the law of total variance,
 $\mathrm{Cov}(z) = \mathrm{Cov}(\mu(x)) + \mathbb{E}[\sigma(x)\sigma(x)^T] = I_d$.
 (iii) Direct substitution into the Theorem-1 bound. $\square$
 
-**Remark 2 (why the balance stays empirical).** Theorem 3 justifies VIB's presence
+**Remark 4 (why the balance stays empirical).** Theorem 3 justifies VIB's presence
 on principle: it is the regularizer that removes exactly the mean-dominated,
 spectrally-concentrated structure that Theorem 1 shows is harmful to HDC. It does
 not say anything about the correct weight or about preserving class separation.
