@@ -134,7 +134,7 @@ def dglss_sifc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
 
 
 def dglss_scc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
-                   local=False, cell=256, min_pts=5, max_pts=256):
+                   local=False, cell=256, min_pts=5, max_pts=256, normalize=True):
     """SCC (DGLSS) / LSCC (DGLSS++): all-pairs class-prototype correlation consistency.
 
     SCC pools per-scan GLOBAL class prototypes from both views (the 2B scans of the
@@ -164,7 +164,8 @@ def dglss_scc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
                 for c in cls:
                     mm = (ls == c) & m
                     if mm.sum() >= min_pts:
-                        protos[c] = F.normalize(zf[mm].mean(dim=0), p=2, dim=0)
+                        p = zf[mm].mean(dim=0)
+                        protos[c] = F.normalize(p, p=2, dim=0) if normalize else p
                         present.append(c)
                 if len(present) >= 2:
                     order = sorted(present)

@@ -27,7 +27,7 @@ DGLSS_METHODS = {'supcon_vib_dglss', 'supcon_vib_dglsspp', 'supcon_vib_dglss_enc
 class GenTrainer(Trainer):
     def __init__(self, ARCH, DATA, datadir, logdir, path=None, method='baseline', cutoff_percent=1.0,
                  fragile_w=None, edl_kl_cap=0.005, edl_w=0.1, edl_kl_selective=True,
-                 dglss_lam1=1.0, dglss_lam2=1.0):
+                 dglss_lam1=1.0, dglss_lam2=1.0, dglss_scc_norm=True):
         self.method = method
         self.cutoff_percent = cutoff_percent
         self.fragile_w = fragile_w if fragile_w is not None else FRAGILE_SUPCON_W
@@ -37,6 +37,10 @@ class GenTrainer(Trainer):
         # DGLSS / DGLSS++ consistency weights (lambda_1 SIFC, lambda_2 SCC in the papers)
         self.dglss_lam1 = dglss_lam1
         self.dglss_lam2 = dglss_lam2
+        # SCC / LSCC prototype normalization. True = the stable cosine-correlation form
+        # (Gram entries in [-1, 1]); False reproduces the raw unnormalized-prototype
+        # form whose Gram entries scale as ||z||^2 and diverge during VIB-free training.
+        self.dglss_scc_norm = dglss_scc_norm
         
         # Call super with path=None to prevent it from immediately loading the checkpoint
         super().__init__(ARCH, DATA, datadir, logdir, None)
@@ -314,7 +318,7 @@ class GenTrainer(Trainer):
                         loss_sifc = dglss_sifc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
                                                     masked=gmsifc, tau=DGLSS_TAU)
                     loss_scc = dglss_scc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
-                                              local=gmsifc)
+                                              local=gmsifc, normalize=self.dglss_scc_norm)
                     loss_total = (loss_sem
                                   + self.dglss_lam1 * loss_sifc
                                   + self.dglss_lam2 * loss_scc)
