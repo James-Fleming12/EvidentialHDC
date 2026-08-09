@@ -76,20 +76,18 @@ there; on crosstalk the oracle gap (0.275 vs 0.204) is the headroom.
 
 ## Plan
 
-1. **Encoder baseline in 7 classes**: `classcount_seven` (plain `supcon_vib`,
-   10 epochs at 50% data) is the reference. Extend to the hardneg variant and the
-   DGLSS / DGLSS++ arms, measured with the isotropy diagnostics. The isotropy
-   comparison is the decisive encoder test (both baselines sit at PR ~4 and the
-   collapse mechanism is not yet triggered).
-2. **Prototype-TTA in 7 classes**: the label-free gated weighted prototype update
-   is CLOSED (Iteration 1: flat on fog/crosstalk, same assignment wall as
-   iterations 0-8). The oracle gap on crosstalk (0.275 vs 0.204 gate) is real but
-   requires true labels; a label-free version would need an assignment signal the
-   distance gate does not provide. The remaining TTA question is whether any
-   label-free update (not gate + re-estimate) can move the centroids toward the
-   corruption.
-3. **Adopt the 7-class space for all comparisons** going forward (it is the
-   thirdparty protocol).
+1. **Adopt the 7-class EVAL map with the EXISTING 17-class-trained encoders**
+   (Iteration 2): no 7-class retraining needed (it slightly hurts the gated decode);
+   the 17-trained features + 7-map + distance gate give the best label-free fog/
+   crosstalk recovery (~0.22 / ~0.38 at 10% retention). The 7-class map is also the
+   thirdparty protocol.
+2. **Encoder thread**: the isotropy comparison (DGLSS / DGLSS++ / supcon_vib) is
+   the decisive test of whether any training regime moves the ceiling. The ceiling
+   (~0.15 fog / ~0.27 crosstalk oracle under the 7-map) is the standing target.
+3. **The 14-class paradigm is closed** (strictly worse ceiling, Iteration 2).
+4. **Prototype-TTA**: the label-free gated update is closed (Iteration 1); the
+   remaining TTA question is whether any label-free update can move the centroids
+   toward the corruption, given the ceiling is map/feature-bound.
 
 ## Iteration log
 
@@ -142,6 +140,58 @@ there; on crosstalk the oracle gap (0.275 vs 0.204) is the headroom.
 features (same assignment wall as iterations 0-8); the 7-class decode advantage is
 label-space, not encoder geometry; the encoder-geometry question is unchanged and
 the isotropy comparison remains the decisive encoder test.
+
+### Iteration 2: the class-paradigm triage (`class_paradigm_diag.py`)
+
+Evaluated all available robust-encoder weights (hardneg medium, plain medium,
+seven_trained) under all three maps (7 / 14 / 17) by eval-time GT aggregation.
+Fog/crosstalk oracle ceilings (true-label re-estimate) and distance-gated @ 10%:
+
+| weight (trained map) | eval map | fog zs | fog gated@10% | fog oracle | xtalk zs | xtalk gated@10% | xtalk oracle |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| hardneg (17) | seven | 0.086 | 0.212 | 0.145 | 0.102 | 0.326 | 0.271 |
+| hardneg (17) | fourteen | 0.038 | 0.094 | 0.091 | 0.055 | 0.142 | 0.150 |
+| hardneg (17) | all17 | 0.067 | 0.159 | 0.114 | 0.081 | 0.278 | 0.196 |
+| plain_med (17) | seven | 0.097 | 0.223 | 0.158 | 0.119 | 0.384 | 0.281 |
+| plain_med (17) | fourteen | 0.047 | 0.134 | 0.108 | 0.061 | 0.216 | 0.174 |
+| plain_med (17) | all17 | 0.073 | 0.221 | 0.124 | 0.089 | 0.329 | 0.225 |
+| seven_trained (7) | seven | 0.104 | 0.165 | 0.165 | 0.146 | 0.204 | 0.275 |
+| seven_trained (7) | fourteen | 0.053 | 0.127 | 0.101 | 0.079 | 0.143 | 0.148 |
+| seven_trained (7) | all17 | 0.078 | 0.165 | 0.125 | 0.112 | 0.204 | 0.205 |
+
+**Findings:**
+
+1. **The oracle ceiling is map-determined, not encoder-determined.** Under the
+   7-class map, the true-label oracle is ~0.145-0.165 (fog) / ~0.27-0.28 (crosstalk)
+   for ALL three encoders, hardneg included. Switching to 7 classes does NOT make the
+   previous method "work": the hardneg encoder does not raise the ceiling. The
+   recoverable wall is set by the corrupted feature structure and the map, far below
+   the clean level (0.77 at the same retention).
+2. **Retraining under 7 classes does not help and slightly hurts the decode.** The
+   17-class-trained features (plain_med, hardneg) evaluated under the 7-map give the
+   highest label-free recovery (gated@10% fog 0.22, crosstalk 0.38), above the
+   7-class-TRAINED seven_trained (0.17 / 0.20). The fine-grained training produces
+   features that aggregate into the 7-map better than coarse-trained features. The
+   recipe is therefore: keep the 17-class-trained encoder, evaluate under the
+   7-class map, and gate by distance to the 7-class clean centroids. No 7-class
+   retraining needed. (Note the gated@10% for the 17-trained features exceeds the
+   full-pool oracle: holding the CLEAN centroids and answering only the confident
+   subset beats re-estimating on the corrupt pool.)
+3. **The 14-class paradigm is strictly worse** on every weight and condition (fog
+   oracle ~0.09-0.11, crosstalk ~0.15). It keeps more fragile classes (parking,
+   fence, pole, traffic-sign, trunk) in the IoU denominator, and those are exactly
+   the classes that die under corruption. "More impressive with the same issues"
+   is confirmed, but with a lower recoverable ceiling: skip it.
+
+**Triage verdict:** the diagnostic was possible with the available weights and is
+decisive. (a) 7 classes does not rescue the previous method's fog/crosstalk ceiling
+(it is encoder-independent at ~0.15 / ~0.27), but the 7-class EVAL map is the best
+protocol and requires NO retraining: the existing 17-class-trained encoders +
+7-map + distance gate give the best label-free recovery (~0.22 / ~0.38 at 10%
+retention). (b) The 14-class paradigm is strictly worse; skip it. (c) The
+encoder-side thread remains the only path to actually lift the wall: the ~0.15 /
+~0.27 oracle ceiling is the standing target, and the isotropy comparison tests
+whether any training regime moves it.
 
 ## Scripts and configs
 
