@@ -9,6 +9,145 @@ Throughout, bold marks the best value in each row; for the mIoU / linear-probe /
 Hamming columns higher is better, for the dead-fraction and mean-fraction columns
 lower is better.
 
+## Background: DGLSS, DGLSS++, and our variants
+
+This section states the two source methods as they appear in the papers, and the
+changes made in our variants, in the mathematical form a final paper would use.
+Implementation-stability details (e.g., gradient clipping) are noted but are not
+method changes.
+
+### DGLSS (Kim, Kang, Oh, Yoon; CVPR 2023)
+
+**Setting.** A LiDAR scan is projected to a range image $X \in \mathbb{R}^{5
+\times H \times W}$ with label map $Y$. The network is $\Phi = \Phi_{\text{dec}}
+\circ \Phi_{\text{enc}}$ with internal features $F = \Phi_{\text{enc}}(X)$, and a
+metric learner $\Psi$ operates on the decoded features. DGLSS trains on a single
+dense source domain (SemanticKITTI) and targets unseen domains that differ in
+sparsity and scene distribution.
+
+**Sparse augmentation.** Each iteration the source scan is subsampled by dropping
+whole beam rows (dense-to-sparse), producing the augmented view $X^a$ with the
+same label map at the surviving positions.
+
+**Sparsity Invariant Feature Consistency (SIFC).** For each source voxel with
+feature $f^s$ and coordinates $x^s$, an aggregated augmented feature is built from
+its neighbors with affinity and inverse-distance weights,
+
+$$
+w_j = \frac{1}{\|x^s - x_j^s\|_2}\, \mathbb{1}\Big[
+\frac{\langle f^s, f_j^s \rangle}{\|f^s\|\,\|f_j^s\|} \ge \tau \Big],
+\qquad
+f^{\text{agg}} = \frac{\sum_j w_j f_j^a}{\sum_j w_j},
+$$
+
+and the loss aligns the source and augmented internal features,
+
+$$
+L_{\text{SIFC}} = \frac{1}{N}\sum_{i=1}^{N}
+\Big( \|F_{i,p}^s - F_{i,p}^a\|_1 + \|F_{i,n}^s - F_{i,\text{agg}}^a\|_1 \Big),
+$$
+
+where $F_{i,p}$ / $F_{i,n}$ are the paired / unpaired (in the augmented view)
+subsets.
+
+**Semantic Correlation Consistency (SCC).** Per-scan class prototypes from the
+metric-learner embedding,
+
+$$
+z_{i,c} = \frac{\sum_j \mathbb{1}[\tilde{y}_{i,j} = c]\, \Psi(\Phi_{\text{dec}}(F_i))_j}
+{\sum_j \mathbb{1}[\tilde{y}_{i,j} = c]},
+$$
+
+and the class-correlation matrices are constrained to be equal across scans,
+
+$$
+L_{\text{SCC}} = \frac{1}{L}\sum_{i}\sum_{j \ne i} \big( Z_i Z_i^T - Z_j Z_j^T \big).
+$$
+
+**Total.** $L = L_{\text{sem}}^s + L_{\text{sem}}^a + \lambda_1 L_{\text{SIFC}}
++ \lambda_2 L_{\text{SCC}}$, with weighted cross-entropy for the semantic terms.
+
+### DGLSS++ (Kim et al.; TPAMI 2026)
+
+**Bidirectional augmentation.** Dense-to-sparse uses the beam subsampling above;
+sparse-to-dense aggregates consecutive scans into a dense scan before
+subsampling.
+
+**Generalized Masked SIFC (GMSIFC).** Extends SIFC to either direction and adds a
+mask that excludes voxel features mapped from multiple inconsistent semantic
+classes,
+
+$$
+L_{\text{GMSIFC}} = \frac{1}{N}\sum_{i}\Big( \|F_{i,p}^s - F_{i,p}^a\|_1
++ \|F_{i,n}^s - F_{i,\text{agg}}^a\|_1 + \|F_{i,\text{agg}}^s - F_{i,n}^a\|_1 \Big),
+$$
+
+with the aggregation applied symmetrically and the mask applied to all three terms.
+
+**Localized SCC (LSCC).** Prototypes are computed per spatial cell $Z_{i,j}$, and
+the loss adds all-pairs cell-correlation consistency to a per-scan contrastive
+term,
+
+$$
+L_{\text{LSCC}} = \frac{1}{L}\sum_{i,j}\sum_{(k,l) \ne (i,j)}
+\big( Z_{i,j} Z_{i,j}^T - Z_{k,l} Z_{k,l}^T \big)
+- \frac{1}{N}\sum_{i=1}^{N}\sum_{j=1}^{M_i'}
+\log \frac{\sum_{k \in P(j)} \exp(\psi_i(j) \cdot \psi_i(k))}
+{\sum_{l \in A(j)} \exp(\psi_i(j) \cdot \psi_i(l))},
+$$
+
+where $P(j)$ / $A(j)$ are the same-class / all-other embedding indices of $j$.
+
+**Total.** $L = L_{\text{sem}}^s + L_{\text{sem}}^a + \lambda_1 L_{\text{GMSIFC}}
++ \lambda_2 L_{\text{LSCC}}$.
+
+### Our variants (the changes for the final paper)
+
+Our implementations of the two methods are applied to the same SENet-to-128D
+architecture as our reference method, trained on the same data and budget, and
+differ from the papers in the following respects.
+
+1. **Correlation on normalized prototypes.** The class prototypes in SCC and
+   LSCC are computed on the normalized class means
+   $p_{i,c} = \bar{z}_{i,c} / \|\bar{z}_{i,c}\|_2$, where $\bar{z}_{i,c}$ is the
+   raw mean of the 128D bottleneck features of class $c$. The Gram entries are
+   then cosine similarities in $[-1, 1]$, so the correlation-consistency loss is
+   bounded and scale-free. The unnormalized form (raw means) scales as
+   $\|z\|^4$ and diverges under VIB-free training; this normalization is the
+   numerical fix and corresponds to evaluating the correlation on a unit
+   embedding, as the paper's metric-learner setup implies.
+2. **Attachment to the HDC-input space.** SIFC / GMSIFC and SCC / LSCC act on the
+   128D bottleneck $z$ (the input to the HDC random projection), not on the
+   encoder volume $\Phi_{\text{enc}}(X)$; the bottleneck plays the role of the
+   metric-learner output $\Psi(\Phi_{\text{dec}}(X))$. All compared methods share
+   this attachment point, so the comparison is controlled.
+3. **GMSIFC mask realization.** The voxel-level "single semantic class" mask is
+   realized as a $3 \times 3$ neighborhood purity filter on the projection labels:
+   a position is kept iff its local neighborhood contains exactly one class. This
+   is the projection-domain proxy for "voxels mapped from a single semantic
+   class."
+4. **VIB-free.** The DGLSS / DGLSS++ arms carry no VIB KL term; the papers have
+   no variational bottleneck. (Our reference method includes VIB; the DGLSS arms
+   deliberately do not, matching the papers.)
+5. **Dense augmentation omitted.** The source is dense, so GMSIFC reduces to the
+   masked dense-to-sparse form and the symmetric unpaired-augmented term is empty.
+6. **Sparse augmentation.** Beam-row dropout at rate $p \sim U(0.3, 0.7)$,
+   matching the papers' dense-to-sparse setting.
+
+**Note (training stability, not a paper change).** The prototype normalization in
+(1) is the numerical fix for the divergence described below; the raw-form SCC
+reproduces the flatline of the earlier DGLSSTrainer. Empirically confirmed at
+equal budget (4 epochs, 10% data): the raw form collapses to a 0.0 HDC decode on
+clean, fog and crosstalk, while the normalized form trains and decodes (clean
+0.317, fog 0.036, crosstalk 0.051). Any further measures, such as gradient
+clipping or the subsampling of the SIFC affinity aggregation to bound cost, are
+implementation details and do not change the loss.
+
+**Theoretical framing.** The isotropy hypothesis, the dead-coordinate saturation
+theorem, the cosine-ranking preservation result (why anisotropic spaces can still
+decode in HDC), and the unified "Gram-consistency losses are isotropy-blind"
+result are in `docs/robust_details.md`. The measurements below test these claims.
+
 ## Iteration 0: the diagnostic battery
 
 One battery of diagnostics on the same three trained feature extractors
@@ -203,6 +342,43 @@ Across the three views of the same extractors:
    binarized path; DGLSS++ strongest decoder) is the robust takeaway to re-test at
    larger scale.
 
-## Iteration log (future)
+## Iteration log
 
-(Subsequent iterations appended here as the encoder thread progresses.)
+### Iteration 1: do the previous supcon_vib TTA difficulties still hold on the DGLSS / DGLSS++ extractors?
+
+The first research iteration is the systematic recheck, on the new feature
+extractors, of the difficulties we hit with the supcon_vib model: the space
+diagnostics and the whole battery of TTA methods that were developed against the
+labeled ceiling. The question is which of those difficulties are properties of
+the corrupted features (and so recur across extractors) and which were specific to
+the supcon_vib space (and so may not hold for DGLSS or DGLSS++).
+
+For each extractor (supcon_vib, supcon_vib_dglss, supcon_vib_dglsspp) and each
+condition (fog, crosstalk, snow control), the frozen 128D features are passed
+through the same battery (`tta_ceiling_diag.py`):
+
+- **the "no label-free path" space diagnostics** (the checks that established the
+  assignment wall on supcon_vib): rec@3 (is the true class even in the top-3 clean
+  prototypes for the zs-wrong points), cosine-to-true, rank-of-true-class for the
+  recoverable points, LP accuracy on the recoverable set, and the assignment gap
+  (oracle-assigned vs LP-assigned re-estimate);
+- **the TTA methods** developed against the ceiling: naive EMA, the
+  confidence-gated and distance-gated weighted updates, BN-statistic alignment,
+  and kNN reassignment.
+
+Zero-shot and oracle are not re-run: they are already measured in the background
+(Iteration 0.3, frozen labeled ceiling), and are used here only to frame the
+gap-closed fraction.
+
+The decisive comparisons, mirroring what we learned on supcon_vib:
+
+1. Does the assignment wall still bind on the DGLSS / DGLSS++ features (rec@3 at
+   or below the random baseline, low LP accuracy on the recoverable set, a small
+   oracle-vs-LP assignment gap), or does one of the extractors make the labeled
+   ceiling more reachable label-free?
+2. Does the distance-gated update stay flat (the supcon_vib result), or do the
+   DGLSS features let the uncertainty-gated update move the prototypes?
+3. Does the kNN reassignment keep recovering some of the oracle gap, and is its
+   gap-closing fraction similar across extractors?
+
+(Pending: results from `tta_ceiling_diag.py`; appended here when the run lands.)
