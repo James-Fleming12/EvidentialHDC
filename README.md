@@ -250,25 +250,33 @@ representation survives, and poisons exactly where it does not.
 
 ### 5.3 Current performance: what the new methods change
 
-The robust encoder roughly doubled Fog linear separability (23.6% to 49.4%) and
-lifted Fog zero-shot HDC classification from 1.8% mIoU to 25.0% point accuracy.
+The robust encoder roughly doubled Fog linear separability (23.6% to 49.4% linear
+probe) and lifted Fog zero-shot HDC point accuracy from 13.2% to 25.0% (the
+full-coverage mIoU equivalents are in sections 5.5 and 5.6).
 
-| Condition | Old baseline mIoU | New Linear Probe | New zero-shot HDC | New perfect-oracle HDC |
+| Condition | Old baseline | New Linear Probe | New zero-shot HDC | New perfect-oracle HDC |
 | :--- | :--- | :--- | :--- | :--- |
-| **Incomplete Echo** | 25.5% | **92.8%** | **73.6%** | 73.4% |
-| **Snow** | 20.6% | 82.0% | 63.8% | 62.8% |
-| **Wet Ground** | 18.8% | 77.0% | 64.3% | 63.5% |
-| **Beam Missing** | 15.2% | 87.2% | 71.4% | 68.7% |
-| **Motion Blur** | 14.8% | 74.6% | 66.1% | 65.0% |
-| **Cross Sensor** | 4.4% | 73.8% | 57.5% | 56.3% |
-| **Crosstalk** | 4.7% | 23.6% | 35.4% | 13.9% |
-| **Fog** | **1.8%** | **41.2%** | **25.0%** | 9.5% |
+| **Incomplete Echo** | 88.2% | **92.8%** | **73.6%** | 73.4% |
+| **Snow** | 86.4% | 82.0% | 63.8% | 62.8% |
+| **Wet Ground** | 89.6% | 77.0% | 64.3% | 63.5% |
+| **Beam Missing** | 80.0% | 87.2% | 71.4% | 68.7% |
+| **Motion Blur** | 84.1% | 74.6% | 66.1% | 65.0% |
+| **Cross Sensor** | 56.6% | 73.8% | 57.5% | 56.3% |
+| **Crosstalk** | 22.1% | 23.6% | 35.4% | 13.9% |
+| **Fog** | **13.2%** | **41.2%** | **25.0%** | 9.5% |
 
-Three stories in one table. Near-healthy conditions stay near-healthy. The collapsed
-conditions gain 10-20x. And the perfect-oracle column now sits below zero-shot on
-every condition, meaning the clean prototypes are already the best prototypes
-available and prototype-level adaptation has no headroom. The columns use different
-metrics, so the within-column comparisons are the meaningful ones.
+All four columns are point accuracy, so they are directly comparable. The
+full-coverage mIoU equivalents are in sections 5.5 and 5.6 (for example, Fog
+zero-shot mIoU is 10.1% and Crosstalk 12.0%). The accuracy-to-mIoU gap is large
+because mIoU averages per-class IoU and is dominated by the rare classes, which
+collapse under corruption.
+
+The perfect-oracle column sits below zero-shot on every condition because this is a
+naive perfect-label re-estimation: re-estimating the prototypes from the degraded
+corrupted features is worse than keeping the frozen clean prototypes. This is the
+"prototype-level adaptation has no headroom" finding. The weighted oracle in
+section 5.5, which uses the right per-point weighting, is what actually beats
+zero-shot (Fog 16.6%, Crosstalk 26.2% full-scene mIoU).
 
 The current encoder, evaluated frozen against the previous baselines, improves mIoU
 on every condition (mean 13.2% to 36.4%), and the Fog and Crosstalk gains are
@@ -286,18 +294,19 @@ structure, which is the encoder thread's target.
 
 Re-estimating the prototypes from the corrupted stream with true labels recovers
 the collapsed conditions on the full scene, with no points removed, and the result
-is stable across pool sizes:
+is stable across pool sizes. The old baseline mIoU (the original, un-pretrained
+model, section 5.2) is included as the reference the robust encoder starts from:
 
-| Condition | Zero-shot mIoU | Full-label oracle mIoU | Gain |
-| :--- | :--- | :--- | :--- |
-| **Fog** | 10.1% | **16.6%** | +6.5 |
-| **Crosstalk** | 12.0% | **26.2%** | +14.2 |
-| Wet Ground | 49.0% | 51.2% | +2.2 |
-| Cross Sensor | 41.5% | 43.6% | +2.1 |
-| Snow | 39.4% | 40.7% | +1.3 |
-| Incomplete Echo | 41.2% | 41.2% | 0.0 |
-| Beam Missing | 53.7% | 53.6% | -0.1 |
-| Motion Blur | 44.3% | 44.8% | +0.5 |
+| Condition | Old baseline mIoU | Zero-shot mIoU | Full-label oracle mIoU | Gain |
+| :--- | :--- | :--- | :--- | :--- |
+| **Fog** | 1.8% | 10.1% | **16.6%** | +6.5 |
+| **Crosstalk** | 4.7% | 12.0% | **26.2%** | +14.2 |
+| Wet Ground | 18.8% | 49.0% | 51.2% | +2.2 |
+| Cross Sensor | 4.4% | 41.5% | 43.6% | +2.1 |
+| Snow | 20.6% | 39.4% | 40.7% | +1.3 |
+| Incomplete Echo | 25.5% | 41.2% | 41.2% | 0.0 |
+| Beam Missing | 15.2% | 53.7% | 53.6% | -0.1 |
+| Motion Blur | 14.8% | 44.3% | 44.8% | +0.5 |
 
 The prototype decoder is not exhausted: with the right per-point weighting,
 re-estimated prototypes beat the frozen clean ones on every condition, and
