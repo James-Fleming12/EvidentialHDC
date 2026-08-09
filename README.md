@@ -59,20 +59,26 @@ space against the thirdparty papers, and it gives higher absolute numbers becaus
 the problem is simpler. It does **not** solve the failure modes we care about,
 because those live in the features.
 
-### The three pillars
+### The three pillars (placeholders, to be filled in)
 
-The method rests on three pillars, each attacking one measured failure mode:
+The method is intended to rest on three pillars. Each is a placeholder at this
+stage: the general direction is set, the concrete design is still being measured
+and will be filled in as the diagnostics land.
 
-1. **Robust feature extractor pretraining.** Make the 128D space survive fog and
-   crosstalk before the HDC projection, so prototypes have a real manifold to live
-   on. This is framed against the DGLSS / DGLSS++ generalization frameworks by the
-   isotropy hypothesis (Section 3).
-2. **Adaptive prototype updates when necessary.** At deployment, decide from the
-   distance-to-clean-prototype uncertainty which points update the prototypes,
-   then re-decode. The measurements bound what this can achieve: the label-free
-   update is flat in full-coverage mIoU, and the perfect-label oracle is the wall.
-3. **Balanced update allocation.** Ensure the majority classes do not consume the
-   whole adaptation budget.
+1. **Robust feature extractor pretraining** (intended to improve on DGLSS++).
+   [to be filled: the pretraining objective and architecture. The goal is a 128D
+   feature space that survives fog and crosstalk before the HDC projection, with a
+   higher recoverable ceiling than the DGLSS++ baseline currently measured.]
+
+2. **Test-time adaptation, with an adaptively activated active-learning fallback**
+   for the particularly bad scenarios. [to be filled: the form of the TTA. The
+   measurements so far bound it: the label-free update is flat in full-coverage
+   mIoU, and the labeled ceiling is the wall, so a small label budget, activated
+   only in the worst conditions, is the current direction.]
+
+3. **Balanced update allocation** (inter- and intra-class balance). [to be filled:
+   how the adaptation budget is split across classes and subclusters so the
+   majority classes do not consume it all.]
 
 ---
 

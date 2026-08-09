@@ -174,9 +174,9 @@ def main():
             pool = f[pool_idx]
             val, vl = f[val_idx], l[val_idx]
 
-            lp_preds = torch.tensor(clf.predict(pool.numpy()))
-            lp_conf = torch.tensor(clf.predict_proba(pool.numpy()).max(axis=1))
-            ones = torch.ones(len(pool))
+            lp_preds = torch.tensor(clf.predict(pool.numpy())).to(device)
+            lp_conf = torch.tensor(clf.predict_proba(pool.numpy()).max(axis=1)).to(device)
+            ones = torch.ones(len(pool), device=device)
 
             def decode(protos):
                 return proto_miou(val, vl, protos, proto_lbls, proj, device)
