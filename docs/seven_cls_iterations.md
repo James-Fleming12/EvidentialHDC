@@ -78,17 +78,70 @@ there; on crosstalk the oracle gap (0.275 vs 0.204) is the headroom.
 
 1. **Encoder baseline in 7 classes**: `classcount_seven` (plain `supcon_vib`,
    10 epochs at 50% data) is the reference. Extend to the hardneg variant and the
-   DGLSS / DGLSS++ arms, measured with the isotropy diagnostics.
-2. **Prototype-TTA in 7 classes**: the gated weighted prototype update
-   (`robust_diagnostic/seven_cls_diag.py`), then the oracle ladder, and whether a
-   label-free update beats zero-shot on fog/crosstalk. On crosstalk the oracle gap
-   (0.275 vs 0.204) is the headroom to chase.
+   DGLSS / DGLSS++ arms, measured with the isotropy diagnostics. The isotropy
+   comparison is the decisive encoder test (both baselines sit at PR ~4 and the
+   collapse mechanism is not yet triggered).
+2. **Prototype-TTA in 7 classes**: the label-free gated weighted prototype update
+   is CLOSED (Iteration 1: flat on fog/crosstalk, same assignment wall as
+   iterations 0-8). The oracle gap on crosstalk (0.275 vs 0.204 gate) is real but
+   requires true labels; a label-free version would need an assignment signal the
+   distance gate does not provide. The remaining TTA question is whether any
+   label-free update (not gate + re-estimate) can move the centroids toward the
+   corruption.
 3. **Adopt the 7-class space for all comparisons** going forward (it is the
    thirdparty protocol).
 
 ## Iteration log
 
-(To be filled as the two threads are exercised in the 7-class setting.)
+### Iteration 1: per-class breakdown, label-free gated update, isotropy (`seven_cls_diag.py`)
+
+**Per-class nearest-centroid IoU (7-class model):**
+
+| class | clean | fog | crosstalk |
+| :--- | :--- | :--- | :--- |
+| vehicle (1) | 0.84 | 0.08 | 0.30 |
+| pedestrian (2) | 0.10 | 0.00 | 0.00 |
+| road (3) | 0.91 | 0.46 | 0.40 |
+| sidewalk (4) | 0.81 | 0.01 | 0.05 |
+| terrain (5) | 0.68 | 0.03 | 0.03 |
+| manmade (6) | 0.42 | 0.05 | 0.18 |
+| vegetation (7) | 0.67 | 0.11 | 0.07 |
+
+**Findings:**
+
+1. **Pedestrian is the universal casualty**: the one rare class in the 7-class map
+   (person + moving-person, ~0.0003 of points) is 0.10 clean and 0.00 under both
+   corruptions. The identical pattern holds in the 17-class map (person 0.11 ->
+   0.00). Road is the universal survivor (0.46 / 0.40). The 7-class mIoU is carried
+   by road plus the partial survivors; the class-conditional collapse (Phase 24.2)
+   is not fixed by the coarse map, only hidden for the classes folded into
+   background. Pedestrian is the standing casualty to target (the fragile-class
+   weighting thread).
+
+2. **The label-free gated prototype update is FLAT** (fog 0.104 -> 0.113 @ 50% ->
+   0.105 @ 10%; crosstalk 0.146 -> 0.152 @ 50% -> 0.146 @ 10%; all17 the same).
+   Re-estimating the centroids on the distance-confident subset just reproduces the
+   clean centroids, because those points already decode correctly; the far points
+   that would move the centroids toward the corruption are exactly the ones the
+   label-free gate excludes. The true-label oracle reaches 0.165 / 0.275 (seven),
+   so the headroom is real but requires the assignment the gate cannot provide (the
+   iterations 0-8 wall: assignment accuracy is not re-estimate quality). "Update
+   prototypes when necessary" via distance-gating does not recover fog/crosstalk.
+
+3. **Isotropy: PR ~4 for both models** (seven 3.7, all17 4.5), with near-identical
+   HDC diversity (deadF 0.014 / 0.009, hamming 0.40 / 0.41). The clean features are
+   highly anisotropic in both, yet the HDC pathway is healthy (deadF ~1%) and the
+   7-class model decodes better on clean (0.632 vs 0.443). So the Phase 24.12 +19
+   clean mIoU is a LABEL-SPACE effect (fewer, well-supported classes), not a
+   feature-geometry effect. The anisotropy-collapse mechanism (dead-coordinate
+   saturation) is NOT triggered at the supcon_vib baseline, so the DGLSS / DGLSS++
+   comparison (isotropy_diag) is the test that must show whether those regimes push
+   the space below this PR ~4 baseline.
+
+**Implications:** the label-free gated-update TTA is closed as a mechanism on these
+features (same assignment wall as iterations 0-8); the 7-class decode advantage is
+label-space, not encoder geometry; the encoder-geometry question is unchanged and
+the isotropy comparison remains the decisive encoder test.
 
 ## Scripts and configs
 
