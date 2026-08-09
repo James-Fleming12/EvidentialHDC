@@ -82,131 +82,28 @@ and will be filled in as the diagnostics land.
 
 ---
 
-## 2. The (potential) adaptive learning framework
+## 2. Pillar 1: Robust feature extractor pretraining
+
+[To be filled: the pretraining objective and architecture.] The goal is a 128D
+feature space that survives fog and crosstalk before the HDC projection, with a
+higher recoverable ceiling than the DGLSS++ baseline currently measured. The
+isotropy comparison (DGLSS / DGLSS++ / supcon_vib) and the recoverability
+diagnostics are tracked in the robust-iterations doc.
+
+---
+
+## 3. Pillar 2: Test-time adaptation, with an active-learning fallback
 
 The framework has two threads, now evaluated in the 7-class setting. Together they
 support a path from the current target (active learning) to the ultimate goal
 (label-free prototype adaptation).
 
-The first thread is **robust feature-extractor training**, and it is the current
-focus. The goal is a feature space whose fog and crosstalk recoverable ceiling
-approaches clean. The working hypothesis is angular isotropy: our contrastive
-training keeps the classes spread evenly over the unit hypersphere, which stops
-the space from collapsing into a low-rank anisotropic manifold that would saturate
-the HDC sign-projection. This is being tested directly against the DGLSS and
-DGLSS++ generalization frameworks (Section 3).
+The first thread is robust feature-extractor training, and it is the current focus
+(Pillar 1). The second thread is adaptive prototype updates when necessary: at
+deployment, the distance to the nearest clean prototype decides which points may
+update the prototypes, and the decoder re-decodes.
 
-The second thread is **adaptive prototype updates when necessary**. In the long
-run this is label-free adaptation: at deployment, the distance to the nearest
-clean prototype decides which points may update the prototypes, and the decoder
-re-decodes. The measurements bound this thread tightly: the label-free update
-does not move full-coverage mIoU above zero-shot, and the perfect-label oracle
-ceiling is only ~0.15 on fog and ~0.27 on crosstalk. That ceiling is the same for
-every encoder, so only the first thread can move it.
-
-The near-term bridge between the two threads is **active learning**. The measured
-facts line up for it: the recoverable set of points is identifiable label-free
-(the distance signal ranks it well), the recoverable points cluster by class in
-the local feature structure, and the full-label oracle is well above what any
-label-free update reaches. That means a small budget of labels, spent on exactly
-the ranked hard points, should update the prototypes far more effectively than any
-label-free signal, and the gap to the oracle is what that budget buys. The robust
-encoder is what makes the selection signal informative and the ceiling worth
-reaching.
-
-The key measurement that motivated this framing: the oracle ceiling is set by the
-map and by the corrupted feature structure, not by the gating mechanism and not by
-the encoder. Two consequences follow. First, we use the 7-class map as the
-evaluation space with our existing 17-class-trained encoders, which already decode
-better under it than an encoder trained on 7 classes, so no retraining is needed.
-Second, the standing target is the encoder: whatever training regime produces a
-feature space whose fog and crosstalk ceiling approaches clean is the win.
-
----
-
-## 3. Pillar 1: Robust Feature Extractor Pretraining
-
-### The problem, measured
-
-Fog and Crosstalk mathematically destroy the linear separability of the feature
-manifold. The noise points become indistinguishable from the semantic points, so
-prototype drift and memory-bank methods have nothing to work with. The only fix is
-to train the encoder so the corruption maps to clean semantics.
-
-### The mechanism
-
-We train the 128D backbone with a decoupled objective before the HDC projection
-layer:
-
-- **Contrastive alignment.** A supervised contrastive loss pulls augmented views of
-  the same class together and pushes different classes apart. LiDAR segmentation is
-  dense, so a single batch provides millions of positive and negative pairs
-  natively.
-- **Magnitude isolation.** A variational information-bottleneck penalty forces the
-  latent magnitudes down. Complex, high-entropy spatial noise is expensive to
-  memorize, so it collapses toward the origin, while the semantic geometry keeps
-  bounded, spherical, dense clusters.
-- **Physics-based augmentation only.** We use voxelized beam dropout, ray-axis
-  jitter, and density subsampling, and explicitly avoid KITTI-C's own ray-tracing
-  algorithms, so the augmentation does not overfit to the corruption pipeline.
-
-### Measured effect
-
-- Linear separability on Fog reached **49.4%**, vs 23.6% for the baseline (2.1x).
-- The information survives the HDC encoding losslessly: 49.4% linear, then 49.0%
-  after random projection, then 47.8% after sign binarization.
-- Feature magnitudes stay bounded (about 4.6-5.6), which is what the Euclidean
-  nearest-prototype geometry of HDC needs.
-- Best HDC prototype accuracy from the naive decoder: **20.1%**, vs 5.3% for the
-  untrained baseline in the same protocol.
-- Post-hoc remediation on top of the robust encoder does not help. The extractor
-  is solved enough; further investment belongs elsewhere.
-
-### Isotropy in comparison to other LiDAR generalization frameworks
-
-The two closest single-source domain-generalization frameworks are DGLSS and
-DGLSS++. Both train a robust encoder with correlation-consistency constraints
-(the SCC and LSCC losses). When we adapted them to our architecture they collapsed
-the HDC decode, and the working hypothesis is the anisotropy mechanism.
-
-The concern is this. A constraint that only asks the class-correlation matrix to be
-consistent can be satisfied by collapsing the embedding into a low-rank subspace.
-A low-rank space with a strong shared direction saturates the HDC sign-projection:
-most of the 10,000 binarized coordinates become near-constant across points, so
-the prototypes collapse. Our contrastive term is the opposite: it is a uniformity
-objective that is only satisfied when the classes spread evenly over the sphere, so
-every random projection sees a balanced mix of points.
-
-The baseline measurement is important context. Our own contrastive class-count
-models sit at a participation ratio of about 4 in both the 7-class and 17-class
-regimes, with roughly 1% dead HDC coordinates and the same code diversity. The HDC
-pathway is healthy and the collapse mechanism is not triggered at the baseline. So
-the isotropic-vs-anisotropic claim must be tested against a model that is
-genuinely more anisotropic than ours. The isotropy diagnostic trains DGLSS, DGLSS++,
-and our method at equal budget and measures the participation ratio, the top-5
-variance share, the condition number, and the HDC dead-coordinate fraction on clean
-and corrupted features. That will decide whether the DGLSS regimes push the space
-below our baseline, and whether any regime moves the fog and crosstalk ceiling.
-
----
-
-## 4. Pillar 2: Adaptive Prototype Updates When Necessary (TTA)
-
-### The problem, measured
-
-With the robust encoder in place, the remaining failure is the naive decoder:
-updates that accept every point absorb the fog and crosstalk artifacts and poison
-the zero-shot centroid. On the pre-robust encoder, even the perfect-label prototype
-ceiling was only 8.7% mIoU on fog, which proved the collapse is in the
-representation, not the decoder.
-
-### The uncertainty signal
-
-We use the distance to the nearest clean class prototype, measured as a scale-
-invariant cosine similarity. On 7-class fog this separates correct from wrong
-points with AUROC 0.71-0.82.
-
-### What the measurements bound (full-coverage mIoU)
+What the measurements bound so far (full-coverage mIoU):
 
 - The label-free gated update is flat. Re-estimating the centroids from the
   distance-confident points reproduces the clean centroids, because the confident
@@ -215,26 +112,26 @@ points with AUROC 0.71-0.82.
   iterations: a label-free signal can say which points are wrong, but not what
   class they belong to.
 - The only full-coverage gains come from true labels. The perfect-label oracle
-  ceiling is ~0.15 on fog and ~0.27 on crosstalk. The distance signal ranks the
-  points well, but it cannot harvest that ceiling label-free on the full scene.
+  ceiling is about 0.15 on fog and 0.27 on crosstalk, and it is the same for every
+  encoder, so only the encoder thread can move it.
 
-### The target
+The near-term bridge between the threads is active learning. The measured facts
+line up for it: the recoverable set of points is identifiable label-free, the
+recoverable points cluster by class in the local feature structure, and the
+full-label oracle is well above what any label-free update reaches. A small budget
+of labels, spent on exactly the ranked hard points, should update the prototypes
+far more effectively than any label-free signal, activated only in the
+particularly bad scenarios. The robust encoder is what makes the selection signal
+informative and the ceiling worth reaching.
 
-The oracle ceiling is the wall. The long-term goal is to approach it label-free,
-which the encoder thread is the only lever that raises. The near-term path is
-active learning: the distance signal picks the ranked hard points, a small label
-budget is spent on exactly those, and the prototypes update from them. Because the
-recoverable points cluster by class in the local feature structure, the small
-label budget can name what the label-free signal cannot, and the update should
-land well above any label-free re-estimate and close most of the oracle gap.
+[To be filled: the form of the TTA, and how the active-learning fallback is
+activated.]
 
-### A design rule
-
-Prior correction and prototype updates must not share a pathway. The prior is an
-inference-time constant that shifts decision boundaries; it does not move
-prototypes by itself. But if prior-corrected pseudo-labels feed the updates, the
-bias steers the prototypes and the drift compounds. The prediction pathway may use
-the prior-corrected score; the adaptation pathway must not.
+A design rule: prior correction and prototype updates must not share a pathway.
+The prior is an inference-time constant that shifts decision boundaries; it does
+not move prototypes by itself. But if prior-corrected pseudo-labels feed the
+updates, the bias steers the prototypes and the drift compounds. The prediction
+pathway may use the prior-corrected score; the adaptation pathway must not.
 
 ---
 
