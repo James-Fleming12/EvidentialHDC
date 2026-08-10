@@ -143,13 +143,23 @@ def dglss_scc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
     prototypes, applies the same all-pairs consistency between cells (DGLSS++ Eq. 17
     first term), and adds the per-scan contrastive term of Eq. 17 (same-class pull on
     the normalized 128D bottleneck, within each scan).
+
+    The loss value is IDENTICAL to the reference formulation but computed fully
+    vectorized. Class prototypes are pooled with a single one-hot scatter (no per-class
+    loop) and the all-pairs shared-class correlation mismatch is closed-form over the
+    gated Gram matrices (no Python pair loop). For pair (i, j) with class-presence
+    vectors p_i, p_j, gated Grams U_k = (p_k p_k^T) . Z_k Z_k^T and W_k = U_k^2:
+        sum of squared diffs over shared classes  =  p_j^T W_i p_j + p_i^T W_j p_i
+                                                    - 2 <U_i, U_j>_F,
+    and the per-pair mean divides by (p_i . p_j)^2 (the shared-class count squared).
     """
     B, C, H, W = z8.shape
-    cls = proj_labels[proj_labels > 0].unique().tolist()
+    device = z8.device
+    C_axis = int(proj_labels.max().item()) + 1
 
-    # collect (class_order, prototype_matrix): per-scan global (SCC) or per-cell (LSCC),
-    # pooling both views (the 2B scans of the batch, per the papers).
-    protos_all = []
+    # collect per-(cell, view) prototype matrices: full class axis (zero rows for
+    # absent / below-min_pts classes) + class-presence vector.
+    protos = []
     for b in range(B):
         if local:
             cells = [(slice(0, H), slice(col, min(col + cell, W))) for col in range(0, W, cell)]
@@ -160,34 +170,37 @@ def dglss_scc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
                 zf = z[b, :, rs, cs].permute(1, 2, 0).reshape(-1, C)
                 ls = proj_labels[b, rs, cs].reshape(-1)
                 m = (vol[b, 0, rs, cs] != 0).reshape(-1)
-                protos, present = {}, []
-                for c in cls:
-                    mm = (ls == c) & m
-                    if mm.sum() >= min_pts:
-                        p = zf[mm].mean(dim=0)
-                        protos[c] = F.normalize(p, p=2, dim=0) if normalize else p
-                        present.append(c)
-                if len(present) >= 2:
-                    order = sorted(present)
-                    protos_all.append((order, torch.stack([protos[c] for c in order])))
+                vsel = m & (ls > 0)
+                oh = F.one_hot(ls[vsel], num_classes=C_axis).float()
+                counts = oh.sum(0)
+                Z = (oh.t() @ zf[vsel]) / counts.clamp(min=1).unsqueeze(1)
+                if normalize:
+                    Z = F.normalize(Z, p=2, dim=1)
+                present = counts >= min_pts
+                protos.append((Z * present.unsqueeze(1), present))
 
-    loss = torch.tensor(0.0, device=z8.device)
-    loss_contr = torch.tensor(0.0, device=z8.device)
-    n = 0
+    Z = torch.stack([p[0] for p in protos])
+    P = torch.stack([p[1].float() for p in protos])
+    keep = P.sum(1) >= 2
+    Z, P = Z[keep], P[keep]
+    L = Z.shape[0]
+
+    loss_contr = torch.tensor(0.0, device=device)
     n_scans = 0
-    for i in range(len(protos_all)):
-        oi, Zi = protos_all[i]
-        for j in range(i + 1, len(protos_all)):
-            oj, Zj = protos_all[j]
-            shared = sorted(set(oi) & set(oj))
-            if len(shared) < 2:
-                continue
-            ioi = {c: k for k, c in enumerate(oi)}
-            ioj = {c: k for k, c in enumerate(oj)}
-            Zi_s = Zi[[ioi[c] for c in shared]]
-            Zj_s = Zj[[ioj[c] for c in shared]]
-            loss = loss + ((Zi_s @ Zi_s.T) - (Zj_s @ Zj_s.T)).pow(2).mean()
-            n += 1
+    loss_corr = torch.tensor(0.0, device=device)
+    if L >= 2:
+        G = torch.bmm(Z, Z.transpose(1, 2))               # (L, C_axis, C_axis) Grams
+        U = P.unsqueeze(2) * G * P.unsqueeze(1)           # gated Grams
+        W = U * U
+        M = P.unsqueeze(2) * P.unsqueeze(1)               # outer-presence masks
+        T = W.reshape(L, -1) @ M.reshape(L, -1).t()       # T[i,j] = p_j^T W_i p_j
+        cross = U.reshape(L, -1) @ U.reshape(L, -1).t()   # <U_i, U_j>_F
+        dist2 = T + T.t() - 2.0 * cross                   # shared-masked Frobenius^2
+        S = P @ P.t()                                     # shared class counts
+        tri = torch.triu(torch.ones(L, L, dtype=torch.bool, device=device), diagonal=1)
+        valid = tri & (S >= 2)
+        if valid.any():
+            loss_corr = (dist2[valid] / S[valid].square()).mean()
 
     if local:
         # DGLSS++ Eq. 17 contrastive term: per-scan InfoNCE on the normalized bottleneck
@@ -216,7 +229,7 @@ def dglss_scc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
                                        - torch.logsumexp(pos_sim, dim=1)).mean()
             n_scans += 1
 
-    loss = loss / max(n, 1)
+    loss = loss_corr
     if local and n_scans > 0:
         loss = loss + loss_contr / n_scans
     return loss
