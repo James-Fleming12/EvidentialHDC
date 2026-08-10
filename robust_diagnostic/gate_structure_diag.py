@@ -85,11 +85,9 @@ def class_centroids(z, l):
     return means
 
 
-def local_density(z, k=20, chunk=8192, max_pts=50000):
-    """Mean distance to k nearest neighbors (lower = denser). Chunked, subsampled."""
-    if len(z) > max_pts:
-        idx = torch.randperm(len(z))[:max_pts]
-        z = z[idx]
+def local_density(z, k=20, chunk=8192):
+    """Mean distance to k nearest neighbors (lower = denser). Chunked so the
+    (chunk x N) similarity never materializes fully. Operates on ALL input points."""
     zn = F.normalize(z, p=2, dim=1)
     dens = torch.zeros(len(z))
     for s in range(0, len(z), chunk):
@@ -109,7 +107,8 @@ def main():
     parser.add_argument("--arch", type=str, default="config/arch/senet-2048p.yml")
     parser.add_argument("--log_dir", type=str, default="robust_diagnostic/logs")
     parser.add_argument("--frames", type=int, default=100)
-    parser.add_argument("--max_pts", type=int, default=200000)
+    parser.add_argument("--max_pts", type=int, default=50000,
+                        help="points per condition for the whole analysis (all signals aligned)")
     parser.add_argument("--out", type=str, default="robust_diagnostic/logs/gate_structure_results.json")
     args = parser.parse_args()
 
@@ -158,7 +157,7 @@ def main():
             dist = sims.max(dim=1).values.numpy()
             margin = (sims.topk(2, dim=1).values[:, 0] - sims.topk(2, dim=1).values[:, 1]).numpy()
             norm = f.norm(p=2, dim=1).numpy()
-            dens = local_density(f, max_pts=50000).numpy()
+            dens = local_density(f).numpy()
 
             sigs = {'conf': conf, 'entr': entr, 'dist': dist,
                     'norm': norm, 'margin': margin, 'density': dens}
