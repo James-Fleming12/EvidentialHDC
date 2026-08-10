@@ -164,6 +164,14 @@ the theoretical analysis predicts; but DGLSS++ decodes best on clean, so the
 "harmful for HDC" claim is only partially confirmed, and the difference shows in
 the binarized decode, not the continuous representation.
 
+At medium scale (24 ep / 100% data, Iteration 4) the pattern persists and
+sharpens: the medium DGLSS++ space decodes better than the micro one (clean HDC
+mIoU 0.456 to 0.530), and the dead-fraction mechanism fires exactly on the two
+collapsed conditions (fog 0.221, crosstalk 0.147), the only conditions with an
+elevated shared-mean fraction (0.83 / 0.71). The label-free TTA findings also
+hold at scale: the assignment wall persists and the norm-gated update no longer
+beats naive EMA once the oracle gap is larger.
+
 3. **Augmentation scope.** DGLSS augments sparsity only (dense-to-sparse); DGLSS++ adds dense augmentation for the sparse-to-dense direction. Our augmentation targets the specific corruption failure modes of the SemanticKITTI-C regime (fog and crosstalk) with depth jitter and volumetric fake-return injection, rather than cross-sensor sparsity.
 
 4. **Supervision form.** DGLSS / DGLSS++ use weighted CE plus unsupervised consistency terms (L1 feature alignment, correlation matrices, and a within-scan InfoNCE in LSCC). Our SupCon term is label-informed (per-point same-class positives and all-other negatives, essentially free at dense LiDAR scale), paired with the VIB magnitude bottleneck and CE. The consistency is cross-view and pairwise-angular, not a correlation-matrix match.

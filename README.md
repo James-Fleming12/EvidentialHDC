@@ -281,6 +281,26 @@ What this shows:
   stays 6-10 points below its ceiling on every extractor, consistent with the
   assignment wall being the binding constraint on crosstalk.
 
+**At medium scale (`--med`, medium DGLSS++ 24 ep/100% data, medium supcon_vib
+pretrain, DGLSS arm still micro):** the same battery (`tta_ceiling_diag.py --med`)
+gives
+
+| extractor | condition | zero-shot | naive EMA | best label-free | label ceiling |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| supcon_vib (med) | fog | 10.1% | 8.4% | **10.7%** | 16.4% |
+| supcon_vib (med) | crosstalk | 12.0% | 9.8% | **15.1%** | 26.2% |
+| supcon_vib_dglss (micro) | fog | 7.6% | 10.6% | **10.8%** | 11.6% |
+| supcon_vib_dglss (micro) | crosstalk | 13.0% | 16.5% | **17.9%** | 21.1% |
+| supcon_vib_dglsspp (med) | fog | 9.2% | 11.4% | **12.7%** | 20.0% |
+| supcon_vib_dglsspp (med) | crosstalk | 14.1% | 15.0% | **17.4%** | 25.0% |
+
+The wall holds at scale: the DGLSS++ fog rec@3 stays below the random baseline
+(0.14 vs ~0.19) and the oracle-vs-LP assignment gap is ~0.01. Medium DGLSS++
+beats medium supcon_vib on the frozen labeled ceilings (HDC oracle mean 0.399 vs
+0.380), and the norm gate from the small-scale run does not scale its gap fraction
+(0.20 fog vs 0.58 micro) — at scale it matches naive EMA and stays below BN
+alignment. Full tables and interpretation in the iterations doc (Iteration 4).
+
 ---
 
 ## 6. Order of work (current state)

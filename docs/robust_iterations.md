@@ -532,3 +532,180 @@ closed:
 4. **Caveat.** Same under-converged extractors; and the gap fractions are on a
    100k-pool split, so compare within this table rather than to the 500k-pool
    Iteration-1 numbers.
+
+### Iteration 4: medium-scale validation
+
+The Iteration 0-3 measurements were all on under-converged micro extractors
+(12 epochs at 10% data). This iteration re-runs the battery on a medium-scale
+DGLSS++ checkpoint and the medium supcon_vib pretrain to check which findings
+scale. Setup (`--med` flags; outputs `..._results_med.json`):
+
+- **supcon_vib**: the existing medium pretrain `logs/med_pretrain_supcon_vib`
+  (saved at epoch 25);
+- **supcon_vib_dglsspp**: the medium run trained for this validation
+  (24 epochs at 100% of sequence 08, `robust_diagnostic/logs/supcon_vib_dglsspp`);
+- **supcon_vib_dglss**: no medium run exists; stays at the micro checkpoint
+  (12 epochs, 10% data). Treat its column as the under-converged reference, not a
+  scale comparison.
+
+The isotropy file contains only the medium DGLSS++ run; the frozen-ceiling and
+TTA-ceiling files contain all three extractors.
+
+#### 4.1 Isotropy of the medium DGLSS++ space
+
+128D-bottleneck isotropy per condition (dead-fraction / mean-fraction lower is
+better; LP and HDC mIoU higher is better):
+
+| set | PR | deadF | meanF | Hamming | LP | HDC mIoU |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| clean | 4.25 | 0.000 | 0.394 | 0.425 | 0.885 | 0.530 |
+| fog | 3.49 | 0.221 | 0.830 | 0.248 | 0.524 | 0.068 |
+| crosstalk | 2.30 | 0.147 | 0.708 | 0.323 | 0.224 | 0.115 |
+| snow | 3.80 | 0.000 | 0.351 | 0.450 | 0.794 | 0.396 |
+| wet_ground | 3.18 | 0.000 | 0.508 | 0.406 | 0.848 | 0.483 |
+| incomplete_echo | 3.72 | 0.000 | 0.411 | 0.426 | 0.909 | 0.449 |
+| beam_missing | 3.58 | 0.000 | 0.273 | 0.461 | 0.865 | 0.506 |
+| motion_blur | 3.63 | 0.000 | 0.397 | 0.442 | 0.868 | 0.502 |
+| cross_sensor | 4.19 | 0.000 | 0.266 | 0.474 | 0.786 | 0.434 |
+| **mean (8 corrupted)** | 3.49 | 0.046 | 0.468 | 0.404 | 0.727 | 0.369 |
+
+#### 4.2 Frozen labeled ceiling at medium scale
+
+Each extractor evaluated with a labeled decoder (`frozen_ceiling_diag.py --med`):
+LP = logistic probe fit on clean labels (continuous ceiling), HDC prototypes
+re-estimated with true labels on the corrupted points (binarized ceiling). Bold =
+best per row.
+
+**LP mIoU (continuous labeled ceiling):**
+
+| condition | supcon_vib (med) | supcon_vib_dglss (micro) | supcon_vib_dglsspp (med) |
+| :--- | :--- | :--- | :--- |
+| fog | 0.036 | **0.061** | 0.049 |
+| crosstalk | 0.040 | **0.098** | 0.061 |
+| snow | **0.429** | 0.395 | 0.423 |
+| wet_ground | 0.516 | 0.474 | **0.603** |
+| incomplete_echo | **0.565** | 0.490 | 0.554 |
+| beam_missing | 0.580 | 0.505 | **0.613** |
+| motion_blur | 0.555 | 0.440 | **0.622** |
+| cross_sensor | **0.501** | 0.344 | 0.476 |
+| **mean** | 0.403 | 0.351 | **0.425** |
+
+**Zero-shot HDC mIoU (reference):**
+
+| condition | supcon_vib (med) | supcon_vib_dglss (micro) | supcon_vib_dglsspp (med) |
+| :--- | :--- | :--- | :--- |
+| fog | **0.078** | 0.056 | 0.068 |
+| crosstalk | 0.101 | 0.099 | **0.115** |
+| snow | 0.384 | 0.329 | **0.396** |
+| wet_ground | 0.446 | 0.377 | **0.483** |
+| incomplete_echo | 0.412 | 0.326 | **0.449** |
+| beam_missing | 0.470 | 0.372 | **0.506** |
+| motion_blur | 0.450 | 0.345 | **0.502** |
+| cross_sensor | 0.395 | 0.312 | **0.434** |
+| **mean** | 0.342 | 0.277 | **0.369** |
+
+**HDC oracle mIoU (binarized labeled ceiling):**
+
+| condition | supcon_vib (med) | supcon_vib_dglss (micro) | supcon_vib_dglsspp (med) |
+| :--- | :--- | :--- | :--- |
+| fog | **0.156** | 0.113 | 0.151 |
+| crosstalk | **0.221** | 0.176 | 0.214 |
+| snow | 0.404 | 0.340 | **0.410** |
+| wet_ground | 0.489 | 0.426 | **0.514** |
+| incomplete_echo | 0.408 | 0.329 | **0.448** |
+| beam_missing | 0.474 | 0.367 | **0.506** |
+| motion_blur | 0.454 | 0.346 | **0.503** |
+| cross_sensor | 0.433 | 0.302 | **0.451** |
+| **mean** | 0.380 | 0.300 | **0.399** |
+
+(LP-accuracy means over the 8 corrupted conditions for reference: supcon_vib
+0.77, dglss 0.72, dglsspp 0.73.)
+
+#### 4.3 TTA battery at medium scale
+
+Same battery as Iteration 1 (`tta_ceiling_diag.py --med`, frozen features,
+pool 500k / val 100k). Assignment-wall diagnostics (rec@3 = true class in top-3
+clean prototypes for the zs-wrong points, random baseline ~0.19; rankT = mean
+true-class rank for the recoverable points; LPrec = LP accuracy on the
+recoverable set; gorc / glp = gated re-estimate with oracle- vs LP-assigned
+labels):
+
+| extractor | cond | rec@3 | cosT | rankT | LPrec | gorc | glp |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| supcon_vib (med) | fog | 0.081 | 0.118 | 3.69 | 0.061 | 0.099 | 0.092 |
+| supcon_vib (med) | crosstalk | 0.129 | 0.126 | 4.82 | 0.078 | 0.138 | 0.114 |
+| supcon_vib (med) | snow | 0.431 | 0.581 | 1.27 | 0.508 | 0.386 | 0.386 |
+| supcon_vib_dglss (micro) | fog | 0.210 | 0.283 | 2.68 | 0.080 | 0.106 | 0.090 |
+| supcon_vib_dglss (micro) | crosstalk | 0.477 | 0.265 | 2.50 | 0.245 | 0.141 | 0.138 |
+| supcon_vib_dglss (micro) | snow | 0.459 | 0.674 | 1.30 | 0.456 | 0.339 | 0.339 |
+| supcon_vib_dglsspp (med) | fog | 0.137 | 0.006 | 2.50 | 0.542 | 0.111 | 0.109 |
+| supcon_vib_dglsspp (med) | crosstalk | 0.272 | 0.024 | 2.37 | 0.120 | 0.154 | 0.147 |
+| supcon_vib_dglsspp (med) | snow | 0.321 | 0.355 | 1.21 | 0.352 | 0.415 | 0.414 |
+
+TTA methods (full-scene mIoU, with zero-shot and oracle for reference):
+
+| extractor | cond | zero-shot | naive | conf | dist | bn | knn | oracle |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| supcon_vib (med) | fog | 0.101 | 0.084 | 0.084 | 0.083 | **0.107** | 0.093 | 0.164 |
+| supcon_vib (med) | crosstalk | 0.120 | 0.098 | 0.098 | 0.098 | **0.151** | 0.107 | 0.262 |
+| supcon_vib (med) | snow | 0.394 | **0.400** | 0.399 | 0.400 | 0.400 | 0.381 | 0.407 |
+| supcon_vib_dglss (micro) | fog | 0.076 | 0.106 | 0.104 | 0.106 | **0.108** | 0.087 | 0.116 |
+| supcon_vib_dglss (micro) | crosstalk | 0.130 | 0.165 | 0.163 | 0.165 | **0.179** | 0.141 | 0.211 |
+| supcon_vib_dglss (micro) | snow | 0.349 | 0.328 | 0.325 | 0.329 | **0.359** | 0.336 | 0.355 |
+| supcon_vib_dglsspp (med) | fog | 0.092 | 0.114 | 0.114 | 0.117 | **0.127** | 0.109 | 0.200 |
+| supcon_vib_dglsspp (med) | crosstalk | 0.141 | 0.150 | 0.151 | 0.151 | **0.174** | 0.148 | 0.250 |
+| supcon_vib_dglsspp (med) | snow | 0.418 | **0.425** | 0.424 | 0.425 | 0.412 | 0.412 | 0.429 |
+
+#### 4.4 The gated update at medium scale
+
+The norm-gated prototype update on the medium DGLSS++ extractor
+(`ttagate_diag.py --methods supcon_vib_dglsspp --med`, 100k pool / 100k val):
+
+| extractor | cond | zero-shot | gate mIoU | oracle | gap-closed |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| supcon_vib_dglsspp (med) | fog | 0.092 | norm 0.114 | 0.198 | 0.20 |
+| supcon_vib_dglsspp (med) | crosstalk | 0.141 | norm 0.149 | 0.249 | 0.08 |
+
+#### 4.5 What Iteration 4 shows
+
+1. **The medium DGLSS++ extractor decodes better and stays structured.** Clean HDC
+   mIoU rises from 0.456 (micro) to 0.530 (medium) and the 8-condition corrupted
+   mean from 0.310 to 0.369; the space is also less anisotropic at scale (clean PR
+   2.7 to 4.3, mean-fraction 0.51 to 0.39). The medium run does not degrade the
+   DGLSS++ decoder — it improves it.
+2. **The mean-dominance mechanism localizes to the collapsed conditions.** The dead
+   fraction is zero on every healthy condition but fires on fog (0.221) and
+   crosstalk (0.147), the only conditions with an elevated mean-fraction (0.830 fog,
+   0.708 crosstalk) and the conditions where HDC mIoU collapses to 0.068 / 0.115.
+   The theory's mechanism (shared-mean dominance saturating the HDC sign codes) is
+   exactly where the decode fails.
+3. **Where both arms are medium scale, DGLSS++ is the best decoder.** On the frozen
+   labeled ceiling, medium DGLSS++ beats medium supcon_vib on the corrupted mean in
+   the continuous (LP-mIoU 0.425 vs 0.403), zero-shot HDC (0.369 vs 0.342), and
+   binarized oracle (0.399 vs 0.380) pathways; the micro DGLSS column is worst on
+   all three (scale gap in zero-shot HDC: 0.277 to 0.369). Caveat: the two medium
+   checkpoints are not identically budgeted (supcon_vib is the earlier
+   `med_pretrain` run, DGLSS++ is 24 ep at 100% data), so the head-to-head is
+   indicative, not controlled.
+4. **The assignment wall persists at scale.** Medium DGLSS++ fog rec@3 is 0.137
+   (below the ~0.19 random baseline) and the gated oracle-vs-LP gap is ~0.002-0.007
+   — detection without assignment, exactly as at micro scale. One structural change:
+   on fog the recoverable set is smaller (rec@3 0.14 vs 0.21 micro) but far more
+   cleanly labeled (LPrec 0.54 vs 0.04), so what is recoverable is better
+   recoverable.
+5. **The label-free TTA methods stay flat, and the best lever remains BN
+   alignment.** Naive / confidence / distance gates close ~0.08-0.32 of the
+   fog/crosstalk gaps on the DGLSS++ and DGLSS arms, while on supcon_vib they sit
+   *below* zero-shot on the collapsed conditions (fog 0.101 to 0.084); BN alignment
+   is the best label-free update everywhere (fog 0.107-0.127, crosstalk
+   0.151-0.179).
+6. **The norm-gate lever does not scale its gap fraction.** The Iteration-3 headline
+   (norm gate closes 58% of the DGLSS++ fog gap) was on the under-converged micro
+   extractor with a small oracle (0.143). At medium scale the oracle is larger (fog
+   0.198, crosstalk 0.249) and the norm gate closes 0.20 / 0.08 of the gap — exactly
+   matching naive EMA (0.20 / 0.08) and below BN alignment (0.32 / 0.31). The
+   absolute gain is similar (fog +0.022), but relative to the larger oracle gap its
+   fraction halves. The "norm gate as the superior lever" result was a small-scale
+   artifact; at scale it is a comparable-but-not-better principled weight,
+   consistent with the Iteration-3 caveat.
+
