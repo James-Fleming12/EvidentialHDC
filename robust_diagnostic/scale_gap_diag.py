@@ -190,14 +190,22 @@ def main():
     parser.add_argument("--kittic_dir", type=str, default="/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C")
     parser.add_argument("--config", type=str, default="config/labels/semantic-kitti-all.yaml")
     parser.add_argument("--arch", type=str, default="config/arch/senet-2048p.yml")
+    parser.add_argument("--log_dir", type=str, default="robust_diagnostic/logs")
     parser.add_argument("--frames", type=int, default=100)
     parser.add_argument("--pool_size", type=int, default=100000)
     parser.add_argument("--val_size", type=int, default=100000)
     parser.add_argument("--micro_path", type=str, default=MICRO_PATH,
-                        help="micro DGLSS++ checkpoint dir (default: the backed-up micro)")
+                        help="micro checkpoint dir (default: the backed-up micro dglsspp)")
     parser.add_argument("--med_path", type=str, default=MED_PATH,
-                        help="medium DGLSS++ checkpoint dir (default: the 24ep/100% run)")
-    parser.add_argument("--out", type=str, default="robust_diagnostic/logs/scale_gap_results.json")
+                        help="medium checkpoint dir (default: the 24ep/100% dglsspp run)")
+    parser.add_argument("--method", type=str, default="supcon_vib_dglsspp",
+                        help="GenTrainer method name used to load the checkpoint(s)")
+    parser.add_argument("--path", type=str, default="",
+                        help="single checkpoint dir to evaluate (overrides --micro_path/--med_path)")
+    parser.add_argument("--label", type=str, default="single",
+                        help="label for the single --path checkpoint")
+    parser.add_argument("--out", type=str, default=None,
+                        help="output JSON (default: robust_diagnostic/logs/scale_gap_results[_<label>].json)")
     args = parser.parse_args()
 
     DATA = yaml.safe_load(open(args.config, 'r'))
@@ -205,14 +213,23 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}")
 
+    if args.path:
+        scales = [(args.label, args.path)]
+    else:
+        scales = [('micro', args.micro_path), ('med', args.med_path)]
+    out = args.out or os.path.join(
+        args.log_dir, 'scale_gap_results'
+        + (('_' + args.label) if len(scales) == 1 else '') + '.json')
+    if not os.path.exists(os.path.dirname(out)):
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+
     proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
-    scales = [('micro', args.micro_path), ('med', args.med_path)]
     all_rows = {}
 
     for name, path in scales:
-        print(f"\n{'='*80}\n=== DGLSS++ {name} scale ({path}) ===\n{'='*80}")
+        print(f"\n{'='*80}\n=== {args.method} {name} ({path}) ===\n{'='*80}")
         trainer = GenTrainer(ARCH, DATA, args.kitti_dir, path, path=path,
-                             method='supcon_vib_dglsspp')
+                             method=args.method)
         model = trainer.model
 
         print("Extracting clean...")
@@ -289,34 +306,49 @@ def main():
                   f"gap-closed {gap:.2f}")
 
     # ---- print per-condition comparison tables ----
+    labels = [name for name, _ in scales]
     for cond in CONDS:
-        print(f"\n{'='*80}\n=== {cond}: per-class, micro vs medium ===\n{'='*80}")
-        classes = sorted(all_rows['micro'][cond]['per_class'].keys(), key=int)
-        rows = {name: all_rows[name][cond]['per_class'] for name in ['micro', 'med']}
-        agg = {name: all_rows[name][cond]['aggregate'] for name in ['micro', 'med']}
-        print(f"aggregate gap-closed: micro {agg['micro']['gap_closed']:.2f}  "
-              f"med {agg['med']['gap_closed']:.2f}")
-        print(f"{'cls':>3} {'freq_m':>7} {'freq_M':>7} | {'fcos_m':>6} {'fcos_M':>6} "
-              f"| {'zscor_m':>6} {'zscor_M':>6} {'lprec_m':>6} {'lprec_M':>6} "
-              f"| {'zs_m':>5} {'zs_M':>5} {'na_m':>5} {'na_M':>5} {'orc_m':>5} {'orc_M':>5} "
-              f"| {'gap_m':>5} {'gap_M':>5}")
-        for c in classes:
-            a, b = rows['micro'][c], rows['med'][c]
-            g = lambda k, d: float('nan') if d.get(k) is None or d[k] != d[k] else d[k]
-            print(f"{int(c):>3} {int(a['freq']):>7} {int(b['freq']):>7} | "
-                  f"{g('feat_cos', a):>6.3f} {g('feat_cos', b):>6.3f} | "
-                  f"{g('zs_correct', a):>6.3f} {g('zs_correct', b):>6.3f} "
-                  f"{g('lp_recall', a):>6.3f} {g('lp_recall', b):>6.3f} | "
-                  f"{g('zs_iou', a):>5.3f} {g('zs_iou', b):>5.3f} "
-                  f"{g('naive_iou', a):>5.3f} {g('naive_iou', b):>5.3f} "
-                  f"{g('oracle_iou', a):>5.3f} {g('oracle_iou', b):>5.3f} | "
-                  f"{g('gap_closed', a):>5.2f} {g('gap_closed', b):>5.2f}")
+        classes = sorted(all_rows[labels[0]][cond]['per_class'].keys(), key=int)
+        agg = {name: all_rows[name][cond]['aggregate'] for name in labels}
+        print(f"\n{'='*80}\n=== {cond}: per-class "
+              f"{' vs '.join(labels)} ===\n{'='*80}")
+        print(' | '.join(f"{lbl} gap {agg[lbl]['gap_closed']:.2f}" for lbl in labels))
+
+        if len(labels) == 2:
+            a0, a1 = labels[0], labels[1]
+            r0, r1 = all_rows[a0][cond]['per_class'], all_rows[a1][cond]['per_class']
+            print(f"{'cls':>3} {'freq0':>7} {'freq1':>7} | {'fcos0':>6} {'fcos1':>6} "
+                  f"| {'zscor0':>6} {'zscor1':>6} {'lprec0':>6} {'lprec1':>6} "
+                  f"| {'zs0':>5} {'zs1':>5} {'na0':>5} {'na1':>5} {'orc0':>5} {'orc1':>5} "
+                  f"| {'gap0':>5} {'gap1':>5}")
+            for c in classes:
+                a, b = r0[c], r1[c]
+                g = lambda k, d: float('nan') if d.get(k) is None or d[k] != d[k] else d[k]
+                print(f"{int(c):>3} {int(a['freq']):>7} {int(b['freq']):>7} | "
+                      f"{g('feat_cos', a):>6.3f} {g('feat_cos', b):>6.3f} | "
+                      f"{g('zs_correct', a):>6.3f} {g('zs_correct', b):>6.3f} "
+                      f"{g('lp_recall', a):>6.3f} {g('lp_recall', b):>6.3f} | "
+                      f"{g('zs_iou', a):>5.3f} {g('zs_iou', b):>5.3f} "
+                      f"{g('naive_iou', a):>5.3f} {g('naive_iou', b):>5.3f} "
+                      f"{g('oracle_iou', a):>5.3f} {g('oracle_iou', b):>5.3f} | "
+                      f"{g('gap_closed', a):>5.2f} {g('gap_closed', b):>5.2f}")
+        else:
+            r0 = all_rows[labels[0]][cond]['per_class']
+            print(f"{'cls':>3} {'freq':>7} | {'fcos':>6} {'hdcc':>6} | {'zscor':>6} "
+                  f"{'lprec':>6} | {'zs':>5} {'na':>5} {'orc':>5} | {'gap':>5}")
+            for c in classes:
+                a = r0[c]
+                g = lambda k: float('nan') if a.get(k) is None or a[k] != a[k] else a[k]
+                print(f"{int(c):>3} {int(a['freq']):>7} | {g('feat_cos'):>6.3f} "
+                      f"{g('hdc_cos'):>6.3f} | {g('zs_correct'):>6.3f} {g('lp_recall'):>6.3f} "
+                      f"| {g('zs_iou'):>5.3f} {g('naive_iou'):>5.3f} {g('oracle_iou'):>5.3f} "
+                      f"| {g('gap_closed'):>5.2f}")
 
     # ---- correlations against class frequency ----
     print(f"\n{'='*80}\n=== correlation with class frequency (Spearman rho) ===\n{'='*80}")
     corrs = {}
     for cond in CONDS:
-        for name in ['micro', 'med']:
+        for name in labels:
             pc = all_rows[name][cond]['per_class']
             pairs = [(pc[str(c)]['freq'], pc[str(c)]['feat_cos'], pc[str(c)]['gap_closed'])
                      for c in pc
@@ -332,10 +364,10 @@ def main():
                   f"rho(freq, gap_closed)={r_gap:+.2f}")
 
     all_rows['correlations'] = corrs
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    with open(args.out, 'w') as f:
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, 'w') as f:
         json.dump(all_rows, f, indent=2, default=float)
-    print(f"\nSaved to {args.out}")
+    print(f"\nSaved to {out}")
 
 
 if __name__ == "__main__":
