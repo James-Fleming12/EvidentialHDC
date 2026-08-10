@@ -59,6 +59,13 @@ from robust_diagnostic.d3ctta_diag import feature_recoverability
 
 CONDS = ['fog', 'crosstalk', 'snow']
 METHODS = ['supcon_vib', 'supcon_vib_dglss', 'supcon_vib_dglsspp']
+# Medium-scale checkpoints used with --med (instead of the micro ones at log_dir/<method>).
+# supcon_vib: the medium pretrain; supcon_vib_dglsspp: the current medium DGLSS++ run's
+# output (the in-place isotropy_diag checkpoint). supcon_vib_dglss has no medium run yet.
+MED_PATHS = {
+    'supcon_vib': 'logs/med_pretrain_supcon_vib',
+    'supcon_vib_dglsspp': 'robust_diagnostic/logs/supcon_vib_dglsspp',
+}
 
 
 def build_parser(root, data, arch):
@@ -120,7 +127,11 @@ def main():
     parser.add_argument("--frames", type=int, default=100)
     parser.add_argument("--pool_size", type=int, default=500000)
     parser.add_argument("--val_size", type=int, default=100000)
-    parser.add_argument("--out", type=str, default="robust_diagnostic/logs/tta_ceiling_results.json")
+    parser.add_argument("--med", action="store_true",
+                        help="use medium-scale checkpoints (logs/med_pretrain_supcon_vib for "
+                             "supcon_vib, the current medium DGLSS++ run) instead of the micro ones")
+    parser.add_argument("--out", type=str, default=None,
+                        help="output JSON (default: robust_diagnostic/logs/tta_ceiling_results[_med].json)")
     args = parser.parse_args()
 
     DATA = yaml.safe_load(open(args.config, 'r'))
@@ -128,11 +139,14 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}")
 
+    out = args.out or os.path.join(args.log_dir, 'tta_ceiling_results'
+                                   + ('_med' if args.med else '') + '.json')
     proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
     results = {}
 
     for method in METHODS:
-        log_dir = os.path.join(args.log_dir, method)
+        log_dir = (MED_PATHS.get(method, os.path.join(args.log_dir, method))
+                   if args.med else os.path.join(args.log_dir, method))
         print(f"\n{'='*80}\n=== {method}: ceiling-access diagnostics + TTA methods ===\n{'='*80}")
         trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, path=log_dir, method=method)
         model = trainer.model
@@ -215,10 +229,10 @@ def main():
                   f"{dist_gate:>7.4f} {bn_align:>7.4f} {knn:>7.4f}  {knn_gap:.2f}")
         results[method] = r_cond
 
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    with open(args.out, 'w') as f:
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, 'w') as f:
         json.dump(results, f, indent=2, default=float)
-    print(f"\nSaved to {args.out}")
+    print(f"\nSaved to {out}")
 
 
 if __name__ == "__main__":

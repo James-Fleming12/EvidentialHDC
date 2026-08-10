@@ -34,6 +34,13 @@ from modules.oracle_core import (get_hdc_projection, build_hdc_prototypes,
 CONDS = ['fog', 'crosstalk']
 GATES = {'supcon_vib': 'dens_gate', 'supcon_vib_dglss': 'norm_gate',
          'supcon_vib_dglsspp': 'norm_gate'}
+# Medium-scale checkpoints used with --med (instead of the micro ones at log_dir/<method>).
+# supcon_vib: the medium pretrain; supcon_vib_dglsspp: the current medium DGLSS++ run's
+# output (the in-place isotropy_diag checkpoint). supcon_vib_dglss has no medium run yet.
+MED_PATHS = {
+    'supcon_vib': 'logs/med_pretrain_supcon_vib',
+    'supcon_vib_dglsspp': 'robust_diagnostic/logs/supcon_vib_dglsspp',
+}
 
 
 def build_parser(root, data, arch):
@@ -100,7 +107,11 @@ def main():
                         help="comma-separated subset of the extractors to evaluate")
     parser.add_argument("--pool_size", type=int, default=100000)
     parser.add_argument("--val_size", type=int, default=100000)
-    parser.add_argument("--out", type=str, default="robust_diagnostic/logs/ttagate_results.json")
+    parser.add_argument("--med", action="store_true",
+                        help="use medium-scale checkpoints (logs/med_pretrain_supcon_vib for "
+                             "supcon_vib, the current medium DGLSS++ run) instead of the micro ones")
+    parser.add_argument("--out", type=str, default=None,
+                        help="output JSON (default: robust_diagnostic/logs/ttagate_results[_med].json)")
     args = parser.parse_args()
 
     DATA = yaml.safe_load(open(args.config, 'r'))
@@ -108,6 +119,8 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}")
 
+    out = args.out or os.path.join(args.log_dir, 'ttagate_results'
+                                   + ('_med' if args.med else '') + '.json')
     proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
     results = {}
     sel = [m.strip() for m in args.methods.split(',') if m.strip()]
@@ -116,7 +129,8 @@ def main():
         if method not in GATES:
             continue
         gate = GATES[method]
-        log_dir = os.path.join(args.log_dir, method)
+        log_dir = (MED_PATHS.get(method, os.path.join(args.log_dir, method))
+                   if args.med else os.path.join(args.log_dir, method))
         print(f"\n{'='*80}\n=== {method}: {gate} as update weight ===\n{'='*80}")
         trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, path=log_dir, method=method)
         model = trainer.model
@@ -167,10 +181,10 @@ def main():
             print(f"{cond:<10} {zs:>7.4f} {oracle:>8.4f} {g:>9.4f}   {gap:.2f}")
         results[method] = r_cond
 
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    with open(args.out, 'w') as f:
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, 'w') as f:
         json.dump(results, f, indent=2, default=float)
-    print(f"\nSaved to {args.out}")
+    print(f"\nSaved to {out}")
 
 
 if __name__ == "__main__":
