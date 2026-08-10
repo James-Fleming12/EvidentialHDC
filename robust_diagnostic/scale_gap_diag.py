@@ -145,7 +145,7 @@ def pool_per_class_stats(pool, pool_l, lp_preds, preds_pool, means_mat, classes)
     """Per-class feature-robustness stats on the pooled corrupted features."""
     col_of = {c: j for j, c in enumerate(classes)}
     zn = F.normalize(pool, p=2, dim=1)
-    cos128 = zn @ means_mat.cpu()                     # (n, n_classes)
+    cos128 = zn @ means_mat.cpu().T                  # (n, n_classes)
     rows = {}
     for c in classes:
         m = pool_l == c
