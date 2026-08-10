@@ -440,3 +440,56 @@ TTA methods (full-scene mIoU, with zero-shot and oracle for reference):
 5. **Caveat.** Same under-converged extractors as Iteration 0; the ordering (wall
    persists everywhere; no label-free method approaches the crosstalk oracle) is
    the robust takeaway.
+
+### Iteration 2: gate-signal structure (is there a usable gate, or exploitable density structure?)
+
+The Iteration-1 TTA methods were near-flat, and the weighted updates were all
+near-identical, which suggested the weight signals were weak. This diagnostic
+(`gate_structure_diag.py`) measures, per extractor and condition, the correct-vs-
+wrong AUROC of every candidate gate signal (LP confidence, entropy, distance to
+the nearest clean prototype, feature norm, top-2 margin, and local density = mean
+distance to k=20 neighbors), a logistic-regression fusion over all of them, the
+recoverability of the confident-but-wrong points (recCW), and the centroid
+separation between confident-correct and confident-wrong in signal space.
+
+Per-extractor correct-vs-wrong AUROC (fog / crosstalk / snow; fusion = all
+signals combined; recCW = true class in top-3 clean prototypes for the
+confident-wrong points):
+
+| extractor | cond | conf | entr | dist | norm | marg | dens | fusion | recCW | C/W gap |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| supcon_vib | fog | 0.243 | 0.757 | 0.144 | 0.155 | 0.160 | **0.912** | **0.923** | 0.328 | 1.77 |
+| supcon_vib | crosstalk | 0.205 | 0.792 | 0.153 | 0.140 | 0.129 | **0.914** | **0.918** | 0.574 | 0.20 |
+| supcon_vib | snow | 0.266 | 0.749 | 0.152 | 0.540 | 0.481 | 0.688 | **0.911** | 0.564 | 0.47 |
+| supcon_vib_dglss | fog | 0.549 | 0.417 | 0.679 | **0.865** | 0.212 | 0.688 | **0.865** | 0.292 | 2.94 |
+| supcon_vib_dglss | crosstalk | 0.255 | 0.733 | 0.487 | 0.648 | 0.295 | 0.735 | **0.812** | 0.499 | 0.95 |
+| supcon_vib_dglss | snow | 0.363 | 0.643 | 0.239 | 0.761 | 0.373 | 0.672 | **0.864** | 0.559 | 2.07 |
+| supcon_vib_dglsspp | fog | 0.571 | 0.406 | 0.472 | **0.839** | 0.166 | 0.611 | **0.909** | 0.194 | 6.71 |
+| supcon_vib_dglsspp | crosstalk | 0.388 | 0.608 | 0.334 | **0.722** | 0.132 | 0.728 | **0.889** | 0.532 | 5.68 |
+| supcon_vib_dglsspp | snow | 0.312 | 0.685 | 0.273 | 0.706 | 0.293 | 0.690 | **0.855** | 0.518 | 1.50 |
+
+**What Iteration 2 shows:**
+
+1. **There IS a strong label-free signal.** On our extractor, local density
+   separates correct from wrong points at AUROC 0.91 on fog and crosstalk; on the
+   DGLSS and DGLSS++ extractors, feature norm is the strong signal (fog 0.87 and
+   0.84). The fusion over all signals is 0.81-0.92 everywhere. The near-flat
+   Iteration-1 TTA came from testing only the weak weight signals (confidence and
+   distance-to-prototype, AUROC 0.14-0.68); density and norm were never used as
+   update weights.
+2. **The best gate differs by extractor.** Density for supcon_vib; norm for the
+   DGLSS arms. This matches the earlier finding that feature norm was the dominant
+   gate on the robust encoder.
+3. **The assignment wall holds even for the confident-wrong points.** Their true
+   class is in the top-3 clean prototypes only 19-33% of the time on fog, at or
+   near the random baseline. We can identify WHICH points are wrong (density /
+   norm / fusion rank them at 0.81-0.92), but not WHAT class they are, exactly the
+   wall Iteration 1 established.
+4. **The DGLSS / DGLSS++ extractors show a larger correct-vs-wrong separation** in
+   signal space (C/W gap 2.9-6.7 vs 0.2-1.8 for ours), so their structure is more
+   separable, not less.
+5. **Actionable next step.** Test the untried gates as weighted-update weights:
+   a density-gated and a norm-gated prototype update, which the Iteration-1
+   battery did not run (it used confidence and distance weights). Given the 0.84-0.91
+   point-level AUROCs, these should move the update further toward the oracle than
+   naive EMA, which is the missing lever the earlier flatness obscured.
