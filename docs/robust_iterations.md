@@ -64,8 +64,7 @@ $$
 L_{\text{SCC}} = \frac{1}{L}\sum_{i}\sum_{j \ne i} \big( Z_i Z_i^T - Z_j Z_j^T \big).
 $$
 
-**Total.** $L = L_{\text{sem}}^s + L_{\text{sem}}^a + \lambda_1 L_{\text{SIFC}}
-+ \lambda_2 L_{\text{SCC}}$, with weighted cross-entropy for the semantic terms.
+**Total.** $L = L_{\text{sem}}^s + L_{\text{sem}}^a + \lambda_1 L_{\text{SIFC}} + \lambda_2 L_{\text{SCC}}$, with weighted cross-entropy for the semantic terms.
 
 ### DGLSS++ (Kim et al.; TPAMI 2026)
 
@@ -98,8 +97,7 @@ $$
 
 where $P(j)$ / $A(j)$ are the same-class / all-other embedding indices of $j$.
 
-**Total.** $L = L_{\text{sem}}^s + L_{\text{sem}}^a + \lambda_1 L_{\text{GMSIFC}}
-+ \lambda_2 L_{\text{LSCC}}$.
+**Total.** $L = L_{\text{sem}}^s + L_{\text{sem}}^a + \lambda_1 L_{\text{GMSIFC}} + \lambda_2 L_{\text{LSCC}}$.
 
 ### Our variants (the changes for the final paper)
 
