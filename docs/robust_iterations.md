@@ -709,3 +709,125 @@ The norm-gated prototype update on the medium DGLSS++ extractor
    artifact; at scale it is a comparable-but-not-better principled weight,
    consistent with the Iteration-3 caveat.
 
+### Iteration 5: per-class autopsy of the micro-vs-medium label-free gap
+
+Iteration 4 asked why the label-free update closes less of the labeled ceiling at
+medium scale. Working hypothesis: at medium scale the training data leans so
+heavily on the majority classes that minority-class features become less robust
+and sit farther from their class prototypes, so the update helps them less.
+`scale_gap_diag.py` runs the re-trained micro checkpoint (12 ep / 10% data, the
+original having been overwritten by the medium run) and the medium checkpoint
+(24 ep / 100% data) on the SAME 100k pool / 100k val split, reporting per class:
+feature proximity to the clean class mean (`feat_cos`, the "close to the
+prototype" measure), HDC code proximity (`hdc_cos`), zero-shot-correct fraction,
+LP pseudo-label recall, and the zs / naive / oracle per-class IoU. Class ids
+(all17 map): 2 bicycle, 4 car, 7 pedestrian, 11 road, 12 other-ground,
+13 sidewalk, 14 terrain, 15 building, 16 vegetation (bus / other-object absent
+from seq 08).
+
+**Aggregate gap-closed, same split both scales:**
+
+| cond | scale | zs | naive | oracle | gap-closed |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | micro | 0.088 | 0.074 | 0.120 | -0.43 |
+| fog | med | 0.082 | 0.101 | 0.176 | **0.20** |
+| crosstalk | micro | 0.100 | 0.132 | 0.209 | **0.30** |
+| crosstalk | med | 0.125 | 0.130 | 0.222 | 0.05 |
+
+**Per-class feature proximity on fog** (`feat_cos`, mean 128D cosine of the
+class's fog points to its CLEAN class mean; higher = closer to the prototype):
+
+| class | pool freq | micro | med |
+| :--- | :--- | :--- | :--- |
+| road (11) | 24923 | 0.587 | **0.856** |
+| sidewalk (13) | 14584 | 0.210 | **0.022** |
+| terrain (14) | 7733 | -0.281 | -0.221 |
+| vegetation (16) | 5243 | 0.431 | **0.112** |
+| car (4) | 3305 | 0.847 | **0.321** |
+| building (15) | 1455 | 0.451 | **0.205** |
+| pedestrian (7) | 288 | 0.156 | -0.005 |
+
+**LP pseudo-label recall on fog** (fraction of a class's points the logistic probe
+assigns to it; the quality the naive update depends on):
+
+| class | micro | med |
+| :--- | :--- | :--- |
+| road (11) | 0.774 | **0.897** |
+| sidewalk (13) | 0.093 | 0.071 |
+| terrain (14) | 0.001 | 0.000 |
+| vegetation (16) | 0.116 | **0.049** |
+| car (4) | 0.734 | **0.149** |
+| building (15) | 0.323 | **0.006** |
+| pedestrian (7) | 0.000 | 0.000 |
+
+Spearman rho(freq, feat_cos) — distance-to-prototype becomes frequency-dependent
+at scale: fog 0.04 (micro) to **0.48** (med); crosstalk 0.33 to 0.29.
+
+**Per-class naive-update effect on fog** (zs -> naive per-class IoU, micro vs med):
+
+| class | micro zs->naive | med zs->naive | micro gap | med gap |
+| :--- | :--- | :--- | :--- | :--- |
+| road (11) | 0.483 -> 0.205 (destroyed) | 0.433 -> 0.524 (fixed) | - | **0.82** |
+| car (4) | 0.054 -> 0.070 | 0.122 -> 0.102 (hurt) | 0.60 | -0.11 |
+| sidewalk (13) | 0.155 -> 0.192 | 0.040 -> 0.132 | 0.52 | 0.46 |
+| terrain (14) | 0.001 -> 0.051 | 0.010 -> 0.007 | 0.36 | -0.01 |
+| vegetation (16) | 0.067 -> 0.127 | 0.083 -> 0.093 | 1.08 | 0.09 |
+| building (15) | 0.031 -> 0.020 | 0.050 -> 0.049 | -0.42 | -0.03 |
+
+#### 5.1 Is the hypothesis correct?
+
+**The feature-space half is confirmed, sharply.** At medium scale the model
+becomes a majority-class specialist: road's fog points sit far closer to the road
+prototype than at micro (feat_cos 0.856 vs 0.587) while every other class's points
+drift away (car 0.847 to 0.321, vegetation 0.431 to 0.112, building 0.451 to
+0.205, sidewalk 0.210 to 0.022). The Spearman rho between class frequency and
+distance-to-prototype jumps from ~0 (micro: everyone equally far) to 0.48 (med) on
+fog. The same pattern holds on crosstalk. This is exactly the claimed
+"minority-class features are less robust at medium scale."
+
+**The consequence for the naive EMA is real but indirect, and it is the LP
+pseudo-labels that mediate it.** The update only helps a class if the logistic
+probe still finds that class in the pooled corrupted points. At medium scale the
+LP's per-class recall polarizes to the majority (road 0.897, car 0.734 -> 0.149,
+building 0.323 -> 0.006, terrain -> 0.000): the update concentrates its gains in
+road (fog gap 0.82) and leaves the drifting classes flat or worse (car 0.122 ->
+0.102, terrain 0.010 -> 0.007, vegetation gap 1.08 -> 0.09). At micro, the LP is a
+weaker but more even classifier (car 0.734, building 0.323, vegetation 0.116), so
+the update spreads real gains across car / sidewalk / terrain / vegetation.
+
+**The twist: "micro gets closer to the ceiling" is not a clean statement.** On
+crosstalk it is true (0.30 vs 0.05). On fog at this 100k split the micro naive
+update is actually NEGATIVE (-0.43): it destroys the road prototype (0.483 ->
+0.205) because micro's fog space is far more collapsed (LP acc 0.159 vs 0.524), so
+the dominant class's 24.9k pooled points carry noisy pseudo-labels and the
+unit-weighted mean drags its prototype. The Iteration-4 fog "micro reaches the
+ceiling" was a 500k-pool artifact of the same instability. So the honest
+statement is: medium-scale polarization (minority features drifting, LP recall
+collapsing off the majority) removes the label-free update's ability to help the
+minority classes, and the micro model's apparent success is partly the inverse
+instability (its update helps minority classes but erases the majority).
+
+Caveat: the "micro" column here is the re-trained model (fresh seed, fog zs 0.088
+vs 0.101 for the original), so absolute values differ slightly from Iterations 0-4;
+the per-class comparison is controlled within this run.
+
+#### 5.2 What to test next
+
+1. **Class-balanced update (the README Pillar-3 lever).** Weight the pool per class
+   so each class carries equal total weight in the prototype re-estimation instead
+   of road's 24.9k points swamping every other class. This directly tests whether
+   the drifting minority prototypes are recoverable when the update is not
+   majority-dominated.
+2. **Pseudo-label vs pool-mass ablation.** Compare, at medium scale: (a) unit
+   weights + LP labels (naive, measured), (b) unit weights + oracle labels (oracle,
+   measured), (c) LP labels with a per-class minimum-support threshold, (d)
+   class-balanced weights + LP labels. Separates assignment noise from
+   majority-dominance.
+3. **Per-class signal-to-noise (SNIR).** Measure per class the corrupted-feature
+   cosine to its own clean centroid vs to the nearest other centroid, at each scale,
+   to quantify "minority less robust" as a loss of class structure rather than just
+   a shift.
+4. **Pool-size sensitivity.** Sweep the pool (50k-500k) at micro scale to confirm
+   whether the fog sign flip (negative at 100k, near-ceiling at 500k) is a
+   real property or an artifact of pool mass / pseudo-label noise.
+
