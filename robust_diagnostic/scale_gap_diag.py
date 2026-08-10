@@ -194,6 +194,9 @@ def main():
     parser.add_argument("--frames", type=int, default=100)
     parser.add_argument("--pool_size", type=int, default=100000)
     parser.add_argument("--val_size", type=int, default=100000)
+    parser.add_argument("--min_support", type=int, default=256,
+                        help="per-class minimum pool weight to re-estimate a prototype "
+                             "(lp_support / zs_support variants keep the base otherwise)")
     parser.add_argument("--micro_path", type=str, default=MICRO_PATH,
                         help="micro checkpoint dir (default: the backed-up micro dglsspp)")
     parser.add_argument("--med_path", type=str, default=MED_PATH,
@@ -270,21 +273,43 @@ def main():
             for c in classes:
                 feat[c]['hdc_cos'] = hdcc.get(c, float('nan'))
 
-            naive = weighted_mean_update(base_protos, proto_lbls, pool, lp_preds, ones,
-                                         proj, device)
             oracle = weighted_mean_update(base_protos, proto_lbls, pool,
                                           pool_l.to(device), ones, proj, device)
 
             def preds(protos):
                 return decode_preds(protos, val, proto_lbls, proj, device)
 
+            def mean_iou(d):
+                vs = [d[c] for c in classes if d[c] == d[c]]
+                return sum(vs) / len(vs) if vs else float('nan')
+
             p_zs = preds(base_protos)
-            p_na = preds(naive)
             p_or = preds(oracle)
             iou_zs = per_class_iou(p_zs, vl, classes)
-            iou_na = per_class_iou(p_na, vl, classes)
             iou_or = per_class_iou(p_or, vl, classes)
+            zs_m, orc_m = mean_iou(iou_zs), mean_iou(iou_or)
 
+            # update variants: pseudo-label source x support threshold
+            variants = {}
+            iou_vs = {}
+            for vname, pseudo, ms in [
+                ('naive', lp_preds, 0),
+                ('lp_support', lp_preds, args.min_support),
+                ('zs', preds_pool.to(device), 0),
+                ('zs_support', preds_pool.to(device), args.min_support),
+            ]:
+                pv = weighted_mean_update(base_protos, proto_lbls, pool, pseudo, ones,
+                                          proj, device, min_support=ms)
+                iou_v = per_class_iou(preds(pv), vl, classes)
+                iou_vs[vname] = iou_v
+                for c in classes:
+                    feat[c][f'v_{vname}_iou'] = iou_v[c]
+                variants[vname] = {'miou': mean_iou(iou_v),
+                                   'gap': (mean_iou(iou_v) - zs_m) / (orc_m - zs_m)
+                                          if orc_m > zs_m else float('nan')}
+
+            iou_na = iou_vs['naive']
+            na_m = variants['naive']['miou']
             for c in classes:
                 feat[c]['zs_iou'] = iou_zs[c]
                 feat[c]['naive_iou'] = iou_na[c]
@@ -292,18 +317,16 @@ def main():
                 zs, na, orc = iou_zs[c], iou_na[c], iou_or[c]
                 feat[c]['gap_closed'] = ((na - zs) / (orc - zs)) if orc > zs else float('nan')
 
-            def mean_iou(d):
-                vs = [d[c] for c in classes if d[c] == d[c]]
-                return sum(vs) / len(vs) if vs else float('nan')
-
-            zs_m, na_m, orc_m = mean_iou(iou_zs), mean_iou(iou_na), mean_iou(iou_or)
-            gap = (na_m - zs_m) / (orc_m - zs_m) if orc_m > zs_m else float('nan')
+            gap = variants['naive']['gap']
             all_rows[name][cond] = {'aggregate': {'zs_miou': zs_m, 'naive_miou': na_m,
                                                   'oracle_miou': orc_m, 'gap_closed': gap},
+                                    'variants': variants,
                                     'per_class': {str(c): feat[c] for c in classes}}
 
             print(f"  aggregate {cond}: zs {zs_m:.4f} naive {na_m:.4f} oracle {orc_m:.4f} "
                   f"gap-closed {gap:.2f}")
+            for vname, d in variants.items():
+                print(f"    variant {vname:<12} miou {d['miou']:.4f}  gap {d['gap']:+.2f}")
 
     # ---- print per-condition comparison tables ----
     labels = [name for name, _ in scales]

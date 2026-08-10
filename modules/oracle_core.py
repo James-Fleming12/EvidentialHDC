@@ -43,7 +43,7 @@ def build_hdc_prototypes(feats_128, lbls, proj, num_classes=17, device='cuda', c
     return base_protos[valid_mask], proto_lbls[valid_mask]
 
 def weighted_mean_update(base_protos, proto_lbls, pool_f_128, pool_pseudo, weights, proj,
-                         device, mask=None, chunk_size=50000):
+                         device, mask=None, chunk_size=50000, min_support=0):
     """Chunked weighted class-mean prototype update (vectorized).
 
     Prototype_c = normalize( sum over pool points with pseudo-label c of w_i * sign(z_i @ proj) )
@@ -53,7 +53,10 @@ def weighted_mean_update(base_protos, proto_lbls, pool_f_128, pool_pseudo, weigh
     that a 20k-point pool is far too small to refine 10kD prototypes whose base
     estimates come from millions of points. A large-pool weighted mean is the
     statistically honest adaptation operator, and chunked index_add keeps it fast.
-    Classes with no pool support keep the base prototype.
+    Classes with no pool support keep the base prototype; with min_support > 0,
+    classes whose total assigned weight is below min_support ALSO keep the base
+    prototype (so a class whose pseudo-labels are ~all noise cannot be corrupted
+    by a thin, wrong support).
     """
     num_proto = len(proto_lbls)
     D = proj.shape[1]
@@ -71,7 +74,8 @@ def weighted_mean_update(base_protos, proto_lbls, pool_f_128, pool_pseudo, weigh
         idx = torch.searchsorted(proto_lbls, pl)
         S.index_add_(0, idx[valid], (cw[valid].unsqueeze(1) * h[valid]).float())
         W.index_add_(0, idx[valid], cw[valid].float())
-    empty = W <= 0
+    threshold = min_support if min_support > 0 else 1
+    empty = W < threshold
     S = F.normalize(S, p=2, dim=1)
     S[empty] = F.normalize(base_protos[empty], p=2, dim=1)
     return S
