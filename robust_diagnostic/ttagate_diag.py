@@ -1,14 +1,15 @@
-"""ttagate_diag.py: do the density- and norm-gated prototype updates improve the
-fog/crosstalk mIoU? (~1.5-2h, eval-only)
+"""ttagate_diag.py: the Iteration-2 gate, as a prototype-update weight, for each
+extractor (~40-60 min, eval-only).
 
-Iteration 2 found strong correct-vs-wrong signals that the earlier TTA battery
-never used as update weights: local density (AUROC 0.91 on supcon_vib) and feature
-norm (AUROC 0.84-0.87 on the DGLSS / DGLSS++ extractors). This tests them as
-weighted-prototype-update gates on fog and crosstalk for each extractor.
+Iteration 2 found strong correct-vs-wrong signals: local density for supcon_vib
+(AUROC 0.91) and feature norm for the DGLSS / DGLSS++ extractors (0.84-0.87).
+This runs ONLY the relevant gate as a weighted-prototype-update weight per
+extractor, on fog and crosstalk, and reports the mIoU and the fraction of the
+oracle gap it closes. The other gates (naive, confidence, distance, BN, kNN) are
+already reported in the doc (Iteration 1); zero-shot and oracle are recomputed
+here as the same-split references for the gap-closed fraction.
 
-The gate weight is the signal itself (higher = more likely correct = more update
-weight), and the pseudo-labels are the clean-trained LP. Compared against naive
-EMA, the confidence gate, the distance gate, zero-shot, and the oracle.
+Per-extractor gate: supcon_vib -> density, supcon_vib_dglss / dglsspp -> norm.
 
 Usage:
   uv run python robust_diagnostic/ttagate_diag.py
@@ -31,8 +32,8 @@ from modules.oracle_core import (get_hdc_projection, build_hdc_prototypes,
                                  compute_miou, weighted_mean_update)
 
 CONDS = ['fog', 'crosstalk']
-METHODS = ['supcon_vib', 'supcon_vib_dglss', 'supcon_vib_dglsspp']
-ORDER = ['naive', 'conf', 'dist', 'norm_gate', 'dens_gate']
+GATES = {'supcon_vib': 'dens_gate', 'supcon_vib_dglss': 'norm_gate',
+         'supcon_vib_dglsspp': 'norm_gate'}
 
 
 def build_parser(root, data, arch):
@@ -75,15 +76,6 @@ def proto_miou(feats, lbls, base_protos, proto_lbls, proj, device):
     return compute_miou(proto_lbls[sims.argmax(dim=1)], lbls.to(device))
 
 
-def class_centroids(z, l):
-    means = {}
-    for c in range(1, 32):
-        m = z[l == c]
-        if len(m) > 0:
-            means[c] = F.normalize(m.mean(0), p=2, dim=0)
-    return means
-
-
 def local_density(z, k=20, chunk=8192):
     """Higher = farther from k neighbors (sparser). Chunked. Aligned with input."""
     zn = F.normalize(z, p=2, dim=1)
@@ -117,9 +109,9 @@ def main():
     proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
     results = {}
 
-    for method in METHODS:
+    for method, gate in GATES.items():
         log_dir = os.path.join(args.log_dir, method)
-        print(f"\n{'='*80}\n=== {method}: density / norm gated prototype updates ===\n{'='*80}")
+        print(f"\n{'='*80}\n=== {method}: {gate} as update weight ===\n{'='*80}")
         trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, path=log_dir, method=method)
         model = trainer.model
 
@@ -129,11 +121,8 @@ def main():
         clf.fit(clean_f[:min(100000, len(clean_f))].numpy(),
                 clean_l[:min(100000, len(clean_l))].numpy())
         base_protos, proto_lbls = build_hdc_prototypes(clean_f, clean_l, proj, device=device)
-        clean_means = class_centroids(clean_f, clean_l)
-        cm = F.normalize(torch.stack([clean_means[c] for c in sorted(clean_means)]), p=2, dim=1)
 
-        print(f"{'cond':<10} {'zs':>7} " + " ".join(f"{t:>9}" for t in ORDER)
-              + f" {'oracle':>8}  gap(norm/dens)")
+        print(f"{'cond':<10} {'zs':>7} {'oracle':>8} {gate:>9}   gap-closed")
         r_cond = {}
         for cond in CONDS:
             cdir = os.path.join(args.kittic_dir, cond, 'heavy')
@@ -148,14 +137,12 @@ def main():
             val, vl = f[val_idx], l[val_idx]
 
             lp_preds = torch.tensor(clf.predict(pool.numpy())).to(device)
-            lp_conf = torch.tensor(clf.predict_proba(pool.numpy()).max(axis=1)).to(device)
             ones = torch.ones(len(pool), device=device)
 
-            # gate weight signals: higher = more likely correct = more weight
-            norm_w = pool.norm(p=2, dim=1).to(device)
-            dens = local_density(pool)
-            dens_w = dens.clamp(min=0).to(device)
-            dist_w = (F.normalize(pool, p=2, dim=1) @ cm.T).max(dim=1).values.clamp(min=0).to(device)
+            if gate == 'dens_gate':
+                w = local_density(pool).clamp(min=0).to(device)
+            else:
+                w = pool.norm(p=2, dim=1).to(device)
 
             def decode(protos):
                 return proto_miou(val, vl, protos, proto_lbls, proj, device)
@@ -163,19 +150,10 @@ def main():
             zs = decode(base_protos)
             oracle = decode(weighted_mean_update(base_protos, proto_lbls, pool, l[pool_idx].to(device),
                                                  ones, proj, device))
-            res = {}
-            res['naive'] = decode(weighted_mean_update(base_protos, proto_lbls, pool, lp_preds, ones, proj, device))
-            res['conf'] = decode(weighted_mean_update(base_protos, proto_lbls, pool, lp_preds, lp_conf, proj, device))
-            res['dist'] = decode(weighted_mean_update(base_protos, proto_lbls, pool, lp_preds, dist_w, proj, device))
-            res['norm_gate'] = decode(weighted_mean_update(base_protos, proto_lbls, pool, lp_preds, norm_w, proj, device))
-            res['dens_gate'] = decode(weighted_mean_update(base_protos, proto_lbls, pool, lp_preds, dens_w, proj, device))
-            r_cond[cond] = {**res, 'zero_shot': zs, 'oracle': oracle}
-
-            def gap(x):
-                return (x - zs) / (oracle - zs) if oracle > zs else float('nan')
-
-            print(f"{cond:<10} {zs:>7.4f} " + " ".join(f"{res[t]:>9.4f}" for t in ORDER)
-                  + f" {oracle:>8.4f}  {gap(res['norm_gate']):.2f}/{gap(res['dens_gate']):.2f}")
+            g = decode(weighted_mean_update(base_protos, proto_lbls, pool, lp_preds, w, proj, device))
+            gap = (g - zs) / (oracle - zs) if oracle > zs else float('nan')
+            r_cond[cond] = {'zero_shot': zs, 'oracle': oracle, gate: g, 'gap_closed': gap}
+            print(f"{cond:<10} {zs:>7.4f} {oracle:>8.4f} {g:>9.4f}   {gap:.2f}")
         results[method] = r_cond
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
