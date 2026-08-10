@@ -64,8 +64,14 @@ CONDS = ['fog', 'crosstalk', 'snow', 'wet_ground', 'incomplete_echo',
 #                            (fog depth jitter + density + crosstalk injection) instead
 #                            of beam-drop, to test whether the corruption-augmentation
 #                            mechanism keeps minority classes closer to their prototypes
+#   - supcon_vib_dglsspp_supcon / _bal / _vib: DGLSS++ plus one mechanism each (the
+#                            decoupled SupCon pull / class-balanced consistency / VIB
+#                            magnitude bottleneck) to test whether each direction helps
+#                            DGLSS++ robustness independently.
 METHODS = ['supcon_vib', 'vib', 'supcon_vib_dglss', 'supcon_vib_dglsspp',
-           'supcon_vib_dglss_enc', 'supcon_vib_dglsspp_cor']
+           'supcon_vib_dglss_enc', 'supcon_vib_dglsspp_cor',
+           'supcon_vib_dglsspp_supcon', 'supcon_vib_dglsspp_bal',
+           'supcon_vib_dglsspp_vib']
 
 
 def build_parser(root, data, arch):

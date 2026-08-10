@@ -973,6 +973,115 @@ whether at the scale where dglsspp polarizes (dg_med rho(freq, feat_cos) +0.48, 
 oracle 0.176) the cor variant holds minority classes closer to their prototypes
 (lower rho, higher fog oracle) and keeps the naive-EMA gap positive.
 
+### 6.1 Medium-lite cor run (12 ep / 100% data)
+
+The medium-lite corruption-augmented run completed cleanly (12 epochs, train IoU
+0.161 -> 0.432). Isotropy, compared with the plain DGLSS++ medium run (dg_med, 24
+ep / 100% data). Budget caveat up front: cor_med used HALF the epochs of dg_med, so
+this is not a same-budget comparison — it shows the cor variant is at least as
+robust as the baseline at half the cost.
+
+**HDC mIoU per condition (higher is better):**
+
+| condition | dg_med (24ep) | cor_med (12ep) |
+| :--- | :--- | :--- |
+| clean | 0.530 | **0.532** |
+| fog | 0.068 | **0.073** |
+| crosstalk | **0.115** | 0.108 |
+| snow | 0.396 | **0.415** |
+| wet_ground | **0.483** | 0.450 |
+| incomplete_echo | 0.448 | **0.458** |
+| beam_missing | **0.506** | 0.500 |
+| motion_blur | **0.502** | 0.495 |
+| cross_sensor | **0.434** | 0.425 |
+| **mean (8 corrupted)** | **0.369** | 0.365 |
+
+**Space structure (lower dead-fraction is better):**
+
+| condition | dg_med | cor_med |
+| :--- | :--- | :--- |
+| fog deadF | 0.221 | **0.208** |
+| crosstalk deadF | 0.147 | **0.059** |
+| crosstalk PR | 2.30 | **2.95** |
+| fog LP | **0.524** | 0.518 |
+| crosstalk LP | 0.224 | **0.231** |
+
+**What the medium-lite isotropy shows:**
+
+1. **The cor variant matches the full-budget baseline at half the cost.** cor_med
+   (12 ep) lands on the same 8-condition HDC mean (0.365 vs 0.369) and clean decode
+   (0.532 vs 0.530) as dg_med (24 ep), with fog better (0.073 vs 0.068) and the
+   healthy conditions roughly tied. The corruption augmentation is at least as
+   effective per epoch as the plain DGLSS++ training, likely more.
+2. **The crosstalk space is far healthier.** The dead-coordinate fraction drops
+   0.147 -> 0.059 (a 2.5x reduction), participation ratio rises 2.30 -> 2.95 (less
+   saturated / less anisotropic), and the linear probe rises 0.224 -> 0.231. The
+   corruption-augmented model saturates the HDC sign-projection far less under
+   crosstalk, the same direction the micro run showed for fog.
+3. **The fog mean-fraction stays high** (0.830, matching dg_med) and the fog
+   dead-fraction only improves slightly (0.221 -> 0.208), so the augmentation has
+   not eliminated fog's shared-mean dominance at this budget — but it no longer
+   needs to, because the decode is at least as good.
+4. **The decisive per-class test is still pending.** The isotropy does not measure
+   the minority-class proximity (rho(freq, feat_cos)), the fog/crosstalk labeled
+   ceiling, or the naive-EMA gap. Those need the `scale_gap_diag` eval on the
+   cor_med checkpoint, which is the next diagnostic before deciding on a full-budget
+   cor run (24 ep / 100%) for the same-budget head-to-head.
+
+### 6.2 Per-class autopsy of cor_med (`scale_gap_diag`, same 100k/100k split)
+
+Same-split aggregate vs the plain medium DGLSS++ baseline. Budget caveat: cor_med
+is 12 ep / 100%, dg_med is 24 ep / 100%, so the ceiling comparison below is
+confounded by training budget (the ceiling rises with epochs).
+
+| extractor | cond | zs | naive | oracle | gap |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| dg_med (24ep) | fog | 0.082 | 0.100 | **0.176** | +0.19 |
+| cor_med (12ep) | fog | 0.084 | 0.094 | 0.147 | +0.16 |
+| dg_med (24ep) | crosstalk | 0.125 | 0.127 | 0.222 | +0.02 |
+| cor_med (12ep) | crosstalk | 0.109 | 0.121 | 0.200 | **+0.14** |
+
+Spearman rho(freq, feat_cos): dg_med fog +0.48 / crosstalk +0.29; cor_med fog +0.57
+/ crosstalk +0.33.
+
+Key per-class differences (car = class 4):
+
+| metric | dg_med fog | cor_med fog | dg_med xtalk | cor_med xtalk |
+| :--- | :--- | :--- | :--- | :--- |
+| car feat_cos | 0.321 | **0.599** | 0.521 | **0.834** |
+| car LP recall | 0.149 | **0.372** | 0.401 | **0.758** |
+| car zs -> naive | 0.122 -> 0.102 | 0.075 -> 0.090 | 0.352 -> 0.252 (hurt) | 0.269 -> 0.391 (gap 0.98) |
+| car oracle | **0.303** | 0.128 | 0.335 | 0.393 |
+
+**What the medium-lite per-class autopsy shows:**
+
+1. **The labeled ceiling was NOT raised at this budget.** cor_med fog oracle 0.147
+   is below dg_med's 0.176 (crosstalk 0.200 vs 0.222). Because the ceiling rises
+   with training and cor_med trained half as long, this is not conclusive, but it
+   does not support the "augmentation raises the ceiling" hypothesis either.
+2. **The majority polarization was NOT reduced.** rho(freq, feat_cos) is +0.57 on
+   cor_med fog, higher than dg_med's +0.48 (crosstalk +0.33 vs +0.29). The
+   augmentation tightens road's features (0.856 -> 0.936) at least as much as the
+   minority classes, so the frequency-dependence of prototype distance does not
+   shrink.
+3. **What the augmentation clearly does is improve the assignment.** The car class
+   shows it on both conditions: fog LP recall 0.149 -> 0.372 and feat_cos 0.321 ->
+   0.599; crosstalk LP recall 0.401 -> 0.758 with the naive update now lifting car
+   (0.269 -> 0.391, gap 0.98) instead of destroying it (dg_med 0.352 -> 0.252).
+   This is exactly the assignment-side lever: the pseudo-labeler can now find the
+   mid-frequency classes.
+4. **The naive-EMA gap is positive on both conditions, with crosstalk much better**
+   (+0.14 vs +0.02). Combined with the aggregate decode matching dg_med at half the
+   budget, the augmentation is a real improvement in TTA-relevant structure even
+   though it does not move the fog ceiling.
+5. **The open question is the budget.** cor_med at 12 ep cannot separate "the
+   augmentation raises the ceiling" from "it only improves assignment/efficiency".
+   The two decisive runs are (a) plain DGLSS++ at 12 ep / 100% (~5h) for a
+   matched-budget comparison with cor_med, or (b) the full 24 ep cor run (~10h) for
+   the same-budget head-to-head with dg_med. If the goal is "raise the fog/crosstalk
+   ceiling", the full cor run is the direct test; if the goal is the cheaper
+   marginal effect of the augmentation, (a) resolves the confound at half the cost.
+
 
 
 

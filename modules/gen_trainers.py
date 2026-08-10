@@ -23,7 +23,8 @@ DGLSS_TAU = 0.7
 # they route through their own branch (plain bottleneck, no reparameterization, no KL)
 # so the comparison with the paper implementations is not contaminated by VIB.
 DGLSS_METHODS = {'supcon_vib_dglss', 'supcon_vib_dglsspp', 'supcon_vib_dglss_enc',
-                 'supcon_vib_dglsspp_cor'}
+                 'supcon_vib_dglsspp_cor', 'supcon_vib_dglsspp_supcon',
+                 'supcon_vib_dglsspp_bal', 'supcon_vib_dglsspp_vib'}
 
 class GenTrainer(Trainer):
     def __init__(self, ARCH, DATA, datadir, logdir, path=None, method='baseline', cutoff_percent=1.0,
@@ -47,7 +48,7 @@ class GenTrainer(Trainer):
         super().__init__(ARCH, DATA, datadir, logdir, None)
         
         # If VIB or any SupCon+VIB variant, initialize logvar_head and add to optimizer BEFORE loading checkpoint
-        if self.method == 'vib' or (self.method.startswith('supcon_vib') and self.method not in DGLSS_METHODS):
+        if self.method == 'vib' or self.method == 'supcon_vib_dglsspp_vib' or (self.method.startswith('supcon_vib') and self.method not in DGLSS_METHODS):
             self.logvar_head = nn.Conv2d(128, 128, kernel_size=1).to(self.device)
             # Add to optimizer so it has 2 param groups (matching the saved checkpoint)
             self.optimizer.add_param_group({'params': self.logvar_head.parameters()})
@@ -173,6 +174,39 @@ class GenTrainer(Trainer):
         # a distinct artifact sub-cluster instead of being absorbed into the class.
         out = self.get_augmented_view(in_vol)
         return self.volumetric_noise_injection(out, density=0.005)
+
+    def supcon_loss(self, z8, z8_aug, proj_labels, tau=0.1, max_pts=2000):
+        """Decoupled SupCon on the 128D bottleneck (clean <-> augmented, L2-normalized),
+        the SAME term and temperature the supcon_vib branch uses (weight 0.1). This lets
+        a DGLSS++ + SupCon direction test use the canonical mechanism rather than a
+        variant-specific tuning."""
+        mask = proj_labels > 0
+        z_c = z8.permute(0, 2, 3, 1)[mask]
+        z_a = z8_aug.permute(0, 2, 3, 1)[mask]
+        lbl = proj_labels[mask]
+        if len(lbl) == 0:
+            return torch.tensor(0.0, device=z8.device)
+        if len(lbl) > max_pts:
+            idx = torch.randperm(len(lbl), device=z8.device)[:max_pts]
+            z_c, z_a, lbl = z_c[idx], z_a[idx], lbl[idx]
+        z_c = F.normalize(z_c, p=2, dim=1)
+        z_a = F.normalize(z_a, p=2, dim=1)
+        sim = z_c @ z_a.T / tau
+        lbl_mat = lbl.unsqueeze(0) == lbl.unsqueeze(1)
+        max_sim, _ = torch.max(sim, dim=1, keepdim=True)
+        exp_sim = torch.exp(sim - max_sim.detach())
+        pos_sum = (exp_sim * lbl_mat).sum(dim=1)
+        all_sum = exp_sim.sum(dim=1)
+        return -torch.log(pos_sum / (all_sum + 1e-8)).mean()
+
+    def vib_loss(self, z8, z8_aug):
+        """VIB magnitude-bottleneck KL on the 128D bottleneck, the same form the
+        supcon_vib branch uses (weight 0.01)."""
+        logvar_aug = self.logvar_head(z8_aug)
+        loss_kl_aug = -0.5 * torch.sum(1 + logvar_aug - z8_aug.pow(2) - logvar_aug.exp(), dim=1).mean()
+        logvar_clean = self.logvar_head(z8)
+        loss_kl_clean = -0.5 * torch.sum(1 + logvar_clean - z8.pow(2) - logvar_clean.exp(), dim=1).mean()
+        return (loss_kl_clean + loss_kl_aug) / 2.0
 
     def train_epoch(self, train_loader, model, criterion, optimizer, epoch, evaluator, scheduler, color_fn, report=10, show_scans=False):
         losses = AverageMeter()
@@ -319,18 +353,29 @@ class GenTrainer(Trainer):
                     # standard-implementation arm, SIFC on the deepest encoder stage x_4
                     # with SCC on the decoded bottleneck (matching the paper's split of
                     # SIFC on Phi_enc(F) and SCC on Psi(Phi_dec(F))).
-                    gmsifc = self.method in ('supcon_vib_dglsspp', 'supcon_vib_dglsspp_cor')
+                    # Variants (all keep the default beam-drop view, isolating the added
+                    # mechanism; only _cor swaps in the corruption-targeted view):
+                    #   _supcon : + 0.1 * decoupled SupCon on the bottleneck
+                    #   _bal    : class-balanced GMSIFC + LSCC contrastive
+                    #   _vib    : + 0.01 * VIB magnitude-bottleneck KL
+                    gmsifc = self.method.startswith('supcon_vib_dglsspp')
+                    class_bal = self.method == 'supcon_vib_dglsspp_bal'
                     if self.method == 'supcon_vib_dglss_enc':
                         loss_sifc = dglss_sifc_loss(x4, x4_aug, proj_labels, in_vol, in_vol_aug,
                                                     masked=False, tau=DGLSS_TAU)
                     else:
                         loss_sifc = dglss_sifc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
-                                                    masked=gmsifc, tau=DGLSS_TAU)
+                                                    masked=gmsifc, tau=DGLSS_TAU, class_bal=class_bal)
                     loss_scc = dglss_scc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
-                                              local=gmsifc, normalize=self.dglss_scc_norm)
+                                              local=gmsifc, normalize=self.dglss_scc_norm,
+                                              class_bal=class_bal)
                     loss_total = (loss_sem
                                   + self.dglss_lam1 * loss_sifc
                                   + self.dglss_lam2 * loss_scc)
+                    if self.method == 'supcon_vib_dglsspp_supcon':
+                        loss_total = loss_total + 0.1 * self.supcon_loss(z8, z8_aug, proj_labels)
+                    if self.method == 'supcon_vib_dglsspp_vib':
+                        loss_total = loss_total + 0.01 * self.vib_loss(z8, z8_aug)
                 elif self.method.startswith('supcon_vib'):
                     # Decoupled SupCon + VIB
                     # 1. VIB Magnitude Bottleneck (Absolute Space)

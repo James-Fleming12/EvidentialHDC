@@ -51,7 +51,7 @@ def single_class_mask(labels):
 
 
 def dglss_sifc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
-                    masked=False, tau=0.7, max_pts=1500):
+                    masked=False, tau=0.7, max_pts=1500, class_bal=False):
     """SIFC (DGLSS) / GMSIFC (DGLSS++) on the 128D bottleneck features.
 
     Paired positions (present in both views) get an L1 alignment. Unpaired source
@@ -61,6 +61,10 @@ def dglss_sifc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
     unpaired augmented positions), following the paper's Figure 3. GMSIFC masks
     multi-class local neighborhoods. The aggregation is subsampled to bound the
     quadratic cost on the full 2048x64 projection.
+
+    With class_bal=True the per-point L1 terms are weighted by the inverse class
+    frequency, so each class contributes equal total alignment gradient (the
+    majority class cannot dominate the consistency loss).
     """
     B, C, H, W = z8.shape
     # Adapt the projection labels + depth-presence masks to the feature resolution.
@@ -88,10 +92,23 @@ def dglss_sifc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
     unpaired_s = valid & source_present & ~beam_present
     unpaired_a = valid & ~source_present & beam_present
 
+    def class_weights(idx_flat):
+        """Inverse-frequency weights for flat indices into labels (H*W)."""
+        pl = labels.reshape(-1)[idx_flat]
+        counts = torch.bincount(pl, minlength=int(labels.max().item()) + 1).float()
+        return (1.0 / counts[pl].clamp(min=1.0)).to(z8.device)
+
     loss = torch.tensor(0.0, device=z8.device)
     if paired.any():
-        pm = paired.expand_as(z8)
-        loss = loss + F.l1_loss(z8[pm], z8_aug[pm])
+        if class_bal:
+            idx_flat = paired.squeeze(1).reshape(-1).nonzero(as_tuple=True)[0]
+            w = class_weights(idx_flat)
+            pts_c = z8.permute(0, 2, 3, 1)[paired.squeeze(1)]
+            pts_a = z8_aug.permute(0, 2, 3, 1)[paired.squeeze(1)]
+            loss = loss + ((pts_c - pts_a).abs().mean(dim=1) * w).sum() / w.sum()
+        else:
+            pm = paired.expand_as(z8)
+            loss = loss + F.l1_loss(z8[pm], z8_aug[pm])
 
     z8f = z8.permute(0, 2, 3, 1).reshape(B, H * W, C)
     z8af = z8_aug.permute(0, 2, 3, 1).reshape(B, H * W, C)
@@ -127,14 +144,21 @@ def dglss_sifc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
             f_agg = weights @ f_agg_view[pi]
             v = weights.sum(dim=1) > 0
             if v.any():
-                agg_losses.append(F.l1_loss(f_u[v], f_agg[v]))
+                if class_bal:
+                    pl_u = labels[b].reshape(-1)[ui]
+                    counts = torch.bincount(pl_u, minlength=int(labels.max().item()) + 1).float()
+                    w_u = (1.0 / counts[pl_u].clamp(min=1.0)).to(z8.device)
+                    agg_losses.append(((f_u[v] - f_agg[v]).abs().mean(dim=1) * w_u[v]).sum() / w_u[v].sum())
+                else:
+                    agg_losses.append(F.l1_loss(f_u[v], f_agg[v]))
     if agg_losses:
         loss = loss + torch.stack(agg_losses).mean()
     return loss
 
 
 def dglss_scc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
-                   local=False, cell=256, min_pts=5, max_pts=256, normalize=True):
+                   local=False, cell=256, min_pts=5, max_pts=256, normalize=True,
+                   class_bal=False):
     """SCC (DGLSS) / LSCC (DGLSS++): all-pairs class-prototype correlation consistency.
 
     SCC pools per-scan GLOBAL class prototypes from both views (the 2B scans of the
@@ -213,7 +237,20 @@ def dglss_scc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
             if len(ls) < 4:
                 continue
             if len(ls) > max_pts:
-                idx = torch.randperm(len(ls), device=z8.device)[:max_pts]
+                if class_bal:
+                    # per-class stratified subsample: every class gets up to
+                    # max_pts/n_classes anchors, so minority classes appear in the
+                    # InfoNCE instead of being drowned by the majority.
+                    per = max(1, max_pts // len(ls.unique()))
+                    idx = []
+                    for c in ls.unique().tolist():
+                        ci = (ls == c).nonzero(as_tuple=True)[0]
+                        if len(ci) > per:
+                            ci = ci[torch.randperm(len(ci), device=z8.device)[:per]]
+                        idx.append(ci)
+                    idx = torch.cat(idx)
+                else:
+                    idx = torch.randperm(len(ls), device=z8.device)[:max_pts]
                 zf, ls = zf[idx], ls[idx]
             zn = F.normalize(zf, p=2, dim=1)
             sim = zn @ zn.T
