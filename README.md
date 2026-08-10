@@ -59,11 +59,12 @@ space against the thirdparty papers, and it gives higher absolute numbers becaus
 the problem is simpler. It does **not** solve the failure modes we care about,
 because those live in the features.
 
-### The three pillars (placeholders, to be filled in)
+### The three pillars
 
-The method is intended to rest on three pillars. Each is a placeholder at this
-stage: the general direction is set, the concrete design is still being measured
-and will be filled in as the diagnostics land.
+The method is intended to rest on three pillars. Pillars 1 and 2 are placeholders
+at this stage: the general direction is set, the concrete design is still being
+measured and will be filled in as the diagnostics land. Pillar 3 is designed and
+detailed in Section 4.
 
 1. **Robust feature extractor pretraining** (intended to improve on DGLSS++).
    [to be filled: the pretraining objective and architecture. The goal is a 128D
@@ -76,9 +77,12 @@ and will be filled in as the diagnostics land.
    mIoU, and the labeled ceiling is the wall, so a small label budget, activated
    only in the worst conditions, is the current direction.]
 
-3. **Balanced update allocation** (inter- and intra-class balance). [to be filled:
-   how the adaptation budget is split across classes and subclusters so the
-   majority classes do not consume it all.]
+3. **Backprop-free active learning** (the fallback that closes the residual
+   label-free gap). When the label-free TTA can no longer close the gap to the
+   supervised ceiling, query one point per dense per-class cluster under a very
+   strict label-or-don't gate, and re-estimate the prototypes from the labeled
+   cluster representatives. The balanced allocation of the label budget across
+   classes is part of this pillar. [Section 4.]
 
 ---
 
@@ -135,6 +139,95 @@ pathway may use the prior-corrected score; the adaptation pathway must not.
 
 ---
 
+## 4. Pillar 3: Backprop-free active learning
+
+The fallback that closes the residual gap when label-free TTA cannot. The design
+is built entirely from measured facts: it exists because a label-free signal can
+say *which* points are wrong but not *what class* they are, and it is viable
+because the corrupted points are still densely packed in per-class clusters, so
+one label per cluster can label the cluster.
+
+### 4.1 The wall that motivates it: detection without assignment
+
+The label-free TTA thread is bounded by the assignment wall, which holds across
+every extractor, every condition, and both scales (iterations doc, Iterations
+1-5):
+
+- **We can detect which points are wrong.** Local density ranks correct from wrong
+  points at AUROC 0.91 on supcon_vib; feature norm does so at 0.84-0.87 on the
+  DGLSS arms; the fused signal is 0.81-0.92 everywhere.
+- **We cannot say what class they are.** For the zero-shot-wrong points, the true
+  class is in the top-3 clean prototypes at or below the ~0.19 random baseline
+  (fog rec@3 0.14-0.24 across extractors and scales), and the logistic probe's
+  per-class recall collapses for the minority classes as training scales up (car
+  fog recall 0.84 at micro, 0.005-0.15 at medium). The information to name the
+  wrong points is absent from the features.
+- **The label-free update is therefore capped.** Its gap-closed fraction shrinks
+  with scale (the norm gate closes 0.58 of the fog gap at micro, 0.20 at medium),
+  and better pseudo-label sources (HDC-decode labels, per-class support
+  thresholds) do not recover it.
+
+So the label-free thread reaches a ceiling of its own. What separates that
+ceiling from the supervised ceiling is precisely the class labels.
+
+### 4.2 The structure that makes it cheap: dense per-class clusters
+
+The corrupted points are not a noise floor; they are still clustered by class.
+The evidence:
+
+- Even on the worst conditions, a corrupted point's nearest neighbor in the
+  corrupted stream is the same class 75-87% of the time (Corruption Atlas
+  corrupted 1-NN purity: fog 75.1%, crosstalk 86.6%, on the *un-pretrained*
+  model).
+- The labeled oracle (re-estimating prototypes from corrupted points with true
+  labels) recovers far more than any label-free update (full-scene mIoU Fog
+  +6.5, Crosstalk +14.2 over zero-shot; section 5.3). The label ceiling is
+  11-25% per extractor on fog/crosstalk, and the best label-free TTA sits 2-9
+  points below it (section 5.4).
+- The failure is the *assignment* (which cluster is which class), not the
+  *packing* (that the clusters exist). This is exactly why the labeled ceiling is
+  much higher than the TTA ceiling: labels convert the surviving cluster structure
+  into prototypes; label-free signals cannot, because they cannot name the
+  clusters.
+
+### 4.3 The mechanism: query one point per cluster, strictly
+
+Backprop-free (no extractor fine-tuning, only prototype re-estimation):
+
+1. **Cluster.** Group the corrupted points into tight per-class clusters in the
+   128D space (the packing that the 1-NN purity measures).
+2. **Rank.** Use the detection signal (density / norm / fusion) to rank clusters by
+   how much their labels would move the decode (the clusters in the uncertain
+   regions where zero-shot is wrong).
+3. **Query strictly.** A very strict label-or-don't gate decides whether a query
+   is worth the budget: a stronger version of the update/don't-update gate from
+   the TTA thread. Query only when the cluster is tight (the point is a
+   representative centroid), the detection signal is confident the cluster is
+   wrong, and the cluster is not already decodable label-free. The gate must
+   waste almost no labels.
+4. **Label the cluster.** One label on the representative point assigns the class
+   to the rest of the cluster (the packing guarantees this holds for most of it).
+5. **Re-estimate.** Update the prototypes from the labeled cluster representatives
+   with the per-point weighting that we know beats zero-shot (the oracle
+   operator). Optionally freeze the saturated majority classes and bound the
+   budget per class (the balanced-allocation rule from the original Pillar 3).
+
+The leverage is that the label budget scales with the number of clusters, not the
+number of points: each queried cluster is worth many correct labels, so a small
+budget recovers most of the oracle gap.
+
+### 4.4 When it activates
+
+Pillar 3 is the fallback. The near-term plan is first the robust extractor
+(Pillar 1, currently the corruption-augmented DGLSS++ thread), then label-free TTA
+(Pillar 2). If after those the TTA-to-supervised gap is not >90% closed, the
+strict one-point-per-cluster active learning takes over: it spends the small label
+budget on exactly the clusters the label-free thread cannot name, and converts the
+surviving cluster structure into prototypes. It is the only path that closes the
+remaining gap, because it is the only one that supplies the missing class labels.
+
+---
+
 ## 5. Previous and Current Results
 
 ### 5.1 Problem setting
@@ -148,7 +241,7 @@ pathway may use the prior-corrected score; the adaptation pathway must not.
 | **HDC encoding** | Seeded random bipolar projection 128D to 10,000D, then sign binarization (information-preserving: 49.4% to 49.0% to 47.8%) |
 | **Prototypes** | Per-class means of the binarized clean features (frozen) |
 | **Adaptation (Pillar 2)** | Adaptive prototype updates when necessary, gated by distance-to-clean-prototype, bounded by the measured label-free ceiling |
-| **Balance (Pillar 3)** | Headroom-based update allocation (freeze saturated majority classes; bound per-subcluster counts), planned |
+| **Active learning (Pillar 3)** | Backprop-free fallback: query one point per dense per-class cluster under a strict label-or-don't gate, re-estimate prototypes from the labeled cluster representatives (Section 4) |
 
 ### 5.2 Previous performance: the original model per condition
 
@@ -180,49 +273,7 @@ conditions while collapsing Fog further, because fog noise sits closer to the se
 centroids than real geometry does. Adaptation helps exactly where the
 representation survives, and poisons exactly where it does not.
 
-### 5.3 Current performance: what the new methods change
-
-The robust encoder roughly doubled Fog linear separability (23.6% to 49.4% linear
-probe) and lifted Fog zero-shot HDC point accuracy from 13.2% to 25.0% (the
-full-coverage mIoU equivalents are in sections 5.5 and 5.6).
-
-| Condition | Old baseline | New Linear Probe | New zero-shot HDC | New perfect-oracle HDC |
-| :--- | :--- | :--- | :--- | :--- |
-| **Incomplete Echo** | 88.2% | **92.8%** | **73.6%** | 73.4% |
-| **Snow** | 86.4% | 82.0% | 63.8% | 62.8% |
-| **Wet Ground** | 89.6% | 77.0% | 64.3% | 63.5% |
-| **Beam Missing** | 80.0% | 87.2% | 71.4% | 68.7% |
-| **Motion Blur** | 84.1% | 74.6% | 66.1% | 65.0% |
-| **Cross Sensor** | 56.6% | 73.8% | 57.5% | 56.3% |
-| **Crosstalk** | 22.1% | 23.6% | 35.4% | 13.9% |
-| **Fog** | **13.2%** | **41.2%** | **25.0%** | 9.5% |
-
-All four columns are point accuracy, so they are directly comparable. The
-full-coverage mIoU equivalents are in sections 5.5 and 5.6 (for example, Fog
-zero-shot mIoU is 10.1% and Crosstalk 12.0%). The accuracy-to-mIoU gap is large
-because mIoU averages per-class IoU and is dominated by the rare classes, which
-collapse under corruption.
-
-The perfect-oracle column sits below zero-shot on every condition because this is a
-naive perfect-label re-estimation: re-estimating the prototypes from the degraded
-corrupted features is worse than keeping the frozen clean prototypes. This is the
-"prototype-level adaptation has no headroom" finding. The weighted oracle in
-section 5.5, which uses the right per-point weighting, is what actually beats
-zero-shot (Fog 16.6%, Crosstalk 26.2% full-scene mIoU).
-
-The current encoder, evaluated frozen against the previous baselines, improves mIoU
-on every condition (mean 13.2% to 36.4%), and the Fog and Crosstalk gains are
-robust across both accuracy and mIoU.
-
-### 5.4 The uncertainty signal, current measurement (7-class setting)
-
-The distance-to-clean-prototype signal ranks correct from wrong points well (AUROC
-0.71-0.82), but in full-coverage mIoU the label-free prototype update is flat: it
-does not beat zero-shot. The perfect-label oracle ceiling is ~0.15 on fog and ~0.27
-on crosstalk. The uncertainty signal is sound; the ceiling is the feature
-structure, which is the encoder thread's target.
-
-### 5.5 The labeled-prototype oracle: the target a TTA method must chase
+### 5.3 The labeled-prototype oracle: the target a TTA method must chase
 
 Re-estimating the prototypes from the corrupted stream with true labels recovers
 the collapsed conditions on the full scene, with no points removed, and the result
@@ -240,13 +291,26 @@ model, section 5.2) is included as the reference the robust encoder starts from:
 | Beam Missing | 15.2% | 53.7% | 53.6% | -0.1 |
 | Motion Blur | 14.8% | 44.3% | 44.8% | +0.5 |
 
-The prototype decoder is not exhausted: with the right per-point weighting,
-re-estimated prototypes beat the frozen clean ones on every condition, and
-substantially on the collapsed ones. Every label-free TTA variant we tried fails to
-reach it. The problem is not "drop the artifacts"; it is "estimate the weights the
-oracle would assign" without labels.
+The oracle that recovers the gap is the *weighted* one. A naive perfect-label
+re-estimation (re-estimating the prototypes from the degraded corrupted features
+with unit weights) sits below zero-shot on every condition, worse than keeping the
+frozen clean prototypes (the "prototype-level adaptation has no headroom" finding).
+The table above uses the right per-point weighting, which is what actually beats
+zero-shot (Fog 16.6%, Crosstalk 26.2% full-scene mIoU). The prototype decoder is
+therefore not exhausted: with the right per-point weighting, re-estimated
+prototypes beat the frozen clean ones on every condition, and substantially on the
+collapsed ones. Every label-free TTA variant we tried fails to reach it. The
+problem is not "drop the artifacts"; it is "estimate the weights the oracle would
+assign" without labels.
 
-### 5.6 Test-time adaptation and the labeled ceiling, per feature extractor
+### 5.4 Test-time adaptation and the labeled ceiling, per feature extractor
+
+The robust encoder roughly doubled Fog linear separability (23.6% to 49.4% linear
+probe) and, evaluated frozen against the previous baselines, improves mIoU on every
+condition (mean 13.2% to 36.4%); the Fog and Crosstalk gains hold in both point
+accuracy and mIoU. The accuracy-to-mIoU gap is large because mIoU averages
+per-class IoU and is dominated by the rare classes, which collapse under
+corruption.
 
 The three feature extractors (supcon_vib, the DGLSS arm, the DGLSS++ arm), frozen,
 with the full-coverage mIoU on the target conditions for zero-shot, the naive EMA
@@ -298,7 +362,7 @@ The wall holds at scale: the DGLSS++ fog rec@3 stays below the random baseline
 (0.14 vs ~0.19) and the oracle-vs-LP assignment gap is ~0.01. Medium DGLSS++
 beats medium supcon_vib on the frozen labeled ceilings (HDC oracle mean 0.399 vs
 0.380), and the norm gate from the small-scale run does not scale its gap fraction
-(0.20 fog vs 0.58 micro) — at scale it matches naive EMA and stays below BN
+(0.20 fog vs 0.58 micro); at scale it matches naive EMA and stays below BN
 alignment. Full tables and interpretation in the iterations doc (Iteration 4).
 
 ---
@@ -309,19 +373,20 @@ alignment. Full tables and interpretation in the iterations doc (Iteration 4).
    encoders (no retraining needed). The 14-class middle ground is closed: it is
    strictly worse because it keeps the fragile classes in the metric. Background
    results are tracked in the seven-class iterations doc.
-2. The encoder thread is the current target. The fog and crosstalk oracle ceiling
-   under the 7-class map is ~0.15 / ~0.27 and is encoder-independent. The isotropy
-   comparison trains DGLSS, DGLSS++ and our method at equal budget to measure
-   whether any regime pushes the space below our baseline or moves the ceiling.
-3. The active-learning path is next: use the distance signal to rank the hard
-   points, spend a small label budget on the ranked recoverable set, and update
-   the prototypes from those labels. This is the near-term mechanism that should
-   close most of the oracle gap (Fog 16.6, Crosstalk 26.2 in the 17-class metric).
-4. The label-free TTA thread is the long-term goal and is bounded: the label-free
-   gated update is flat in full-coverage mIoU, and the oracle ceiling is the wall
-   only labels cross. It becomes reachable only if the encoder thread moves the
-   ceiling.
-5. Balanced update allocation remains planned, to be engaged once the encoder or
-   the active-learning updates produce headroom to harvest.
-5. Prototype adaptation becomes viable only if the encoder thread raises the
-   ceiling.
+2. The encoder thread is the current target. The DGLSS / DGLSS++ / supcon_vib
+   isotropy comparison is complete: DGLSS++ decodes best at medium scale (clean
+   HDC mIoU 0.530, 8-condition mean 0.369), and the corruption-targeted
+   augmentation variant is the leading lever to raise the fog/crosstalk ceiling.
+3. Then label-free TTA on the improved extractor (Pillar 2), with the 
+   update/don't-update and support-threshold gates.
+4. If the TTA-to-supervised gap is not >90% closed after 2 and 3, pivot to the
+   backprop-free active learning framework (Pillar 3, Section 4): rank the dense
+   per-class clusters with the detection signal, query one point per cluster under
+   a strict label-or-don't gate, and re-estimate the prototypes from the labeled
+   cluster representatives. This is the only path that closes the residual gap,
+   because it is the only one that supplies the missing class labels.
+5. The label-free TTA thread remains the long-term goal and is bounded: the
+   label-free gated update is flat in full-coverage mIoU, and the oracle ceiling
+   is the wall only labels cross.
+6. Balanced allocation of the label budget across classes is folded into Pillar 3,
+   to be engaged once the active-learning updates produce headroom to harvest.
