@@ -381,4 +381,62 @@ The decisive comparisons, mirroring what we learned on supcon_vib:
 3. Does the kNN reassignment keep recovering some of the oracle gap, and is its
    gap-closing fraction similar across extractors?
 
-(Pending: results from `tta_ceiling_diag.py`; appended here when the run lands.)
+**Results** (`tta_ceiling_diag.py`, frozen features, pool 500k / val 100k).
+
+Assignment-wall diagnostics (rec@3 = true class in top-3 clean prototypes for the
+zs-wrong points, random baseline ~0.19; rankT = mean true-class rank for the
+recoverable points; LPrec = LP accuracy on the recoverable set; gorc / glp =
+gated re-estimate with oracle- vs LP-assigned labels, R = 0.25):
+
+| extractor | cond | rec@3 | cosT | rankT | LPrec | gorc | glp |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| supcon_vib | fog | 0.240 | 0.124 | 3.07 | 0.025 | 0.113 | 0.087 |
+| supcon_vib | crosstalk | 0.467 | 0.165 | 2.33 | 0.116 | 0.159 | 0.131 |
+| supcon_vib | snow | 0.484 | 0.535 | 1.27 | 0.462 | 0.341 | 0.341 |
+| supcon_vib_dglss | fog | 0.210 | 0.283 | 2.68 | 0.081 | 0.106 | 0.090 |
+| supcon_vib_dglss | crosstalk | 0.477 | 0.265 | 2.50 | 0.246 | 0.140 | 0.138 |
+| supcon_vib_dglss | snow | 0.459 | 0.674 | 1.30 | 0.452 | 0.339 | 0.339 |
+| supcon_vib_dglsspp | fog | 0.205 | 0.152 | 1.78 | 0.044 | 0.127 | 0.121 |
+| supcon_vib_dglsspp | crosstalk | 0.457 | 0.135 | 2.18 | 0.124 | 0.154 | 0.149 |
+| supcon_vib_dglsspp | snow | 0.482 | 0.540 | 1.31 | 0.437 | 0.350 | 0.350 |
+
+TTA methods (full-scene mIoU, with zero-shot and oracle for reference):
+
+| extractor | cond | zero-shot | naive | conf | dist | bn | knn | oracle |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| supcon_vib | fog | 0.082 | 0.092 | 0.094 | 0.094 | 0.096 | 0.083 | 0.110 |
+| supcon_vib | crosstalk | 0.119 | 0.136 | 0.137 | 0.136 | 0.147 | 0.128 | 0.243 |
+| supcon_vib | snow | 0.348 | 0.358 | 0.358 | 0.358 | 0.354 | 0.338 | 0.363 |
+| supcon_vib_dglss | fog | 0.076 | 0.106 | 0.104 | 0.107 | 0.108 | 0.087 | 0.116 |
+| supcon_vib_dglss | crosstalk | 0.130 | 0.164 | 0.161 | 0.164 | 0.179 | 0.141 | 0.211 |
+| supcon_vib_dglss | snow | 0.349 | 0.328 | 0.325 | 0.329 | 0.359 | 0.336 | 0.355 |
+| supcon_vib_dglsspp | fog | 0.101 | 0.129 | 0.126 | 0.127 | 0.131 | 0.119 | 0.127 |
+| supcon_vib_dglsspp | crosstalk | 0.124 | 0.161 | 0.161 | 0.160 | 0.186 | 0.147 | 0.222 |
+| supcon_vib_dglsspp | snow | 0.355 | 0.351 | 0.351 | 0.351 | 0.359 | 0.348 | 0.374 |
+
+**What Iteration 1 shows:**
+
+1. **The assignment wall holds on every extractor.** Fog rec@3 is 0.21-0.24, at or
+   just above the ~0.19 random baseline, on all three extractors; the LP accuracy
+   on the recoverable set is 0.03-0.08 on fog and 0.12-0.25 on crosstalk; and the
+   gated oracle-vs-LP gap is tiny (about 0.01-0.03) everywhere. Detection is
+   solvable, assignment is not, identically across DGLSS, DGLSS++ and supcon_vib.
+   No extractor makes the labeled ceiling reachable label-free.
+2. **The TTA methods are mostly flat, and slightly less so than before.** On fog
+   the naive / confidence / distance / BN updates move a few points above zero-shot
+   (dglsspp 0.101 to 0.131), and the fog oracle headroom is small (~0.03-0.04) so
+   they nearly reach it. On crosstalk the oracle gap is large (0.09-0.12), and the
+   methods close only part of it, with BN alignment the best label-free
+   (0.147-0.186). The distance-gated update is no flatter than naive EMA, so the
+   earlier "flat" result is not reproduced sharply here.
+3. **kNN is not the best method on these features.** On fog and crosstalk the kNN
+   reassignment sits at or below the simple weighted updates (e.g. ours crosstalk
+   kNN 0.128 vs naive 0.136, BN 0.147), and its oracle-gap fraction is small
+   (fog 0.06-0.71, crosstalk 0.07-0.20). This differs from the earlier harness
+   where kNN was the best re-estimate; the budget split and feature scale here
+   favor the weighted updates.
+4. **The control behaves.** On snow there is no headroom (oracle about equals
+   zero-shot), all methods are flat, and kNN is the one that drifts below zero-shot.
+5. **Caveat.** Same under-converged extractors as Iteration 0; the ordering (wall
+   persists everywhere; no label-free method approaches the crosstalk oracle) is
+   the robust takeaway.
