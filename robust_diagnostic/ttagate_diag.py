@@ -96,6 +96,8 @@ def main():
     parser.add_argument("--arch", type=str, default="config/arch/senet-2048p.yml")
     parser.add_argument("--log_dir", type=str, default="robust_diagnostic/logs")
     parser.add_argument("--frames", type=int, default=100)
+    parser.add_argument("--methods", type=str, default=",".join(GATES),
+                        help="comma-separated subset of the extractors to evaluate")
     parser.add_argument("--pool_size", type=int, default=100000)
     parser.add_argument("--val_size", type=int, default=100000)
     parser.add_argument("--out", type=str, default="robust_diagnostic/logs/ttagate_results.json")
@@ -108,8 +110,12 @@ def main():
 
     proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
     results = {}
+    sel = [m.strip() for m in args.methods.split(',') if m.strip()]
 
-    for method, gate in GATES.items():
+    for method in sel:
+        if method not in GATES:
+            continue
+        gate = GATES[method]
         log_dir = os.path.join(args.log_dir, method)
         print(f"\n{'='*80}\n=== {method}: {gate} as update weight ===\n{'='*80}")
         trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, path=log_dir, method=method)

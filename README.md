@@ -246,51 +246,40 @@ substantially on the collapsed ones. Every label-free TTA variant we tried fails
 reach it. The problem is not "drop the artifacts"; it is "estimate the weights the
 oracle would assign" without labels.
 
-### 5.6 The kNN reassignment: the best label-free re-estimate
+### 5.6 Test-time adaptation and the labeled ceiling, per feature extractor
 
-The best label-free TTA so far is a single-round kNN reassignment: detect the
-recoverable subset, reassign those points by a confidence-weighted vote over their
-neighbors, and re-estimate the prototypes. Full-scene mIoU:
+The three feature extractors (supcon_vib, the DGLSS arm, the DGLSS++ arm), frozen,
+with the full-coverage mIoU on the target conditions for zero-shot, the naive EMA
+prototype update, the best label-free TTA found (BN-statistic alignment), and the
+full-label oracle (the ceiling). The assignment wall holds on all three: a
+label-free signal can separate which points are wrong, but not what class they
+belong to.
 
-| Condition | Zero-shot | zs-pseudo re-est | **kNN reassign** | Full-label oracle |
-| :--- | :--- | :--- | :--- | :--- |
-| **Fog** | 10.1% | 9.3% | **9.8%** | 17.1% |
-| **Crosstalk** | 12.0% | 10.7% | **12.7%** | 26.2% |
-| Snow | 39.4% | 38.1% | 39.5% | 40.6% |
-| Wet Ground | 49.0% | 47.7% | 48.1% | 51.5% |
-| Incomplete Echo | 41.2% | 39.5% | 40.5% | 40.9% |
-| Beam Missing | 53.7% | 51.6% | 53.0% | 49.4% |
-| Motion Blur | 44.3% | 43.0% | 43.9% | 44.8% |
-| Cross Sensor | 41.5% | 39.8% | 41.2% | 43.5% |
+| extractor | condition | zero-shot | naive EMA | best label-free | label ceiling |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| supcon_vib | fog | 8.2% | 9.2% | **9.6%** | 11.0% |
+| supcon_vib | crosstalk | 11.9% | 13.6% | **14.7%** | 24.3% |
+| supcon_vib_dglss | fog | 7.6% | 10.6% | **10.8%** | 11.6% |
+| supcon_vib_dglss | crosstalk | 13.0% | 16.4% | **17.9%** | 21.1% |
+| supcon_vib_dglsspp | fog | 10.1% | 12.9% | **13.1%** | 12.7% |
+| supcon_vib_dglsspp | crosstalk | 12.4% | 16.1% | **18.6%** | 22.2% |
 
-BN-statistic alignment remains the best single label-free full-scene result on
-crosstalk (15.1%), and the kNN method is the best re-estimate: the first label-free
-prototype re-estimate to beat the frozen zero-shot decoder on crosstalk, and the
-best at not collapsing the geometric conditions.
+What this shows:
 
-Why the kNN captures information the other gates and classifiers do not:
-
-- **Detection is solvable; assignment is the hard part.** A label-free signal can
-  separate fixable from unfixable points, but it says which points are fixable, not
-  what class they belong to.
-- **The recoverable points' true class is invisible to every global signal.** The
-  true class sits at rank 3.7-4.8 in the clean-prototype ordering, and a linear
-  probe gets only 5-8% on those points. No global classifier can name them.
-- **The local structure can.** The recoverable set clusters by class in the 128D
-  space (kNN true-label agreement 0.76-0.95). The kNN vote exploits that local
-  structure, which is why gating (which only selects) and reweighting (which only
-  scales) fail while a local consensus reassignment recovers some of it.
-
-What a TTA method should learn from the failure modes:
-
-- Spend capacity on "what class", not "which points".
-- The label source feeding the local vote is the ceiling. The kNN vote is only as
-  good as the labels it reads, which is why iterating the vote over the current
-  pseudo-labels compounds error instead of adding information.
-- Only reassign the points you are confident are wrong; reassigning correct points
-  degrades the healthy majority.
-- A better method needs a label source that is locally more accurate than the
-  linear probe.
+- **Naive EMA works on every extractor**, not just one: it closes about a third of
+  the fog gap on supcon_vib, three quarters on the DGLSS arm, and reaches the fog
+  ceiling on the DGLSS++ arm. The label-free update is not flat at this scale; it
+  was the weak weight signals (confidence, distance) that were flat, not the
+  update itself.
+- **The best label-free TTA is BN-statistic alignment on every extractor**, closing
+  most of the fog gap and 20-40% of the crosstalk gap. The recent density gate
+  (supcon_vib) and norm gate (DGLSS arms), which rank correct from wrong points at
+  AUROC 0.84-0.91, are comparable principled weights but do not beat naive EMA on
+  the update objective.
+- **Fog is largely closable label-free at this scale; crosstalk is the wall.** The
+  fog label-free numbers approach or reach the ceiling, while crosstalk label-free
+  stays 6-10 points below its ceiling on every extractor, consistent with the
+  assignment wall being the binding constraint on crosstalk.
 
 ---
 

@@ -504,8 +504,8 @@ closed:
 
 | extractor | cond | zero-shot | gate mIoU | oracle | gap-closed |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| supcon_vib | fog | 0.082 | dens 0.082 | 0.123 | 0.00 (no-op, bug) |
-| supcon_vib | crosstalk | 0.119 | dens 0.119 | 0.244 | 0.00 (no-op, bug) |
+| supcon_vib | fog | 0.082 | dens 0.093 | 0.123 | **0.28** |
+| supcon_vib | crosstalk | 0.119 | dens 0.136 | 0.244 | **0.13** |
 | supcon_vib_dglss | fog | 0.076 | norm 0.103 | 0.135 | **0.45** |
 | supcon_vib_dglss | crosstalk | 0.130 | norm 0.144 | 0.209 | **0.17** |
 | supcon_vib_dglsspp | fog | 0.101 | norm 0.125 | 0.143 | **0.58** |
@@ -523,13 +523,12 @@ closed:
    principled weight (correct points carry higher norms on the DGLSS arms) that
    behaves no worse than naive, and the fog gap is genuinely closable at this
    scale.
-3. **The density gate for supcon_vib is a no-op as first implemented** (exactly
-   equal to zero-shot): the weight was `dens.clamp(min=0)`, and `dens` (negative
-   mean top-20 cosine) is almost always negative, so nearly every weight was
-   zeroed and the update fell back to the clean prototypes. The direction is
-   correct (correct points are sparser, AUROC 0.91); the transform was wrong. It
-   is being re-run with a monotone positive shift (`dens - min(dens)`), which
-   preserves the ranking without degenerating.
-4. **Caveat.** Same under-converged extractors; and the norm-gate gap fractions
-   are on a 100k-pool split, so compare within this table rather than to the
-   500k-pool Iteration-1 numbers.
+3. **The density gate now works for supcon_vib** (after a monotone-shift fix): fog
+   0.082 to 0.093 and crosstalk 0.119 to 0.136, closing 28% and 13% of the oracle
+   gaps. This is comparable to the naive update on the same extractor (Iteration
+   1: fog gap ~0.36, crosstalk ~0.14). So the density signal is a usable weight,
+   consistent with its 0.91 correct-vs-wrong AUROC, but it does not beat naive
+   EMA on ours either.
+4. **Caveat.** Same under-converged extractors; and the gap fractions are on a
+   100k-pool split, so compare within this table rather than to the 500k-pool
+   Iteration-1 numbers.
