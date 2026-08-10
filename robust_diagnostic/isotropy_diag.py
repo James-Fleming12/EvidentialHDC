@@ -55,12 +55,17 @@ from modules.oracle_core import get_hdc_projection, build_hdc_prototypes, comput
 CONDS = ['fog', 'crosstalk', 'snow', 'wet_ground', 'incomplete_echo',
          'beam_missing', 'motion_blur', 'cross_sensor']
 # The comparison arms. supcon_vib is the SupCon+VIB reference; vib isolates VIB (the
-# isotropy-attribution control); the three DGLSS arms are VIB-free:
+# isotropy-attribution control); the DGLSS arms are VIB-free:
 #   - supcon_vib_dglss:      SIFC + SCC on the 128D bottleneck (the HDC-input space)
 #   - supcon_vib_dglsspp:    GMSIFC + LSCC on the bottleneck
 #   - supcon_vib_dglss_enc:  the paper-faithful attachment: SIFC on the deepest encoder
 #                            stage x_4, SCC on the decoded bottleneck
-METHODS = ['supcon_vib', 'vib', 'supcon_vib_dglss', 'supcon_vib_dglsspp', 'supcon_vib_dglss_enc']
+#   - supcon_vib_dglsspp_cor: DGLSS++ with the corruption-targeted augmented view
+#                            (fog depth jitter + density + crosstalk injection) instead
+#                            of beam-drop, to test whether the corruption-augmentation
+#                            mechanism keeps minority classes closer to their prototypes
+METHODS = ['supcon_vib', 'vib', 'supcon_vib_dglss', 'supcon_vib_dglsspp',
+           'supcon_vib_dglss_enc', 'supcon_vib_dglsspp_cor']
 
 
 def build_parser(root, data, arch):

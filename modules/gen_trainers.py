@@ -22,7 +22,8 @@ DGLSS_TAU = 0.7
 # DGLSS / DGLSS++ / standard-implementation arms. These are VIB-FREE by construction:
 # they route through their own branch (plain bottleneck, no reparameterization, no KL)
 # so the comparison with the paper implementations is not contaminated by VIB.
-DGLSS_METHODS = {'supcon_vib_dglss', 'supcon_vib_dglsspp', 'supcon_vib_dglss_enc'}
+DGLSS_METHODS = {'supcon_vib_dglss', 'supcon_vib_dglsspp', 'supcon_vib_dglss_enc',
+                 'supcon_vib_dglsspp_cor'}
 
 class GenTrainer(Trainer):
     def __init__(self, ARCH, DATA, datadir, logdir, path=None, method='baseline', cutoff_percent=1.0,
@@ -198,7 +199,15 @@ class GenTrainer(Trainer):
 
             # Create augmented view for all methods. DGLSS / DGLSS++ use the pure
             # sparsity (beam-drop) view their consistency losses are defined on.
-            if self.method in DGLSS_METHODS:
+            if self.method == 'supcon_vib_dglsspp_cor':
+                # Robust DGLSS++ arm: corruption-targeted augmented view (fog depth
+                # jitter + density sparsity from get_augmented_view, then crosstalk
+                # fake-return injection) instead of the pure beam-drop view, so the
+                # GMSIFC/LSCC consistency constraints learn invariance to the exact
+                # corruptions that collapse the minority classes.
+                in_vol_aug = self.get_augmented_view(in_vol)
+                in_vol_aug = self.volumetric_noise_injection(in_vol_aug, density=0.005)
+            elif self.method in DGLSS_METHODS:
                 in_vol_aug = get_dglss_view(in_vol)
             else:
                 in_vol_aug = self.get_augmented_view(in_vol)
@@ -310,7 +319,7 @@ class GenTrainer(Trainer):
                     # standard-implementation arm, SIFC on the deepest encoder stage x_4
                     # with SCC on the decoded bottleneck (matching the paper's split of
                     # SIFC on Phi_enc(F) and SCC on Psi(Phi_dec(F))).
-                    gmsifc = self.method == 'supcon_vib_dglsspp'
+                    gmsifc = self.method in ('supcon_vib_dglsspp', 'supcon_vib_dglsspp_cor')
                     if self.method == 'supcon_vib_dglss_enc':
                         loss_sifc = dglss_sifc_loss(x4, x4_aug, proj_labels, in_vol, in_vol_aug,
                                                     masked=False, tau=DGLSS_TAU)

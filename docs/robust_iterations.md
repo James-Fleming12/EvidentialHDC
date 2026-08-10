@@ -888,4 +888,41 @@ not a budget-matched rerun, so the exact oracle ordering (dg_med fog 0.176 vs sv
 0.146) is split-dependent and indicative, not controlled. The robust conclusion is
 the ceiling-boundedness itself, which both medium extractors show.
 
+#### 5.4 The supcon_vib micro-to-medium trajectory (settles the "majority overemphasis" question)
+
+To test whether supcon_vib's lower fog ceiling came from majority-class
+overemphasis in the larger dataset, the same autopsy was run on the existing MICRO
+supcon_vib checkpoint (`robust_diagnostic/logs/supcon_vib`, 12 ep / 10% data):
+
+| cond | scale | zs | naive | oracle | gap |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | micro | 0.073 | 0.083 | 0.109 | **+0.28** |
+| fog | med | 0.090 | 0.076 | 0.146 | **-0.25** |
+| crosstalk | micro | 0.106 | 0.120 | 0.217 | **+0.13** |
+| crosstalk | med | 0.107 | 0.087 | 0.233 | **-0.16** |
+
+**The ceiling ROSE with scale, so majority overemphasis is not what lowers it.**
+supcon_vib's fog oracle goes 0.109 (micro) to 0.146 (med), crosstalk 0.217 to 0.233,
+mirroring dglsspp (fog 0.120 to 0.176). The larger dataset raises the recoverable
+ceiling; it does not depress it. dglsspp's consistently higher fog oracle at BOTH
+scales (0.120 vs 0.109, 0.176 vs 0.146) marks the gap as an extractor property of
+the corrupted features, not a scale effect.
+
+**What scale actually breaks is the pseudo-label assignment, not the ceiling.** The
+naive EMA flips from +0.28 (micro) to -0.25 (med) for supcon_vib on fog, and the
+per-class driver is the logistic probe's car recall collapsing from 0.838 (micro,
+where the LP is an "even" classifier and feat_cos is 0.819) to 0.005 (med, where the
+LP polarizes to road-only and car feat_cos drops to 0.351): the micro update lifts
+car 0.057 -> 0.066, the medium update destroys it 0.157 -> 0.026. So the medium
+scale simultaneously raises the ceiling and removes the update's ability to reach
+it, decoupling the two: the ceiling is a feature property, the naive-EMA failure is
+an assignment problem.
+
+**Consequence for the plan.** The class-balance training idea is now refuted on both
+of its premises: supcon_vib shows no polarization yet fails, and its (and
+dglsspp's) ceiling rises with scale rather than falling. The label-free TTA failure
+at scale is the tightening assignment wall (pseudo-label recall collapse), bounded
+additionally by how little ceiling the extractor has on the collapsed conditions.
+
+
 
