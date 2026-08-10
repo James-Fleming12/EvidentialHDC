@@ -140,7 +140,12 @@ def main():
             ones = torch.ones(len(pool), device=device)
 
             if gate == 'dens_gate':
-                w = local_density(pool).clamp(min=0).to(device)
+                # dens = -mean top-20 cosine (higher = sparser = more likely correct).
+                # A raw clamp(min=0) zeroes out nearly every weight (dens is almost
+                # always negative in clustered high-dim space), so the update becomes
+                # a no-op. Shift instead: monotone increasing, all positive.
+                dens = local_density(pool)
+                w = (dens - dens.min()) + 1e-3
             else:
                 w = pool.norm(p=2, dim=1).to(device)
 

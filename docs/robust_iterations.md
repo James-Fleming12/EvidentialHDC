@@ -493,3 +493,43 @@ confident-wrong points):
    battery did not run (it used confidence and distance weights). Given the 0.84-0.91
    point-level AUROCs, these should move the update further toward the oracle than
    naive EMA, which is the missing lever the earlier flatness obscured.
+
+### Iteration 3: the Iteration-2 gates as update weights
+
+The density- and norm-gated prototype updates, run per extractor with the gate
+Iteration 2 identified as strong for it (`ttagate_diag.py`): norm for the DGLSS
+arms, density for supcon_vib. Same 100k pool / 100k val split; zero-shot and
+oracle recomputed as the gap references. mIoU and fraction of the oracle gap
+closed:
+
+| extractor | cond | zero-shot | gate mIoU | oracle | gap-closed |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| supcon_vib | fog | 0.082 | dens 0.082 | 0.123 | 0.00 (no-op, bug) |
+| supcon_vib | crosstalk | 0.119 | dens 0.119 | 0.244 | 0.00 (no-op, bug) |
+| supcon_vib_dglss | fog | 0.076 | norm 0.103 | 0.135 | **0.45** |
+| supcon_vib_dglss | crosstalk | 0.130 | norm 0.144 | 0.209 | **0.17** |
+| supcon_vib_dglsspp | fog | 0.101 | norm 0.125 | 0.143 | **0.58** |
+| supcon_vib_dglsspp | crosstalk | 0.124 | norm 0.159 | 0.223 | **0.36** |
+
+**What Iteration 3 shows:**
+
+1. **The norm-gated update is a real, non-flat TTA lever on the DGLSS extractors.**
+   It closes 45-58% of the fog gap and 17-36% of the crosstalk gap (DGLSS++ fog
+   0.101 to 0.125, gap 0.58). This is the first weighted update that moves
+   meaningfully on fog, unlike the near-flat confidence / distance gates.
+2. **It is comparable to, not clearly better than, the naive weighted update.** On
+   the same budget the naive EMA closes a similar fraction (Iteration 1: DGLSS
+   fog 0.106, DGLSS++ fog 0.129). The value of the norm gate is that it is a
+   principled weight (correct points carry higher norms on the DGLSS arms) that
+   behaves no worse than naive, and the fog gap is genuinely closable at this
+   scale.
+3. **The density gate for supcon_vib is a no-op as first implemented** (exactly
+   equal to zero-shot): the weight was `dens.clamp(min=0)`, and `dens` (negative
+   mean top-20 cosine) is almost always negative, so nearly every weight was
+   zeroed and the update fell back to the clean prototypes. The direction is
+   correct (correct points are sparser, AUROC 0.91); the transform was wrong. It
+   is being re-run with a monotone positive shift (`dens - min(dens)`), which
+   preserves the ranking without degenerating.
+4. **Caveat.** Same under-converged extractors; and the norm-gate gap fractions
+   are on a 100k-pool split, so compare within this table rather than to the
+   500k-pool Iteration-1 numbers.
