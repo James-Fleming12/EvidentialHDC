@@ -831,3 +831,61 @@ the per-class comparison is controlled within this run.
    whether the fog sign flip (negative at 100k, near-ceiling at 500k) is a
    real property or an artifact of pool mass / pseudo-label noise.
 
+#### 5.3 Update variants at medium scale (support threshold + HDC pseudo-labels)
+
+Before committing to a 5h class-balanced training run, the working assumption that
+"minority features sit far from their prototypes, so the update can't help them"
+was checked against the medium supcon_vib extractor (`logs/med_pretrain_supcon_vib`)
+with the same per-class autopsy. The two structural alternatives were also tested,
+eval-only, on both medium checkpoints: a per-class minimum-support threshold in the
+update (`weighted_mean_update`, `min_support=256`: keep the base prototype when a
+class's assigned pool weight is below threshold) and the zero-shot HDC decode as the
+pseudo-label source instead of the logistic probe. Aggregate gap-closed
+(zs -> variant -> oracle) per condition:
+
+| extractor | cond | naive (LP) | LP+support | HDC labels | HDC+support | oracle |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| supcon_vib (med) | fog | -0.25 | -0.38 | -0.13 | -0.13 | 0.146 |
+| supcon_vib (med) | crosstalk | -0.16 | -0.26 | -0.09 | -0.09 | 0.233 |
+| dglsspp (med) | fog | +0.19 | +0.20 | +0.15 | +0.15 | 0.176 |
+| dglsspp (med) | crosstalk | +0.02 | +0.08 | +0.06 | +0.04 | 0.222 |
+
+Key per-class numbers (fog): sv_med car zs 0.157 -> naive 0.026 / HDC-labels 0.114 /
+oracle 0.200; dg_med car zs 0.122 -> naive 0.102 / oracle 0.303 (and on crosstalk
+dg_med car naive 0.252 -> LP+support 0.313, the one variant that clearly helps).
+
+**What this shows:**
+
+1. **No variant rescues supcon_vib's update.** All four stay negative
+   (-0.09 to -0.38) on both conditions. Even the HDC-decode labels only reduce the
+   damage (sv_med fog car 0.026 -> 0.114) without going positive.
+2. **The binding limit for supcon_vib is the labeled ceiling, not the update
+   noise.** sv_med fog oracle is 0.146 vs zs 0.090 — only 0.056 of headroom to work
+   with; dg_med fog has 0.176 vs 0.082 (0.094). supcon_vib's corrupted features are
+   less recoverable *even with true labels* (fog car oracle 0.200 vs 0.303, terrain
+   0.161 vs 0.204, vegetation 0.173 vs 0.185). With almost no gap to close, any
+   label-free update noise pushes the result below zero-shot.
+3. **This answers the noise-robustness question:** supcon_vib med is not "less
+   robust to update noise" in a way a better update fixes — its medium-scale fog
+   space has a low recoverable ceiling, so the LP's noise (fog LP recall for car
+   0.005) has nothing to cancel and the update net-negative. dglsspp med, with real
+   headroom, is the extractor on which the naive update works at all (+0.19).
+4. **The support threshold helps only where it protects, and it is imperfect.** It
+   recovers dg_med's crosstalk car (0.252 -> 0.313), but for sv_med's fog car it
+   fails (LP+support 0.007, worse than naive 0.026): the logistic probe assigns
+   >= 256 (mostly wrong) pool points to car on fog, so a total-weight threshold
+   counts assignments, not correct ones, and lets the low-precision class through.
+   A precision-aware or confidence-gated threshold would be needed.
+5. **The class-balance training idea loses its premise at this evidence.** supcon_vib
+   med has no feature polarization (rho(freq, feat_cos) = -0.36 fog) and still fails;
+   therefore "minority features far from prototypes" is not what breaks the naive
+   EMA at medium scale. What breaks it is the low labeled ceiling on the collapsed
+   conditions. Balancing the extractor to tighten minority classes cannot raise a
+   ceiling that is set by how little of the minority structure survives fog.
+
+**Caveat.** supcon_vib's med checkpoint is the earlier `med_pretrain` run (epoch 25),
+not a budget-matched rerun, so the exact oracle ordering (dg_med fog 0.176 vs sv_med
+0.146) is split-dependent and indicative, not controlled. The robust conclusion is
+the ceiling-boundedness itself, which both medium extractors show.
+
+
