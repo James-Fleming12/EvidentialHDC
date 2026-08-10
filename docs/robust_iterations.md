@@ -924,5 +924,57 @@ dglsspp's) ceiling rises with scale rather than falling. The label-free TTA fail
 at scale is the tightening assignment wall (pseudo-label recall collapse), bounded
 additionally by how little ceiling the extractor has on the collapsed conditions.
 
+## Iteration 6: DGLSS++ with corruption-targeted augmentation (micro gate)
+
+Iterations 4-5 established that (a) the label-free TTA failure at scale is the
+assignment wall plus a low recoverable ceiling, and (b) the minority-class drift is
+a corruption-shift under fog/crosstalk. The natural training lever is the one
+mechanism supcon_vib has that the DGLSS arms lack: the corruption-targeted
+augmented view. This iteration adds a **`supcon_vib_dglsspp_cor`** arm — DGLSS++
+(GMSIFC + LSCC + CE, still VIB-free) but with the augmented view set to supcon_vib's
+`get_augmented_view` (beam-drop + fog depth jitter + 20% density sparsity) plus a
+crosstalk fake-return injection, so the consistency constraints learn invariance to
+the exact corruptions that collapse the minority classes.
+
+**Micro gate (12 ep / 10% data), same-split aggregate vs the two micro baselines:**
+
+| extractor | cond | zs | naive | oracle | gap |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| dglsspp (micro) | fog | 0.088 | 0.074 | 0.120 | -0.43 |
+| supcon_vib (micro) | fog | 0.073 | 0.083 | 0.109 | +0.28 |
+| **dglsspp_cor (micro)** | fog | 0.081 | 0.093 | 0.114 | **+0.37** |
+| dglsspp (micro) | crosstalk | 0.100 | 0.132 | 0.209 | +0.30 |
+| supcon_vib (micro) | crosstalk | 0.106 | 0.120 | 0.217 | +0.13 |
+| **dglsspp_cor (micro)** | crosstalk | 0.104 | 0.118 | 0.202 | **+0.15** |
+
+**Isotropy (`isotropy_results.json`, micro cor run):** clean HDC mIoU 0.432 (vs
+0.427 baseline), fog 0.069 (vs 0.075), crosstalk 0.095 (vs 0.090), 8-condition mean
+0.300 (vs 0.297). The fog dead-coordinate fraction **halves** (0.101 vs 0.183) and
+crosstalk dead-fraction halves (0.020 vs 0.041). Training is the best of the three
+micro runs (best-val IoU 0.303 vs dg 0.283 / sv 0.289).
+
+**What the micro gate shows:**
+
+1. **The corruption augmentation flips the fog naive-EMA gap from strongly negative
+   to the best of the three micro models** (-0.43 baseline, +0.28 supcon_vib,
+   +0.37 cor). The mechanism is visible per class: the baseline's negative fog gap
+   came from the update destroying the ROAD prototype (0.483 -> 0.205); cor protects
+   it (0.495 -> 0.460), and car's LP recall stays high (0.893) so the update helps
+   car (0.057 -> 0.063).
+2. **It produces a cleaner fog space.** The dead-coordinate fraction under fog is
+   halved (0.183 -> 0.101) and the 8-condition HDC mean is at least tied with the
+   baseline, so the augmentation does not trade robustness for a decode loss.
+3. **The minority feat_cos are roughly unchanged at micro** (car 0.825 vs 0.847,
+   vegetation 0.450 vs 0.431, building 0.409 vs 0.451) — the micro effect is a
+   cleaner overall fog space and a protected majority prototype, not yet a
+   per-minority tightening. The minority-specific claim is only decidable where the
+   baseline polarizes, i.e. at medium scale.
+
+**Next.** The decisive test is the medium-lite cor run (12 ep / 100% data, ~5h):
+whether at the scale where dglsspp polarizes (dg_med rho(freq, feat_cos) +0.48, fog
+oracle 0.176) the cor variant holds minority classes closer to their prototypes
+(lower rho, higher fog oracle) and keeps the naive-EMA gap positive.
+
+
 
 
