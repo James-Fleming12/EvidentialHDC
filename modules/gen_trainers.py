@@ -28,7 +28,28 @@ DGLSS_METHODS = {'supcon_vib_dglss', 'supcon_vib_dglsspp', 'supcon_vib_dglss_enc
                  'supcon_vib_dglsspp_corsupcon',
                  'supcon_vib_dglsspp_corsupcon_nogmsifc',
                  'supcon_vib_dglsspp_corsupcon_nolscc',
-                 'supcon_vib_dglsspp_corsupcon_nocons'}
+                 'supcon_vib_dglsspp_corsupcon_nocons',
+                 'supcon_vib_dglsspp_corsupcon_w03',
+                 'supcon_vib_dglsspp_corsupcon_w05',
+                 'supcon_vib_dglsspp_corsupcon_blend03',
+                 'supcon_vib_dglsspp_corsupcon_blend05',
+                 'supcon_vib_dglsspp_corsupcon_cond',
+                 'supcon_vib_dglsspp_corsupcon_ch64',
+                 'supcon_vib_dglsspp_corsupcon_ch96'}
+
+# SupCon anchoring-direction variants (tested at micro): each changes ONE knob of the
+# clean-anchoring, with two points per sweep so the direction is testable against
+# mis-tuning. key -> kwargs to supcon_loss / SupCon weight multiplier.
+SUPCON_VARIANTS = {
+    'supcon_vib_dglsspp_corsupcon': {},
+    'supcon_vib_dglsspp_corsupcon_w03': {'weight': 0.03},
+    'supcon_vib_dglsspp_corsupcon_w05': {'weight': 0.05},
+    'supcon_vib_dglsspp_corsupcon_blend03': {'weight': 0.1, 'blend_alpha': 0.3},
+    'supcon_vib_dglsspp_corsupcon_blend05': {'weight': 0.1, 'blend_alpha': 0.5},
+    'supcon_vib_dglsspp_corsupcon_cond': {'weight': 0.1, 'cond': True},
+    'supcon_vib_dglsspp_corsupcon_ch64': {'weight': 0.1, 'channels': 64},
+    'supcon_vib_dglsspp_corsupcon_ch96': {'weight': 0.1, 'channels': 96},
+}
 
 class GenTrainer(Trainer):
     def __init__(self, ARCH, DATA, datadir, logdir, path=None, method='baseline', cutoff_percent=1.0,
@@ -179,11 +200,23 @@ class GenTrainer(Trainer):
         out = self.get_augmented_view(in_vol)
         return self.volumetric_noise_injection(out, density=0.005)
 
-    def supcon_loss(self, z8, z8_aug, proj_labels, tau=0.1, max_pts=2000):
+    def supcon_loss(self, z8, z8_aug, proj_labels, tau=0.1, max_pts=2000,
+                    blend_alpha=None, cond=False, channels=None):
         """Decoupled SupCon on the 128D bottleneck (clean <-> augmented, L2-normalized),
         the SAME term and temperature the supcon_vib branch uses (weight 0.1). This lets
         a DGLSS++ + SupCon direction test use the canonical mechanism rather than a
-        variant-specific tuning."""
+        variant-specific tuning.
+
+        Direction-test variants (to check the anchoring trade-off is robust to tuning):
+          - channels=k    : apply the pull to only the first k bottleneck channels,
+                            leaving the rest free to retain the corruption shift.
+          - blend_alpha   : pull each corrupted point toward its class's blended
+                            anchor normalize((1-a)*clean_mean + a*corrupted_mean)
+                            instead of the pairwise clean<->aug form.
+          - cond=True     : weight each point's pull by its closeness to the clean
+                            class anchor (near-clean points anchored, far/shifted
+                            points anchored lightly so the recoverable shift survives).
+        """
         mask = proj_labels > 0
         z_c = z8.permute(0, 2, 3, 1)[mask]
         z_a = z8_aug.permute(0, 2, 3, 1)[mask]
@@ -193,15 +226,58 @@ class GenTrainer(Trainer):
         if len(lbl) > max_pts:
             idx = torch.randperm(len(lbl), device=z8.device)[:max_pts]
             z_c, z_a, lbl = z_c[idx], z_a[idx], lbl[idx]
+
+        if channels is not None:
+            z_c = z_c[:, :channels]
+            z_a = z_a[:, :channels]
+
         z_c = F.normalize(z_c, p=2, dim=1)
         z_a = F.normalize(z_a, p=2, dim=1)
-        sim = z_c @ z_a.T / tau
-        lbl_mat = lbl.unsqueeze(0) == lbl.unsqueeze(1)
-        max_sim, _ = torch.max(sim, dim=1, keepdim=True)
-        exp_sim = torch.exp(sim - max_sim.detach())
-        pos_sum = (exp_sim * lbl_mat).sum(dim=1)
-        all_sum = exp_sim.sum(dim=1)
-        return -torch.log(pos_sum / (all_sum + 1e-8)).mean()
+
+        if cond:
+            # per-point anchor weight: closeness of the corrupted point to its clean
+            # class centroid, normalized to [0,1] and detached (a gate, not a gradient
+            # path). Far-from-clean (shifted) points get a small weight, so their
+            # recoverable shift survives.
+            Kc = int(lbl.max()) + 1
+            centroid = torch.zeros(Kc, z_c.shape[1], device=z_c.device)
+            centroid.scatter_add_(0, lbl.unsqueeze(1).expand(-1, z_c.shape[1]), z_c)
+            cnt = torch.bincount(lbl, minlength=Kc).float().unsqueeze(1).clamp(min=1)
+            clean_cent = F.normalize(centroid / cnt, p=2, dim=1)
+            sim_c = (z_a * clean_cent[lbl]).sum(dim=1).detach()
+            lo, hi = sim_c.min(), sim_c.max()
+            w = ((sim_c - lo) / (hi - lo + 1e-8)).clamp(0, 1)
+        else:
+            w = None
+
+        if blend_alpha is not None:
+            # soft anchor: InfoNCE of corrupted points against the per-class blended
+            # (clean + shifted) anchors, so the shift direction is retained.
+            Kc = int(lbl.max()) + 1
+            c_sum = torch.zeros(Kc, z_c.shape[1], device=z_c.device)
+            a_sum = torch.zeros(Kc, z_a.shape[1], device=z_a.device)
+            c_sum.scatter_add_(0, lbl.unsqueeze(1).expand(-1, z_c.shape[1]), z_c)
+            a_sum.scatter_add_(0, lbl.unsqueeze(1).expand(-1, z_a.shape[1]), z_a)
+            cnt = torch.bincount(lbl, minlength=Kc).float().unsqueeze(1).clamp(min=1)
+            clean_cent = F.normalize(c_sum / cnt, p=2, dim=1)
+            corr_cent = F.normalize(a_sum / cnt, p=2, dim=1)
+            anchor = F.normalize((1 - blend_alpha) * clean_cent + blend_alpha * corr_cent, p=2, dim=1)
+            sim = z_a @ anchor.T / tau
+            pos = sim.gather(1, lbl.unsqueeze(1))
+            max_sim, _ = torch.max(sim, dim=1, keepdim=True)
+            loss = -(pos - (torch.logsumexp(sim - max_sim.detach(), dim=1) + max_sim.detach()))
+        else:
+            sim = z_c @ z_a.T / tau
+            lbl_mat = lbl.unsqueeze(0) == lbl.unsqueeze(1)
+            max_sim, _ = torch.max(sim, dim=1, keepdim=True)
+            exp_sim = torch.exp(sim - max_sim.detach())
+            pos_sum = (exp_sim * lbl_mat).sum(dim=1)
+            all_sum = exp_sim.sum(dim=1)
+            loss = -torch.log(pos_sum / (all_sum + 1e-8))
+
+        if w is not None:
+            return (loss * w).sum() / w.sum()
+        return loss.mean()
 
     def vib_loss(self, z8, z8_aug):
         """VIB magnitude-bottleneck KL on the 128D bottleneck, the same form the
@@ -384,7 +460,9 @@ class GenTrainer(Trainer):
                                                   class_bal=class_bal)
                         loss_total = loss_total + self.dglss_lam2 * loss_scc
                     if 'corsupcon' in self.method:
-                        loss_total = loss_total + 0.1 * self.supcon_loss(z8, z8_aug, proj_labels)
+                        cfg = SUPCON_VARIANTS.get(self.method, {})
+                        loss_total = loss_total + cfg.get('weight', 0.1) * self.supcon_loss(
+                            z8, z8_aug, proj_labels, **{k: v for k, v in cfg.items() if k != 'weight'})
                     if self.method == 'supcon_vib_dglsspp_vib':
                         loss_total = loss_total + 0.01 * self.vib_loss(z8, z8_aug)
                 elif self.method.startswith('supcon_vib'):

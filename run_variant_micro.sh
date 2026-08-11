@@ -4,9 +4,10 @@
 # to its own log.
 #
 # Usage:
-#   bash run_variant_micro.sh            # GPU 3, originals + ablations + dglss check
+#   bash run_variant_micro.sh            # GPU 3, everything
 #   bash run_variant_micro.sh 0          # GPU 0
-#   bash run_variant_micro.sh 3 abl      # GPU 3, ONLY the component ablations + dglss check
+#   bash run_variant_micro.sh 3 abl      # GPU 3, ablations + anchoring + dglss check
+#   bash run_variant_micro.sh 3 anchor   # GPU 3, ONLY the anchoring-direction tests + dglss check
 #
 # Each training also runs the full isotropy eval (prints + saves isotropy_results.json
 # into the variant's log_dir). After training, the scale_gap per-class autopsy runs for
@@ -66,10 +67,24 @@ run_abl() {
     2>&1 | tee "logs/dglsspp_${label}_micro_diag.log" || fail "eval $label"
 }
 
-run_abl "supcon_vib_dglsspp_corsupcon" "robust_diagnostic/logs/micro_corsupcon" "corsupcon"
-run_abl "supcon_vib_dglsspp_corsupcon_nogmsifc" "robust_diagnostic/logs/micro_abl_nogmsifc" "corsupcon_nogmsifc"
-run_abl "supcon_vib_dglsspp_corsupcon_nolscc" "robust_diagnostic/logs/micro_abl_nolscc" "corsupcon_nolscc"
-run_abl "supcon_vib_dglsspp_corsupcon_nocons" "robust_diagnostic/logs/micro_abl_nocons" "corsupcon_nocons"
+if [ "$MODE" = "all" ] || [ "$MODE" = "abl" ]; then
+  run_abl "supcon_vib_dglsspp_corsupcon" "robust_diagnostic/logs/micro_corsupcon" "corsupcon"
+  run_abl "supcon_vib_dglsspp_corsupcon_nogmsifc" "robust_diagnostic/logs/micro_abl_nogmsifc" "corsupcon_nogmsifc"
+  run_abl "supcon_vib_dglsspp_corsupcon_nolscc" "robust_diagnostic/logs/micro_abl_nolscc" "corsupcon_nolscc"
+  run_abl "supcon_vib_dglsspp_corsupcon_nocons" "robust_diagnostic/logs/micro_abl_nocons" "corsupcon_nocons"
+fi
+
+# --- Anchoring-direction micro tests (each at two settings so the direction is robust
+#     to tuning): lower weight / soft alpha-blend / per-point conditioned / channel-split ---
+if [ "$MODE" = "all" ] || [ "$MODE" = "abl" ] || [ "$MODE" = "anchor" ]; then
+  run_abl "supcon_vib_dglsspp_corsupcon_w03" "robust_diagnostic/logs/micro_anchor_w03" "corsupcon_w03"
+  run_abl "supcon_vib_dglsspp_corsupcon_w05" "robust_diagnostic/logs/micro_anchor_w05" "corsupcon_w05"
+  run_abl "supcon_vib_dglsspp_corsupcon_blend03" "robust_diagnostic/logs/micro_anchor_blend03" "corsupcon_blend03"
+  run_abl "supcon_vib_dglsspp_corsupcon_blend05" "robust_diagnostic/logs/micro_anchor_blend05" "corsupcon_blend05"
+  run_abl "supcon_vib_dglsspp_corsupcon_cond" "robust_diagnostic/logs/micro_anchor_cond" "corsupcon_cond"
+  run_abl "supcon_vib_dglsspp_corsupcon_ch64" "robust_diagnostic/logs/micro_anchor_ch64" "corsupcon_ch64"
+  run_abl "supcon_vib_dglsspp_corsupcon_ch96" "robust_diagnostic/logs/micro_anchor_ch96" "corsupcon_ch96"
+fi
 
 echo "=== [dglss] plain-DGLSS base per-class check (eval-only) ==="
 CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/scale_gap_diag.py \

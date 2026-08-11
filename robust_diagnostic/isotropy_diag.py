@@ -75,13 +75,25 @@ CONDS = ['fog', 'crosstalk', 'snow', 'wet_ground', 'incomplete_echo',
 #                            combined variant that drop the GMSIFC / LSCC / both
 #                            consistency terms, to test whether the DGLSS++ stack earns
 #                            its place on top of CE + SupCon + the corruption view.
+#   - supcon_vib_dglsspp_corsupcon_w03 / _w05 / _blend03 / _blend05 / _cond / _ch64 /
+#                            _ch96: anchoring-direction tests — lower SupCon weight /
+#                            soft alpha-blend anchor / per-point conditioned anchor /
+#                            channel-split anchor, each at two settings so the
+#                            direction is robust to tuning.
 METHODS = ['supcon_vib', 'vib', 'supcon_vib_dglss', 'supcon_vib_dglsspp',
            'supcon_vib_dglss_enc', 'supcon_vib_dglsspp_cor',
            'supcon_vib_dglsspp_supcon', 'supcon_vib_dglsspp_bal',
            'supcon_vib_dglsspp_vib', 'supcon_vib_dglsspp_corsupcon',
            'supcon_vib_dglsspp_corsupcon_nogmsifc',
            'supcon_vib_dglsspp_corsupcon_nolscc',
-           'supcon_vib_dglsspp_corsupcon_nocons']
+           'supcon_vib_dglsspp_corsupcon_nocons',
+           'supcon_vib_dglsspp_corsupcon_w03',
+           'supcon_vib_dglsspp_corsupcon_w05',
+           'supcon_vib_dglsspp_corsupcon_blend03',
+           'supcon_vib_dglsspp_corsupcon_blend05',
+           'supcon_vib_dglsspp_corsupcon_cond',
+           'supcon_vib_dglsspp_corsupcon_ch64',
+           'supcon_vib_dglsspp_corsupcon_ch96']
 
 
 def build_parser(root, data, arch):
