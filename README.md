@@ -89,21 +89,29 @@ detailed in Section 4.
 ## 2. Pillar 1: Robust feature extractor pretraining
 
 The extractor is **DGLSS++** — the domain-generalization method whose consistency
-constraints (GMSIFC + LSCC on the 128D HDC-input bottleneck) we adapted to a
-corruption-robustness target — with two additions:
+constraints we adapted to a corruption-robustness target — with three pieces, each
+doing a distinct job:
 
-- **Corruption-targeted augmented view.** The sparse beam-drop view is replaced by
-  the fog/crosstalk-targeted view (depth jitter + density sparsity + fake-return
-  injection), so the consistency constraints learn invariance to the exact
-  corruptions that collapse the minority classes, not just sensor sparsity.
-- **A decoupled supervised-contrastive pull (SupCon)** on the normalized bottleneck,
-  pulling the corrupted view's points toward their clean class anchors. This fixes
-  the majority-class polarization that plain DGLSS++ develops at scale
-  (rho(freq, feat_cos) of distance-to-prototype: +0.48 at medium -> -0.49 with the
-  additions).
+- **GMSIFC + LSCC consistency stack** (the DGLSS++ core): GMSIFC aligns cross-view
+  features and LSCC enforces per-cell class-correlation consistency. Ablations show
+  GMSIFC is what makes the label-free TTA work, and LSCC is what keeps the
+  representation decodable.
+- **Corruption-targeted augmented view**: replaces the sparse beam-drop view with a
+  fog/crosstalk-targeted one (depth jitter + density sparsity + fake-return
+  injection), so the constraints learn the corruptions that collapse the minority
+  classes, not just sensor sparsity.
+- **Decoupled supervised-contrastive pull (SupCon)**: pulls the corrupted view's
+  points toward their clean class anchors, inverting the majority-class polarization
+  that plain DGLSS++ develops at scale (rho(freq, feat_cos) of distance-to-prototype:
+  +0.48 -> -0.49).
 
-Both keep the method VIB-free and the training budget matched. Current per-condition
-HDC zero-shot mIoU at medium scale (**as of 2026-08-11** — from the isotropy /
+All VIB-free, budget-matched. **Status:** at the 8-condition mean the robust variant
+currently TIED with plain DGLSS++ (0.369) — the next step is to push the overall
+performance clearly above it. Note: continuing training from 21 to 24 epochs did not
+help (the crosstalk label-free gap halved, +0.52 -> +0.20); why more training hurts
+the TTA is an open question.
+
+Current per-condition HDC zero-shot mIoU at medium scale (**as of 2026-08-11** — from the isotropy /
 frozen-ceiling diagnostics; these numbers go stale as new runs land):
 
 | condition | HyperLiDAR baseline | supcon_vib (med) | DGLSS++ (med, 24ep) | Robust DGLSS++ (ours, 21ep) |

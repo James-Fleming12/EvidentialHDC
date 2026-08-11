@@ -1264,6 +1264,46 @@ burden? Micro-scale ablations that drop GMSIFC, drop LSCC, and drop both from th
 combined variant would show which consistency term (if either) earns its place in
 the paper's robust-DGLSS++.
 
+### 8.2 Component ablation of the combined variant (micro)
+
+Same-split aggregate and isotropy for the full combined variant and the three
+ablations (each keeps CE + SupCon + the corruption view; `_nogmsifc` / `_nolscc` /
+`_nocons` drop the GMSIFC / LSCC / both consistency terms):
+
+| variant | fog gap | xtalk gap | rho(fog) | clean HDC | fog HDC | 8-cond mean |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **full corsupcon** | **+0.48** | **+0.34** | -0.07 | 0.424 | 0.067 | 0.296 |
+| nogmsifc (no GMSIFC) | +0.03 | +0.08 | +0.07 | **0.449** | 0.069 | **0.303** |
+| nolscc (no LSCC) | +0.40 | +0.33 | -0.04 | 0.386 | **0.053** | 0.285 |
+| nocons (no consistency) | +0.23 | +0.04 | **-0.60** | 0.420 | 0.061 | 0.286 |
+
+Note: the `nocons` scale_gap autopsy log was corrupted in transit; its numbers are
+from `scale_gap_results_corsupcon_nocons_micro.json`.
+
+**What the ablation shows — each consistency term has a distinct, load-bearing role:**
+
+1. **GMSIFC is the TTA engine.** Dropping it collapses the naive-EMA gains (fog
+   +0.48 -> +0.03, crosstalk +0.34 -> +0.08) even though the frozen decode is fine
+   (best clean HDC 0.449 and best 8-cond 0.303). GMSIFC's cross-view feature
+   alignment is what makes the label-free update work.
+2. **LSCC is the decode regularizer.** Dropping it keeps the TTA gains (fog +0.40,
+   crosstalk +0.33) but tanks the representation (clean HDC 0.424 -> 0.386, 8-cond
+   0.296 -> 0.285, and the space over-collapses, PR ~1.3). The correlation
+   consistency is what keeps the bottleneck structured enough to decode.
+3. **Both are needed; the "too many things" hypothesis is refuted.** The full stack
+   is not dead weight — it is the only configuration with BOTH strong TTA (fog
+   +0.48, crosstalk +0.34) and a healthy decode (8-cond 0.296). Each term earns its
+   place for a different reason, and neither subsumes the other (nor does CE + SupCon
+   + the corruption view alone, at 8-cond 0.286).
+4. **The full micro corsupcon reproduces the medium story in miniature**: the
+   best naive-EMA gaps of the family, with the polarization trend already visible
+   (fog rho -0.07 at micro vs -0.49 at medium, same direction).
+
+**Verdict.** Keep the full GMSIFC + LSCC stack in the paper's robust-DGLSS++ method.
+The stack is not an optimization burden to shed; it provides the two things the
+method needs (GMSIFC -> label-free TTA, LSCC -> decode structure) and its removal
+degrades one or the other.
+
 
 
 

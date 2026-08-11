@@ -130,6 +130,12 @@ def main():
     parser.add_argument("--med", action="store_true",
                         help="use medium-scale checkpoints (logs/med_pretrain_supcon_vib for "
                              "supcon_vib, the current medium DGLSS++ run) instead of the micro ones")
+    parser.add_argument("--method", type=str, default="supcon_vib_dglsspp",
+                        help="GenTrainer method name (used with --path)")
+    parser.add_argument("--path", type=str, default="",
+                        help="single checkpoint dir to evaluate (overrides the default method loop)")
+    parser.add_argument("--label", type=str, default="single",
+                        help="label for the single --path checkpoint")
     parser.add_argument("--out", type=str, default=None,
                         help="output JSON (default: robust_diagnostic/logs/tta_ceiling_results[_med].json)")
     args = parser.parse_args()
@@ -139,15 +145,20 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}")
 
+    if args.path:
+        targets = [(args.label, args.method, args.path)]
+    else:
+        targets = [(m, m, (MED_PATHS.get(m, os.path.join(args.log_dir, m))
+                           if args.med else os.path.join(args.log_dir, m)))
+                   for m in METHODS]
     out = args.out or os.path.join(args.log_dir, 'tta_ceiling_results'
-                                   + ('_med' if args.med else '') + '.json')
+                                   + (('_' + args.label) if args.path else ('_med' if args.med else ''))
+                                   + '.json')
     proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
     results = {}
 
-    for method in METHODS:
-        log_dir = (MED_PATHS.get(method, os.path.join(args.log_dir, method))
-                   if args.med else os.path.join(args.log_dir, method))
-        print(f"\n{'='*80}\n=== {method}: ceiling-access diagnostics + TTA methods ===\n{'='*80}")
+    for label, method, log_dir in targets:
+        print(f"\n{'='*80}\n=== {method} {label} ({log_dir}): ceiling-access diagnostics + TTA methods ===\n{'='*80}")
         trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, path=log_dir, method=method)
         model = trainer.model
 
@@ -227,7 +238,7 @@ def main():
                   f"{rk['recovered']['mean']:>6.2f} {lp_rec:>6.3f} {g_orc:>6.3f} "
                   f"{g_lp:>6.3f} | {naive:>7.4f} {conf_gate:>7.4f} "
                   f"{dist_gate:>7.4f} {bn_align:>7.4f} {knn:>7.4f}  {knn_gap:.2f}")
-        results[method] = r_cond
+        results[label] = r_cond
 
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, 'w') as f:
