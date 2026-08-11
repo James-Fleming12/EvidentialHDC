@@ -175,6 +175,9 @@ def main():
     parser.add_argument("--frames", type=int, default=50, help="frames per condition for evaluation")
     parser.add_argument("--eval_only", action="store_true",
                         help="load existing checkpoints from log_dir/<method> instead of training")
+    parser.add_argument("--resume", action="store_true",
+                        help="load the existing checkpoint from log_dir/<method> and continue "
+                             "training to --epochs total (resumes from the saved epoch)")
     parser.add_argument("--conditions", type=str, default="",
                         help="comma-separated subset; default = all 8")
     parser.add_argument("--ref_load_path", type=str, default="",
@@ -209,6 +212,11 @@ def main():
             if args.eval_only:
                 print(f"\n{'='*80}\n=== Loading {method} checkpoint ({log_dir}) ===\n{'='*80}")
                 trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, path=log_dir, method=method)
+            elif args.resume:
+                print(f"\n{'='*80}\n=== Resuming {method} (train to epoch {args.epochs}) ===\n{'='*80}")
+                trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, path=log_dir,
+                                     method=method, cutoff_percent=args.cutoff)
+                trainer.train(epochs=args.epochs)
             else:
                 print(f"\n{'='*80}\n=== Training {method} (cutoff {args.cutoff}, {args.epochs} epochs) ===\n{'='*80}")
                 trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, method=method,

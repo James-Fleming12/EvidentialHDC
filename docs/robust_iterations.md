@@ -1149,6 +1149,80 @@ augmentation improves efficiency/ceiling — testing them COMBINED as the paper'
 robust-DGLSS++ variant (beam-drop + corruption view is orthogonal to the SupCon
 pull).
 
+## Iteration 8: the combined robust-DGLSS++ variant at medium scale
+
+The paper's candidate — DGLSS++ with BOTH the corruption-targeted augmented view
+and the decoupled SupCon pull (`supcon_vib_dglsspp_corsupcon`, VIB-free) — trained
+for 21 ep / 100% data (~10.5h) and evaluated with the same per-class autopsy.
+Training converged cleanly (IoU 0.164 -> 0.482, best val 0.396 — the best of every
+medium run). Comparison vs the plain medium DGLSS++ baseline (dg_med, 24 ep) and
+the augmentation-only medium (cor_med, 12 ep):
+
+**Aggregate gap-closed (same 100k/100k split):**
+
+| extractor | cond | zs | naive | oracle | gap | rho(freq,feat_cos) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| dg_med (24ep) | fog | 0.082 | 0.100 | 0.176 | +0.19 | +0.48 |
+| cor_med (12ep) | fog | 0.084 | 0.094 | 0.147 | +0.16 | +0.57 |
+| **corsupcon_med (21ep)** | fog | **0.095** | 0.100 | 0.157 | +0.08 | **-0.49** |
+| dg_med (24ep) | crosstalk | 0.125 | 0.127 | 0.222 | +0.02 | +0.29 |
+| cor_med (12ep) | crosstalk | 0.109 | 0.121 | 0.200 | +0.14 | +0.33 |
+| **corsupcon_med (21ep)** | crosstalk | 0.108 | **0.149** | 0.188 | **+0.52** | -0.05 |
+
+**Isotropy (HDC mIoU per condition / structure):**
+
+| metric | dg_med | cor_med | corsupcon_med |
+| :--- | :--- | :--- | :--- |
+| clean HDC | 0.530 | 0.532 | 0.528 |
+| fog HDC | 0.068 | 0.073 | **0.085** |
+| crosstalk HDC | **0.115** | 0.108 | 0.098 |
+| 8-condition mean | 0.369 | 0.365 | **0.369** |
+| fog dead-fraction | 0.221 | 0.208 | 0.228 |
+| crosstalk dead-fraction | 0.147 | 0.059 | **0.048** |
+| fog mean-fraction | 0.830 | 0.830 | 0.890 |
+| fog participation ratio | 3.49 | 3.50 | 2.04 |
+| best val IoU | 0.387 | 0.379 | **0.396** |
+
+Key per-class: car fog feat_cos 0.826 vs dg_med 0.321 (2.5x closer), fog zs-correct
+0.978 vs 0.319, fog LP recall 0.304 vs 0.149; car crosstalk naive update 0.134 ->
+0.279 (gap 0.99) vs dg_med 0.352 -> 0.252 (hurt); sidewalk crosstalk naive 0.003 ->
+0.198 (gap 1.05).
+
+**What the combined run shows:**
+
+1. **The majority polarization is INVERTED.** fog rho(freq, feat_cos) goes +0.48
+   (dg_med) to **-0.49** — the first medium-scale run where the minority classes are
+   NOT disproportionately far from their prototypes; they are now closer than the
+   majority. The SupCon pull anchors them (car feat_cos 0.826 vs 0.321). This is the
+   structural fix the SupCon direction was designed to deliver.
+2. **The crosstalk naive-EMA gap is +0.52** (vs dg_med +0.02, cor_med +0.14) — the
+   largest label-free TTA gain measured at scale. The naive update now lifts car
+   (gap 0.99) and sidewalk (gap 1.05) on crosstalk instead of leaving them flat or
+   destroying them.
+3. **Best fog zero-shot and decode** (zs 0.095, HDC 0.085 vs dg_med 0.082 / 0.068).
+   The fog naive gap is small (+0.08) only because zero-shot is already high (less
+   headroom), and the fog labeled ceiling is still below dg_med (oracle 0.157 vs
+   0.176) — the "raise the fog ceiling" goal is not met, consistent with the
+   ceiling being feature/budget-bound rather than assignment-bound.
+4. **Tied aggregate at 3 fewer epochs** (8-condition mean 0.369 at 21 ep vs dg_med
+   0.369 at 24 ep) with the best val IoU (0.396). The combined variant is at least
+   as robust per epoch as the plain DGLSS++, and the crosstalk dead-fraction drops
+   to 0.048 (vs 0.147).
+5. **The fog space is the most mean-dominated measured** (mean-fraction 0.890, PR
+   2.04) yet decodes the best on fog — a clean instance of the structured-anisotropy
+   result: the dominant direction carries the classes, so low rank / high
+   mean-dominance does not itself predict HDC failure.
+6. **The one regression:** crosstalk HDC decode is below dg_med (0.098 vs 0.115),
+   and fog linear separability dropped (LP 0.470 vs 0.524). The SupCon's anchoring
+   trades some continuous-space separability for the minority-class structure.
+
+**Verdict.** This is the paper's robust-DGLSS++ method: DGLSS++ + corruption
+augmentation + SupCon. It fixes the assignment/polarization (SupCon), improves
+efficiency (augmentation), and gives the best label-free TTA (crosstalk +0.52) and
+best fog decode at scale. The remaining open item is the fog labeled ceiling, which
+neither the augmentation nor SupCon raises — pointing back to the active-learning
+fallback as the only path past it.
+
 
 
 

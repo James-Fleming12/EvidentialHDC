@@ -88,11 +88,44 @@ detailed in Section 4.
 
 ## 2. Pillar 1: Robust feature extractor pretraining
 
-[To be filled: the pretraining objective and architecture.] The goal is a 128D
-feature space that survives fog and crosstalk before the HDC projection, with a
-higher recoverable ceiling than the DGLSS++ baseline currently measured. The
-isotropy comparison (DGLSS / DGLSS++ / supcon_vib) and the recoverability
-diagnostics are tracked in the robust-iterations doc.
+The extractor is **DGLSS++** — the domain-generalization method whose consistency
+constraints (GMSIFC + LSCC on the 128D HDC-input bottleneck) we adapted to a
+corruption-robustness target — with two additions:
+
+- **Corruption-targeted augmented view.** The sparse beam-drop view is replaced by
+  the fog/crosstalk-targeted view (depth jitter + density sparsity + fake-return
+  injection), so the consistency constraints learn invariance to the exact
+  corruptions that collapse the minority classes, not just sensor sparsity.
+- **A decoupled supervised-contrastive pull (SupCon)** on the normalized bottleneck,
+  pulling the corrupted view's points toward their clean class anchors. This fixes
+  the majority-class polarization that plain DGLSS++ develops at scale
+  (rho(freq, feat_cos) of distance-to-prototype: +0.48 at medium -> -0.49 with the
+  additions).
+
+Both keep the method VIB-free and the training budget matched. Current per-condition
+HDC zero-shot mIoU at medium scale (**as of 2026-08-11** — from the isotropy /
+frozen-ceiling diagnostics; these numbers go stale as new runs land):
+
+| condition | HyperLiDAR baseline | supcon_vib (med) | DGLSS++ (med, 24ep) | Robust DGLSS++ (ours, 21ep) |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | 1.8% | 7.8% | 6.8% | **8.5%** |
+| crosstalk | 4.7% | 10.2% | **11.5%** | 9.8% |
+| snow | 20.6% | 38.4% | 39.6% | **41.1%** |
+| wet_ground | 18.8% | 44.6% | **48.3%** | 46.8% |
+| incomplete_echo | 25.5% | 41.2% | 44.9% | **45.0%** |
+| beam_missing | 15.2% | 47.0% | **50.6%** | 50.3% |
+| motion_blur | 14.8% | 45.0% | **50.2%** | **50.2%** |
+| cross_sensor | 4.4% | 39.6% | 43.4% | **43.5%** |
+| **mean (8 corrupted)** | 13.2% | 34.2% | **36.9%** | **36.9%** |
+
+Clean HDC mIoU (same pipeline): DGLSS++ 53.0%, Robust DGLSS++ 52.8% — roughly tied
+(supcon_vib and the baseline were not measured on clean in the same pipeline).
+Sources: HyperLiDAR baseline = the un-pretrained model (Corruption Atlas, section
+5.2); supcon_vib = frozen-ceiling HDC-zs; DGLSS++ and Robust DGLSS++ = the isotropy
+pipeline. The robust variant additionally inverts the majority polarization
+(rho -0.49) and delivers the best crosstalk label-free TTA at scale (naive-EMA
+gap-closed +0.52 vs +0.02 for plain DGLSS++). The isotropy comparison and per-class
+autopsies are tracked in the robust-iterations doc.
 
 ---
 
@@ -219,7 +252,8 @@ budget recovers most of the oracle gap.
 ### 4.4 When it activates
 
 Pillar 3 is the fallback. The near-term plan is first the robust extractor
-(Pillar 1, currently the corruption-augmented DGLSS++ thread), then label-free TTA
+(Pillar 1, currently the corruption-augmented + SupCon DGLSS++ variant, section 2),
+then label-free TTA
 (Pillar 2). If after those the TTA-to-supervised gap is not >90% closed, the
 strict one-point-per-cluster active learning takes over: it spends the small label
 budget on exactly the clusters the label-free thread cannot name, and converts the
