@@ -68,10 +68,13 @@ CONDS = ['fog', 'crosstalk', 'snow', 'wet_ground', 'incomplete_echo',
 #                            decoupled SupCon pull / class-balanced consistency / VIB
 #                            magnitude bottleneck) to test whether each direction helps
 #                            DGLSS++ robustness independently.
+#   - supcon_vib_dglsspp_corsupcon: the combined robustness variant for the paper —
+#                            corruption-targeted augmentation AND the decoupled SupCon
+#                            pull (assignment + efficiency/ceiling levers together).
 METHODS = ['supcon_vib', 'vib', 'supcon_vib_dglss', 'supcon_vib_dglsspp',
            'supcon_vib_dglss_enc', 'supcon_vib_dglsspp_cor',
            'supcon_vib_dglsspp_supcon', 'supcon_vib_dglsspp_bal',
-           'supcon_vib_dglsspp_vib']
+           'supcon_vib_dglsspp_vib', 'supcon_vib_dglsspp_corsupcon']
 
 
 def build_parser(root, data, arch):

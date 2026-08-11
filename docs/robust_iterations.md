@@ -1082,6 +1082,73 @@ Key per-class differences (car = class 4):
    ceiling", the full cor run is the direct test; if the goal is the cheaper
    marginal effect of the augmentation, (a) resolves the confound at half the cost.
 
+## Iteration 7: DGLSS++ robustness-variant directions (micro gate)
+
+Three mechanisms that could separate a "robust DGLSS++" from the default were
+tested at micro scale (12 ep / 10% data), each added to the default beam-drop
+DGLSS++ with the CANONICAL form/weight so the direction verdict is not
+implementation-dependent: `_supcon` (+0.1 x decoupled SupCon, tau=0.1, the exact
+supcon_vib term), `_bal` (class-balanced GMSIFC + LSCC contrastive), `_vib`
+(+0.01 x VIB magnitude-bottleneck KL). The plain-DGLSS base was also checked.
+Baseline reference (plain DGLSS++ micro): fog zs 0.088 / naive 0.074 / oracle
+0.120 / gap -0.43; crosstalk gap +0.30; rho(freq, feat_cos) fog +0.04.
+
+**Aggregate gap-closed (same 100k/100k split) + isotropy:**
+
+| variant | cond | zs | naive | oracle | gap | rho(freq,feat_cos) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| plain dglsspp | fog | 0.088 | 0.074 | 0.120 | -0.43 | +0.04 |
+| **dglsspp+SupCon** | fog | 0.082 | 0.103 | 0.124 | **+0.49** | +0.04 |
+| **dglsspp+SupCon** | crosstalk | 0.116 | 0.142 | 0.213 | **+0.27** | +0.38 |
+| dglsspp+classbal | fog | 0.074 | 0.076 | 0.114 | +0.03 | +0.04 |
+| dglsspp+classbal | crosstalk | 0.095 | 0.114 | 0.206 | +0.17 | +0.39 |
+| dglsspp+VIB | fog | 0.078 | 0.084 | 0.110 | +0.19 | **-0.14** |
+| dglsspp+VIB | crosstalk | 0.090 | 0.107 | 0.192 | +0.17 | +0.21 |
+
+Isotropy (8-condition HDC mean / clean HDC / best-val IoU): plain dglsspp 0.297 /
+0.427 / 0.296; **+SupCon 0.302 / 0.433 / 0.310**; +classbal 0.296 / 0.433 /
+0.291; +VIB 0.293 / 0.428 / 0.308. Fog dead-fraction: plain 0.183, +SupCon
+0.081, +classbal 0.077, +VIB 0.159.
+
+**What the direction gate shows:**
+
+1. **SupCon is the winning direction.** Adding the supervised same-class pull
+   flips the fog naive-EMA gap from -0.43 to +0.49 (the largest flip of the
+   three) and holds crosstalk at +0.27, with the best val IoU (0.310) and the
+   best 8-condition decode (0.302). The mechanism prediction held: the same-class
+   pull improves the ASSIGNMENT side (the LP finds the classes, so the naive
+   update works on both conditions) without hurting the decode, and it more than
+   halves the fog dead-fraction (0.183 -> 0.081).
+2. **VIB is a qualified direction.** Naive gaps are positive (+0.19 / +0.17) and
+   it is the ONLY variant that flips the fog rho negative (-0.14), i.e. minority
+   classes end up closer to their prototypes than the majority — the
+   polarization-reduction it was meant to deliver. But the 8-condition decode is
+   slightly below baseline (0.293) and the fog dead-fraction stays high (0.159),
+   so at this budget VIB compresses the space at some decode cost. Worth a
+   medium-scale look only if paired with something that restores the decode.
+3. **Class-balance is not supported at micro.** rho is unchanged (+0.04 / +0.39),
+   fog HDC is the worst of the four (0.059), the fog naive gap is the weakest
+   (+0.03), and the val IoU is the lowest (0.291). Balancing the consistency
+   gradients neither reduces the minority weakness nor helps the decode. The
+   direction is the weakest of the three; the earlier per-class evidence
+   (supcon_vib has no polarization yet fails) already predicted this.
+4. **The plain-DGLSS base check shows the collapse signature is its glaring
+   weakness.** The plain DGLSS micro has the OPPOSITE polarization (fog rho
+   -0.50, minority-tight) and its naive EMA works (+0.49 fog), but its zero-shot
+   is the weakest (fog 0.068) and it carries the mean-dominance / dead-fraction
+   signature (clean dead-fraction ~10% vs ~0.3% for DGLSS++, Iteration 0). The
+   first-pass improvement is therefore adopting the DGLSS++ structure (masking,
+   local cells, contrastive term) plus the corruption augmentation, which is the
+   current plan.
+
+**Caveat and next.** These are micro gates: the naive-gap flips are measurable at
+micro (the -0.43 -> +0.49 fog signal is real), but the polarization / ceiling
+effects need medium scale. The recommendation is a medium-lite DGLSS++ + SupCon
+run (the winner), and — because SupCon improves assignment while the corruption
+augmentation improves efficiency/ceiling — testing them COMBINED as the paper's
+robust-DGLSS++ variant (beam-drop + corruption view is orthogonal to the SupCon
+pull).
+
 
 
 

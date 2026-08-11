@@ -24,7 +24,8 @@ DGLSS_TAU = 0.7
 # so the comparison with the paper implementations is not contaminated by VIB.
 DGLSS_METHODS = {'supcon_vib_dglss', 'supcon_vib_dglsspp', 'supcon_vib_dglss_enc',
                  'supcon_vib_dglsspp_cor', 'supcon_vib_dglsspp_supcon',
-                 'supcon_vib_dglsspp_bal', 'supcon_vib_dglsspp_vib'}
+                 'supcon_vib_dglsspp_bal', 'supcon_vib_dglsspp_vib',
+                 'supcon_vib_dglsspp_corsupcon'}
 
 class GenTrainer(Trainer):
     def __init__(self, ARCH, DATA, datadir, logdir, path=None, method='baseline', cutoff_percent=1.0,
@@ -233,7 +234,7 @@ class GenTrainer(Trainer):
 
             # Create augmented view for all methods. DGLSS / DGLSS++ use the pure
             # sparsity (beam-drop) view their consistency losses are defined on.
-            if self.method == 'supcon_vib_dglsspp_cor':
+            if self.method in ('supcon_vib_dglsspp_cor', 'supcon_vib_dglsspp_corsupcon'):
                 # Robust DGLSS++ arm: corruption-targeted augmented view (fog depth
                 # jitter + density sparsity from get_augmented_view, then crosstalk
                 # fake-return injection) instead of the pure beam-drop view, so the
@@ -372,7 +373,7 @@ class GenTrainer(Trainer):
                     loss_total = (loss_sem
                                   + self.dglss_lam1 * loss_sifc
                                   + self.dglss_lam2 * loss_scc)
-                    if self.method == 'supcon_vib_dglsspp_supcon':
+                    if self.method in ('supcon_vib_dglsspp_supcon', 'supcon_vib_dglsspp_corsupcon'):
                         loss_total = loss_total + 0.1 * self.supcon_loss(z8, z8_aug, proj_labels)
                     if self.method == 'supcon_vib_dglsspp_vib':
                         loss_total = loss_total + 0.01 * self.vib_loss(z8, z8_aug)
