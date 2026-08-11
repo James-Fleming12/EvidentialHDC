@@ -1223,6 +1223,47 @@ best fog decode at scale. The remaining open item is the fog labeled ceiling, wh
 neither the augmentation nor SupCon raises — pointing back to the active-learning
 fallback as the only path past it.
 
+### 8.1 Three more epochs (21 -> 24) and the overtraining question
+
+The combined variant was resumed for 3 more epochs to 24 ep / 100% (the exact
+dg_med budget). Same-split aggregate and isotropy, 21 ep vs 24 ep:
+
+| metric | 21 ep | 24 ep |
+| :--- | :--- | :--- |
+| fog zs / naive / oracle / gap | 0.095 / 0.100 / 0.157 / +0.08 | 0.092 / 0.096 / 0.158 / +0.07 |
+| crosstalk zs / naive / oracle / gap | 0.108 / **0.149** / 0.188 / **+0.52** | 0.107 / 0.127 / **0.210** / +0.20 |
+| fog rho(freq, feat_cos) | -0.49 | **-0.66** |
+| clean HDC mIoU | 0.528 | **0.533** |
+| fog HDC mIoU | **0.085** | 0.079 |
+| crosstalk HDC mIoU | 0.098 | 0.097 |
+| 8-condition mean | **0.369** | 0.368 |
+| fog dead-fraction | 0.228 | **0.088** |
+| fog participation ratio | 2.04 | **2.72** |
+
+**What the extra epochs did:** mostly neutral with two real effects. (1) The fog
+space is visibly healthier (dead-fraction 0.228 -> 0.088, PR 2.04 -> 2.72) and the
+clean decode improves slightly (0.528 -> 0.533), but the fog decode itself ticks
+down (0.085 -> 0.079) and the crosstalk NAIVE-EMA gap HALVES (+0.52 -> +0.20) even
+though the crosstalk ceiling ROSE (oracle 0.188 -> 0.210, now matching dg_med's
+0.222). The +0.52 crosstalk gap at 21 ep was a transient sweet spot, driven by
+sidewalk (naive 0.003 -> 0.198 at 21 ep vs 0.013 -> 0.035 at 24 ep) — more training
+does not sustain it. (2) The majority polarization keeps inverting (rho -0.66), so
+the SupCon's minority anchoring strengthens with training.
+
+**Verdict: do not overtrain for TTA.** The 21-ep checkpoint is the better label-free
+TTA checkpoint (crosstalk +0.52); 24 ep buys a healthier fog space and a slightly
+higher ceiling but gives back most of the naive-EMA gain. The ceiling keeps rising
+with budget (as Iterations 4-5 established), but the label-free update does not
+track it. This decouples the two: pick the checkpoint for the story you are telling
+(+0.52 TTA at 21 ep, or the matched-budget decode at 24 ep).
+
+**Next diagnostic: component ablation.** The overtraining result makes the "too many
+things" question worth testing directly: is the full GMSIFC + LSCC stack adding
+value on top of CE + SupCon + the corruption view, or is it just extra optimization
+burden? Micro-scale ablations that drop GMSIFC, drop LSCC, and drop both from the
+combined variant would show which consistency term (if either) earns its place in
+the paper's robust-DGLSS++.
+
 
 
 

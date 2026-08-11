@@ -25,7 +25,10 @@ DGLSS_TAU = 0.7
 DGLSS_METHODS = {'supcon_vib_dglss', 'supcon_vib_dglsspp', 'supcon_vib_dglss_enc',
                  'supcon_vib_dglsspp_cor', 'supcon_vib_dglsspp_supcon',
                  'supcon_vib_dglsspp_bal', 'supcon_vib_dglsspp_vib',
-                 'supcon_vib_dglsspp_corsupcon'}
+                 'supcon_vib_dglsspp_corsupcon',
+                 'supcon_vib_dglsspp_corsupcon_nogmsifc',
+                 'supcon_vib_dglsspp_corsupcon_nolscc',
+                 'supcon_vib_dglsspp_corsupcon_nocons'}
 
 class GenTrainer(Trainer):
     def __init__(self, ARCH, DATA, datadir, logdir, path=None, method='baseline', cutoff_percent=1.0,
@@ -234,7 +237,7 @@ class GenTrainer(Trainer):
 
             # Create augmented view for all methods. DGLSS / DGLSS++ use the pure
             # sparsity (beam-drop) view their consistency losses are defined on.
-            if self.method in ('supcon_vib_dglsspp_cor', 'supcon_vib_dglsspp_corsupcon'):
+            if self.method.startswith('supcon_vib_dglsspp_cor'):
                 # Robust DGLSS++ arm: corruption-targeted augmented view (fog depth
                 # jitter + density sparsity from get_augmented_view, then crosstalk
                 # fake-return injection) instead of the pure beam-drop view, so the
@@ -355,25 +358,32 @@ class GenTrainer(Trainer):
                     # with SCC on the decoded bottleneck (matching the paper's split of
                     # SIFC on Phi_enc(F) and SCC on Psi(Phi_dec(F))).
                     # Variants (all keep the default beam-drop view, isolating the added
-                    # mechanism; only _cor swaps in the corruption-targeted view):
+                    # mechanism; only _cor / _corsupcon* swap in the corruption view):
                     #   _supcon : + 0.1 * decoupled SupCon on the bottleneck
                     #   _bal    : class-balanced GMSIFC + LSCC contrastive
                     #   _vib    : + 0.01 * VIB magnitude-bottleneck KL
+                    #   _corsupcon* : corruption view + SupCon; the _nogmsifc / _nolscc /
+                    #                _nocons suffixes drop the GMSIFC / LSCC / both
+                    #                consistency terms to ablate the DGLSS++ stack.
                     gmsifc = self.method.startswith('supcon_vib_dglsspp')
                     class_bal = self.method == 'supcon_vib_dglsspp_bal'
-                    if self.method == 'supcon_vib_dglss_enc':
-                        loss_sifc = dglss_sifc_loss(x4, x4_aug, proj_labels, in_vol, in_vol_aug,
-                                                    masked=False, tau=DGLSS_TAU)
-                    else:
-                        loss_sifc = dglss_sifc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
-                                                    masked=gmsifc, tau=DGLSS_TAU, class_bal=class_bal)
-                    loss_scc = dglss_scc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
-                                              local=gmsifc, normalize=self.dglss_scc_norm,
-                                              class_bal=class_bal)
-                    loss_total = (loss_sem
-                                  + self.dglss_lam1 * loss_sifc
-                                  + self.dglss_lam2 * loss_scc)
-                    if self.method in ('supcon_vib_dglsspp_supcon', 'supcon_vib_dglsspp_corsupcon'):
+                    no_sifc = self.method.endswith('nogmsifc') or self.method.endswith('nocons')
+                    no_scc = self.method.endswith('nolscc') or self.method.endswith('nocons')
+                    loss_total = loss_sem
+                    if not no_sifc:
+                        if self.method == 'supcon_vib_dglss_enc':
+                            loss_sifc = dglss_sifc_loss(x4, x4_aug, proj_labels, in_vol, in_vol_aug,
+                                                        masked=False, tau=DGLSS_TAU)
+                        else:
+                            loss_sifc = dglss_sifc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
+                                                        masked=gmsifc, tau=DGLSS_TAU, class_bal=class_bal)
+                        loss_total = loss_total + self.dglss_lam1 * loss_sifc
+                    if not no_scc:
+                        loss_scc = dglss_scc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
+                                                  local=gmsifc, normalize=self.dglss_scc_norm,
+                                                  class_bal=class_bal)
+                        loss_total = loss_total + self.dglss_lam2 * loss_scc
+                    if 'corsupcon' in self.method:
                         loss_total = loss_total + 0.1 * self.supcon_loss(z8, z8_aug, proj_labels)
                     if self.method == 'supcon_vib_dglsspp_vib':
                         loss_total = loss_total + 0.01 * self.vib_loss(z8, z8_aug)

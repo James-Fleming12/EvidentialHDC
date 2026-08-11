@@ -4,8 +4,9 @@
 # to its own log.
 #
 # Usage:
-#   bash run_variant_micro.sh            # GPU 3
+#   bash run_variant_micro.sh            # GPU 3, originals + ablations + dglss check
 #   bash run_variant_micro.sh 0          # GPU 0
+#   bash run_variant_micro.sh 3 abl      # GPU 3, ONLY the component ablations + dglss check
 #
 # Each training also runs the full isotropy eval (prints + saves isotropy_results.json
 # into the variant's log_dir). After training, the scale_gap per-class autopsy runs for
@@ -15,7 +16,8 @@
 set -u
 
 GPU="${1:-3}"
-echo "Using GPU $GPU"
+MODE="${2:-all}"
+echo "Using GPU $GPU (mode: $MODE)"
 
 fail() {
   echo "ERROR: $1 failed (exit $?)" >&2
@@ -40,10 +42,34 @@ run_eval() {
     2>&1 | tee "logs/dglsspp_${name}_micro_diag.log" || fail "eval $name"
 }
 
-for name in supcon bal vib; do
-  run_train "$name"
-  run_eval "$name"
-done
+if [ "$MODE" = "all" ]; then
+  for name in supcon bal vib; do
+    run_train "$name"
+    run_eval "$name"
+  done
+fi
+
+# --- Component ablations of the combined robust variant (micro) ---
+# First the full combined variant at micro (the reference), then drop GMSIFC / LSCC /
+# both, so "does the DGLSS++ stack earn its place" has a same-scale baseline.
+run_abl() {
+  local method="$1"
+  local logdir="$2"
+  local label="$3"
+  echo "=== [$label] micro training (12 ep / 10% data) ==="
+  CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/isotropy_diag.py \
+    --methods "$method" --epochs 12 --cutoff 0.1 --log_dir "$logdir" \
+    2>&1 | tee "logs/dglsspp_${label}_micro.log" || fail "train $label"
+  echo "=== [$label] scale_gap per-class autopsy ==="
+  CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/scale_gap_diag.py \
+    --method "$method" --path "$logdir/$method" --label "${label}_micro" \
+    2>&1 | tee "logs/dglsspp_${label}_micro_diag.log" || fail "eval $label"
+}
+
+run_abl "supcon_vib_dglsspp_corsupcon" "robust_diagnostic/logs/micro_corsupcon" "corsupcon"
+run_abl "supcon_vib_dglsspp_corsupcon_nogmsifc" "robust_diagnostic/logs/micro_abl_nogmsifc" "corsupcon_nogmsifc"
+run_abl "supcon_vib_dglsspp_corsupcon_nolscc" "robust_diagnostic/logs/micro_abl_nolscc" "corsupcon_nolscc"
+run_abl "supcon_vib_dglsspp_corsupcon_nocons" "robust_diagnostic/logs/micro_abl_nocons" "corsupcon_nocons"
 
 echo "=== [dglss] plain-DGLSS base per-class check (eval-only) ==="
 CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/scale_gap_diag.py \

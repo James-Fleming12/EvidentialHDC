@@ -71,10 +71,17 @@ CONDS = ['fog', 'crosstalk', 'snow', 'wet_ground', 'incomplete_echo',
 #   - supcon_vib_dglsspp_corsupcon: the combined robustness variant for the paper —
 #                            corruption-targeted augmentation AND the decoupled SupCon
 #                            pull (assignment + efficiency/ceiling levers together).
+#   - supcon_vib_dglsspp_corsupcon_nogmsifc / _nolscc / _nocons: ablations of the
+#                            combined variant that drop the GMSIFC / LSCC / both
+#                            consistency terms, to test whether the DGLSS++ stack earns
+#                            its place on top of CE + SupCon + the corruption view.
 METHODS = ['supcon_vib', 'vib', 'supcon_vib_dglss', 'supcon_vib_dglsspp',
            'supcon_vib_dglss_enc', 'supcon_vib_dglsspp_cor',
            'supcon_vib_dglsspp_supcon', 'supcon_vib_dglsspp_bal',
-           'supcon_vib_dglsspp_vib', 'supcon_vib_dglsspp_corsupcon']
+           'supcon_vib_dglsspp_vib', 'supcon_vib_dglsspp_corsupcon',
+           'supcon_vib_dglsspp_corsupcon_nogmsifc',
+           'supcon_vib_dglsspp_corsupcon_nolscc',
+           'supcon_vib_dglsspp_corsupcon_nocons']
 
 
 def build_parser(root, data, arch):
