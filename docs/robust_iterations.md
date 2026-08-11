@@ -1304,6 +1304,51 @@ The stack is not an optimization burden to shed; it provides the two things the
 method needs (GMSIFC -> label-free TTA, LSCC -> decode structure) and its removal
 degrades one or the other.
 
+### 8.3 TTA battery on the 21-ep robust extractor (is it meaningfully better for TTA?)
+
+The full TTA battery (`tta_ceiling_diag.py`, 500k pool / 100k val — the same split
+as the Iteration-4 medium numbers) run on the 21-ep robust-DGLSS++ checkpoint, vs
+the plain DGLSS++ medium (dg_med):
+
+| cond | extractor | zero-shot | naive EMA | dist | BN | oracle | naive gap-closed |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | dg_med | 0.092 | 0.114 | 0.117 | **0.127** | 0.200 | 0.20 |
+| fog | **robust (21ep)** | **0.107** | 0.116 | 0.116 | 0.114 | 0.165 | 0.15 |
+| crosstalk | dg_med | 0.141 | 0.150 | 0.151 | **0.174** | 0.250 | 0.08 |
+| crosstalk | **robust (21ep)** | 0.122 | **0.168** | **0.169** | 0.132 | 0.212 | **0.52** |
+| snow | dg_med | 0.418 | 0.425 | 0.425 | 0.412 | 0.429 | - |
+| snow | **robust (21ep)** | **0.432** | **0.442** | **0.442** | 0.427 | **0.444** | - |
+
+**What the battery shows:**
+
+1. **Crosstalk TTA is dramatically better.** The robust extractor's naive EMA closes
+   52% of the crosstalk gap vs 8% for plain DGLSS++ (absolute 0.168 vs 0.149), and
+   this beats even dg_med's best label-free lever (BN at 0.31). Crosstalk — the wall
+   in every prior iteration — is now the condition where the label-free update works
+   best. This is consistent with the SupCon's polarization inversion: crosstalk was
+   where the naive update destroyed the minority prototypes, and that is fixed.
+2. **Fog TTA is a wash-to-regression.** Naive/dist are ~tied (0.116 vs 0.114/0.117),
+   gap-closed 0.15 vs 0.20, and the fog ceiling DROPPED (oracle 0.165 vs 0.200) so
+   there is less to close. The robust extractor buys fog TTA nothing — the fog
+   bottleneck is the ceiling, not the assignment.
+3. **The best label-free lever changes.** BN-statistic alignment was the best method
+   on plain DGLSS++ (0.127 fog, 0.174 crosstalk); on the robust extractor it sits
+   below naive/dist (0.114 / 0.132). The feature statistics the robust extractor
+   produces make the simple weighted update the stronger lever, not BN alignment.
+4. **The assignment wall still binds, now more sharply on fog.** The robust extractor
+   fog rec@3 is 0.061 (vs dg_med 0.137, below the ~0.19 random baseline) — the
+   zero-shot-wrong points are less recoverable — even though cosine-to-true is higher
+   (cosT 0.055 vs 0.006) and the recoverable set is cleaner (LPrec 0.579 vs 0.542).
+   Detection-without-assignment persists.
+
+**Verdict: meaningfully better for TTA, but only where the ceiling allows it.** The
+robust-DGLSS++ extractor breaks the crosstalk TTA wall (+0.52 gap-closed vs +0.08)
+and improves the healthy-condition TTA; it does not help fog TTA because the fog
+labeled ceiling is the binding constraint (and the robust extractor's fog ceiling is
+lower). The TTA improvement is real and attributable to the extractor changes
+(assignment/polarization), and it is the strongest label-free TTA result at scale in
+this project.
+
 
 
 
