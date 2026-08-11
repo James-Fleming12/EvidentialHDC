@@ -1349,6 +1349,66 @@ lower). The TTA improvement is real and attributable to the extractor changes
 (assignment/polarization), and it is the strongest label-free TTA result at scale in
 this project.
 
+## Iteration 9: extractor diff — why crosstalk improved, why fog regressed, how to raise the fog ceiling
+
+`extractor_diff_diag.py` compared plain DGLSS++ (24 ep) vs the robust 21-ep variant
+per class and per condition, measuring feat_cos (corrupted -> clean prototype),
+direction-retention (corrupted class-mean vs clean class-mean; 1 = unshifted),
+intra-class tightness, and the per-class zs / naive / oracle / oracle-gain. Key
+per-class numbers:
+
+| metric | condition | plain dglsspp | robust 21ep |
+| :--- | :--- | :--- | :--- |
+| car feat_cos | fog | 0.32 | 0.83 |
+| car dir-retention | fog | 0.37 | 0.87 |
+| car oracle | fog | **0.303** | 0.148 |
+| car oracle | crosstalk | 0.335 | 0.280 |
+| car naive-gain | crosstalk | -0.099 (hurt) | **+0.141** (helps) |
+| sidewalk naive-gain | crosstalk | +0.078 | **+0.201** |
+
+**Q1 — what made crosstalk better: the update stopped destroying the classes it now
+finds.** The naive-gain flipped for car (-0.099 -> +0.141) and more than doubled for
+sidewalk (+0.078 -> +0.201), with car's LP recall up (0.40 -> 0.48) and feat_cos up
+(0.52 -> 0.88). The SupCon anchoring made the minority classes findable and
+prototype-safe under crosstalk, which is exactly the wall the earlier iterations
+measured.
+
+**Q2 — what made fog worse: the anchoring erased car's recoverable shift.** The fog
+oracle drop is dominated by car (0.303 -> 0.148, -0.155), whose fog features were
+pulled from a shifted, recoverable direction (dir-retention 0.37, far from clean)
+onto the clean car anchor (dir-retention 0.87, feat_cos 0.32 -> 0.83). Re-estimating
+from the aligned features reproduces the clean prototype, so the oracle gain is gone.
+Building follows the same pattern (oracle 0.095 -> 0.046); sidewalk's smaller drop
+(0.241 -> 0.204) is separate (its features moved AWAY from clean). Road and
+vegetation are unchanged or slightly better.
+
+**Q3 — the ceiling is capped by clean-anchoring over-alignment (confirmed).**
+Spearman rho(feat_cos, oracle_gain) on fog: plain DGLSS++ **+0.32** (closer to clean
+HELPED recoverability) vs robust **-0.68** (closer to clean HURT recoverability) —
+the sign flips and is strongly negative. The classes the SupCon anchored hardest have
+the least recoverable ceiling. The direction-retention->oracle link that held for
+plain DGLSS++ (rho +0.67) is destroyed (+0.10). The over-alignment is the mechanism:
+anchoring the corrupted features onto their clean prototypes is GREAT for assignment
+(LP recall, zero-shot) but erases the class-specific corruption shift that the oracle
+re-estimation needs.
+
+**What to change (the fix): a soft / partial anchor.** The SupCon should not fully
+erase the corruption shift. Options, in order of leverage:
+1. **Soft anchor**: pull the corrupted view toward a blend of the clean class anchor
+   and the class's own (shifted) mean, or scale the SupCon weight down on the
+   corrupted view, so the recoverable shift survives while the assignment still
+   improves.
+2. **Shift-preserving regularizer**: keep the clean<->corrupted displacement per class
+   (e.g., a term that maintains the direction-retention at a target < 1).
+3. **TTA-side**: for fog specifically, re-estimate prototypes from a MIX of clean and
+   corrupted labeled points rather than corrupted-only, recovering the lost oracle
+   gain without retraining.
+
+This is the central tension of the paper method: the same clean-anchoring mechanism
+delivers the crosstalk TTA breakthrough (Q1) and caps the fog ceiling (Q2/Q3). A
+partial anchor is the natural resolution — enough anchoring to fix assignment, enough
+shift to keep the ceiling.
+
 
 
 

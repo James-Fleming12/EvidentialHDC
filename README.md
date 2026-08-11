@@ -135,6 +135,40 @@ pipeline. The robust variant additionally inverts the majority polarization
 gap-closed +0.52 vs +0.02 for plain DGLSS++). The isotropy comparison and per-class
 autopsies are tracked in the robust-iterations doc.
 
+**Ceilings and the anchoring trade-off.** The label ceiling (oracle — re-estimating
+prototypes from the corrupted points with true labels) sets the recoverable bound per
+condition (same 100k/100k split):
+
+| condition | extractor | zero-shot | label ceiling (oracle) | label-free TTA (naive) |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | DGLSS++ | 8.2% | **17.6%** | 10.0% |
+| fog | Robust DGLSS++ | 9.5% | 15.7% | 10.7% |
+| crosstalk | DGLSS++ | 12.5% | 22.2% | 12.7% |
+| crosstalk | Robust DGLSS++ | 10.8% | 18.8% | **15.0%** |
+
+The robust variant RAISES zero-shot (fog 8.2% -> 9.5%) and the label-free TTA
+(crosstalk 12.7% -> 15.0%) but LOWERS the label ceiling on both conditions. The
+mechanism is the SupCon clean-anchoring, and it cuts in opposite directions:
+
+- **Crosstalk is better because the update stops destroying the classes it can now
+  find.** The anchoring pulls the minority classes onto their clean anchors (car
+  feat_cos 0.52 -> 0.88, car LP recall 0.40 -> 0.48), so the naive update flips from
+  hurting car (-0.10) to helping it (+0.14) and more than doubles sidewalk's gain —
+  the crosstalk label-free gap-closed rises from +0.02 to +0.52.
+- **Fog is worse because the anchoring erases the recoverable shift.** Under fog,
+  car's features were shifted into a recoverable direction (direction-retention 0.37)
+  and the oracle could re-estimate them (car fog oracle 0.30); the anchoring pulls
+  them onto the clean anchor (direction-retention 0.87), so re-estimation just
+  reproduces the clean prototype and car's fog oracle collapses to 0.15. Per class,
+  the correlation between "close to the clean prototype" and "recoverable with
+  labels" flips sign: +0.32 on plain DGLSS++ (closer helped) to -0.68 on the robust
+  variant (closer hurt) — the classes anchored hardest have the least recoverable
+  ceiling.
+
+The goal is a variant that balances the two: enough clean-anchoring to keep the
+assignment and TTA gains on crosstalk, while preserving enough of the corruption
+shift to keep the fog recoverable ceiling.
+
 ---
 
 ## 3. Pillar 2: Test-time adaptation, with an active-learning fallback
