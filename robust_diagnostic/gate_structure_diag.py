@@ -132,7 +132,6 @@ def main():
                                    + (('_' + args.label) if args.path else '') + '.json')
     results = {}
     for method, log_dir, label in targets:
-        log_dir = os.path.join(args.log_dir, method)
         print(f"\n{'='*80}\n=== {method}: gate-signal structure ===\n{'='*80}")
         trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, path=log_dir, method=method)
         model = trainer.model

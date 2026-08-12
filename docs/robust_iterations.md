@@ -1709,3 +1709,59 @@ For the paper, the honest framing is: Robust DGLSS++ delivers the label-free TTA
 advantage, and the AL fallback / ceiling work is a stated limitation — the AL budget
 analysis (Iteration 13) shows the fallback would need roughly the same labels on every
 trained extractor, so the AL framework is viable but not extractor-advantaged.
+
+## Iteration 15: next-extractor shortlist (decoupling capacity, not new losses)
+
+Goal: **keep the Robust 21ep label-free TTA** (crosstalk naive gap +0.52, the strongest
+at scale) **while raising the frozen-feature labeled ceiling** (which Robust is below
+plain DGLSS++ on: fog oracle 0.157 vs 0.176, crosstalk 0.188 vs 0.222). Frozen TTA
+procedure, new extractor only; success criterion `TTA_new >= TTA_robust - eps` and
+`oracle_new > oracle_robust`.
+
+**What the autopsy established (Iterations 9, 12, 14):**
+- The ceiling needs BOTH intra-corrupted packing AND a retained shifted direction
+  (plain car fog: tightness 0.87 + dir-retention 0.37 = oracle 0.303; Robust: tightness
+  0.95 + dir-retention 0.87 = oracle 0.148; blend05: 0.91 + 0.69 = 0.088).
+- The SupCon clean-anchor erases the direction the network would otherwise retain —
+  it does NOT add a new loss that teaches it. rho(feat_cos, oracle_gain) flips from
+  +0.32 (plain) to -0.68 (Robust) on fog.
+- Every training-time term operating on the SYNTHETIC augmented view failed to
+  transfer to the real fog/crosstalk geometry (coclust, nnpull, blend05). So new
+  extractor designs must stop erasing the retained direction, not add synthetic-view
+  objectives.
+
+**Shortlist, ranked (each is a medium-scale commitment; micro is only a stability
+smoke test, NOT a TTA gate — three micro-to-medium reversals so far):**
+
+1. **Two-branch bottleneck** `z = [z_inv, z_corr]` (inv 64D + corr 64D, test 96/32 and
+   32/96 after). `z_inv` carries GMSIFC + LSCC + SupCon (assignment / TTA); `z_corr`
+   carries CE + LSCC only, NO clean anchor — inherits the plain-DGLSS++ geometry
+   (packed + shifted). The HDC decoder reads the concatenation, so the oracle has
+   access to the retained direction. This is architecturally distinct from the failed
+   `coclust` (fought over one shared 128D) and `ch64` (gradients still flow through
+   the shared backbone): the corr branch has its own capacity the anchor cannot
+   rewrite. Implementation: second conv head on `conv_2`, decoder input 128 -> 128+d,
+   `get_hdc_projection(dim_in=...)` threaded through the diag scripts.
+2. **Residual form** `z_corr = z_inv + Δz` with weak `L_res = ||Δz||^2` (the corr
+   branch learns the corruption-specific deformation; small penalty so it is used
+   only when needed). Ablation/interpretation form of #1, not a competitor — do after
+   #1 confirms the split helps. Needs an orthogonality term or the residual collapses
+   into duplicating `z_inv`.
+3. **Displacement-direction consistency** (angular coherence of the per-class
+   `Δc = μ_c^corr - μ_c^clean`, NOT magnitude): targets rho(dir-retention, oracle)
+   = +0.55..+0.74 directly, and is the weakest structural commitment so most likely
+   to survive the synthetic->real transfer. Complement to #1, not standalone.
+4. **HDC-side projection head** `g(z) = Az` (learned A in R^(128x128)) or an
+   HDC-aware surrogate loss — cheap, decoder-side, TTA untouched. Capped by the
+   information bound: it cannot recover a direction already erased in the continuous
+   space, so it only helps up to what the extractor retains.
+5. **Two-stage / asymmetric two-stage** (stage 1: ceiling structure; stage 2:
+   attachment of the invariant branch, freeze or partially freeze z_corr). Matches the
+   Iteration-8.1 overtraining observation (TTA peaks at 21 ep, ceiling keeps rising)
+   but carries the strongest trajectory/micro-reversal risk.
+
+**Explicitly NOT pursued** (already measured negative or dominated): soft anchor /
+lower-weight SupCon (Iterations 10-11), SupCon-on-a-subspace of one shared vector
+(ch64/ch96, Iteration 10), corrupted-only clustering = coclust (Iterations 11-14),
+neighborhood-purity regularizer (Iteration 14), full equivariance `z_corr = A_T z_clean`
+(no structured corruption conditioning available at train time).
