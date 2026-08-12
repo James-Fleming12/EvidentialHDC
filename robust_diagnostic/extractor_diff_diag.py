@@ -166,6 +166,37 @@ def class_structure(pool, pool_l, clean_f, clean_l, clean_means, classes):
     return rows
 
 
+def cluster_al_stats(pool, pool_l, classes):
+    """Active-learning readiness: per class, the fraction of the class's CORRUPTED
+    points whose nearest (normalized 128D) CORRUPTED class-mean is their OWN class.
+    This is the accuracy of the Pillar-3 'query one point per cluster, label the whole
+    cluster' scheme at the class-mean level: high purity = one query per class labels
+    most of the class. Also returns the overall mean over present classes."""
+    zn = F.normalize(pool, p=2, dim=1)
+    means = {}
+    for c in classes:
+        m = pool_l == c
+        if int(m.sum()) > 0:
+            means[c] = F.normalize(zn[m].mean(0), p=2, dim=0)
+    cids = [c for c in classes if c in means]
+    if not cids:
+        return {str(c): float('nan') for c in classes}, float('nan')
+    means_mat = torch.stack([means[c] for c in cids])
+    sims = zn @ means_mat.t()
+    preds = torch.tensor(cids, device=pool.device)[sims.argmax(1)]
+    out = {}
+    vals = []
+    for c in classes:
+        m = pool_l == c
+        if int(m.sum()) == 0:
+            out[str(c)] = float('nan')
+            continue
+        p = float((preds[m] == c).float().mean().item())
+        out[str(c)] = p
+        vals.append(p)
+    return out, (sum(vals) / len(vals) if vals else float('nan'))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--kitti_dir", type=str, default="/mnt/alpha/jmfleming/KITTI")
@@ -227,9 +258,11 @@ def main():
 
             classes = sorted(cids)
             struct = class_structure(pool, pool_l, clean_f, clean_l, cmeans, classes)
+            al_purity, al_mean = cluster_al_stats(pool, pool_l, classes)
             for c in classes:
                 m = pool_l == c
                 struct[c]['lp_recall'] = float((lp_preds[m] == c).float().mean().item()) if m.sum() else float('nan')
+                struct[c]['al_purity'] = al_purity.get(str(c), float('nan'))
 
             def preds(protos):
                 return decode_preds(protos, val, proto_lbls, proj, device)
@@ -252,10 +285,10 @@ def main():
             zs_m, na_m, orc_m = mean_iou(iou_zs), mean_iou(iou_na), mean_iou(iou_or)
             gap = (na_m - zs_m) / (orc_m - zs_m) if orc_m > zs_m else float('nan')
             data[label][cond] = {'aggregate': {'zs': zs_m, 'naive': na_m, 'oracle': orc_m,
-                                               'gap_closed': gap},
+                                               'gap_closed': gap, 'al_purity': al_mean},
                                  'per_class': {str(c): struct[c] for c in classes}}
             print(f"  aggregate {cond}: zs {zs_m:.4f} naive {na_m:.4f} oracle {orc_m:.4f} "
-                  f"gap {gap:.2f}")
+                  f"gap {gap:.2f}  one-label-per-cluster purity {al_mean:.3f}")
 
     # ---- comparison printout ----
     la, lb = args.label_a, args.label_b
@@ -317,6 +350,20 @@ def main():
             dire = [p[2] for p in pairs]; orc = [p[3] for p in pairs]
             print(f"{label:<12} {cond:<10} rho(feat_cos, oracle_gain)={spearman(fcos, ogain):+.2f}   "
                   f"rho(dir_retention, oracle)={spearman(dire, orc):+.2f}")
+
+    # ---- active-learning readiness comparison ----
+    print(f"\n{'='*80}\n=== Active-learning readiness: one label per class-mean cluster ===\n{'='*80}")
+    for cond in CONDS:
+        a_agg, b_agg = data[la][cond]['aggregate'], data[lb][cond]['aggregate']
+        print(f"{cond}: one-label-per-cluster purity  {la} {a_agg.get('al_purity', float('nan')):.3f}  |  "
+              f"{lb} {b_agg.get('al_purity', float('nan')):.3f}")
+        print(f"{'cls':>3} {'alP_A':>6} {'alP_B':>6} | {'orA':>5} {'orB':>5} | {'tightA':>6} {'tightB':>6}")
+        for c in sorted(data[la][cond]['per_class'].keys(), key=int):
+            ra, rb = data[la][cond]['per_class'][c], data[lb][cond]['per_class'][c]
+            g = lambda k, d: float('nan') if d.get(k) is None or d[k] != d[k] else d[k]
+            print(f"{int(c):>3} {g('al_purity', ra):>6.2f} {g('al_purity', rb):>6.2f} | "
+                  f"{g('oracle_iou', ra):>5.2f} {g('oracle_iou', rb):>5.2f} | "
+                  f"{g('corr_tightness', ra):>6.2f} {g('corr_tightness', rb):>6.2f}")
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, 'w') as f:

@@ -1457,6 +1457,50 @@ and the full corsupcon micro (fog +0.48, crosstalk +0.34).
 fallback if the blend form-change is a concern (it achieves the same goal with a
 single knob, the SupCon weight, at 0.03).
 
+## Iteration 11: the soft-anchor medium run does NOT transfer (micro-to-medium reversal)
+
+The Iteration-10 winner (blend05, alpha 0.5) was trained overnight at medium scale
+(21 ep / 100%) to confirm the fog-ceiling recovery. It did not — the result is a
+regression on TTA.
+
+**Aggregate gap-closed (same 100k/100k split), vs the references:**
+
+| extractor | fog zs / naive / oracle / gap | crosstalk zs / naive / oracle / gap |
+| :--- | :--- | :--- |
+| dg_med (24ep, plain) | 0.082 / 0.100 / **0.176** / +0.19 | 0.125 / 0.127 / 0.222 / +0.02 |
+| corsupcon_med (21ep, full) | 0.095 / 0.100 / 0.157 / +0.08 | 0.108 / **0.149** / 0.188 / **+0.52** |
+| **blend05_med (21ep, soft anchor)** | 0.096 / 0.085 / 0.143 / **-0.24** | 0.110 / 0.109 / **0.239** / **-0.01** |
+
+Isotropy: 8-condition mean 0.364 (below both dg_med and corsupcon_med at 0.369),
+clean HDC 0.522, fog dead-fraction 0.251 (highest of the family), crosstalk
+dead-fraction 0.098, best val IoU 0.385 (below corsupcon's 0.396). Per class:
+car fog oracle 0.088 (vs 0.148 full, 0.303 plain) — the soft anchor did NOT recover
+car's fog ceiling; car crosstalk oracle 0.565 (the highest seen) yet the naive
+update only reaches 0.265.
+
+**What this shows:**
+
+1. **The soft anchor regressed both TTA gaps at medium.** The fog gap went negative
+   (-0.24, the naive update now hurts) and the crosstalk gap collapsed from +0.52 to
+   -0.01 — the exact opposite of the micro signal (fog +0.72, crosstalk +0.39).
+2. **The micro gate is not reliable for TTA direction.** This is the third
+   micro-to-medium reversal (norm gate +0.58 -> +0.20; micro fog naive near-ceiling
+   -> negative; now blend05). Micro under-converged dynamics do not predict the
+   medium label-free-update behavior.
+3. **The soft-anchor direction does not resolve the trade-off.** Even with the
+   half-shifted anchor, the fog recoverable ceiling stays low (0.143, lowest of the
+   family) and the label-free update fails on both conditions. The hard SupCon (full
+   corsupcon) remains the best medium TTA extractor.
+4. **The paper's TTA extractor stays the full corsupcon (21 ep).** Its crosstalk
+   naive-EMA gap (+0.52) is the strongest label-free result at scale; the lower-weight
+   (w03/w05) medium runs were not run and, given this reversal, are a gamble worth
+   only if a second overnight slot opens.
+
+**Verdict.** The overnight blend05 run closes the soft-anchor hypothesis (negative).
+The TTA-refinement work should proceed on the full corsupcon 21-ep checkpoint, and
+the fog labeled ceiling — which neither the hard SupCon nor the soft anchor raises —
+remains the active-learning fallback's target.
+
 
 
 
