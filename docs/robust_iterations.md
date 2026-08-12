@@ -1668,6 +1668,48 @@ correlation (+0.7-0.9) says should raise the ceilings and the AL readiness toget
 The muddle result also motivates testing it on the simpler nocons base. Cost: ~1% of
 the step time (a k-NN on the SupCon's 2000-point subsample).
 
+## Iteration 14: the neighborhood-purity regularizer gate is negative
+
+The regularizer (pull each corrupted point toward its nearest same-class neighbor,
+directly minimizing 1 - nn1) was micro-trained on the full method (`nnpull`) and the
+AL-cleanest base (`nocons_nnpull`) and gated on nn1 and the TTA gaps.
+
+**AL readiness (nn1):**
+
+| variant | fog nn1 | crosstalk nn1 | car fog oracle | agg oracle |
+| :--- | :--- | :--- | :--- | :--- |
+| corsupcon_ref | 0.335 | 0.513 | 0.086 | 0.117 |
+| nnpull | 0.320 | 0.494 | 0.124 | 0.118 |
+| nocons_nnpull | 0.352 | 0.530 | 0.058 | 0.127 |
+
+**TTA gaps (scale_gap):** corsupcon_ref fog +0.48 / crosstalk +0.34; nnpull fog +0.18
+/ crosstalk +0.18; nocons_nnpull fog +0.01 / crosstalk +0.24.
+
+**What the gate shows:**
+
+1. **The regularizer did not raise nn1 on the full method** — it went DOWN (0.335 ->
+   0.320 fog, 0.513 -> 0.494 crosstalk). The training-time pull optimizes the SYNTHETIC
+   augmented view's neighborhoods, not the real SemanticKITTI-C fog/crosstalk
+   neighborhoods, so it does not transfer to the evaluated point-level purity.
+2. **On the nocons base it added nothing** (0.352/0.530 vs plain nocons 0.368/0.531).
+3. **It hurt the TTA** (fog +0.48 -> +0.18, crosstalk +0.34 -> +0.18) — the extra term
+   at 0.1 dilutes the assignment gain (car fog LP recall drops).
+4. The only positive is car's fog oracle rising (0.086 -> 0.124), insufficient to
+   offset the failures.
+
+**The broader conclusion.** Three successive attempts to fix the entanglement / raise
+the ceiling — corrupted-only clustering (Iteration 11 coclust), the soft anchor
+(blend05), and now the neighborhood-purity regularizer — all fail at medium or in the
+micro gate. The point-level entanglement under the REAL corruptions is not addressable
+by training-time terms that operate on the SYNTHETIC augmented view (the only
+corruption available at train time). The Robust DGLSS++'s measured contribution is the
+label-free TTA (crosstalk +0.52, the strongest at scale); the "higher ceilings" and
+"AL requires fewer labels" claims are NOT supported by the method or any fix tried.
+For the paper, the honest framing is: Robust DGLSS++ delivers the label-free TTA
+advantage, and the AL fallback / ceiling work is a stated limitation — the AL budget
+analysis (Iteration 13) shows the fallback would need roughly the same labels on every
+trained extractor, so the AL framework is viable but not extractor-advantaged.
+
 
 
 
