@@ -325,7 +325,7 @@ class GenTrainer(Trainer):
         n = len(zn)
         self_mask = ~torch.eye(n, dtype=torch.bool, device=zn.device)
         same = (lbl.unsqueeze(0) == lbl.unsqueeze(1)) & self_mask
-        sim = sim.masked_fill(~same, -1e9)
+        sim = sim.masked_fill(~same, -1e4)   # -1e9 overflows fp16 under autocast
         has = same.any(dim=1)
         if not has.any():
             return torch.tensor(0.0, device=z.device)
