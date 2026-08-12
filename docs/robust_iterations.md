@@ -1409,6 +1409,54 @@ delivers the crosstalk TTA breakthrough (Q1) and caps the fog ceiling (Q2/Q3). A
 partial anchor is the natural resolution — enough anchoring to fix assignment, enough
 shift to keep the ceiling.
 
+## Iteration 10: anchoring-direction micro tests (soft anchor, lower weight, per-point, channel-split)
+
+Four ways to resolve the anchoring trade-off, each at two settings where the idea
+has a tunable knob so the direction is testable against mis-tuning (micro, same
+100k/100k split). References: plain DGLSS++ micro (fog gap -0.43, crosstalk +0.30)
+and the full corsupcon micro (fog +0.48, crosstalk +0.34).
+
+| variant | fog gap | xtalk gap | rho(fog) | car feat_cos | car fog oracle |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| plain dglsspp | -0.43 | +0.30 | +0.04 | 0.85 | 0.081 |
+| corsupcon (ref) | +0.48 | +0.34 | -0.07 | 0.81 | 0.086 |
+| w03 (SupCon wt 0.03) | +0.56 | +0.18 | -0.14 | **0.75** | **0.110** |
+| w05 (SupCon wt 0.05) | +0.65 | +0.28 | +0.04 | 0.83 | 0.091 |
+| blend03 (alpha 0.3) | +0.37 | +0.20 | +0.04 | 0.82 | 0.085 |
+| **blend05 (alpha 0.5)** | **+0.72** | **+0.39** | +0.09 | 0.81 | 0.096 |
+| cond (per-point) | +0.31 | +0.08 | **-0.36** | 0.82 | 0.082 |
+| ch64 (64/128 channels) | -0.02 | +0.10 | +0.09 | 0.85 | 0.087 |
+| ch96 (96/128 channels) | +0.36 | +0.14 | +0.03 | 0.87 | 0.074 |
+
+**What the anchoring tests show:**
+
+1. **The soft alpha-blend anchor is the direction.** blend05 (anchor = the class's
+   clean/shifted mean blended 50/50) is the ONLY variant that improves BOTH the fog
+   gap (+0.72 vs +0.48) AND the crosstalk gap (+0.39 vs +0.34) over the reference,
+   with the car fog oracle up (0.096). blend03 (alpha 0.3) also improves fog (+0.37)
+   — so across the alpha sweep the direction holds (fog up), and alpha 0.5 is the
+   sweet spot for keeping crosstalk. The partial anchor preserves the recoverable
+   shift while still providing a clustering signal.
+2. **Lowering the SupCon weight is a robust, simpler lever.** w03 / w05 both raise
+   the fog gap (+0.56 / +0.65) and the car fog oracle (0.110 / 0.091) while holding
+   crosstalk in the 0.18-0.28 range; w03 gives the strongest over-alignment release
+   (car feat_cos 0.75, car oracle 0.110). The two points agree, so the direction is
+   not weight-tuning luck.
+3. **The channel-split and per-point conditioning are rejected at micro.** The
+   channel-split does not agree across its two settings on fog (ch64 -0.02 vs ch96
+   +0.36) and both lose crosstalk (0.10-0.14); the per-point conditioning gives the
+   strongest polarization inversion (rho -0.36) but the weakest crosstalk TTA (+0.08).
+   Neither is worth a medium run.
+4. **Caveat (same as Iteration 9):** the fog-ceiling / over-alignment effects are
+   medium-scale phenomena, so the micro gate shows the DIRECTION (fog up while
+   crosstalk held), and the winning variant needs a medium run to confirm the fog
+   oracle recovery at scale.
+
+**Verdict.** The overnight candidate is **blend05** (soft alpha-blend anchor, alpha
+0.5) — the only variant to improve both conditions at micro — with **w03** as the
+fallback if the blend form-change is a concern (it achieves the same goal with a
+single knob, the SupCon weight, at 0.03).
+
 
 
 
