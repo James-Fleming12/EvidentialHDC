@@ -223,7 +223,6 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}")
 
-    proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
     conds = [c.strip() for c in args.conditions.split(',')] if args.conditions else CONDS
     os.makedirs(args.log_dir, exist_ok=True)
 
@@ -261,6 +260,7 @@ def main():
         print("Extracting clean...")
         clean_f, clean_l = extract_features(model, clean_parser, device, args.frames)
         print(f"  clean n {len(clean_f)}")
+        proj = get_hdc_projection(dim_in=clean_f.shape[1], dim_out=10000, device=device)
 
         clf = LogisticRegression(max_iter=1000)
         fit_n = min(100000, len(clean_f))

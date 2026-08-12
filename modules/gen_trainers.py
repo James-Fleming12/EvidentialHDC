@@ -68,6 +68,24 @@ SUPCON_VARIANTS = {
     'supcon_vib_dglsspp_corsupcon_nocons_nnpull': {'weight': 0.1, 'nnpull_w': 0.1},
 }
 
+# Decoupling variants (Iteration-15 shortlist): split the bottleneck into an invariant
+# head (conv_2, carries GMSIFC+LSCC+SupCon = the TTA/assignment machinery) and a
+# corruption head (conv_corr, CE + LSCC only, NO clean anchor = keeps the shifted,
+# recoverable class structure the labeled ceiling needs). The decoder/HDC read the
+# concatenation [inv, corr], so the oracle has access to the retained direction.
+#   _twobranch  : independent corr head (mode='ind'), total dim = inv_dim + corr_dim
+#   _residual   : corr = inv + delta (mode='res'), weakly L2-regularized
+# Each is micro-gated on the feature-space mechanism (corr dir_retention < 1, inv
+# feat_cos high, concatenated oracle up) before any medium commitment.
+DECOUPLE_VARIANTS = {
+    # method key -> (inv_dim, corr_dim, corr_mode, res_w)
+    'supcon_vib_dglsspp_corsupcon_twobranch_128_64':  (128, 64, 'ind', 0.0),
+    'supcon_vib_dglsspp_corsupcon_twobranch_128_128': (128, 128, 'ind', 0.0),
+    'supcon_vib_dglsspp_corsupcon_residual_128_128':  (128, 128, 'res', 0.05),
+}
+for _m in DECOUPLE_VARIANTS:
+    DGLSS_METHODS.add(_m)
+
 class GenTrainer(Trainer):
     def __init__(self, ARCH, DATA, datadir, logdir, path=None, method='baseline', cutoff_percent=1.0,
                  fragile_w=None, edl_kl_cap=0.005, edl_w=0.1, edl_kl_selective=True,
@@ -85,6 +103,17 @@ class GenTrainer(Trainer):
         # (Gram entries in [-1, 1]); False reproduces the raw unnormalized-prototype
         # form whose Gram entries scale as ||z||^2 and diverge during VIB-free training.
         self.dglss_scc_norm = dglss_scc_norm
+
+        # Decoupling variants: tell the model constructor to build the corr head and
+        # the trainer to route the losses per-branch. Must be set BEFORE super().__init__
+        # builds the network.
+        dec = DECOUPLE_VARIANTS.get(self.method)
+        if dec is not None:
+            self.inv_dim, self.corr_dim, self.corr_mode, self.res_w = dec
+            ARCH.setdefault("train", {})["twobranch"] = {
+                "inv_dim": self.inv_dim, "corr_dim": self.corr_dim, "corr_mode": self.corr_mode}
+        else:
+            self.inv_dim, self.corr_dim, self.corr_mode, self.res_w = 128, 0, 'ind', 0.0
         
         # Call super with path=None to prevent it from immediately loading the checkpoint
         super().__init__(ARCH, DATA, datadir, logdir, None)
@@ -494,34 +523,64 @@ class GenTrainer(Trainer):
                         if self.method == 'supcon_vib_dglss_enc':
                             loss_sifc = dglss_sifc_loss(x4, x4_aug, proj_labels, in_vol, in_vol_aug,
                                                         masked=False, tau=DGLSS_TAU)
+                        elif self.corr_dim > 0:
+                            # GMSIFC on the INVARIANT slice only: the corr branch must
+                            # NOT be clean-view-aligned (that is what erases the shift).
+                            loss_sifc = dglss_sifc_loss(z8[:, :self.inv_dim], z8_aug[:, :self.inv_dim],
+                                                        proj_labels, in_vol, in_vol_aug,
+                                                        masked=gmsifc, tau=DGLSS_TAU, class_bal=class_bal)
                         else:
                             loss_sifc = dglss_sifc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
                                                         masked=gmsifc, tau=DGLSS_TAU, class_bal=class_bal)
                         loss_total = loss_total + self.dglss_lam1 * loss_sifc
                     if not no_scc:
-                        loss_scc = dglss_scc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
-                                                  local=gmsifc, normalize=self.dglss_scc_norm,
-                                                  class_bal=class_bal)
+                        if self.corr_dim > 0:
+                            # LSCC on BOTH slices (decode structure for both branches).
+                            loss_scc = (dglss_scc_loss(z8[:, :self.inv_dim], z8_aug[:, :self.inv_dim],
+                                                       proj_labels, in_vol, in_vol_aug,
+                                                       local=gmsifc, normalize=self.dglss_scc_norm,
+                                                       class_bal=class_bal)
+                                        + dglss_scc_loss(z8[:, self.inv_dim:], z8_aug[:, self.inv_dim:],
+                                                         proj_labels, in_vol, in_vol_aug,
+                                                         local=gmsifc, normalize=self.dglss_scc_norm,
+                                                         class_bal=class_bal))
+                        else:
+                            loss_scc = dglss_scc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
+                                                      local=gmsifc, normalize=self.dglss_scc_norm,
+                                                      class_bal=class_bal)
                         loss_total = loss_total + self.dglss_lam2 * loss_scc
                     if 'corsupcon' in self.method:
                         cfg = SUPCON_VARIANTS.get(self.method, {})
                         supcon_kw = {k: v for k, v in cfg.items()
                                      if k not in ('weight', 'coclust_w', 'nnpull_w')}
+                        if self.corr_dim > 0:
+                            # SupCon on the INVARIANT slice only (the clean anchor is
+                            # exactly what erases the corr branch's recoverable shift).
+                            z8_anchor = z8[:, :self.inv_dim]
+                            z8_aug_anchor = z8_aug[:, :self.inv_dim]
+                        else:
+                            z8_anchor, z8_aug_anchor = z8, z8_aug
                         loss_total = loss_total + cfg.get('weight', 0.1) * self.supcon_loss(
-                            z8, z8_aug, proj_labels, **supcon_kw)
+                            z8_anchor, z8_aug_anchor, proj_labels, **supcon_kw)
                         if 'coclust_w' in cfg:
                             # corrupted-only clustering: pull the corrupted points
                             # toward their CORRUPTED class centroids (blend_alpha=1.0),
                             # maximizing intra-corrupted packing while leaving the
                             # shifted direction intact (Iteration-12 ceiling drivers).
                             loss_total = loss_total + cfg['coclust_w'] * self.supcon_loss(
-                                z8, z8_aug, proj_labels, blend_alpha=1.0)
+                                z8_anchor, z8_aug_anchor, proj_labels, blend_alpha=1.0)
                         if 'nnpull_w' in cfg:
                             # neighborhood-purity regularizer: pull each corrupted point
                             # toward its nearest SAME-CLASS neighbor, directly raising
                             # the 1-NN purity that drives the ceiling and AL readiness.
                             loss_total = loss_total + cfg['nnpull_w'] * self.nn_pull_loss(
-                                z8_aug, proj_labels)
+                                z8_aug_anchor, proj_labels)
+                        if self.corr_dim > 0 and self.corr_mode == 'res':
+                            # residual-shift penalty: keep the corr deformation small
+                            # (used only when the corruption needs it).
+                            loss_total = loss_total + self.res_w * (
+                                (z8[:, self.inv_dim:] - z8[:, :self.corr_dim]).pow(2).mean()
+                                + (z8_aug[:, self.inv_dim:] - z8_aug[:, :self.corr_dim]).pow(2).mean()) / 2.0
                     if self.method == 'supcon_vib_dglsspp_vib':
                         loss_total = loss_total + 0.01 * self.vib_loss(z8, z8_aug)
                 elif self.method.startswith('supcon_vib'):

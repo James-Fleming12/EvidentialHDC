@@ -111,7 +111,11 @@ class DGLSSTrainer():
 
             if self.ARCH["train"]["pipeline"] == "res":
                 from modules.network.ResNet import ResNet_34
-                self.model = ResNet_34(self.parser.get_n_classes(), self.ARCH["train"]["aux_loss"])
+                tw = self.ARCH["train"].get("twobranch", {})
+                self.model = ResNet_34(self.parser.get_n_classes(), self.ARCH["train"]["aux_loss"],
+                                       corr_dim=tw.get("corr_dim", 0),
+                                       corr_mode=tw.get("corr_mode", "ind"),
+                                       inv_dim=tw.get("inv_dim", 128))
 
                 def convert_relu_to_softplus(model, act):
                     for child_name, child in model.named_children():
@@ -843,7 +847,11 @@ class Trainer():
 
             if self.ARCH["train"]["pipeline"] == "res":
                 from modules.network.ResNet import ResNet_34
-                self.model = ResNet_34(self.parser.get_n_classes(), self.ARCH["train"]["aux_loss"])
+                tw = self.ARCH["train"].get("twobranch", {})
+                self.model = ResNet_34(self.parser.get_n_classes(), self.ARCH["train"]["aux_loss"],
+                                       corr_dim=tw.get("corr_dim", 0),
+                                       corr_mode=tw.get("corr_mode", "ind"),
+                                       inv_dim=tw.get("inv_dim", 128))
 
                 def convert_relu_to_softplus(model, act):
                     for child_name, child in model.named_children():

@@ -301,6 +301,145 @@ Decode-side retention was flat-to-worse: the best recoverability config reached 
 - **Single round is enough**: iteration adds compute without benefit and diverges.
 - The single-round kNN is already cheap (one kNN graph + one re-estimate); it is the efficient form and the one to keep in the TTA category. Its ceiling is set by the label source (the LP), not the mechanism.
 
+### Iteration 9: the Robust DGLSS++ (21-ep) full TTA run-through
+
+`run_robust_tta.sh` re-ran the four TTA diagnostics on the Robust DGLSS++ 21-ep
+checkpoint (`med_corsupcon_21ep/supcon_vib_dglsspp_corsupcon`): the gate-signal
+structure, the gated prototype update, the full TTA battery, and the frozen labeled
+ceiling. Purpose: a clean same-suite picture of the Robust extractor's gate signals,
+TTA levers, and ceilings vs the supcon_vib-era references (Iterations 0-8 used the
+plain medium encoder; the DGLSS++ family references are the micro-era runs of the
+same harness).
+
+**9.1 Gate-signal structure** (`gate_structure_diag`, correct-vs-wrong AUROC per
+signal, 50k points per condition):
+
+| cond | sig | supcon_vib | dglsspp | **robust21** |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | conf | 0.243 | 0.571 | **0.652** |
+| fog | entr | **0.757** | 0.406 | 0.352 |
+| fog | dist | 0.144 | **0.472** | 0.414 |
+| fog | norm | 0.155 | 0.839 | **0.861** |
+| fog | margin | 0.160 | 0.166 | **0.494** |
+| fog | density | **0.912** | 0.611 | 0.367 |
+| fog | fusion | **0.923** | 0.909 | 0.895 |
+| crosstalk | conf | 0.205 | 0.388 | **0.497** |
+| crosstalk | entr | **0.792** | 0.608 | 0.505 |
+| crosstalk | dist | 0.153 | **0.334** | 0.282 |
+| crosstalk | norm | 0.140 | **0.722** | 0.713 |
+| crosstalk | margin | 0.129 | 0.132 | **0.265** |
+| crosstalk | density | **0.914** | 0.728 | 0.697 |
+| crosstalk | fusion | **0.918** | 0.889 | 0.871 |
+| snow | norm | 0.540 | 0.706 | 0.434 |
+| snow | density | 0.688 | 0.690 | **0.890** |
+| snow | fusion | **0.911** | 0.855 | 0.908 |
+
+**Findings:**
+1. **The dominant gate signal on the Robust extractor is the feature NORM, not
+   density.** Robust fog/crosstalk norm AUROC is 0.861/0.713, matching the DGLSS++
+   family (0.839/0.722) and far above supcon_vib (0.155/0.140). The supcon_vib-era
+   density gate (0.912/0.914) does NOT transfer: robust fog density drops to 0.367.
+   The `norm_gate` is therefore the right gate for this extractor family, confirming
+   the Iteration-2/3 gated-update choice.
+2. **The best single signal is still imperfect (norm 0.71-0.86); fusion only adds a
+   little (0.87-0.90).** The fusion AUROC is essentially flat across the family
+   (0.87-0.92), so no gate reaches near-perfect detection on the Robust extractor.
+3. **Margin is the one signal the Robust extractor newly strengthens** (fog 0.494,
+   crosstalk 0.265 vs 0.13-0.17 for the rest of the family), consistent with the
+   SupCon making the class structure more separable.
+4. **The confident-but-wrong points are the least recoverable on fog**
+   (rec_conf_wrong 0.157, lowest of the family) — the fog recoverability deficit
+   shows up directly in the gate structure.
+
+**9.2 Gated prototype update** (`ttagate_diag`, `norm_gate` as the update weight,
+vs the family references):
+
+| extractor | cond | zs | oracle | gate | gap-closed |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| supcon_vib (dens_gate) | fog | 0.082 | 0.123 | 0.093 | +0.28 |
+| dglsspp (norm_gate) | fog | 0.101 | 0.142 | 0.125 | +0.58 |
+| dglsspp med (norm_gate) | fog | 0.092 | 0.198 | 0.114 | +0.20 |
+| **robust21 (norm_gate)** | fog | 0.107 | 0.177 | 0.115 | **+0.11** |
+| supcon_vib (dens_gate) | crosstalk | 0.119 | 0.244 | 0.136 | +0.13 |
+| dglsspp (norm_gate) | crosstalk | 0.124 | 0.223 | 0.159 | +0.36 |
+| dglsspp med (norm_gate) | crosstalk | 0.141 | 0.249 | 0.149 | +0.08 |
+| **robust21 (norm_gate)** | crosstalk | 0.122 | 0.211 | 0.173 | **+0.57** |
+
+**Findings:**
+1. **The norm gate transfers cleanly to the Robust extractor: crosstalk gap +0.57 —
+   the strongest of the family** (vs +0.36 dglsspp micro, +0.08 dglsspp med). The
+   gated update closes over half the crosstalk gap, matching the Iteration-8.3
+   naive-EMA result (+0.52) with a single gate.
+2. **Fog gap is weak (+0.11) and ceiling-bound:** the gate reaches 0.115 vs an oracle
+   of 0.177, but the fog zero-shot is already high (0.107) so the headroom is small —
+   the same "fog is ceiling-bound, not assignment-bound" story as Iterations 8.3 and 9
+   of the robust log.
+
+**9.3 Full TTA battery** (`tta_ceiling_diag`, 500k pool / 100k val) — the Robust
+extractor vs the family references from the same harness:
+
+| cond | extractor | zs | naive | conf | dist | bn | knn | oracle |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | supcon_vib | 0.082 | 0.092 | 0.094 | 0.094 | 0.096 | 0.083 | 0.110 |
+| fog | dglsspp | 0.101 | 0.129 | 0.126 | 0.127 | 0.131 | 0.119 | 0.126 |
+| fog | **robust21** | 0.107 | 0.120 | 0.119 | 0.120 | 0.114 | 0.104 | 0.165 |
+| crosstalk | supcon_vib | 0.119 | 0.136 | 0.136 | 0.136 | 0.147 | 0.128 | 0.243 |
+| crosstalk | dglsspp | 0.124 | 0.161 | 0.161 | 0.160 | 0.186 | 0.147 | 0.222 |
+| crosstalk | **robust21** | 0.122 | **0.168** | 0.168 | 0.169 | 0.132 | 0.123 | 0.212 |
+| snow | **robust21** | 0.432 | 0.443 | 0.442 | 0.442 | 0.427 | 0.424 | 0.444 |
+
+**Findings:**
+1. **Crosstalk label-free TTA is the Robust extractor's win:** naive/conf/dist all
+   hit 0.168-0.169, the best label-free crosstalk numbers in the suite, closing 52%
+   of the crosstalk gap (0.122 -> 0.168 vs oracle 0.212). This is the strongest
+   label-free crosstalk re-estimate measured (Iteration-7 kNN reached 12.7 on the
+   plain encoder with a different split; here the naive EMA alone does it).
+2. **Fog label-free TTA is a wash-to-regression:** naive 0.120 vs the dglsspp micro
+   0.129, and below the BN lever of the older runs. Fog zero-shot is higher (0.107)
+   but the recoverability of the wrong points is worse (rec3 0.061, rank_true 3.64),
+   the Iteration-8.3 "detection-without-assignment" wall.
+3. **The best lever changed again: BN is no longer competitive** (fog 0.114,
+   crosstalk 0.132, below naive/conf/dist). The simple weighted update is the Robust
+   extractor's strongest TTA lever, not feature-statistics alignment.
+
+**9.4 Frozen labeled ceiling** (`frozen_ceiling_diag`, LP + HDC oracle per condition,
+vs the medium-scale family references):
+
+| cond | metric | supcon_vib med | dglss med | dglsspp med | **robust21** |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | lp_acc | 0.194 | 0.184 | **0.524** | 0.465 |
+| fog | hdc_oracle | **0.156** | 0.113 | 0.151 | 0.150 |
+| crosstalk | lp_acc | 0.230 | **0.314** | 0.223 | 0.230 |
+| crosstalk | hdc_oracle | **0.221** | 0.176 | 0.214 | 0.177 |
+| snow | hdc_oracle | 0.404 | 0.340 | 0.410 | **0.427** |
+| wet_ground | hdc_oracle | 0.489 | 0.426 | **0.514** | 0.510 |
+| beam_missing | hdc_oracle | 0.474 | 0.367 | **0.506** | 0.503 |
+| motion_blur | hdc_oracle | 0.454 | 0.346 | **0.503** | 0.501 |
+| cross_sensor | hdc_oracle | 0.433 | 0.302 | 0.451 | **0.448** |
+
+**Findings:**
+1. **The Robust extractor does NOT raise the fog/crosstalk labeled ceiling:** fog
+   HDC-oracle 0.150 (vs supcon_vib 0.156, dglsspp 0.151) and crosstalk 0.177 (vs
+   supcon_vib 0.221, dglsspp 0.214). The SupCon's clean-anchoring costs exactly the
+   recoverable shifted direction the oracle needs, reproducing the Iteration-9 robust
+   log autopsy (fog oracle 0.157 vs dg_med 0.176).
+2. **The geometric conditions are fine or better:** snow (0.427, best), wet_ground,
+   beam_missing, motion_blur, cross_sensor all within 0.005 of dglsspp med and above
+   supcon_vib — the ceiling regression is specific to the assignment-collapsed
+   conditions (fog/crosstalk).
+3. **Fog LP-accuracy is high (0.465) yet the fog LP-mIoU is lowest (0.052):** the
+   continuous space separates classes on fog but with a rare-class starvation that a
+   linear probe does not express; the HDC oracle (0.150) is the honest ceiling.
+
+**Verdict.** The run-through gives the complete same-suite picture of the Robust 21-ep
+extractor: a strong, correctly-placed gate signal (norm, not density), the best
+label-free crosstalk TTA of the family (naive +0.52-0.57 gap-closed), a healthy
+geometric-condition ceiling — and an unchanged fog/crosstalk labeled-ceiling deficit.
+For the TTA paper the method's claim is the label-free crosstalk update (norm-gated);
+for the ceiling/AL work the extractor is neutral-to-negative (the Iteration-15
+shortlist in `robust_iterations.md` targets this: decouple the anchor from the
+corr-branch capacity rather than add new synthetic-view losses).
+
 ### Candidate mechanisms: all closed or judged not worth running
 
 - **ReAct (norm clipping before projection): CLOSED (Iteration 3).** Sign() is scale-invariant, so magnitude clipping cannot change the binarized decode (verified empirically: identical at every threshold).

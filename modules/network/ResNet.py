@@ -111,7 +111,8 @@ class Adaptor(nn.Module):
 
 class ResNet_34(nn.Module):
     def __init__(self, nclasses, aux, block=BasicBlock, layers=[3, 4, 6, 3], if_BN=True, zero_init_residual=False,
-                 norm_layer=None, groups=1, width_per_group=64, use_adaptor=True):
+                 norm_layer=None, groups=1, width_per_group=64, use_adaptor=True,
+                 corr_dim=0, corr_mode='ind', inv_dim=128):
         super(ResNet_34, self).__init__()
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
@@ -137,8 +138,22 @@ class ResNet_34(nn.Module):
         self.layer4 = self._make_layer(block, 128, layers[3], stride=2, use_adaptor=use_adaptor)
 
         self.conv_1 = BasicConv2d(640, 256, kernel_size=3, padding=1)
-        self.conv_2 = BasicConv2d(256, 128, kernel_size=3, padding=1)
-        self.semantic_output = nn.Conv2d(128, nclasses, 1)
+        self.conv_2 = BasicConv2d(256, inv_dim, kernel_size=3, padding=1)
+        # Decoupling branch (Iteration-15 shortlist): a SECOND bottleneck head with its
+        # own capacity. The invariant head (conv_2) keeps the full inv_dim and carries
+        # GMSIFC+LSCC+SupCon; the corruption head (conv_corr) is either an independent
+        # branch (mode='ind') or an additive residual inv + delta (mode='res'). The
+        # decoder reads the concatenation [inv, corr], so the HDC oracle has access to
+        # the retained shifted direction.
+        self.corr_dim = corr_dim
+        self.corr_mode = corr_mode
+        self.inv_dim = inv_dim
+        if corr_dim > 0:
+            self.conv_corr = BasicConv2d(256, corr_dim, kernel_size=3, padding=1)
+            self.semantic_output = nn.Conv2d(inv_dim + corr_dim, nclasses, 1)
+        else:
+            self.conv_corr = None
+            self.semantic_output = nn.Conv2d(inv_dim, nclasses, 1)
 
         if self.aux:
             self.aux_head1 = nn.Conv2d(128, nclasses, 1)
@@ -189,8 +204,16 @@ class ResNet_34(nn.Module):
         feat_map = torch.cat(res, dim=1) 
         
         out = self.conv_1(feat_map)
-        out = self.conv_2(out)
-        
+        out_inv = self.conv_2(out)
+
+        if self.corr_dim > 0:
+            out_corr = self.conv_corr(out)
+            if self.corr_mode == 'res':
+                out_corr = out_inv[:, :self.corr_dim] + out_corr
+            out = torch.cat([out_inv, out_corr], dim=1)
+        else:
+            out = out_inv
+
         if only_feat:
             return out
 

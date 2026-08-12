@@ -166,6 +166,30 @@ def class_structure(pool, pool_l, clean_f, clean_l, clean_means, classes):
     return rows
 
 
+def branch_structure(pool, pool_l, clean_f, clean_l, clean_means, classes, inv_ch):
+    """Two-branch decoupling check (Iteration-15 gate): split the concatenated
+    bottleneck at channel inv_ch into the invariant slice [0:inv_ch] and the corruption
+    slice [inv_ch:] and measure the per-class structure ON EACH SLICE SEPARATELY:
+      - inv slice feat_cos       : how anchored the invariant branch is (should stay
+                                   HIGH -- the SupCon clean-anchor lands here)
+      - corr slice dir_retention : whether the corruption branch retains the shifted
+                                   direction (should be < 1 -- the recoverable shift
+                                   survives, unlike the full-vector over-alignment)
+      - corr slice tightness     : intra-corruption packing of the corr branch
+    Returns dict per class: {inv_feat_cos, corr_feat_cos, inv_dir_retention,
+    corr_dir_retention, corr_tightness}."""
+    out = {}
+    for name, sl in (('inv', slice(0, inv_ch)), ('corr', slice(inv_ch, None))):
+        rows = class_structure(pool[:, sl], pool_l, clean_f[:, sl], clean_l,
+                               {c: F.normalize(m[sl], p=2, dim=0) for c, m in clean_means.items()},
+                               classes)
+        for c in classes:
+            out.setdefault(c, {})[f'{name}_feat_cos'] = rows[c]['feat_cos']
+            out[c][f'{name}_dir_retention'] = rows[c]['dir_retention']
+            out[c][f'{name}_tightness'] = rows[c]['corr_tightness']
+    return out
+
+
 def cluster_al_stats(pool, pool_l, classes):
     """Active-learning readiness: per class, the fraction of the class's CORRUPTED
     points whose nearest (normalized 128D) CORRUPTED class-mean is their OWN class.
@@ -214,6 +238,10 @@ def main():
     parser.add_argument("--method_b", type=str, default="supcon_vib_dglsspp_corsupcon")
     parser.add_argument("--label_a", type=str, default="dglsspp_med")
     parser.add_argument("--label_b", type=str, default="robust_21ep")
+    parser.add_argument("--inv_ch", type=int, default=0,
+                        help="two-branch split point: invariant channels [0:inv_ch], corruption "
+                             "channels [inv_ch:]. When >0, also measures the per-branch structure "
+                             "(inv/corr feat_cos, dir_retention, tightness) -- the decoupling gate.")
     parser.add_argument("--out", type=str, default="robust_diagnostic/logs/extractor_diff_results.json")
     args = parser.parse_args()
 
@@ -221,7 +249,6 @@ def main():
     ARCH = yaml.safe_load(open(args.arch, 'r'))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}")
-    proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
 
     ckpts = [('A', args.label_a, args.method_a, args.path_a),
              ('B', args.label_b, args.method_b, args.path_b)]
@@ -234,6 +261,7 @@ def main():
 
         clean_f, clean_l = extract_features(model, build_parser(args.kitti_dir, DATA, ARCH),
                                             device, args.frames)
+        proj = get_hdc_projection(dim_in=clean_f.shape[1], dim_out=10000, device=device)
         clf = LogisticRegression(max_iter=1000)
         clf.fit(clean_f[:min(100000, len(clean_f))].numpy(),
                 clean_l[:min(100000, len(clean_l))].numpy())
@@ -258,6 +286,10 @@ def main():
 
             classes = sorted(cids)
             struct = class_structure(pool, pool_l, clean_f, clean_l, cmeans, classes)
+            if args.inv_ch and clean_f.shape[1] > args.inv_ch:
+                br = branch_structure(pool, pool_l, clean_f, clean_l, cmeans, classes, args.inv_ch)
+                for c in classes:
+                    struct[c].update(br.get(c, {}))
             al_purity, al_mean = cluster_al_stats(pool, pool_l, classes)
             for c in classes:
                 m = pool_l == c
@@ -364,6 +396,27 @@ def main():
             print(f"{int(c):>3} {g('al_purity', ra):>6.2f} {g('al_purity', rb):>6.2f} | "
                   f"{g('oracle_iou', ra):>5.2f} {g('oracle_iou', rb):>5.2f} | "
                   f"{g('corr_tightness', ra):>6.2f} {g('corr_tightness', rb):>6.2f}")
+
+    # ---- two-branch decoupling gate (only meaningful when --inv_ch is set) ----
+    if args.inv_ch and 'inv_feat_cos' in data[lb][CONDS[0]]['per_class'].get(str(sorted(
+            data[lb][CONDS[0]]['per_class'].keys(), key=int)[0]), {}):
+        print(f"\n{'='*80}\n=== DECOUPLING GATE (--inv_ch {args.inv_ch}): per-branch structure ===\n{'='*80}")
+        print(f"Goal: corr dir_retention < 1 (shift retained in the corr branch) while the inv "
+              f"branch stays anchored; concatenated oracle up. Report: {la} -> {lb}.")
+        for cond in CONDS:
+            pc = data[lb][cond]['per_class']
+            agg = data[lb][cond]['aggregate']
+            print(f"\n{cond}: {lb} aggregate zs {agg['zs']:.4f} naive {agg['naive']:.4f} "
+                  f"oracle {agg['oracle']:.4f}")
+            print(f"{'cls':>3} {'inv_fc':>7} {'inv_dir':>7} {'corr_fc':>7} {'corr_dir':>7} "
+                  f"{'corr_t':>7} {'oracle':>7} {'or_gain':>7}")
+            for c in sorted(pc.keys(), key=int):
+                r = pc[c]
+                g = lambda k, d: float('nan') if d.get(k) is None or d[k] != d[k] else d[k]
+                print(f"{int(c):>3} {g('inv_feat_cos', r):>7.2f} {g('inv_dir_retention', r):>7.2f} "
+                      f"{g('corr_feat_cos', r):>7.2f} {g('corr_dir_retention', r):>7.2f} "
+                      f"{g('corr_tightness', r):>7.2f} {g('oracle_iou', r):>7.3f} "
+                      f"{g('oracle_gain', r):>7.2f}")
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, 'w') as f:

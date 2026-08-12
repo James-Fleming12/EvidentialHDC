@@ -226,7 +226,6 @@ def main():
     if not os.path.exists(os.path.dirname(out)):
         os.makedirs(os.path.dirname(out), exist_ok=True)
 
-    proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
     all_rows = {}
 
     for name, path in scales:
@@ -238,6 +237,7 @@ def main():
         print("Extracting clean...")
         clean_f, clean_l = extract_features(model, build_parser(args.kitti_dir, DATA, ARCH),
                                             device, args.frames)
+        proj = get_hdc_projection(dim_in=clean_f.shape[1], dim_out=10000, device=device)
         clf = LogisticRegression(max_iter=1000)
         clf.fit(clean_f[:min(100000, len(clean_f))].numpy(),
                 clean_l[:min(100000, len(clean_l))].numpy())
