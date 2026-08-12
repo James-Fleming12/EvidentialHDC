@@ -80,6 +80,10 @@ CONDS = ['fog', 'crosstalk', 'snow', 'wet_ground', 'incomplete_echo',
 #                            soft alpha-blend anchor / per-point conditioned anchor /
 #                            channel-split anchor, each at two settings so the
 #                            direction is robust to tuning.
+#   - supcon_vib_dglsspp_corsupcon_coclust / _coclust_w005: the clean-anchor SupCon
+#                            PLUS a corrupted-only clustering pull (to the corrupted
+#                            class centroids), targeting the Iteration-12 ceiling
+#                            drivers (intra-corrupted packing + retained direction).
 METHODS = ['supcon_vib', 'vib', 'supcon_vib_dglss', 'supcon_vib_dglsspp',
            'supcon_vib_dglss_enc', 'supcon_vib_dglsspp_cor',
            'supcon_vib_dglsspp_supcon', 'supcon_vib_dglsspp_bal',
@@ -93,7 +97,9 @@ METHODS = ['supcon_vib', 'vib', 'supcon_vib_dglss', 'supcon_vib_dglsspp',
            'supcon_vib_dglsspp_corsupcon_blend05',
            'supcon_vib_dglsspp_corsupcon_cond',
            'supcon_vib_dglsspp_corsupcon_ch64',
-           'supcon_vib_dglsspp_corsupcon_ch96']
+           'supcon_vib_dglsspp_corsupcon_ch96',
+           'supcon_vib_dglsspp_corsupcon_coclust',
+           'supcon_vib_dglsspp_corsupcon_coclust_w005']
 
 
 def build_parser(root, data, arch):

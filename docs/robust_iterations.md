@@ -1501,6 +1501,60 @@ The TTA-refinement work should proceed on the full corsupcon 21-ep checkpoint, a
 the fog labeled ceiling — which neither the hard SupCon nor the soft anchor raises —
 remains the active-learning fallback's target.
 
+## Iteration 12: what drives the label ceiling, and is the robust extractor AL-ready?
+
+Using the two medium checkpoints that bracket the ceiling extremes (full corsupcon:
+crosstalk car oracle 0.280 / fog car 0.148; blend05: crosstalk car 0.565 / fog car
+0.088), plus the plain baseline, the extractor-diff feature-space autopsy answers
+both questions.
+
+**Active-learning readiness (one label per class-mean cluster):**
+
+| extractor | fog purity | crosstalk purity |
+| :--- | :--- | :--- |
+| plain DGLSS++ | **0.547** | 0.468 |
+| robust (corsupcon) | 0.534 | 0.465 |
+| soft-anchor (blend05) | 0.519 | **0.488** |
+
+**This is a negative for the "robust extractor is AL-cleaner" hypothesis.** The
+Robust variants are NOT cleaner at the class-mean probe — on fog the plain extractor
+is actually the highest (0.547 vs 0.534 / 0.519), on crosstalk they are tied
+(~0.47-0.49), and in absolute terms the purity is only ~0.5: a naive "query one point
+at each class mean" would label roughly half a class's points correctly on any
+extractor. So the active-learning fallback does NOT inherit a cleaner feature space
+from the Robust training at this probe level.
+
+**The label-ceiling driver (per class): recoverability needs BOTH intra-class packing
+AND a retained shifted direction.** Per-class car fog oracle and structure:
+
+| extractor | car fog oracle | feat_cos | dir-retention | corr-tightness |
+| :--- | :--- | :--- | :--- | :--- |
+| plain DGLSS++ | **0.303** | 0.32 | 0.37 (shifted) | 0.87 |
+| robust (corsupcon) | 0.148 | 0.83 | 0.87 (anchored) | 0.95 |
+| soft-anchor (blend05) | 0.088 | 0.63 | 0.69 | 0.91 |
+
+The plain extractor's car is recoverable (0.303) because its fog features are tightly
+packed AND shifted into a distinct direction; the hard anchor erases the direction
+(-> 0.148); the soft anchor leaves the direction partially (0.69) but loosens the
+packing (tightness 0.95 -> 0.91) and the oracle is lowest (0.088). The crosstalk
+correlation confirms it: rho(dir-retention, oracle) is +0.55 (robust) and +0.74
+(blend05) — classes that retain their shifted direction are the recoverable ones,
+and on crosstalk blend05's car (oracle 0.565) is the cleanest example.
+
+**What to look at (the concrete lever):** the ceiling is not set by the clean-anchor
+strength alone — it is set by whether the corrupted class keeps its OWN tight,
+shifted cluster. The natural next design is a **corrupted-only clustering term**:
+pull corrupted points toward their CORRUPTED class means (maximize intra-corrupted
+packing) WITHOUT any pull toward the clean direction (so direction-retention is left
+intact), combined with a mild clean anchor only for the assignment/TTA gains. This is
+distinct from both tested anchors and directly targets the two measured drivers.
+
+**Verdict.** The AL-cleaner hypothesis is not supported at the class-mean probe (the
+Robust features are not AL-ready beyond the plain baseline). The path to "one model
+that does both" is the corrupted-only clustering design: it keeps the label-free TTA
+(which needs the clean anchor / assignment) and should raise the label ceiling (which
+needs the packed, direction-retained corrupted clusters) — testable at micro first.
+
 
 
 

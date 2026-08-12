@@ -35,7 +35,9 @@ DGLSS_METHODS = {'supcon_vib_dglss', 'supcon_vib_dglsspp', 'supcon_vib_dglss_enc
                  'supcon_vib_dglsspp_corsupcon_blend05',
                  'supcon_vib_dglsspp_corsupcon_cond',
                  'supcon_vib_dglsspp_corsupcon_ch64',
-                 'supcon_vib_dglsspp_corsupcon_ch96'}
+                 'supcon_vib_dglsspp_corsupcon_ch96',
+                 'supcon_vib_dglsspp_corsupcon_coclust',
+                 'supcon_vib_dglsspp_corsupcon_coclust_w005'}
 
 # SupCon anchoring-direction variants (tested at micro): each changes ONE knob of the
 # clean-anchoring, with two points per sweep so the direction is testable against
@@ -49,6 +51,12 @@ SUPCON_VARIANTS = {
     'supcon_vib_dglsspp_corsupcon_cond': {'weight': 0.1, 'cond': True},
     'supcon_vib_dglsspp_corsupcon_ch64': {'weight': 0.1, 'channels': 64},
     'supcon_vib_dglsspp_corsupcon_ch96': {'weight': 0.1, 'channels': 96},
+    # corrupted-only clustering: the clean-anchor SupCon PLUS a pull of the corrupted
+    # points toward their CORRUPTED class centroids (alpha=1.0), which maximizes
+    # intra-corrupted packing while leaving the shifted direction intact (the two
+    # drivers of the label ceiling from Iteration 12). Two weights for robustness.
+    'supcon_vib_dglsspp_corsupcon_coclust': {'weight': 0.1, 'coclust_w': 0.1},
+    'supcon_vib_dglsspp_corsupcon_coclust_w005': {'weight': 0.1, 'coclust_w': 0.05},
 }
 
 class GenTrainer(Trainer):
@@ -461,8 +469,16 @@ class GenTrainer(Trainer):
                         loss_total = loss_total + self.dglss_lam2 * loss_scc
                     if 'corsupcon' in self.method:
                         cfg = SUPCON_VARIANTS.get(self.method, {})
+                        supcon_kw = {k: v for k, v in cfg.items() if k not in ('weight', 'coclust_w')}
                         loss_total = loss_total + cfg.get('weight', 0.1) * self.supcon_loss(
-                            z8, z8_aug, proj_labels, **{k: v for k, v in cfg.items() if k != 'weight'})
+                            z8, z8_aug, proj_labels, **supcon_kw)
+                        if 'coclust_w' in cfg:
+                            # corrupted-only clustering: pull the corrupted points
+                            # toward their CORRUPTED class centroids (blend_alpha=1.0),
+                            # maximizing intra-corrupted packing while leaving the
+                            # shifted direction intact (Iteration-12 ceiling drivers).
+                            loss_total = loss_total + cfg['coclust_w'] * self.supcon_loss(
+                                z8, z8_aug, proj_labels, blend_alpha=1.0)
                     if self.method == 'supcon_vib_dglsspp_vib':
                         loss_total = loss_total + 0.01 * self.vib_loss(z8, z8_aug)
                 elif self.method.startswith('supcon_vib'):
