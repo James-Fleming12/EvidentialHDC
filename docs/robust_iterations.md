@@ -1555,6 +1555,68 @@ that does both" is the corrupted-only clustering design: it keeps the label-free
 (which needs the clean anchor / assignment) and should raise the label ceiling (which
 needs the packed, direction-retained corrupted clusters) — testable at micro first.
 
+## Iteration 13: point-level active-learning readiness (the AL fallback is not cleaner)
+
+`al_readiness_diag.py` measures the POINT-level readiness the Pillar-3 framework
+actually uses (query one point, label its neighborhood) across the three medium
+checkpoints: 1-NN same-class purity (nn1) and k-NN purity (nnk), with the per-class
+labeled ceiling (oracle).
+
+| extractor | cond | nn1 | nnk | car nn1 | car oracle | agg oracle |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| plain DGLSS++ | fog | **0.425** | **0.276** | 0.633 | **0.303** | **0.176** |
+| robust (corsupcon) | fog | 0.405 | 0.261 | 0.595 | 0.149 | 0.157 |
+| soft-anchor (blend05) | fog | 0.428 | 0.280 | 0.666 | 0.088 | 0.143 |
+| plain DGLSS++ | crosstalk | **0.566** | **0.415** | 0.827 | 0.335 | **0.222** |
+| robust (corsupcon) | crosstalk | 0.538 | 0.405 | 0.781 | 0.280 | 0.188 |
+| soft-anchor (blend05) | crosstalk | 0.558 | 0.402 | 0.840 | **0.565** | **0.239** |
+
+**The AL-cleaner hypothesis is rejected at the point level too.** The Robust
+extractor has LOWER 1-NN purity than plain DGLSS++ on both conditions (fog 0.405 vs
+0.425, crosstalk 0.538 vs 0.566) — the active-learning framework would need MORE
+labels, not fewer, on it. The class-mean probe (Iteration 12) and the point-level
+probe agree.
+
+**The unifying finding: the ceiling and the AL readiness are the SAME property.**
+rho(nn1, oracle) across extractors and conditions is +0.67 to +0.93 (plain DGLSS++
+fog +0.93). Classes that are point-level clustered under corruption are both
+recoverable (high ceiling) and AL-friendly (fewer labels). A lever that raises the
+1-NN purity raises both at once.
+
+**The absolute purity is low, and training appears to reduce it.** nn1 is only
+0.40-0.57 on the trained medium extractors, far below the 75-87% corrupted 1-NN
+purity the Corruption Atlas reported for the UNTRAINED baseline. If comparable, the
+training that makes the class MEANS separable (better decode) is entangling the
+point-level neighborhoods under corruption — which is exactly what both the AL
+framework and the label ceiling need. The exception that confirms it: blend05 car
+crosstalk has the cleanest neighborhood (nn1 0.840) and the highest oracle (0.565).
+
+**Verdict.** Both paper requirements fail on the current Robust extractor: it is not
+AL-cleaner (lower nn1) and its ceilings are lower. The next step is to raise the
+point-level cluster purity (nn1) directly — which the nn1-oracle correlation says
+should lift the ceilings and the AL readiness together.
+
+### 13.1 Next diagnostics (what is needed)
+
+1. **Confirm training reduced the purity.** Re-run `al_readiness_diag.py` on the
+   UNTRAINED baseline (if the checkpoint exists) — if its nn1 is ~0.7-0.9 vs
+   0.40-0.57 for the trained extractors, the training actively entangles the
+   corrupted neighborhoods and the fix is a training-time term, not a TTA/AL tweak.
+2. **Per-class entanglement map.** The JSON gives nn1 per class: the classes with
+   nn1 ~0.5 (car fog 0.60-0.67, sidewalk ~0.54, vegetation ~0.55-0.58) are the ones
+   limiting both the ceiling and AL. Identify the entangled set and check whether it
+   is exactly the minority classes.
+3. **Label-budget estimate.** With nn1 as the per-query cluster purity, estimate how
+   many labels AL would need per class to reach a target coverage: at p ~ 0.4-0.55 a
+   naive one-point-per-cluster scheme needs roughly 2x more labels than at p ~ 0.8.
+   This quantifies "requiring less labels" for each extractor.
+4. **The design lever: a neighborhood-purity regularizer.** A training term that
+   directly maximizes the 1-NN same-class purity (e.g., pull each point toward its
+   nearest same-class neighbor's feature — a local smoothness that the class-mean /
+   clean-anchor terms do not provide). Since nn1-oracle correlates at +0.7-0.9, this
+   single term should raise the ceilings AND the AL readiness together — the first
+   design to micro-test.
+
 
 
 
