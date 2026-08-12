@@ -93,6 +93,12 @@ def main():
     parser.add_argument("--med", action="store_true",
                         help="use medium-scale checkpoints (logs/med_pretrain_supcon_vib for "
                              "supcon_vib, the current medium DGLSS++ run) instead of the micro ones")
+    parser.add_argument("--method", type=str, default="supcon_vib_dglsspp_corsupcon",
+                        help="GenTrainer method name (used with --path)")
+    parser.add_argument("--path", type=str, default="",
+                        help="single checkpoint dir to evaluate (overrides the default method loop)")
+    parser.add_argument("--label", type=str, default="robust_21ep",
+                        help="label for the single --path checkpoint")
     parser.add_argument("--out", type=str, default=None,
                         help="output JSON (default: robust_diagnostic/logs/frozen_ceiling_results[_med].json)")
     args = parser.parse_args()
@@ -102,15 +108,19 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}")
 
+    if args.path:
+        targets = [(args.method, args.path, args.label)]
+    else:
+        targets = [(m, (MED_PATHS.get(m, os.path.join(args.log_dir, m))
+                        if args.med else os.path.join(args.log_dir, m)), m) for m in METHODS]
     out = args.out or os.path.join(args.log_dir, 'frozen_ceiling_results'
-                                   + ('_med' if args.med else '') + '.json')
+                                   + (('_' + args.label) if args.path
+                                      else ('_med' if args.med else '')) + '.json')
     proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
     results = {}
 
-    for method in METHODS:
-        log_dir = (MED_PATHS.get(method, os.path.join(args.log_dir, method))
-                   if args.med else os.path.join(args.log_dir, method))
-        print(f"\n{'='*80}\n=== {method} (frozen, labeled ceiling) ===\n{'='*80}")
+    for method, log_dir, label in targets:
+        print(f"\n{'='*80}\n=== {method} {label} ({log_dir}): frozen, labeled ceiling ===\n{'='*80}")
         trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, path=log_dir, method=method)
         model = trainer.model
 
@@ -140,7 +150,7 @@ def main():
             r_m[cond] = {'lp_acc': lp_acc, 'lp_miou': lp_miou,
                          'hdc_zs': hdc_zs, 'hdc_oracle': hdc_oracle}
             print(f"{cond:<16} {lp_acc:>7.4f} {lp_miou:>8.4f} {hdc_zs:>8.4f} {hdc_oracle:>10.4f}")
-        results[method] = r_m
+        results[label] = r_m
 
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, 'w') as f:

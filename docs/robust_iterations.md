@@ -1709,7 +1709,3 @@ For the paper, the honest framing is: Robust DGLSS++ delivers the label-free TTA
 advantage, and the AL fallback / ceiling work is a stated limitation — the AL budget
 analysis (Iteration 13) shows the fallback would need roughly the same labels on every
 trained extractor, so the AL framework is viable but not extractor-advantaged.
-
-
-
-

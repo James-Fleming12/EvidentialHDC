@@ -109,7 +109,14 @@ def main():
     parser.add_argument("--frames", type=int, default=100)
     parser.add_argument("--max_pts", type=int, default=50000,
                         help="points per condition for the whole analysis (all signals aligned)")
-    parser.add_argument("--out", type=str, default="robust_diagnostic/logs/gate_structure_results.json")
+    parser.add_argument("--method", type=str, default="supcon_vib_dglsspp_corsupcon",
+                        help="GenTrainer method name (used with --path)")
+    parser.add_argument("--path", type=str, default="",
+                        help="single checkpoint dir to evaluate (overrides the default method loop)")
+    parser.add_argument("--label", type=str, default="robust_21ep",
+                        help="label for the single --path checkpoint")
+    parser.add_argument("--out", type=str, default=None,
+                        help="output JSON (default: robust_diagnostic/logs/gate_structure_results.json)")
     args = parser.parse_args()
 
     DATA = yaml.safe_load(open(args.config, 'r'))
@@ -117,8 +124,14 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}")
 
+    if args.path:
+        targets = [(args.method, args.path, args.label)]
+    else:
+        targets = [(m, os.path.join(args.log_dir, m), m) for m in METHODS]
+    out = args.out or os.path.join(args.log_dir, 'gate_structure_results'
+                                   + (('_' + args.label) if args.path else '') + '.json')
     results = {}
-    for method in METHODS:
+    for method, log_dir, label in targets:
         log_dir = os.path.join(args.log_dir, method)
         print(f"\n{'='*80}\n=== {method}: gate-signal structure ===\n{'='*80}")
         trainer = GenTrainer(ARCH, DATA, args.kitti_dir, log_dir, path=log_dir, method=method)
@@ -186,12 +199,12 @@ def main():
             print(f"{cond:<10} " + " ".join(f"{aurocs[s]:>7.3f}" for s in
                   ['conf', 'entr', 'dist', 'norm', 'margin', 'density', 'fusion'])
                   + f"  {fr['rec_of_wrong']:>6.3f}   {gap:.3f}")
-        results[method] = r_cond
+        results[label] = r_cond
 
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    with open(args.out, 'w') as f:
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, 'w') as f:
         json.dump(results, f, indent=2, default=float)
-    print(f"\nSaved to {args.out}")
+    print(f"\nSaved to {out}")
 
 
 if __name__ == "__main__":
