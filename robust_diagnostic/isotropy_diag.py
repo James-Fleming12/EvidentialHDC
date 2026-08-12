@@ -84,6 +84,11 @@ CONDS = ['fog', 'crosstalk', 'snow', 'wet_ground', 'incomplete_echo',
 #                            PLUS a corrupted-only clustering pull (to the corrupted
 #                            class centroids), targeting the Iteration-12 ceiling
 #                            drivers (intra-corrupted packing + retained direction).
+#   - supcon_vib_dglsspp_corsupcon_nnpull / _nocons_nnpull: the clean-anchor SupCon
+#                            PLUS a neighborhood-purity pull (each corrupted point to
+#                            its nearest same-class neighbor), directly raising the
+#                            Iteration-13 1-NN purity that drives the ceiling and the
+#                            AL readiness (the _nocons base is the AL-cleanest variant).
 METHODS = ['supcon_vib', 'vib', 'supcon_vib_dglss', 'supcon_vib_dglsspp',
            'supcon_vib_dglss_enc', 'supcon_vib_dglsspp_cor',
            'supcon_vib_dglsspp_supcon', 'supcon_vib_dglsspp_bal',
@@ -99,7 +104,9 @@ METHODS = ['supcon_vib', 'vib', 'supcon_vib_dglss', 'supcon_vib_dglsspp',
            'supcon_vib_dglsspp_corsupcon_ch64',
            'supcon_vib_dglsspp_corsupcon_ch96',
            'supcon_vib_dglsspp_corsupcon_coclust',
-           'supcon_vib_dglsspp_corsupcon_coclust_w005']
+           'supcon_vib_dglsspp_corsupcon_coclust_w005',
+           'supcon_vib_dglsspp_corsupcon_nnpull',
+           'supcon_vib_dglsspp_corsupcon_nocons_nnpull']
 
 
 def build_parser(root, data, arch):

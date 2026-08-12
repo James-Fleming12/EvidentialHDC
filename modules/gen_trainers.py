@@ -37,7 +37,9 @@ DGLSS_METHODS = {'supcon_vib_dglss', 'supcon_vib_dglsspp', 'supcon_vib_dglss_enc
                  'supcon_vib_dglsspp_corsupcon_ch64',
                  'supcon_vib_dglsspp_corsupcon_ch96',
                  'supcon_vib_dglsspp_corsupcon_coclust',
-                 'supcon_vib_dglsspp_corsupcon_coclust_w005'}
+                 'supcon_vib_dglsspp_corsupcon_coclust_w005',
+                 'supcon_vib_dglsspp_corsupcon_nnpull',
+                 'supcon_vib_dglsspp_corsupcon_nocons_nnpull'}
 
 # SupCon anchoring-direction variants (tested at micro): each changes ONE knob of the
 # clean-anchoring, with two points per sweep so the direction is testable against
@@ -57,6 +59,13 @@ SUPCON_VARIANTS = {
     # drivers of the label ceiling from Iteration 12). Two weights for robustness.
     'supcon_vib_dglsspp_corsupcon_coclust': {'weight': 0.1, 'coclust_w': 0.1},
     'supcon_vib_dglsspp_corsupcon_coclust_w005': {'weight': 0.1, 'coclust_w': 0.05},
+    # neighborhood-purity regularizer (Iteration 13.2): clean-anchor SupCon PLUS a
+    # pull of each corrupted point toward its nearest SAME-CLASS neighbor (raises the
+    # 1-NN purity that drives both the ceiling and the AL readiness). Tested on the
+    # full method and on the simpler nocons base (which the muddle check found
+    # AL-cleanest).
+    'supcon_vib_dglsspp_corsupcon_nnpull': {'weight': 0.1, 'nnpull_w': 0.1},
+    'supcon_vib_dglsspp_corsupcon_nocons_nnpull': {'weight': 0.1, 'nnpull_w': 0.1},
 }
 
 class GenTrainer(Trainer):
@@ -296,6 +305,33 @@ class GenTrainer(Trainer):
         loss_kl_clean = -0.5 * torch.sum(1 + logvar_clean - z8.pow(2) - logvar_clean.exp(), dim=1).mean()
         return (loss_kl_clean + loss_kl_aug) / 2.0
 
+    def nn_pull_loss(self, z, proj_labels, max_pts=2000):
+        """Neighborhood-purity regularizer (Iteration 13.2): pull each point toward its
+        nearest SAME-CLASS neighbor in the (corrupted) bottleneck view, i.e. minimize
+        1 - cos(z_i, NN_same_class(z_i)). Directly maximizes the 1-NN same-class purity
+        (nn1) that drives both the label ceiling and the AL readiness (rho(nn1, oracle)
+        ~+0.7-0.9). Runs on the same subsample as the SupCon, so it adds ~1% to the
+        step time."""
+        mask = proj_labels > 0
+        zf = z.permute(0, 2, 3, 1)[mask]
+        lbl = proj_labels[mask]
+        if len(lbl) == 0:
+            return torch.tensor(0.0, device=z.device)
+        if len(lbl) > max_pts:
+            idx = torch.randperm(len(lbl), device=z.device)[:max_pts]
+            zf, lbl = zf[idx], lbl[idx]
+        zn = F.normalize(zf, p=2, dim=1)
+        sim = zn @ zn.T
+        n = len(zn)
+        self_mask = ~torch.eye(n, dtype=torch.bool, device=zn.device)
+        same = (lbl.unsqueeze(0) == lbl.unsqueeze(1)) & self_mask
+        sim = sim.masked_fill(~same, -1e9)
+        has = same.any(dim=1)
+        if not has.any():
+            return torch.tensor(0.0, device=z.device)
+        best = sim[has].max(dim=1).values
+        return (1.0 - best).mean()
+
     def train_epoch(self, train_loader, model, criterion, optimizer, epoch, evaluator, scheduler, color_fn, report=10, show_scans=False):
         losses = AverageMeter()
         acc = AverageMeter()
@@ -451,8 +487,8 @@ class GenTrainer(Trainer):
                     #                consistency terms to ablate the DGLSS++ stack.
                     gmsifc = self.method.startswith('supcon_vib_dglsspp')
                     class_bal = self.method == 'supcon_vib_dglsspp_bal'
-                    no_sifc = self.method.endswith('nogmsifc') or self.method.endswith('nocons')
-                    no_scc = self.method.endswith('nolscc') or self.method.endswith('nocons')
+                    no_sifc = 'nogmsifc' in self.method or 'nocons' in self.method
+                    no_scc = 'nolscc' in self.method or 'nocons' in self.method
                     loss_total = loss_sem
                     if not no_sifc:
                         if self.method == 'supcon_vib_dglss_enc':
@@ -479,6 +515,12 @@ class GenTrainer(Trainer):
                             # shifted direction intact (Iteration-12 ceiling drivers).
                             loss_total = loss_total + cfg['coclust_w'] * self.supcon_loss(
                                 z8, z8_aug, proj_labels, blend_alpha=1.0)
+                        if 'nnpull_w' in cfg:
+                            # neighborhood-purity regularizer: pull each corrupted point
+                            # toward its nearest SAME-CLASS neighbor, directly raising
+                            # the 1-NN purity that drives the ceiling and AL readiness.
+                            loss_total = loss_total + cfg['nnpull_w'] * self.nn_pull_loss(
+                                z8_aug, proj_labels)
                     if self.method == 'supcon_vib_dglsspp_vib':
                         loss_total = loss_total + 0.01 * self.vib_loss(z8, z8_aug)
                 elif self.method.startswith('supcon_vib'):

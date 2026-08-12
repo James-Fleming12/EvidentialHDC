@@ -1617,6 +1617,57 @@ should lift the ceilings and the AL readiness together.
    single term should raise the ceilings AND the AL readiness together — the first
    design to micro-test.
 
+### 13.2 Diagnostic batch: purity across extractors, muddle check, label budget
+
+`run_al_diagnostics.sh` (point-level AL readiness on the medium extractors + the
+micro piecewise variants + the analysis):
+
+**Medium extractors (nn1 1-NN purity / nnk / oracle / 1-nn1 label multiplier):**
+
+| extractor | cond | nn1 | nnk | oracle | 1/nn1 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| plain DGLSS++ | fog | 0.425 | 0.276 | 0.176 | 2.35 |
+| plain DGLSS++ | crosstalk | 0.566 | 0.415 | 0.222 | 1.77 |
+| robust 21ep | fog | 0.405 | 0.261 | 0.157 | 2.47 |
+| robust 21ep | crosstalk | 0.547 | 0.404 | 0.191 | 1.83 |
+| blend05 | fog | 0.428 | 0.280 | 0.143 | 2.34 |
+| blend05 | crosstalk | 0.558 | 0.402 | 0.239 | 1.79 |
+| supcon_vib med | fog | 0.419 | 0.248 | 0.146 | 2.39 |
+| supcon_vib med | crosstalk | 0.519 | 0.395 | 0.234 | 1.93 |
+
+**Muddle check (micro nn1, does removing a piece raise purity?):**
+
+| variant | fog nn1 | crosstalk nn1 |
+| :--- | :--- | :--- |
+| corsupcon_full | 0.335 | 0.513 |
+| nocons (no GMSIFC+LSCC) | **0.368** | **0.531** |
+| supcon_only (beam-drop) | 0.338 | 0.498 |
+| cor_only (no SupCon) | 0.321 | 0.517 |
+
+**What the batch shows:**
+
+1. **The low point-level purity is universal to ALL trained extractors.** supcon_vib
+   med is equally low (0.419 / 0.519), so it is intrinsic to corruption for trained
+   models — not a robust-specific failure — and well below the untrained baseline's
+   Corruption-Atlas 75-87%.
+2. **The muddle hypothesis is weakly supported.** Dropping the consistency stack
+   (nocons) gives the highest micro nn1 (0.368 fog / 0.531 crosstalk), so GMSIFC+LSCC
+   do contribute to the neighborhood entanglement — but the gain is small and even
+   nocons is low (~0.37 fog), so removing pieces does not restore clean neighborhoods.
+3. **The label budget confirms the robust extractor is marginally worse for AL:** a
+   1/nn1 of 2.47 on fog (vs 2.35 plain) means ~5% more labels.
+4. **The entangled set is identical across every extractor:** bicycle (~0),
+   pedestrian (~0.2), building (~0.3), terrain (~0.4), sidewalk (~0.53) — the same
+   rare/minority classes are the entanglement everywhere.
+
+**Verdict.** No current training (robust, plain, supcon_vib) fixes the point-level
+entanglement, and it is not primarily a combination-muddle (dropping pieces helps
+only slightly). This is the case for the neighborhood-purity regularizer — the only
+design aimed directly at the measured property (nn1), which the nn1-oracle
+correlation (+0.7-0.9) says should raise the ceilings and the AL readiness together.
+The muddle result also motivates testing it on the simpler nocons base. Cost: ~1% of
+the step time (a k-NN on the SupCon's 2000-point subsample).
+
 
 
 
