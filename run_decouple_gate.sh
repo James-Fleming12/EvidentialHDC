@@ -11,9 +11,10 @@
 #
 # Three micro variants (12 ep / 10% data, ~1-1.5h each), each vs the corsupcon micro
 # reference:
-#   twobranch_128_64   inv 128 + corr 64 (ind), total 192
-#   twobranch_128_128  inv 128 + corr 128 (ind), total 256
-#   residual_128_128   inv 128 + corr = inv+dz (res), total 256
+#   twobranch_128_64   inv 128 + corr 64 (ind), total 192   <- Q1: decoupling useful at all?
+#   residual_128_128   inv 128 + corr = inv+dz (res), total 256  <- Q2: residual the better impl?
+# (twobranch_128_128 dropped from the gate -- corr capacity is a secondary knob; the
+#  two kept variants answer both questions, and the gate stays ~3-3.5h total.)
 #
 # The extractor_diff GATE prints per-branch structure with --inv_ch 128:
 #   PASS signals (vs corsupcon reference, on FOG):
@@ -33,7 +34,7 @@ echo "Using GPU $GPU"
 
 REF_METHOD="supcon_vib_dglsspp_corsupcon"
 REF_PATH="robust_diagnostic/logs/micro_corsupcon/$REF_METHOD"
-VARIANTS="supcon_vib_dglsspp_corsupcon_twobranch_128_64 supcon_vib_dglsspp_corsupcon_twobranch_128_128 supcon_vib_dglsspp_corsupcon_residual_128_128"
+VARIANTS="supcon_vib_dglsspp_corsupcon_twobranch_128_64 supcon_vib_dglsspp_corsupcon_residual_128_128"
 
 fail() { echo "ERROR: $1 failed (exit $?)" >&2; }
 
@@ -51,12 +52,8 @@ run_abl() {
 }
 
 # reference extractor_diff (eval-only, no branch split; 128D)
-echo "=== [ref] extractor_diff corsupcon micro (baseline for the gate) ==="
-CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/extractor_diff_diag.py \
-  --path_a "$REF_PATH" --method_a "$REF_METHOD" --label_a "corsupcon_micro" \
-  --path_b "$REF_PATH" --method_b "$REF_METHOD" --label_b "corsupcon_micro" \
-  --out "robust_diagnostic/logs/decouple_ref_baseline.json" \
-  2>&1 | tee "logs/decouple_ref_baseline.log" || fail "ref baseline"
+# NOTE: no ref-vs-ref baseline run -- the corsupcon micro reference is embedded as
+# path_a in every gate comparison below.
 
 for v in $VARIANTS; do
   run_abl "$v" "robust_diagnostic/logs/micro_$v" "$v"
