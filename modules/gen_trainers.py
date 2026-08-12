@@ -505,7 +505,8 @@ class GenTrainer(Trainer):
                         loss_total = loss_total + self.dglss_lam2 * loss_scc
                     if 'corsupcon' in self.method:
                         cfg = SUPCON_VARIANTS.get(self.method, {})
-                        supcon_kw = {k: v for k, v in cfg.items() if k not in ('weight', 'coclust_w')}
+                        supcon_kw = {k: v for k, v in cfg.items()
+                                     if k not in ('weight', 'coclust_w', 'nnpull_w')}
                         loss_total = loss_total + cfg.get('weight', 0.1) * self.supcon_loss(
                             z8, z8_aug, proj_labels, **supcon_kw)
                         if 'coclust_w' in cfg:
