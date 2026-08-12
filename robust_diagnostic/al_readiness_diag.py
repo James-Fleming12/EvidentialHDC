@@ -151,8 +151,21 @@ def main():
     parser.add_argument("--frames", type=int, default=100)
     parser.add_argument("--pool_size", type=int, default=100000)
     parser.add_argument("--val_size", type=int, default=100000)
+    parser.add_argument("--checkpoints", type=str, default="",
+                        help="comma-separated label:method:path triples to compare "
+                             "(defaults to the three medium extractors)")
     parser.add_argument("--out", type=str, default="robust_diagnostic/logs/al_readiness_results.json")
     args = parser.parse_args()
+
+    if args.checkpoints:
+        ckpts = []
+        for spec in args.checkpoints.split(','):
+            parts = spec.strip().split(':')
+            if len(parts) != 3:
+                raise SystemExit(f"bad checkpoint spec: {spec!r} (want label:method:path)")
+            ckpts.append(tuple(parts))
+    else:
+        ckpts = CHECKPOINTS
 
     DATA = yaml.safe_load(open(args.config, 'r'))
     ARCH = yaml.safe_load(open(args.arch, 'r'))
@@ -166,7 +179,7 @@ def main():
     print(header)
     print('-' * len(header))
 
-    for label, method, path in CHECKPOINTS:
+    for label, method, path in ckpts:
         trainer = GenTrainer(ARCH, DATA, args.kitti_dir, path, path=path, method=method)
         model = trainer.model
         clean_f, clean_l = extract_features(model, build_parser(args.kitti_dir, DATA, ARCH),
