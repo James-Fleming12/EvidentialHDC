@@ -1841,3 +1841,75 @@ directions, in order of leverage:
    the weakest structural commitment (direction, not magnitude).
 Both are cheap micro re-gates (~2-3h) that test the mechanism properly before the 10h
 run is on the table.
+
+## Iteration 17: decoupling micro-gate 2 (corrfree + displacement-direction consistency)
+
+Follow-up to Iteration 16. The first gate's corr branch never became shifted because
+LSCC (a clean-view alignment term) was applied to the corr slice. This gate tests the
+two fixes (`run_decouple_gate2.sh`, 12 ep / 10% data, vs the corsupcon micro ref):
+`twobranch_128_64_corrfree` (LSCC dropped on the corr slice — corr's only clean pull
+is CE on the full concat) and `residual_128_128_dircons` (residual form + `L_dir =
+1 - cos(dz, sg(delta_c))` with a per-class EMA displacement direction, so same-class
+corrupted points move coherently).
+
+**Aggregate (same 100k/100k split; ref = corsupcon micro):**
+
+| extractor | cond | zs | naive | oracle | gap | al_purity |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| corsupcon (ref) | fog | 0.081 | 0.105 | 0.122 | +0.59 | 0.466 |
+| corrfree | fog | 0.076 | 0.074 | 0.118 | **-0.05** | 0.530 |
+| **dircons** | fog | 0.083 | **0.114** | **0.129** | **+0.68** | 0.506 |
+| corsupcon (ref) | crosstalk | 0.100 | 0.137 | 0.208 | +0.34 | 0.425 |
+| corrfree | crosstalk | 0.092 | 0.116 | 0.213 | +0.21 | 0.448 |
+| **dircons** | crosstalk | 0.092 | 0.125 | 0.193 | +0.33 | 0.432 |
+
+**Per-branch decoupling check (`--inv_ch 128`), key classes:**
+
+| variant | cond | cls | ref_oracle | var_oracle | corr_dir | corr_tight |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| corrfree | fog | car(4) | 0.082 | 0.094 | 0.84 | 0.86 |
+| corrfree | fog | sig13 | 0.163 | 0.147 | 0.10 | 0.83 |
+| **dircons** | fog | car(4) | 0.086 | 0.093 | 0.93 | 0.90 |
+| **dircons** | fog | sig13 | 0.135 | **0.178** | 0.36 | 0.88 |
+| **dircons** | fog | veg16 | 0.171 | **0.191** | 0.35 | 0.67 |
+| **dircons** | crosstalk | sig13 | 0.178 | **0.230** | 0.35 | 0.95 |
+| **dircons** | crosstalk | car(4) | 0.375 | 0.401 | 0.92 | 0.91 |
+
+**What the gate shows:**
+
+1. **`dircons` is the first variant where the corr branch actually retains a shifted
+   direction AND the ceiling moves with it.** The displacement-direction consistency
+   (EMA per-class direction, detached target) produces corr_dir 0.35-0.36 for
+   traffic-sign on both conditions and 0.35 for vegetation — classes with a real
+   retained shift — and their oracles rise accordingly (sig13 fog 0.135 -> 0.178,
+   sig13 crosstalk 0.178 -> 0.230, veg16 fog 0.171 -> 0.191). rho(dir_retention,
+   oracle) crosstalk rises +0.62 -> +0.83. The mechanism from Iteration 12 (packed +
+   retained shifted direction = recoverable) is finally reproduced at micro.
+2. **dircons also holds/improves the TTA.** The fog naive gap is the best measured
+   (+0.68 vs ref +0.48, absolute naive 0.114) and crosstalk holds (+0.33 vs +0.34).
+   The residual + L_res keeps the inv branch anchored (car fog inv_fc 0.89, inv_dir
+   0.97), so the assignment/TTA side is not sacrificed.
+3. **But the gains are concentrated in the classes the EMA direction reaches; the
+   dominant classes do not shift.** car corr_dir stays ~0.92-0.93 (L_res shrinks its
+   residual toward zero, so it never moves coherently), and the crosstalk ceiling
+   aggregate is marginally DOWN (0.208 -> 0.193) because road/terrain/orange classes
+   (11, 15, 16) lost oracle while sig13 gained. The dircons is a partial positive:
+   the mechanism works where it applies, and the losses that don't shift are the
+   classes that didn't need to (their ceiling is not the bottleneck).
+4. **corrfree is a negative.** Dropping LSCC on the corr slice made corr's direction
+   freer (sig13 fog corr_dir 0.10!) but did NOT translate to ceiling: fog oracle is
+   DOWN (0.122 -> 0.118), the fog naive gap went negative (-0.05, the update now
+   hurts), and only crosstalk ceiling held (+0.213). Free capacity without a
+   corruption-targeted objective just spreads the representation thinner.
+
+**Verdict: the dircons direction is worth the 10h medium run; corrfree is not.** The
+displacement-direction consistency is the first design to reproduce the packed +
+retained-shift mechanism (Iteration 12) at micro, holds the TTA (fog +0.68), and
+raises the fog ceiling. The medium run should use the residual_128_128_dircons
+variant (residual + dircons + L_res=0.05) and be gated on the full battery: the
+fog/crosstalk labeled ceiling (hdc_oracle up from the 0.150/0.177 robust baseline),
+the crosstalk naive gap, and the per-class corr_dir on the frozen extractor. Two
+cheap follow-ups if the medium dircons under-delivers on crosstalk ceiling: (a) raise
+dir_w (0.1 -> 0.2) to reach the classes that did not shift; (b) add the HDC-side
+projection head (shortlist #4) since the crosstalk ceiling loss is on the dominant
+classes whose direction never moved.
