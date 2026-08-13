@@ -1765,3 +1765,79 @@ lower-weight SupCon (Iterations 10-11), SupCon-on-a-subspace of one shared vecto
 (ch64/ch96, Iteration 10), corrupted-only clustering = coclust (Iterations 11-14),
 neighborhood-purity regularizer (Iteration 14), full equivariance `z_corr = A_T z_clean`
 (no structured corruption conditioning available at train time).
+
+## Iteration 16: two-branch decoupling micro-gate (independent + residual)
+
+The Iteration-15 shortlist's two-subspace idea, micro-gated (`run_decouple_gate.sh`,
+12 ep / 10% data, vs the corsupcon micro reference) before any 10h medium commitment.
+Two variants, both keeping the invariant head at the full 128D (so the TTA machinery
+is untouched) and ADDING a corruption head the decoder/HDC reads concatenated:
+`twobranch_128_64` (independent 64D corr head, total 192) and `residual_128_128`
+(corr = inv + Δz with weak L_res=0.05, total 256). Loss routing: GMSIFC + SupCon on
+the INV slice only (the clean anchor must not touch corr), LSCC on both slices, CE on
+the full concat.
+
+**Aggregate (same 100k/100k split; ref = corsupcon micro):**
+
+| extractor | cond | zs | naive | oracle | gap | al_purity |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| corsupcon (ref) | fog | 0.081 | 0.098 | 0.117 | +0.48 | 0.534 |
+| **twobranch_128_64** | fog | 0.088 | 0.083 | 0.108 | **-0.22** | 0.481 |
+| **residual_128_128** | fog | 0.081 | 0.093 | **0.128** | +0.25 | — |
+| corsupcon (ref) | crosstalk | 0.100 | 0.137 | 0.208 | +0.34 | 0.425 |
+| **twobranch_128_64** | crosstalk | 0.092 | 0.129 | 0.165 | +0.51 | 0.403 |
+| **residual_128_128** | crosstalk | 0.101 | 0.125 | 0.199 | +0.24 | — |
+
+**Per-branch decoupling check (`--inv_ch 128`), car:**
+
+| variant | cond | inv_feat_cos | inv_dir | corr_feat_cos | corr_dir | car oracle |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| twobranch_128_64 | fog | 0.87 | 0.96 | 0.77 | **0.91** | 0.086 -> 0.096 |
+| twobranch_128_64 | crosstalk | 0.86 | 0.96 | 0.82 | **0.94** | 0.375 -> 0.368 |
+| residual_128_128 | fog | 0.87 | 0.96 | 0.83 | **0.93** | 0.086 -> 0.104 |
+| residual_128_128 | crosstalk | 0.90 | 0.98 | 0.86 | **0.95** | 0.375 -> **0.494** |
+
+**What the gate shows:**
+
+1. **The corr branch did NOT become shifted — the decoupling mechanism did not
+   activate.** In both variants the corr `dir_retention` is ~0.91-0.95, essentially
+   the same as the inv branch (0.96). The goal was corr_dir < 1 (ideally ~0.3-0.6,
+   like plain DGLSS++'s car fog 0.37). The reason is in the loss routing: LSCC IS a
+   clean-view alignment term (correlation consistency between clean and corrupted
+   views), so applying it to the corr slice — as the shortlist prescribed — re-pulls
+   the corr branch toward clean. CE on the full concat additionally backprops
+   clean-label class-discriminative gradients into corr. The corr head was never free
+   to retain the shift.
+2. **The independent-head variant (twobranch_128_64) is a clear negative.** The
+   ceiling DROPPED (oracle 0.117 -> 0.108 fog, 0.208 -> 0.165 crosstalk), the fog
+   naive gap went NEGATIVE (-0.22, the update now hurts), and AL purity fell on both
+   conditions. The added 64D capacity did not help and degraded the representation.
+3. **The residual variant is a partial positive — real ceiling gains on the classes
+   we care about, at the cost of TTA.** car oracle UP (fog 0.086 -> 0.104, crosstalk
+   0.375 -> 0.494), traffic-sign fog 0.135 -> 0.222, and rho(dir_retention, oracle)
+   crosstalk rose +0.62 -> +0.81. BUT the fog aggregate ceiling gain is small
+   (0.117 -> 0.128), crosstalk ceiling is slightly DOWN (0.208 -> 0.199), and both
+   naive gaps dropped (+0.48 -> +0.25 fog, +0.34 -> +0.24 crosstalk) — the TTA side
+   regressed, violating the success criterion (TTA >= robust - eps).
+4. **The residual's car gains are likely extra capacity + a small perturbation, not
+   true decoupling.** With L_res = 0.05 the Δz is strongly shrunk toward zero, so
+   corr ≈ inv and corr_dir tracks inv_dir (0.93-0.95). The car/traffic-sign oracle
+   gains may come from the wider 256D HDC projection, not from a retained shifted
+   direction.
+
+**Verdict: do NOT commit to the 10h medium run on either variant as-is.** The gate's
+feature-space test (the one micro measures reliably) failed: the corr branch never
+retained the shifted direction, and TTA gaps did not hold. The residual's car ceiling
+gains are real but unexplained by the mechanism we intended. Two concrete next
+directions, in order of leverage:
+1. **Give the corr branch genuine freedom**: drop LSCC (and the clean-view alignment)
+   from the corr slice so CE + the concatenated decoder are its only pulls — the
+   purest "free capacity" test. If LSCC-on-corr is what re-anchored it, this is the
+   fix.
+2. **Test the displacement-direction consistency explicitly** (Iteration-15 idea #3,
+   the angular-coherence term): rather than hoping the shift emerges, train
+   `L_dir = 1 - cos(Δz, sg(δ_c))` with a per-class EMA displacement target — the one
+   objective that directly targets rho(dir_retention, oracle) = +0.55..+0.81 and is
+   the weakest structural commitment (direction, not magnitude).
+Both are cheap micro re-gates (~2-3h) that test the mechanism properly before the 10h
+run is on the table.
