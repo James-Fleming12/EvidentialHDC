@@ -197,6 +197,7 @@ INPUT_NORM_VARIANTS = {
     'supcon_vib_dglsspp_inputin': {'norm': 'bn'},
     'supcon_vib_dglsspp_inputin_in': {'norm': 'in'},
     'supcon_vib_dglsspp_inputin_in_chan': {'norm': 'in', 'norm_channels': (0, 4)},
+    'supcon_vib_dglsspp_inputin_in_scale': {'norm': 'in', 'scale_only': True},
 }
 for _m in INPUT_NORM_VARIANTS:
     DGLSS_METHODS.add(_m)
@@ -247,6 +248,7 @@ class GenTrainer(Trainer):
             tw["norm"] = INPUT_NORM_VARIANTS[self.method]["norm"]
             tw["input_in"] = True
             tw["norm_channels"] = INPUT_NORM_VARIANTS[self.method].get("norm_channels")
+            tw["scale_only"] = INPUT_NORM_VARIANTS[self.method].get("scale_only", False)
         self.input_in = self.method in INPUT_NORM_VARIANTS
         self._dir_ema = None  # per-class EMA displacement direction for _dircons
 

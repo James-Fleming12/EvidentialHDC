@@ -2691,3 +2691,75 @@ survives. Implemented as `supcon_vib_dglsspp_inputin_in_chan` (internal Instance
 Fallback if the channel-split does not transfer fog: the full two-input-stream
 architecture (one normalized stream + one raw, combined at the bottleneck) — deferred
 until the channel-split is measured.
+
+## Iteration 19.12: the channel-restricted input-IN works — fog AND crosstalk both up
+
+The Iteration-19.11.2 fix (per-scan input normalization restricted to the range +
+remission channels 0/4, xyz geometry channels 1-3 untouched, internal InstanceNorm)
+was micro-gated vs plain DGLSS++:
+
+| variant | cond | A_or | var_or | d_or | A_na | var_na | d_na |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| inputin | fog | 0.159 | 0.100 | -0.059 | 0.089 | 0.074 | -0.016 |
+| inputin | crosstalk | 0.214 | 0.249 | +0.035 | 0.125 | 0.244 | +0.119 |
+| inputin_in | fog | 0.159 | 0.137 | -0.022 | 0.089 | 0.120 | +0.032 |
+| inputin_in | crosstalk | 0.214 | 0.277 | +0.063 | 0.117 | 0.268 | +0.150 |
+| **inputin_in_chan** | fog | 0.159 | **0.175** | **+0.016** | 0.090 | 0.157 | +0.067 |
+| **inputin_in_chan** | crosstalk | 0.214 | **0.303** | **+0.089** | 0.126 | 0.291 | +0.165 |
+
+**Isotropy decode health (the cleanest of the whole family):**
+
+| variant | clean HDC | fog HDC | crosstalk HDC | fog LP | crosstalk LP |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| inputin_in_chan | **0.344** | **0.154** | **0.305** | **0.404** | **0.807** |
+
+**The channel-restricted fix resolves the fog regression and improves everything:**
+1. **Fog oracle is now ABOVE plain DGLSS++** (+0.016, 0.175 vs 0.159) — the stack had
+   dropped it to 0.137, the channel-split recovered it and then some. Car recovers
+   (0.217 -> 0.203, vs 0.094 for the unrestricted stack), and the big gains are
+   vegetation (+0.116, 0.102 -> 0.219) and terrain (+0.086, 0.277 -> 0.363).
+2. **Crosstalk is the strongest in the family**: oracle 0.303 vs DGLSS++ 0.214
+   (+0.089) and vs the stack's 0.277 — car 0.305 -> 0.554, road 0.493 -> 0.666,
+   veg 0.337 -> 0.512, og 0.243 -> 0.361. The crosstalk HDC decode 0.305 is double
+   anything measured before.
+3. **The mechanism confirmation is exact**: restricting normalization to the
+   range/remission channels kept the crosstalk packing gain while preserving enough
+   of fog's geometry-based structure for its recoverability — the fog dir_retention
+   still rises (0.27 -> 0.86 car) but the fog oracle recovers because the geometry
+   channels are normalized against clean statistics, so the shift isn't fully erased
+   the way the unrestricted stack did (car 0.94).
+4. **The naive TTA rises too** (fog +0.067, crosstalk +0.165), so the variant
+   improves BOTH the ceiling and the label-free update — the first variant to do
+   both on both conditions.
+
+**Verdict: this is the covariate-shift-aware DGLSS++ candidate.** It beats plain
+DGLSS++ on every condition (fog oracle 0.175 vs 0.159, crosstalk 0.303 vs 0.214), the
+first extractor variant to do so since the pivot. The paper's extractor contribution
+is now: per-scan input normalization restricted to the statistics-shifted channels
+(range/remission) + internal InstanceNorm — a principled, mechanism-grounded change
+that raises the ceiling on BOTH conditions without any geometry tradeoff. Promote to
+**medium-lite** (12 ep / 100%) to confirm the gains survive scale — this is the first
+ceiling candidate worth the medium commitment since the dircons run.
+
+**Why it worked (the full mechanism):** crosstalk's corruption is a statistics shift
+in the range/remission channels, and fog's recoverable structure lives partly in the
+xyz geometry. Normalizing only channels 0/4 absorbs crosstalk's shift while leaving
+fog's geometry in the clean-stat normalization — so fog keeps its recoverable
+direction and crosstalk gains the packing separation. This is a clean example of the
+covariate-shift-vs-structure distinction: the right fix normalizes the shifted
+statistics, not the structure.
+
+### 19.12.1 The scale-only design knob (before the medium run)
+
+The mechanism (19.12) showed the mean-shift component of per-scan normalization is
+what erases fog's recoverable direction (all fog dir_retention -> ~1 under the full
+stack). The one principled knob left before committing the 10h run: **scale-only per-
+scan normalization** (divide by per-scan std, DO NOT subtract the mean) on ALL
+channels. This absorbs the magnitude statistics shift (crosstalk's need) while
+preserving the direction (fog's need) — the cleaner, more general version of the
+channel-restricted fix, no channel selection required. Implemented as
+`supcon_vib_dglsspp_inputin_in_scale` and verified: scale-only keeps per-scan means
+non-zero (direction preserved) with stds ~1, vs full IN which erases the means.
+Micro-gate it against the channel-restricted winner (19.12) before the medium run:
+if scale-only matches or beats inputin_in_chan on both conditions, it is the simpler
+and more general paper story; the medium run then commits whichever wins.

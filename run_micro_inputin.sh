@@ -9,6 +9,10 @@
 #   supcon_vib_dglsspp_inputin_in_chan   : the 19.11.2 fix: input-IN restricted to
 #                                          range+remission channels, xyz geometry left
 #                                          untouched (fog's shift survives)
+#   supcon_vib_dglsspp_inputin_in_scale  : the 19.12.1 knob: scale-only (divide by
+#                                          per-scan std, no mean subtraction) on all
+#                                          channels -- absorbs magnitude shift, keeps
+#                                          direction. The general version of _chan.
 #
 # Gate: extractor_diff vs the plain-DGLSS++ baseline, checking oracle (ceiling) +
 # naive (TTA) on fog/crosstalk.
@@ -19,6 +23,10 @@
 set -u
 GPU="${1:-3}"
 EPOCHS="${2:-8}"
+# Only the NEW variant needs running -- inputin and inputin_in were measured in the
+# Iteration-19.11/19.12 sweeps (their gates are already in Logs). The scale-only knob
+# is the only unmeasured one. Override with an explicit list if needed.
+VARIANTS="${3:-supcon_vib_dglsspp_inputin_in_scale}"
 echo "Using GPU $GPU, $EPOCHS ep / 10%"
 
 REF_METHOD="supcon_vib_dglsspp_corsupcon"
@@ -43,15 +51,15 @@ run_one() {
     2>&1 | tee "logs/micro_gate_$label.log" || fail "gate $label"
 }
 
-run_one "supcon_vib_dglsspp_inputin" "inputin"
-run_one "supcon_vib_dglsspp_inputin_in" "inputin_in"
-run_one "supcon_vib_dglsspp_inputin_in_chan" "inputin_in_chan"
+for m in $VARIANTS; do
+  run_one "$m" "${m##*_}"
+done
 
 echo ""
 echo "=== INPUT-IN VERDICT ==="
-echo "From logs/micro_gate_*.log, compare each variant vs plain DGLSS++ (A):"
-echo "  - oracle (ceiling) on fog/crosstalk: does per-scan input norm raise it?"
-echo "  - naive (TTA): does it hold or improve?"
-echo "  - inputin_in vs inputin_in_chan: does the channel-restricted version keep"
-echo "    the crosstalk gain while recovering the fog oracle (the 19.11.2 fix)?"
-echo "Any variant that raises the oracle without hurting naive -> promote to medium-lite."
+echo "Compare inputin_in_scale vs plain DGLSS++ (A) and vs the 19.12 winner"
+echo "(inputin_in_chan, already in Logs as micro_gate_inputin_in_chan.json):"
+echo "  - scale-only (no mean-shift): does it match or beat _chan on BOTH conditions?"
+echo "    If so it is the simpler, more general paper story (no channel selection)."
+echo "Promote the winner to the full medium run:"
+echo "  bash run_covshift_medium.sh 3 <method>"

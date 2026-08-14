@@ -117,7 +117,7 @@ class ResNet_34(nn.Module):
     def __init__(self, nclasses, aux, block=BasicBlock, layers=[3, 4, 6, 3], if_BN=True, zero_init_residual=False,
                  norm_layer=None, groups=1, width_per_group=64, use_adaptor=True,
                  corr_dim=0, corr_mode='ind', inv_dim=128, norm='bn', input_in=False,
-                 norm_channels=None):
+                 norm_channels=None, scale_only=False):
         super(ResNet_34, self).__init__()
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
@@ -158,6 +158,9 @@ class ResNet_34(nn.Module):
         # channel indices (e.g. (0,4) = range+remission) and leaves the rest (xyz
         # geometry) untouched -- the Iteration-19.11.2 condition-aware fix.
         self.norm_channels = norm_channels
+        # scale_only: divide by per-scan std WITHOUT subtracting the mean (preserves
+        # direction -- the Iteration-19.12 candidate for the cleaner general fix).
+        self.scale_only = scale_only
         if corr_dim > 0:
             self.conv_corr = BasicConv2d(256, corr_dim, kernel_size=3, padding=1, norm=norm)
             self.semantic_output = nn.Conv2d(inv_dim + corr_dim, nclasses, 1)
@@ -201,12 +204,26 @@ class ResNet_34(nn.Module):
         parser normalizes the 5-channel input by FIXED clean-data img_means/img_stds;
         under fog/crosstalk the network then receives inputs scaled against clean
         statistics. This re-normalizes each scan's valid channels by its OWN per-scan
-        mean/std (over valid points only), the training-side mirror of the BN-statistic
-        alignment TTA lever. Applied inside forward so it holds at BOTH train and eval
-        time (the diagnostics call model() directly).
-        With norm_channels set (e.g. (0,4)), only those channels are re-normalized;
-        the geometry channels (xyz) are left in the parser's clean-stat normalization
-        so fog's shifted direction survives (the Iteration-19.11.2 condition-aware fix)."""
+        statistics (over valid points only), the training-side mirror of the
+        BN-statistic alignment TTA lever. Applied inside forward so it holds at BOTH
+        train and eval time (the diagnostics call model() directly).
+        Design modes (Iteration-19.12):
+          - default (norm_channels=None): full per-scan mean+std on all channels.
+            (Verified: this ERASES fog's recoverable direction -- dir_retention -> 1.)
+          - norm_channels=(0,4): mean+std on range+remission only, xyz left in clean
+            stats. (Verified: fog recovers, crosstalk up -- the 19.12 winner.)
+          - scale_only=True: divide by per-scan std on ALL channels but DO NOT subtract
+            the mean -- absorbs the magnitude statistics shift (crosstalk) while
+            preserving the direction (fog). The cleaner general version of the
+            channel-restricted fix, testable as a micro before the medium run."""
+        if self.scale_only:
+            valid = (in_vol[:, 0:1, :, :] > 0).float()
+            x = in_vol * valid
+            denom = valid.sum(dim=(2, 3), keepdim=True).clamp(min=1)
+            var = ((x - x.sum(dim=(2, 3), keepdim=True) / denom).pow(2) * valid
+                   ).sum(dim=(2, 3), keepdim=True) / denom
+            std = var.clamp(min=1e-6).sqrt()
+            return (x / std) * valid
         if self.norm_channels is not None:
             # normalize only the listed channels; keep the rest unchanged
             x = in_vol.clone()
