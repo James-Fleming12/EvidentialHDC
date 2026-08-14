@@ -145,6 +145,12 @@ CORRSC_VARIANTS = {
     'supcon_vib_dglsspp_corsupcon_corrsc': 0.1,
     'supcon_vib_dglsspp_corsupcon_corrfree_corrsc': 0.1,
 }
+# The corrsc direction is "corrupted-manifold compactness, weak clean anchor". For the
+# single-branch corrsc the standard clean-anchor SupCon would otherwise run at 0.1 on
+# the full z8 (dominating the 0.1 corr-manifold term) -- cap it at a weak 0.02 so the
+# corrupted-manifold is the primary pull. (corrfree_corrsc is untouched: its standard
+# anchor applies to the INV slice for TTA, which is the intended division.)
+SUPCON_VARIANTS['supcon_vib_dglsspp_corsupcon_corrsc'] = {'weight': 0.02}
 HDC_VARIANTS = {
     'supcon_vib_dglsspp_corsupcon_hdc': 0.1,
 }
@@ -185,6 +191,19 @@ class GenTrainer(Trainer):
             self.dir_fragile = False
             self.teacher_w = 0.0
         self._dir_ema = None  # per-class EMA displacement direction for _dircons
+
+        # HDC-aware variants: build the seeded projection ONCE (get_hdc_projection
+        # calls torch.manual_seed(42), which must NOT run inside the training loop --
+        # it would reset the global RNG every step and destroy augmentation/subsample
+        # randomness). Save/restore the RNG around the build to leave training state
+        # untouched, and store the projection for reuse.
+        self._hdc_proj = None
+        if self.method in HDC_VARIANTS:
+            from modules.oracle_core import get_hdc_projection
+            rng_state = torch.get_rng_state()
+            self._hdc_proj = get_hdc_projection(dim_in=128, dim_out=10000,
+                                                device=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+            torch.set_rng_state(rng_state)
 
         # Frozen teacher for the _distill variants: load the plain DGLSS++ medium
         # extractor once, frozen, so its corrupted-view geometry is the distillation
@@ -487,7 +506,10 @@ class GenTrainer(Trainer):
         cur = torch.zeros(K, D, device=dz.device)
         cur.scatter_add_(0, lbl.unsqueeze(1).expand(-1, D), dz)
         cnt = torch.bincount(lbl, minlength=K).float().unsqueeze(1).clamp(min=1)
-        cur = F.normalize(cur / cnt, p=2, dim=1)
+        # normalize per present class; classes absent from this batch get a zero row
+        # (F.normalize(0)=NaN would poison the EMA)
+        norms = cur.norm(p=2, dim=1, keepdim=True).clamp(min=1e-9)
+        cur = cur / norms
         if self._dir_ema is None or self._dir_ema.shape[0] != K:
             self._dir_ema = cur.detach()
         else:
@@ -531,8 +553,17 @@ class GenTrainer(Trainer):
         corrupted point's SOFT code (the pre-sign continuous projection, normalized)
         toward its class prototype via a cosine CE. Optimizes the exact geometry the
         decoder reads, rather than the continuous-space geometry the dircons line
-        attacked. R is the same seeded projection the eval uses."""
-        from modules.oracle_core import get_hdc_projection
+        attacked. R is the same seeded projection the eval uses, built ONCE in
+        __init__ (get_hdc_projection resets the global RNG, so it must not run in
+        the training loop)."""
+        if self._hdc_proj is None or self._hdc_proj.shape[0] != z8.shape[1]:
+            # fallback for an unexpected dim (shouldn't happen; HDC_VARIANTS are 128D)
+            from modules.oracle_core import get_hdc_projection
+            rng_state = torch.get_rng_state()
+            self._hdc_proj = get_hdc_projection(dim_in=z8.shape[1], dim_out=10000,
+                                                device=z8.device)
+            torch.set_rng_state(rng_state)
+        proj = self._hdc_proj
         mask = proj_labels > 0
         zc = z8.permute(0, 2, 3, 1)[mask]
         za = z8_aug.permute(0, 2, 3, 1)[mask]
@@ -543,7 +574,6 @@ class GenTrainer(Trainer):
             idx = torch.randperm(len(lbl), device=z8.device)[:max_pts]
             zc, za, lbl = zc[idx], za[idx], lbl[idx]
 
-        proj = get_hdc_projection(dim_in=z8.shape[1], dim_out=10000, device=z8.device)
         # clean class HDC prototypes (detached): sign code, L2-normalized per class
         hc = torch.sign(zc @ proj).float()
         K = int(lbl.max()) + 1
@@ -818,15 +848,19 @@ class GenTrainer(Trainer):
                                 za2 = z8_aug[:, self.inv_dim:]
                                 z_anchor = z8[:, self.inv_dim:]
                                 z_anchor_aug = z8_aug[:, self.inv_dim:]
+                                # corrfree_corrsc: weak clean anchor on the CORR slice
+                                # (the standard block anchors the INV slice at 0.1 for
+                                # TTA; this weak term keeps the free corr branch from
+                                # drifting unanchored).
+                                loss_total = loss_total + 0.02 * self.supcon_loss(
+                                    z_anchor, z_anchor_aug, proj_labels)
                             else:
                                 za1, za2 = z8_aug2, z8_aug
-                                z_anchor, z_anchor_aug = z8, z8_aug
+                                # single-branch corrsc: the standard SupCon block already
+                                # provides the weak 0.02 clean anchor (SUPCON_VARIANTS
+                                # cap); do not double-add here.
                             loss_total = loss_total + cw * self.supcon_loss(
                                 za1, za2, proj_labels)
-                            # weak clean-corrupted term retained (feedback: keep a weak
-                            # clean-anchor so the manifold does not drift unanchored).
-                            loss_total = loss_total + 0.02 * self.supcon_loss(
-                                z_anchor, z_anchor_aug, proj_labels)
                         if self.method in HDC_VARIANTS:
                             # HDC-aware soft-prototype loss: pull the corrupted view's
                             # soft HDC code toward the class's clean HDC prototype

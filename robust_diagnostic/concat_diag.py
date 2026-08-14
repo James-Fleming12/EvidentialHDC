@@ -139,15 +139,18 @@ def main():
         "concat": (fcat, la),
     }
 
-    clf = LogisticRegression(max_iter=1000)
-    clf.fit(fa_inv[:min(100000, len(fa_inv))].numpy(), la[:min(100000, len(la))].numpy())
-
     results = {}
     header = (f"{'row':<16} {'cond':<10} {'zs':>6} {'naive':>6} {'bn':>6} {'oracle':>7}")
     print(header)
     for name, (f_all, l_all) in feats_map.items():
         proj = get_hdc_projection(dim_in=f_all.shape[1], dim_out=10000, device=device)
         base_protos, proto_lbls = build_hdc_prototypes(f_all, l_all, proj, device=device)
+        # per-row logistic classifier on THIS row's clean features (the naive TTA
+        # pseudo-labels must match the pool dimension; a clf fit on the 128D inv
+        # slice cannot predict 256D concat features).
+        clf = LogisticRegression(max_iter=1000)
+        clf.fit(f_all[:min(100000, len(f_all))].numpy(),
+                l_all[:min(100000, len(l_all))].numpy())
         results[name] = {}
         for cond in CONDS:
             cdir = os.path.join(args.kittic_dir, cond, 'heavy')
