@@ -2078,3 +2078,37 @@ regression reported honestly; (b) to fix the healthy-condition cost, the displac
 consistency should be applied ONLY on the corrupted view's minority classes (the
 residual is currently coupled on all classes), or the L_res relaxed so the clean view
 keeps its structure. Both are micro-testable before any further medium spend.
+
+## Iteration 19.5: dircons_w02 derisk micro-gate (dir_w 0.1 -> 0.2)
+
+The Iteration-19 lever (a) — raise dir_w to reach the classes that never shifted —
+was micro-gated (`run_dircons_derisk.sh`, 8 ep / 10%, reduced-cost frames=50 /
+pool=50k, vs the corsupcon micro reference). The gate FAILED on the key signals:
+
+| metric | cond | corsupcon ref | dircons_w02 | verdict |
+| :--- | :--- | :--- | :--- | :--- |
+| oracle | fog | 0.112 | 0.105 | DOWN |
+| oracle | crosstalk | 0.208 | 0.194 | DOWN |
+| naive gap | fog | +0.40 | +0.17 | worse |
+| naive gap | crosstalk | +0.31 | **+0.46** | better |
+| car corr_dir | fog | — | **0.95** | NOT < 1 |
+| car corr_dir | crosstalk | — | **0.95** | NOT < 1 |
+| car oracle | fog | 0.066 | 0.059 | DOWN |
+| ts(13) oracle | fog | 0.210 | 0.157 | DOWN |
+| veg(16) oracle | crosstalk | 0.463 | 0.385 | DOWN |
+
+**Verdict: the stronger pull (0.2) does NOT reach the classes that never shifted
+(car corr_dir stays ~0.95), and the oracle does not rise — it falls.** The only
+positive is the crosstalk naive TTA improving (+0.31 -> +0.46), which is the TTA
+side, not the ceiling side the decoupling was built for. So the dircons_w02
+direction is NOT worth a 10h run as-is.
+
+**What this means for the medium commitment:** the ceiling problem is NOT a matter of
+pull strength — it is the residual coupling (L_res = 0.05 shrinks car's residual to
+zero before it can develop a direction) and the all-class coupling (the healthy
+conditions' residual is pulled too). The two remaining levers are therefore:
+(a) **relax L_res** (0.05 -> 0.01) so the residual can actually develop for car, and
+(b) **fragile-only dircons** (apply the displacement consistency only to classes
+2/7/13/14/15), which decouples the healthy classes and concentrates the direction
+where the ceiling needs it. Both are untested and are the candidates for the
+medium-scale batch comparison.

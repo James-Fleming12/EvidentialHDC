@@ -83,10 +83,16 @@ SUPCON_VARIANTS = {
 #                 same-class corrupted points move coherently; direction, not magnitude)
 #   _dircons_w02 : dircons at dir_w=0.2 (Iteration-19 follow-up: reach the classes
 #                 that did not shift at 0.1, e.g. car, to push the crosstalk ceiling
-#                 past DGLSS++'s 0.214)
+#                 past DGLSS++'s 0.214)  [micro-gated Iteration 19.5: car corr_dir
+#                 stays 0.95 -> the pull strength is not the lever]
 #   _dircons_frag: dircons applied ONLY to the casualty classes (2/7/13/14/15), so
 #                 the healthy classes' residual stays uncoupled (Iteration-19 finding:
 #                 the all-class coupling costs the healthy conditions ~0.01-0.02)
+#   _dircons_w02_res01: dir_w 0.2 AND L_res 0.05 -> 0.01 (Iteration-19.5 lever a:
+#                 relax the residual penalty so car's displacement can actually
+#                 develop instead of being shrunk toward zero)
+#   _dircons_frag_w02: fragile-only dircons at dir_w 0.2 (Iteration-19.5 levers a+b
+#                 combined: stronger direction, concentrated on the casualty classes)
 # Each is micro-gated on the feature-space mechanism (corr dir_retention < 1, inv
 # feat_cos high, concatenated oracle up) before any medium commitment.
 # method key -> (inv_dim, corr_dim, corr_mode, res_w, lscc_corr, dir_w, dir_fragile)
@@ -98,6 +104,8 @@ DECOUPLE_VARIANTS = {
     'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons':  (128, 128, 'res', 0.05, True, 0.1, False),
     'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons_w02': (128, 128, 'res', 0.05, True, 0.2, False),
     'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons_frag': (128, 128, 'res', 0.05, True, 0.1, True),
+    'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons_w02_res01': (128, 128, 'res', 0.01, True, 0.2, False),
+    'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons_frag_w02': (128, 128, 'res', 0.05, True, 0.2, True),
 }
 for _m in DECOUPLE_VARIANTS:
     DGLSS_METHODS.add(_m)
