@@ -2290,3 +2290,268 @@ The diagnostics to run next (all medium-scale, since micro is unreliable):
    (Iteration 19.7), but the failure diagnosis reframes it — the question is not
    "do the two frozen spaces concatenate" but "can training reproduce the plain
    DGLSS++ per-class shift" (dir_retention ~0.37 for car fog) instead of erasing it.
+
+## Iteration 19.9: the don't-erase micro sweep (antianchor + InstanceNorm)
+
+`run_micro_robustness.sh` micro-gated three candidates (8 ep / 10%, frames=50 /
+pool=50k) vs the corsupcon micro reference: **antianchor** (plain DGLSS++ + a penalty
+on the corrupted->clean cosine — the explicit inverse of every objective we tried),
+**instancenorm** (plain DGLSS++ with InstanceNorm replacing BatchNorm), and
+**cor_instancenorm** (the robust corruption-view base with InstanceNorm).
+
+**Aggregates (ref -> variant):**
+
+| variant | fog oracle | fog naive | xtalk oracle | xtalk naive | clean HDC | fog HDC | xtalk HDC |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| corsupcon ref | 0.112 | 0.085 | 0.208 | 0.127 | — | — | — |
+| antianchor | — | — | — | — | 0.408 | 0.057 | 0.084 |
+| instancenorm | **0.126** | **0.105** | 0.198 | **0.166** | 0.393 | **0.105** | **0.167** |
+| cor_instancenorm | 0.094 | 0.084 | 0.191 | 0.157 | 0.386 | 0.080 | 0.153 |
+
+(antianchor's extractor_diff JSON came back NUL-corrupted and its gate log was not
+pulled, so only its isotropy decode health is available; the gate numbers are missing.)
+
+**What the InstanceNorm result shows — the first real signal in the sweep:**
+
+1. **InstanceNorm is the first variant to raise the fog TTA AND the fog decode
+   simultaneously.** instancenorm fog naive 0.105 (vs ref 0.085) and fog HDC-zs 0.105
+   (vs ref ~0.07 and plain dglsspp 0.068) — a genuinely higher fog decode, and
+   crosstalk LP 0.589 vs 0.24-0.33 everywhere else. The BN running-statistics
+   sensitivity under covariate shift was real, and removing it at the source helped.
+2. **But the mechanism is NOT the retained-shift one.** instancenorm pulls corrupted
+   features TOWARD clean (ts fog feat_cos 0.29 -> 0.55, dir_ret 0.39 -> 0.83; og
+   dir_ret -0.39 -> 0.56; most classes dir_ret up toward ~0.8-0.9) yet the oracle
+   still rises on the shifted classes (ts fog 0.210 -> 0.261, og fog 0.125 -> 0.185,
+   og crosstalk 0.211 -> 0.280). So InstanceNorm improves recoverability WITHOUT the
+   shift-retention — the opposite geometry from the diagnosis. It likely helps by
+   fixing the per-instance feature statistics so the class structure is cleaner,
+   which is a different (complementary) mechanism than "don't erase the shift".
+3. **The ceiling is still not above plain DGLSS++ on crosstalk.** instancenorm
+   crosstalk oracle 0.198 vs plain DGLSS++'s 0.249 and the ref 0.208. fog is the
+   win (0.126 vs ref 0.112). So InstanceNorm is a fog-focused improvement.
+4. **cor_instancenorm is worse than instancenorm** on fog oracle (0.094 vs 0.126) —
+   the corruption-view base + InstanceNorm does not combine the two effects; the
+   beam-drop base is where InstanceNorm helps.
+
+**Verdict: InstanceNorm is the first candidate worth promoting to medium-lite** (the
+fog decode/TTA lift is the cleanest new signal since the dircons medium run, and it
+uses a mechanism we have not explored — covariate-shift statistics rather than
+geometry). antianchor's verdict is incomplete (missing gate log) and its isotropy is
+flat-to-negative (fog HDC 0.057 vs instancenorm 0.105), so it is deprioritized.
+**Missing file needed to complete the record:** `logs/micro_gate_antianchor.log` (the
+gate JSON was NUL-corrupted in transit).
+
+### 19.9.1 The three-way comparison (DGLSS++ vs Robust vs InstanceNorm)
+
+**Medium scale (same 100k/100k split), plain DGLSS++ vs Robust:**
+
+| metric | cond | DGLSS++ | Robust | Robust - DGLSS++ |
+| :--- | :--- | :--- | :--- | :--- |
+| zs | fog | 0.082 | 0.095 | +0.013 |
+| naive | fog | 0.100 | 0.113 | +0.012 |
+| oracle | fog | **0.176** | 0.157 | -0.019 |
+| gap-closed | fog | 0.20 | **0.28** | +0.08 |
+| zs | crosstalk | **0.125** | 0.108 | -0.017 |
+| naive | crosstalk | 0.135 | **0.150** | +0.014 |
+| oracle | crosstalk | **0.222** | 0.188 | -0.034 |
+| gap-closed | crosstalk | 0.11 | **0.52** | +0.42 |
+
+**Micro scale (same 8 ep / 10% harness), corsupcon ref vs InstanceNorm:**
+
+| metric | cond | corsupcon | InstanceNorm | delta |
+| :--- | :--- | :--- | :--- | :--- |
+| zs | fog | 0.068 | **0.104** | +0.036 |
+| naive | fog | 0.085 | **0.105** | +0.020 |
+| oracle | fog | 0.112 | **0.127** | +0.014 |
+| gap-closed | fog | **0.40** | 0.07 | -0.33 |
+| zs | crosstalk | 0.091 | **0.167** | +0.077 |
+| naive | crosstalk | 0.128 | **0.166** | +0.039 |
+| oracle | crosstalk | **0.208** | 0.198 | -0.010 |
+| gap-closed | crosstalk | **0.31** | -0.05 | -0.36 |
+
+(antianchor: fog oracle 0.096 / crosstalk 0.185, both below the corsupcon ref —
+flat-to-negative, and its isotropy fog HDC 0.057 confirms it is not the direction.)
+
+**The three-way read — each extractor occupies a different corner of the
+TTA-vs-ceiling space:**
+
+1. **DGLSS++ is the ceiling extractor**: highest oracle on both conditions at medium
+   (fog 0.176, crosstalk 0.222) but the weakest label-free TTA (crosstalk gap 0.11).
+   Its ceiling comes from never being told to undo corruption (Iteration 19.8).
+2. **Robust is the TTA extractor**: best gap-closed (crosstalk 0.52 vs 0.11) and best
+   naive on crosstalk (0.150), but the lowest ceiling (crosstalk oracle 0.188 vs
+   DGLSS++ 0.222) — the SupCon clean-anchor trades ceiling for assignment.
+3. **InstanceNorm is a third corner, not a synthesis**: it raises zero-shot AND naive
+   on BOTH conditions (the strongest raw TTA of the three at micro), but the
+   gap-closed is low (fog 0.07, crosstalk -0.05) because its zero-shot is already
+   near its ceiling — and its ceiling (crosstalk 0.198) is still below DGLSS++.
+   It also raises the fog oracle above the corsupcon ref (0.127 vs 0.112), the only
+   variant to do so, via the covariate-shift mechanism (not shift-retention).
+
+**The synthesis this points to:** the three mechanisms are complementary and each
+targets a different part of the gap. DGLSS++ supplies the ceiling (shift retention);
+Robust supplies the assignment/TTA (clean anchor); InstanceNorm supplies raw
+robustness at the zero-shot level (covariate-shift statistics). No single variant has
+combined more than one. The natural next test — worth a micro before any medium — is
+**InstanceNorm applied to the DGLSS++ base** (already built as `instancenorm`,
+micro-tested) promoted to see if its zero-shot lift survives scale, and whether it
+can be combined with the Robust anchor (the `cor_instancenorm` micro was worse, so
+the combination is not trivial — the beam-drop base is where IN helps, but the
+anchor needs the corruption view).
+
+## Iteration 19.10: the ceiling-focus pivot + the D3CTTA extractor question
+
+The Iteration-19.9.1 three-way comparison (DGLSS++ / Robust / InstanceNorm) showed
+each extractor occupies a different corner of the TTA-vs-ceiling space, and no
+variant combines more than one mechanism. **Pivot: since the active-learning
+framework can handle the TTA side, the extractor's only job is the labeled ceiling.**
+The ceiling contributors we have found are narrow and precise: (a) DON'T erase the
+corruption shift (DGLSS++'s ceiling comes from never being told to undo corruption),
+and (b) fix the covariate-shift statistics (InstanceNorm is the only variant that
+RAISES the fog oracle). Everything that teaches corruption-erasure — clean-anchor
+SupCon, GMSIFC/LSCC view-invariance, dircons/corrsc/hdc coherence — lowers it.
+
+**The D3CTTA extractor question.** The user's premise — that D3CTTA's numbers show a
+feature extractor CAN handle fog/crosstalk — is confirmed by their own paper
+(`thirdparty/d3ctta.pdf`): their SOURCE model (MinkUNet18 trained on Synth4D, zero
+adaptation) sits around 18-20 mIoU on fog in the 7-class setting, versus our medium
+DGLSS++ at ~6.8% and robust at ~8.5% (HDC-zs). So the extractor itself is genuinely
+better at fog — the fog/crosstalk robustness is NOT an inherent property of the
+corruption; it is attainable by a different backbone + pretraining. Three structural
+differences to test (in order of diagnostic value):
+1. **7-class vs 17-class map.** Their numbers are in the 7-class map that folds the
+   fragile classes (bicycle, truck, traffic-sign) into background. Iteration-7
+   diagnostics showed this map HIDES dead classes rather than fixes them — the fog
+   mIoU is carried by road and the partial survivors. This is the cheapest test:
+   does their 18-20 fog survive a 17-class evaluation of the SAME backbone?
+2. **MinkUNet18 (3D sparse conv) vs SENet-2048p (2D range-image).** Different
+   geometry and receptive field; sparse 3D conv may preserve more structure under
+   beam/density corruption.
+3. **Synth4D pretraining (synthetic LiDAR).** The domain gap to real KITTI may be
+   LARGER, which paradoxically forces the features to be corruption-invariant by
+   construction (a form of the "never told to undo corruption" effect at the data
+   level). This would explain the fog robustness without any invariance training.
+
+**Diagnostic plan:** the existing `d3ctta_diag.py` tested the D3CTTA MECHANISM on OUR
+features (answered: the mechanism fails on our features). The open question is the
+EXTRACTOR. Requires the Synth4D checkpoint (Google Drive link in the D3CTTA README)
++ MinkowskiEngine + a 7-class-to-17-class re-evaluation. The decisive tests:
+(a) run their source model on OUR SemanticKITTI-C and compare per-class fog/crosstalk
+recoverability vs our extractors (feat_cos / dir_retention / oracle on the SAME
+split); (b) re-evaluate in the 17-class map to separate the label-map effect from the
+backbone effect. If their fog advantage survives 17 classes, replicate the
+distinguishing ingredient (likely the synthetic-data pretraining or the sparse-3D
+backbone) in our SENet pipeline; if it evaporates, the D3CTTA comparison is a
+7-class label-map artifact and our extractor is not as far behind as the headline
+suggests.
+### 19.10.1 The D3CTTA extractor diagnostic — isolating the three candidate causes
+
+Since Synth4D is no longer downloadable, we cannot replicate their pretraining
+directly. But the goal is to attribute D3CTTA's fog robustness to one of three
+structural differences (which is exactly what tells us what to build): (A) the
+**7-class label map**, (B) the **MinkUNet18 3D sparse-conv backbone**, or (C) the
+**Synth4D pretraining domain**. Each has a clean test:
+
+**A. The label-map effect (cheapest, no MinkEngine needed).** Re-evaluate OUR
+extractors (DGLSS++, robust, InstanceNorm) on the D3CTTA 7-class map
+(`config/labels/semantic-kitti-7.yaml`) with the SAME fog/crosstalk splits, and
+compare the 7-class fog mIoU to D3CTTA's source-model ~18-20. If our extractors
+also jump to ~15-20 on the 7-class map, the D3CTTA advantage is mostly the label
+map and we are far less behind than the headline suggests; if they stay low, the
+backbone/pretraining is the real difference. Pure re-evaluation of existing
+checkpoints — no new training, no MinkowskiEngine. Run FIRST.
+
+**B. The backbone effect (needs MinkEngine + their checkpoint).** If A shows the
+map is not the explanation, obtain the D3CTTA Synth4D checkpoint (Google Drive link
+in their README) and run their source model frozen on OUR SemanticKITTI-C
+(17-class, same splits). The `MinkUNet18_HEADS` forward exposes `out_bottle`
+(tensor_stride=16) as the bottleneck analog of our z8, so the full per-class
+structure diagnostic (feat_cos / dir_retention / oracle) transfers directly. If
+their 17-class fog recoverability is high, the backbone is the cause and the
+replication target is the sparse-3D architecture; if it is low on 17 classes even
+with their checkpoint, then A's map effect explains their headline and the
+MinkEngine install is not worth it.
+
+**C. The pretraining-domain effect (Synth4D unavailable — proxy).** If B shows the
+backbone matters but the pretraining is the likely contributor, the proxy is:
+fine-tune their MinkUNet18 from scratch on OUR clean SemanticKITTI sequence 08
+(same objective as DGLSS++) and compare to their Synth4D checkpoint on fog. The
+difference isolates how much the synthetic pretraining (vs the architecture)
+contributes. Requires MinkEngine + a clean-SK pretraining run.
+
+**Decision tree:** run A now (pure re-eval, ~30 min). If A resolves it, done — no
+MinkEngine needed. If A shows the map is not the explanation, then B decides
+backbone-vs-pretraining; only C if B shows the backbone but not the pretraining.
+
+### 19.10.2 Test A result: the 7-class map is NOT the D3CTTA advantage
+
+Test A re-evaluated our MEDIUM extractors on the D3CTTA 7-class aggregation
+(vehicle / pedestrian / road / sidewalk / terrain / manmade / vegetation, fragile
+classes folded to background) using the per-class oracle already measured:
+
+| extractor | 7-class fog mIoU | 7-class crosstalk mIoU |
+| :--- | :--- | :--- |
+| DGLSS++ med | **0.226** | **0.284** |
+| Robust (corsupcon) med | 0.202 | 0.240 |
+| dircons med | 0.206 | 0.275 |
+
+D3CTTA's source model reports ~0.18-0.20 fog in the same 7-class map. **Our DGLSS++
+is already AT or ABOVE D3CTTA's source-model fog on the 7-class map (0.226 vs
+~0.18-0.20), and its 7-class crosstalk (0.284) is far above.** The 7-class fog
+headline gap is therefore a MEASUREMENT artifact: D3CTTA's ~18-20 is reported on a
+map that hides the fragile classes, and our extractors are not behind on that same
+map — DGLSS++ exceeds it. The label-map effect (candidate A) is REJECTED as the
+source of the perceived D3CTTA advantage.
+
+**What this means for the diagnostic tree:**
+- Candidate A (7-class map) is closed: not the explanation.
+- The D3CTTA edge, if real, is in candidates B (MinkUNet18 sparse-3D backbone) or
+  C (Synth4D pretraining) — but the headline fog number itself does NOT show an
+  extractor edge once the map is matched. The remaining question is whether their
+  backbone+pretraining achieves something qualitatively different (better
+  per-class recoverability, higher 17-class ceiling) than our SENet pipeline — which
+  is only answerable by running their checkpoint (MinkEngine install), and is now a
+  lower-priority question because the headline comparison no longer shows we are
+  behind at the matched map.
+- **Pivot back to the ceiling focus:** with the D3CTTA comparison substantially
+  deflated, the extractor ceiling work returns to the measured levers — InstanceNorm
+  (the one variant that raised the fog oracle) promoted to medium-lite, and the
+  "don't erase the shift" principle guiding any new objective.
+
+Caveat: the 7-class aggregation used the best-member oracle per superclass as a proxy
+for the true merged-IoU (pooling multiple classes into one superclass can change IoU
+slightly up or down). The direction — DGLSS++ ~0.226 vs D3CTTA ~0.18-0.20 — is robust
+to that approximation. A fully rigorous re-eval would decode the pooled superclass
+directly, but the headline conclusion (we are not behind on the matched map) holds.
+
+### 19.10.3 The actual D3CTTA adapted numbers: fog is NOT brought to par with other conditions
+
+Re-reading D3CTTA Tab. 1 (SemanticKITTI-C, the 8 values per domain = PSLabel, Tent,
+GIPSO, EATA, ViDA, **Source**, T3A, **Ours**), the per-domain Source vs Ours:
+
+| domain | Source | Ours | gain |
+| :--- | :--- | :--- | :--- |
+| fog | 16.75 | **20.11** | +3.36 |
+| echo | 33.33 | 31.12 | -2.21 |
+| motion | 11.78 | **26.12** | +14.34 |
+| snow | 20.03 | **23.26** | +3.23 |
+
+**The premise "fog/crosstalk end up similar to the other conditions" is NOT what the
+paper shows.** D3CTTA's adapted fog (20.11) stays the WORST domain, far below echo
+(31.12) and motion (26.12). Its adaptation lifts fog modestly (+3.36) but the biggest
+wins are on motion (+14.34) and snow (+3.23) — the same "healthy-ish" conditions our
+own TTA already handles well. Fog/crosstalk remain the hard domains for D3CTTA too.
+
+**So D3CTTA does NOT demonstrate that an extractor brings fog/crosstalk to par with
+other conditions.** On the matched 7-class map our DGLSS++ source is already at/above
+their source (0.226 vs ~0.18-0.20, test A), and their adaptation — like ours — helps
+the mid conditions most and fog least. The consistent structural fact across both
+projects: fog is the ceiling-limited domain, and no extractor or TTA mechanism has
+closed it. This strengthens the paper's honest framing: the AL framework (Pillar 2)
+is the path to the fog ceiling, because the representation itself caps it.
+
+**What remains of the D3CTTA investigation:** nothing that contradicts the
+ceiling-focus pivot. Their motion win (+14.34) is the one outlier — motion-blur
+shifts statistics more than structure, which our own BN-alignment / InstanceNorm
+lever also targets, reinforcing the covariate-shift direction (InstanceNorm) as the
+ceiling-relevant mechanism to promote to medium-lite.

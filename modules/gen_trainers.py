@@ -182,6 +182,19 @@ NORM_VARIANTS = {
 for _m in NORM_VARIANTS:
     DGLSS_METHODS.add(_m)
 
+# Input-normalization variants (Iteration-19.10 level-1 covariate shift): the 5-channel
+# input is normalized by FIXED clean-data img_means/img_stds in the parser, so under
+# fog/crosstalk the network receives inputs scaled against clean statistics. These
+# variants normalize each scan's valid input channels by its OWN per-scan mean/std
+# instead. _inputin = input-IN only (internal stays BatchNorm); _inputin_in = the
+# stack (input-IN + internal InstanceNorm), attacking both covariate-shift levels.
+INPUT_NORM_VARIANTS = {
+    'supcon_vib_dglsspp_inputin': {'norm': 'bn'},
+    'supcon_vib_dglsspp_inputin_in': {'norm': 'in'},
+}
+for _m in INPUT_NORM_VARIANTS:
+    DGLSS_METHODS.add(_m)
+
 class GenTrainer(Trainer):
     def __init__(self, ARCH, DATA, datadir, logdir, path=None, method='baseline', cutoff_percent=1.0,
                  fragile_w=None, edl_kl_cap=0.005, edl_w=0.1, edl_kl_selective=True,
@@ -221,6 +234,13 @@ class GenTrainer(Trainer):
         if self.method in NORM_VARIANTS:
             tw = ARCH.setdefault("train", {}).setdefault("twobranch", {})
             tw["norm"] = NORM_VARIANTS[self.method]["norm"]
+        if self.method in INPUT_NORM_VARIANTS:
+            # input-IN variants: internal norm from the config, and the input-IN flag
+            # (applied inside the model forward so it holds at train AND eval time).
+            tw = ARCH.setdefault("train", {}).setdefault("twobranch", {})
+            tw["norm"] = INPUT_NORM_VARIANTS[self.method]["norm"]
+            tw["input_in"] = True
+        self.input_in = self.method in INPUT_NORM_VARIANTS
         self._dir_ema = None  # per-class EMA displacement direction for _dircons
 
         # HDC-aware variants: build the seeded projection ONCE (get_hdc_projection

@@ -116,7 +116,7 @@ class Adaptor(nn.Module):
 class ResNet_34(nn.Module):
     def __init__(self, nclasses, aux, block=BasicBlock, layers=[3, 4, 6, 3], if_BN=True, zero_init_residual=False,
                  norm_layer=None, groups=1, width_per_group=64, use_adaptor=True,
-                 corr_dim=0, corr_mode='ind', inv_dim=128, norm='bn'):
+                 corr_dim=0, corr_mode='ind', inv_dim=128, norm='bn', input_in=False):
         super(ResNet_34, self).__init__()
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
@@ -152,6 +152,7 @@ class ResNet_34(nn.Module):
         self.corr_dim = corr_dim
         self.corr_mode = corr_mode
         self.inv_dim = inv_dim
+        self.input_in = input_in
         if corr_dim > 0:
             self.conv_corr = BasicConv2d(256, corr_dim, kernel_size=3, padding=1, norm=norm)
             self.semantic_output = nn.Conv2d(inv_dim + corr_dim, nclasses, 1)
@@ -190,7 +191,26 @@ class ResNet_34(nn.Module):
             
         return nn.Sequential(*layers)
 
+    def _input_instancenorm(self, in_vol):
+        """Per-scan input normalization (Iteration-19.10 level-1 covariate shift). The
+        parser normalizes the 5-channel input by FIXED clean-data img_means/img_stds;
+        under fog/crosstalk the network then receives inputs scaled against clean
+        statistics. This re-normalizes each scan's valid channels by its OWN per-scan
+        mean/std (over valid points only), the training-side mirror of the BN-statistic
+        alignment TTA lever. Applied inside forward so it holds at BOTH train and eval
+        time (the diagnostics call model() directly)."""
+        valid = (in_vol[:, 0:1, :, :] > 0).float()
+        x = in_vol * valid
+        denom = valid.sum(dim=(2, 3), keepdim=True).clamp(min=1)
+        mu = x.sum(dim=(2, 3), keepdim=True) / denom
+        var = ((x - mu).pow(2) * valid).sum(dim=(2, 3), keepdim=True) / denom
+        std = var.clamp(min=1e-6).sqrt()
+        out = (x - mu) / std
+        return out * valid
+
     def forward(self, x, only_feat=False, return_enc=False, return_stage4=False):
+        if self.input_in:
+            x = self._input_instancenorm(x)
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.conv3(x)
