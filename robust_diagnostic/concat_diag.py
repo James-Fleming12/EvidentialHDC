@@ -137,7 +137,7 @@ def main():
 
     feats_map = {
         f"{args.label_a}_inv": (fa_inv, la),
-        f"{args.label_b}": (fb, lb),
+        f"{args.label_b}": (fb, la),
         "concat": (fcat, la),
     }
 
