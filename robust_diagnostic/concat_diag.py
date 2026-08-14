@@ -48,9 +48,14 @@ def build_parser(root, data, arch):
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
 
 
-def extract_features(model, parser, device, num_frames=100):
-    feats, lbls = [], []
-    model.eval()
+def extract_aligned(model_a, model_b, parser, device, num_frames=100):
+    """Run BOTH models on the SAME batches in ONE parser pass, so the per-frame masks
+    and labels are identical by construction (a separate pass per model is not
+    guaranteed to yield the same frame/mask sequence). Returns (feat_a, feat_b, lbl)
+    aligned point-for-point."""
+    fa, fb, lbls = [], [], []
+    model_a.eval()
+    model_b.eval()
     with torch.no_grad():
         for i, batch in enumerate(parser.get_train_set()):
             if i >= num_frames:
@@ -58,15 +63,14 @@ def extract_features(model, parser, device, num_frames=100):
             in_vol = batch[0].to(device)
             labels = batch[2].to(device).view(-1)
             mask = (batch[1].to(device) > 0).view(-1)
-            out_tuple = model(in_vol)
-            if len(out_tuple) == 3:
-                _, _, z8 = out_tuple
-            else:
-                _, z8 = out_tuple
-            z_flat = z8.permute(0, 2, 3, 1).reshape(-1, z8.shape[1])[mask]
-            feats.append(z_flat.cpu())
+            oa = model_a(in_vol)
+            ob = model_b(in_vol)
+            za = oa[2] if len(oa) == 3 else oa[1]
+            zb = ob[2] if len(ob) == 3 else ob[1]
+            fa.append(za.permute(0, 2, 3, 1).reshape(-1, za.shape[1])[mask].cpu())
+            fb.append(zb.permute(0, 2, 3, 1).reshape(-1, zb.shape[1])[mask].cpu())
             lbls.append(labels[mask].cpu())
-    return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
+    return (torch.cat(fa, dim=0), torch.cat(fb, dim=0), torch.cat(lbls, dim=0))
 
 
 def per_class_iou(preds, lbls, classes):
@@ -123,10 +127,8 @@ def main():
     print(f"{args.label_b}: model loaded, {args.method_b}")
 
     clean_parser = build_parser(args.kitti_dir, DATA, ARCH)
-    fa, la = extract_features(model_a, clean_parser, device, args.frames)
-    fb, lb = extract_features(model_b, clean_parser, device, args.frames)
-    assert torch.equal(la, lb), "clean labels must align"
-    print(f"clean feats: A {fa.shape}, B {fb.shape}")
+    fa, fb, la = extract_aligned(model_a, model_b, clean_parser, device, args.frames)
+    print(f"clean feats: A {fa.shape}, B {fb.shape}, aligned labels {la.shape}")
 
     # A-alone uses the inv slice only (the TTA branch); concat = [inv_A, B]
     fa_inv = fa[:, :args.inv_ch] if fa.shape[1] > args.inv_ch else fa
@@ -156,9 +158,8 @@ def main():
             cdir = os.path.join(args.kittic_dir, cond, 'heavy')
             if not os.path.exists(cdir):
                 cdir = os.path.join(args.kittic_dir, cond, 'moderate')
-            pa, pl = extract_features(model_a, build_parser(cdir, DATA, ARCH), device, args.frames)
-            pb, plb = extract_features(model_b, build_parser(cdir, DATA, ARCH), device, args.frames)
-            assert torch.equal(pl, plb), f"{cond} labels must align"
+            pa, pb, pl = extract_aligned(model_a, model_b, build_parser(cdir, DATA, ARCH),
+                                         device, args.frames)
 
             pa = pa[:, :args.inv_ch] if pa.shape[1] > args.inv_ch else pa
             pool_f = {"a": pa, "b": pb, "cat": torch.cat([pa, pb], dim=1)}[name]
