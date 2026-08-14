@@ -33,7 +33,8 @@ from modules.oracle_core import (get_hdc_projection, build_hdc_prototypes,
 
 CONDS = ['fog', 'crosstalk']
 GATES = {'supcon_vib': 'dens_gate', 'supcon_vib_dglss': 'norm_gate',
-         'supcon_vib_dglsspp': 'norm_gate', 'supcon_vib_dglsspp_corsupcon': 'norm_gate'}
+         'supcon_vib_dglsspp': 'norm_gate', 'supcon_vib_dglsspp_corsupcon': 'norm_gate',
+         'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons': 'norm_gate'}
 # Medium-scale checkpoints used with --med (instead of the micro ones at log_dir/<method>).
 # supcon_vib: the medium pretrain; supcon_vib_dglsspp: the current medium DGLSS++ run's
 # output (the in-place isotropy_diag checkpoint). supcon_vib_dglss has no medium run yet.
@@ -126,7 +127,6 @@ def main():
     out = args.out or os.path.join(args.log_dir, 'ttagate_results'
                                    + (('_' + args.label) if args.path
                                       else ('_med' if args.med else '')) + '.json')
-    proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
     results = {}
     if args.path:
         sel = [args.method]
@@ -148,6 +148,7 @@ def main():
 
         clean_f, clean_l = extract_features(model, build_parser(args.kitti_dir, DATA, ARCH),
                                             device, args.frames)
+        proj = get_hdc_projection(dim_in=clean_f.shape[1], dim_out=10000, device=device)
         clf = LogisticRegression(max_iter=1000)
         clf.fit(clean_f[:min(100000, len(clean_f))].numpy(),
                 clean_l[:min(100000, len(clean_l))].numpy())

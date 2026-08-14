@@ -1913,3 +1913,86 @@ cheap follow-ups if the medium dircons under-delivers on crosstalk ceiling: (a) 
 dir_w (0.1 -> 0.2) to reach the classes that did not shift; (b) add the HDC-side
 projection head (shortlist #4) since the crosstalk ceiling loss is on the dominant
 classes whose direction never moved.
+
+## Iteration 18: the dircons medium run (17 ep) — ceiling up, crosstalk TTA down
+
+The Iteration-17 winner (`residual_128_128_dircons`, inv 128 + corr=inv+dz,
+L_res=0.05, L_dir=0.1) trained at medium scale (17 ep / 100%, ~9.5h; the run was
+configured for 17 ep and the checkpoint saved at epoch 16 with best_val 0.3954).
+Eval via `extractor_diff_diag --inv_ch 128` vs the robust 21ep baseline, plus the
+gate/ceiling harness (two of which crashed on a stale 128D-projection bug, fixed
+below).
+
+**Aggregate (extractor_diff, 100k/100k split; A = robust_21ep, B = dircons_med):**
+
+| metric | cond | robust_21ep | dircons_med | dircons vs robust |
+| :--- | :--- | :--- | :--- | :--- |
+| zs | fog | 0.0950 | **0.0990** | +0.004 |
+| naive | fog | 0.1063 | **0.1079** | +0.002 |
+| oracle | fog | 0.1573 | **0.1608** | +0.004 |
+| gap-closed | fog | +0.18 | +0.14 | -0.04 |
+| zs | crosstalk | 0.1082 | **0.1090** | +0.001 |
+| naive | crosstalk | **0.1494** | 0.1242 | **-0.025** |
+| oracle | crosstalk | 0.1875 | **0.2145** | **+0.027** |
+| gap-closed | crosstalk | **+0.52** | +0.14 | **-0.38** |
+| one-label purity | fog | 0.534 | 0.507 | -0.027 |
+| one-label purity | crosstalk | 0.465 | **0.482** | +0.017 |
+
+**Per-class ceiling moves (oracle: robust -> dircons):**
+
+| cond | cls | robust oracle | dircons oracle | d(oracle) |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | car(4) | 0.148 | **0.211** | **+0.063** |
+| fog | ts(13) | 0.204 | **0.227** | +0.023 |
+| fog | og(14) | 0.212 | **0.229** | +0.016 |
+| fog | veg(16) | 0.243 | 0.186 | -0.057 |
+| crosstalk | car(4) | 0.280 | **0.430** | **+0.150** |
+| crosstalk | ts(13) | 0.190 | **0.272** | +0.082 |
+| crosstalk | og(14) | 0.207 | **0.224** | +0.016 |
+| crosstalk | veg(16) | 0.170 | **0.209** | +0.039 |
+
+**What the run shows:**
+
+1. **The labeled ceiling IS higher, concentrated exactly where the corr branch was
+   designed to help.** car crosstalk oracle 0.280 -> 0.430, traffic-sign 0.190 ->
+   0.272, car fog 0.148 -> 0.211. The crosstalk oracle (0.2145) is the best measured
+   for this family at this scale. The per-branch gate shows the mechanism at medium:
+   corr_dir for ts(13) and og(14) is ~-0.07..0.07 (fully displaced), while car stays
+   anchored (corr_dir 0.85-0.92) with inv_feat_cos high (0.94-0.96) — the split
+   behaved as designed.
+2. **But the crosstalk label-free TTA collapsed: gap +0.52 -> +0.14.** The naive
+   update now reaches 0.1242 (vs robust 0.1494). Per-class this is concentrated:
+   traffic-sign crosstalk naive 0.203 -> 0.071 and building(15) 0.257 -> 0.072
+   COLLAPSED while car went 0.272 -> 0.431. The classes the dircons shifted hardest
+   (ts, og) lost their naive-EMA assignment — the shift the ceiling needs is the
+   shift the label-free assignment can't recover at medium. This violates the
+   success criterion (TTA >= robust - eps).
+3. **The oracle gain does not come free on the dominant classes.** vegetation fog
+   oracle regressed 0.243 -> 0.186 (the largest single ceiling loss), and road(11)
+   lost 0.555 -> 0.490. The aggregate fog ceiling gain (+0.004) is the small net of
+   the minority-class wins vs these losses.
+4. **AL readiness is mixed-to-flat:** crosstalk purity slightly up (0.465 -> 0.482,
+   driven by car 0.75->0.80 and ts 0.19->0.34), fog slightly down (0.534 -> 0.507).
+
+**Verdict: partial. The decoupling mechanism survives at medium and raises the
+ceiling (the headline oracle gains on car/ts), but it costs the crosstalk label-free
+TTA — the exact trade the method was meant to break.** The naive update fails on the
+very classes whose direction the dircons retained. The most likely fix is
+two-pronged and cheap to micro-test: (a) reduce L_dir's effect on the classes the
+assignment needs (weight dircons by the class's inverse oracle-need, or apply it
+only where LP recall is already high), and (b) the TTA-side fix from Iteration 9.3:
+re-estimate from a MIX of clean+corrupted labeled points so the shifted prototypes
+stay assignable. Before more training: **the crosstalk-naive regression must be
+diagnosed at micro first (does the dircons EMA direction correlate with the naive
+update failure per class?), because if the shift and the assignment genuinely
+conflict, the residual form cannot hold both and the two-stage or
+displacement-consistency-only (no residual) variant becomes the better bet.**
+
+**Harness bug fixed during this analysis:** `tta_ceiling_diag`, `frozen_ceiling_diag`
+and `ttagate_diag` still hardcoded `get_hdc_projection(dim_in=128)` — they crashed
+on the 256D dircons features (`frozen_ceiling_diag.py:133`,
+`tta_ceiling_diag.py:170`, and ttagate silently wrote an empty JSON because the
+dircons method was also missing from its `GATES` dict). All three now derive the
+projection dim from `clean_f.shape[1]` and the dircons method is registered in
+`GATES`, so the missing tta_ceiling / frozen_ceiling / ttagate numbers can be
+re-run on the existing checkpoint without retraining.

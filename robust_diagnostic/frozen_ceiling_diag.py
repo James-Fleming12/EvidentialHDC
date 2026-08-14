@@ -116,7 +116,6 @@ def main():
     out = args.out or os.path.join(args.log_dir, 'frozen_ceiling_results'
                                    + (('_' + args.label) if args.path
                                       else ('_med' if args.med else '')) + '.json')
-    proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
     results = {}
 
     for method, log_dir, label in targets:
@@ -126,6 +125,7 @@ def main():
 
         clean_parser = build_parser(args.kitti_dir, DATA, ARCH)
         clean_f, clean_l = extract_features(model, clean_parser, device, args.frames)
+        proj = get_hdc_projection(dim_in=clean_f.shape[1], dim_out=10000, device=device)
 
         clf = LogisticRegression(max_iter=1000)
         fit_n = min(100000, len(clean_f))

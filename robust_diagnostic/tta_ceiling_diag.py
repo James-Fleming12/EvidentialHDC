@@ -154,7 +154,6 @@ def main():
     out = args.out or os.path.join(args.log_dir, 'tta_ceiling_results'
                                    + (('_' + args.label) if args.path else ('_med' if args.med else ''))
                                    + '.json')
-    proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
     results = {}
 
     for label, method, log_dir in targets:
@@ -164,6 +163,7 @@ def main():
 
         clean_f, clean_l = extract_features(model, build_parser(args.kitti_dir, DATA, ARCH),
                                             device, args.frames)
+        proj = get_hdc_projection(dim_in=clean_f.shape[1], dim_out=10000, device=device)
         clf = LogisticRegression(max_iter=1000)
         clf.fit(clean_f[:min(100000, len(clean_f))].numpy(),
                 clean_l[:min(100000, len(clean_l))].numpy())
