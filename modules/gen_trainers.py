@@ -93,21 +93,62 @@ SUPCON_VARIANTS = {
 #                 develop instead of being shrunk toward zero)
 #   _dircons_frag_w02: fragile-only dircons at dir_w 0.2 (Iteration-19.5 levers a+b
 #                 combined: stronger direction, concentrated on the casualty classes)
+#   _distill     : teacher-preserved ceiling branch (feedback direction): the corr
+#                 branch (independent, no residual coupling) is distilled toward the
+#                 FROZEN plain-DGLSS++ medium's corrupted-view features via cosine
+#                 geometry, instead of a self-referential EMA displacement direction.
+#                 TTA stays on the inv branch (GMSIFC+LSCC+SupCon, untouched); the
+#                 HDC decoder reads the concat. teacher_w scales L_distill.
 # Each is micro-gated on the feature-space mechanism (corr dir_retention < 1, inv
 # feat_cos high, concatenated oracle up) before any medium commitment.
-# method key -> (inv_dim, corr_dim, corr_mode, res_w, lscc_corr, dir_w, dir_fragile)
+# method key -> (inv_dim, corr_dim, corr_mode, res_w, lscc_corr, dir_w, dir_fragile, teacher_w)
 DECOUPLE_VARIANTS = {
-    'supcon_vib_dglsspp_corsupcon_twobranch_128_64':        (128, 64, 'ind', 0.0, True, 0.0, False),
-    'supcon_vib_dglsspp_corsupcon_twobranch_128_128':       (128, 128, 'ind', 0.0, True, 0.0, False),
-    'supcon_vib_dglsspp_corsupcon_residual_128_128':        (128, 128, 'res', 0.05, True, 0.0, False),
-    'supcon_vib_dglsspp_corsupcon_twobranch_128_64_corrfree': (128, 64, 'ind', 0.0, False, 0.0, False),
-    'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons':  (128, 128, 'res', 0.05, True, 0.1, False),
-    'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons_w02': (128, 128, 'res', 0.05, True, 0.2, False),
-    'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons_frag': (128, 128, 'res', 0.05, True, 0.1, True),
-    'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons_w02_res01': (128, 128, 'res', 0.01, True, 0.2, False),
-    'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons_frag_w02': (128, 128, 'res', 0.05, True, 0.2, True),
+    'supcon_vib_dglsspp_corsupcon_twobranch_128_64':        (128, 64, 'ind', 0.0, True, 0.0, False, 0.0),
+    'supcon_vib_dglsspp_corsupcon_twobranch_128_128':       (128, 128, 'ind', 0.0, True, 0.0, False, 0.0),
+    'supcon_vib_dglsspp_corsupcon_residual_128_128':        (128, 128, 'res', 0.05, True, 0.0, False, 0.0),
+    'supcon_vib_dglsspp_corsupcon_twobranch_128_64_corrfree': (128, 64, 'ind', 0.0, False, 0.0, False, 0.0),
+    'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons':  (128, 128, 'res', 0.05, True, 0.1, False, 0.0),
+    'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons_w02': (128, 128, 'res', 0.05, True, 0.2, False, 0.0),
+    'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons_frag': (128, 128, 'res', 0.05, True, 0.1, True, 0.0),
+    'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons_w02_res01': (128, 128, 'res', 0.01, True, 0.2, False, 0.0),
+    'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons_frag_w02': (128, 128, 'res', 0.05, True, 0.2, True, 0.0),
+    'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons_res01': (128, 128, 'res', 0.01, True, 0.1, False, 0.0),
+    'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons_res02': (128, 128, 'res', 0.02, True, 0.1, False, 0.0),
+    'supcon_vib_dglsspp_corsupcon_distill_128_128':  (128, 128, 'ind', 0.0, False, 0.0, False, 0.1),
+    'supcon_vib_dglsspp_corsupcon_corrfree_corrsc':  (128, 64, 'ind', 0.0, False, 0.0, False, 0.0),
 }
 for _m in DECOUPLE_VARIANTS:
+    DGLSS_METHODS.add(_m)
+
+# Frozen teacher for the _distill variants: the plain DGLSS++ medium checkpoint
+# (the higher-ceiling extractor the teacher framework preserves geometry from).
+TEACHER_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
+TEACHER_METHOD = 'supcon_vib_dglsspp'
+
+# Feedback-direction variants (Iteration-19.5 broad sweep). Each adds ONE new loss to
+# the robust corsupcon base, attacking the ceiling WITHOUT making the whole
+# representation more shifted (the dircons failure mode):
+#   corrsc       : corruption-manifold multi-positive SupCon. A SECOND independently
+#                  corrupted view is generated; supcon(z_aug2, z_aug) pulls same-class
+#                  corrupted realizations together (instead of corr->clean), so each
+#                  class forms a good CORRUPTED manifold. Weak clean-corrupted term
+#                  retained. ("same class => same local corrupted manifold")
+#   corrfree_corrsc: corrfree base (independent corr head, no LSCC on corr) + the
+#                  corrupted-manifold SupCon applied to the CORR slice, giving the
+#                  free branch the structured supervision it was missing (corrfree
+#                  alone had freedom but no organization).
+#   hdc          : HDC-aware soft-prototype loss. Differentiable surrogate on the
+#                  binarized geometry: pull the corrupted view's soft HDC code toward
+#                  the class's clean HDC prototype (margin in code space, not in the
+#                  continuous space the dircons geometry lived in).
+CORRSC_VARIANTS = {
+    'supcon_vib_dglsspp_corsupcon_corrsc': 0.1,
+    'supcon_vib_dglsspp_corsupcon_corrfree_corrsc': 0.1,
+}
+HDC_VARIANTS = {
+    'supcon_vib_dglsspp_corsupcon_hdc': 0.1,
+}
+for _m in (*CORRSC_VARIANTS, *HDC_VARIANTS):
     DGLSS_METHODS.add(_m)
 
 class GenTrainer(Trainer):
@@ -134,14 +175,33 @@ class GenTrainer(Trainer):
         dec = DECOUPLE_VARIANTS.get(self.method)
         if dec is not None:
             (self.inv_dim, self.corr_dim, self.corr_mode,
-             self.res_w, self.lscc_corr, self.dir_w, self.dir_fragile) = dec
+             self.res_w, self.lscc_corr, self.dir_w, self.dir_fragile,
+             self.teacher_w) = dec
             ARCH.setdefault("train", {})["twobranch"] = {
                 "inv_dim": self.inv_dim, "corr_dim": self.corr_dim, "corr_mode": self.corr_mode}
         else:
             self.inv_dim, self.corr_dim, self.corr_mode = 128, 0, 'ind'
             self.res_w, self.lscc_corr, self.dir_w = 0.0, True, 0.0
             self.dir_fragile = False
+            self.teacher_w = 0.0
         self._dir_ema = None  # per-class EMA displacement direction for _dircons
+
+        # Frozen teacher for the _distill variants: load the plain DGLSS++ medium
+        # extractor once, frozen, so its corrupted-view geometry is the distillation
+        # target. Builds a second model via a fresh GenTrainer (cheap: eval-only load).
+        # The teacher must be the plain 128D DGLSS++ -- temporarily clear the student's
+        # twobranch config so the teacher model constructor builds a single-head net.
+        self.teacher_model = None
+        if self.teacher_w > 0:
+            saved_tw = ARCH["train"].pop("twobranch", None)
+            t = GenTrainer(ARCH, DATA, datadir, TEACHER_PATH, path=TEACHER_PATH,
+                           method=TEACHER_METHOD)
+            if saved_tw is not None:
+                ARCH["train"]["twobranch"] = saved_tw
+            self.teacher_model = t.model
+            self.teacher_model.eval()
+            for p in self.teacher_model.parameters():
+                p.requires_grad_(False)
         
         # Call super with path=None to prevent it from immediately loading the checkpoint
         super().__init__(ARCH, DATA, datadir, logdir, None)
@@ -437,6 +497,65 @@ class GenTrainer(Trainer):
         target = self._dir_ema[lbl]
         return (1.0 - (dz * target).sum(dim=1)).mean()
 
+    def distill_loss(self, in_vol_aug, z8, proj_labels, max_pts=2000):
+        """Teacher-preserved ceiling branch (feedback direction): distill the CORR
+        branch (z8[:, inv_dim:]) toward the FROZEN plain-DGLSS++ corrupted-view
+        features via cosine geometry, on the corrupted (augmented) view only. Unlike
+        dircons, the target is a KNOWN-good extractor's geometry, not the network's
+        own EMA displacement -- so the branch is asked to reproduce a fixed target
+        rather than invent one. TTA stays on the inv branch untouched; the HDC
+        decoder reads the concat [inv, corr]."""
+        mask = proj_labels > 0
+        with torch.no_grad():
+            t_out = self.teacher_model(in_vol_aug)
+            if len(t_out) == 3:
+                _, _, z_t = t_out
+            else:
+                _, z_t = t_out
+        z_c = z8[:, self.inv_dim:].permute(0, 2, 3, 1)[mask]
+        z_t = z_t.permute(0, 2, 3, 1)[mask]
+        lbl = proj_labels[mask]
+        if len(lbl) == 0:
+            return torch.tensor(0.0, device=z8.device)
+        if len(lbl) > max_pts:
+            idx = torch.randperm(len(lbl), device=z8.device)[:max_pts]
+            z_c, z_t = z_c[idx], z_t[idx]
+        z_c = F.normalize(z_c, p=2, dim=1)
+        z_t = F.normalize(z_t, p=2, dim=1)
+        return (1.0 - (z_c * z_t).sum(dim=1)).mean()
+
+    def hdc_loss(self, z8, z8_aug, proj_labels, max_pts=2000, tau=0.1):
+        """HDC-aware soft-prototype loss (feedback direction 4): train the continuous
+        features so their BINARIZED code has class margin. Differentiable surrogate:
+        per class, pool a clean HDC prototype sign(z @ R) (detached), then pull each
+        corrupted point's SOFT code (the pre-sign continuous projection, normalized)
+        toward its class prototype via a cosine CE. Optimizes the exact geometry the
+        decoder reads, rather than the continuous-space geometry the dircons line
+        attacked. R is the same seeded projection the eval uses."""
+        from modules.oracle_core import get_hdc_projection
+        mask = proj_labels > 0
+        zc = z8.permute(0, 2, 3, 1)[mask]
+        za = z8_aug.permute(0, 2, 3, 1)[mask]
+        lbl = proj_labels[mask]
+        if len(lbl) == 0:
+            return torch.tensor(0.0, device=z8.device)
+        if len(lbl) > max_pts:
+            idx = torch.randperm(len(lbl), device=z8.device)[:max_pts]
+            zc, za, lbl = zc[idx], za[idx], lbl[idx]
+
+        proj = get_hdc_projection(dim_in=z8.shape[1], dim_out=10000, device=z8.device)
+        # clean class HDC prototypes (detached): sign code, L2-normalized per class
+        hc = torch.sign(zc @ proj).float()
+        K = int(lbl.max()) + 1
+        protos = torch.zeros(K, proj.shape[1], device=z8.device)
+        protos.scatter_add_(0, lbl.unsqueeze(1).expand(-1, proj.shape[1]), hc)
+        cnt = torch.bincount(lbl, minlength=K).float().unsqueeze(1).clamp(min=1)
+        protos = F.normalize(protos / cnt, p=2, dim=1).detach()
+        # corrupted SOFT code (differentiable pre-sign projection), cosine to prototypes
+        ua = F.normalize(za @ proj, p=2, dim=1)
+        logits = ua @ protos.T / tau
+        return F.cross_entropy(logits, lbl)
+
     def train_epoch(self, train_loader, model, criterion, optimizer, epoch, evaluator, scheduler, color_fn, report=10, show_scans=False):
         losses = AverageMeter()
         acc = AverageMeter()
@@ -475,6 +594,13 @@ class GenTrainer(Trainer):
             else:
                 in_vol_aug = self.get_augmented_view(in_vol)
 
+            # corrsc: a SECOND independently corrupted view, so the corrupted-manifold
+            # SupCon has two realizations of the same class to pull together.
+            in_vol_aug2 = None
+            if self.method in CORRSC_VARIANTS:
+                in_vol_aug2 = self.get_augmented_view(in_vol)
+                in_vol_aug2 = self.volumetric_noise_injection(in_vol_aug2, density=0.005)
+
             # SupCon+VIB+SOR: mirror the eval-time SOR pre-filter on both clean and augmented inputs
             if self.method == 'supcon_vib_sor':
                 in_vol = self.sor_filter(in_vol)
@@ -496,6 +622,12 @@ class GenTrainer(Trainer):
                 else:
                     output, z8 = model(in_vol)
                     output_aug, z8_aug = model(in_vol_aug)
+
+                if in_vol_aug2 is not None:
+                    if self.ARCH["train"]["aux_loss"]:
+                        output_aug2, aux_list_aug2, z8_aug2 = model(in_vol_aug2)
+                    else:
+                        output_aug2, z8_aug2 = model(in_vol_aug2)
 
                 # Standard semantic segmentation loss
                 loss_ce = criterion(torch.log(output.clamp(min=1e-8)), proj_labels)
@@ -670,6 +802,37 @@ class GenTrainer(Trainer):
                             # corrupted points move coherently (direction-only).
                             loss_total = loss_total + self.dir_w * self.dircons_loss(
                                 z8, z8_aug, proj_labels, fragile_only=self.dir_fragile)
+                        if self.corr_dim > 0 and self.teacher_w > 0:
+                            # teacher-preserved ceiling branch: distill the corr branch
+                            # toward the frozen plain-DGLSS++ corrupted geometry.
+                            loss_total = loss_total + self.teacher_w * self.distill_loss(
+                                in_vol_aug, z8, proj_labels)
+                        if self.method in CORRSC_VARIANTS and in_vol_aug2 is not None:
+                            # corruption-manifold multi-positive SupCon: pull same-class
+                            # CORRUPTED realizations together (not corr->clean), so each
+                            # class forms a good corrupted manifold. Applies to the corr
+                            # slice when a corrfree corr head exists, else the full view.
+                            cw = CORRSC_VARIANTS[self.method]
+                            if self.corr_dim > 0:
+                                za1 = z8_aug2[:, self.inv_dim:]
+                                za2 = z8_aug[:, self.inv_dim:]
+                                z_anchor = z8[:, self.inv_dim:]
+                                z_anchor_aug = z8_aug[:, self.inv_dim:]
+                            else:
+                                za1, za2 = z8_aug2, z8_aug
+                                z_anchor, z_anchor_aug = z8, z8_aug
+                            loss_total = loss_total + cw * self.supcon_loss(
+                                za1, za2, proj_labels)
+                            # weak clean-corrupted term retained (feedback: keep a weak
+                            # clean-anchor so the manifold does not drift unanchored).
+                            loss_total = loss_total + 0.02 * self.supcon_loss(
+                                z_anchor, z_anchor_aug, proj_labels)
+                        if self.method in HDC_VARIANTS:
+                            # HDC-aware soft-prototype loss: pull the corrupted view's
+                            # soft HDC code toward the class's clean HDC prototype
+                            # (margin in the binarized geometry, not the continuous one).
+                            loss_total = loss_total + HDC_VARIANTS[self.method] * self.hdc_loss(
+                                z8, z8_aug, proj_labels)
                     if self.method == 'supcon_vib_dglsspp_vib':
                         loss_total = loss_total + 0.01 * self.vib_loss(z8, z8_aug)
                 elif self.method.startswith('supcon_vib'):
