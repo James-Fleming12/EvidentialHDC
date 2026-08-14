@@ -162,7 +162,9 @@ def main():
                                          device, args.frames)
 
             pa = pa[:, :args.inv_ch] if pa.shape[1] > args.inv_ch else pa
-            pool_f = {"a": pa, "b": pb, "cat": torch.cat([pa, pb], dim=1)}[name]
+            a_name = f"{args.label_a}_inv"
+            b_name = f"{args.label_b}"
+            pool_f = {a_name: pa, b_name: pb, "concat": torch.cat([pa, pb], dim=1)}[name]
 
             torch.manual_seed(42)
             perm = torch.randperm(len(pool_f))
