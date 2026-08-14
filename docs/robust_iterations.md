@@ -2112,3 +2112,54 @@ conditions' residual is pulled too). The two remaining levers are therefore:
 2/7/13/14/15), which decouples the healthy classes and concentrates the direction
 where the ceiling needs it. Both are untested and are the candidates for the
 medium-scale batch comparison.
+
+## Iteration 19.6: broad sweep + the D3CTTA fallback plan
+
+The Iteration-19.5/feedback directions were implemented as a broad micro sweep
+(`run_overnight.sh`), each its own training call so one failure does not kill the
+batch: the dircons L_res closure (0.01 / 0.02), **corrsc** (corruption-manifold
+multi-positive SupCon — two independently corrupted views pulled together per class,
+weak clean anchor), **corrfree_corrsc** (the free corr head + corrupted-manifold
+supervision it was missing), **hdc** (HDC-aware soft-prototype CE on the binarized
+geometry the decoder reads), and the eval-only **concat_diag** (do the FROZEN robust
++ plain DGLSS++ features combine in one HDC decoder — the teacher-premise
+falsification). Implementation review caught and fixed: (1) the hdc projection was
+being rebuilt every step, which calls `torch.manual_seed(42)` internally and would
+reset the training RNG (destroying augmentation/subsample randomness and making the
+two corrsc views identical) — now built once in `__init__` with the RNG preserved;
+(2) the fragile-only dircons EMA could see zero-count classes whose
+`F.normalize(0)=NaN` row would poison the EMA — now zero-masked per class; (3) the
+single-branch corrsc was getting a 0.1 clean-anchor from the standard SupCon block,
+dominating its 0.1 corrupted-manifold term (backwards from the "weak clean term"
+intent) — capped to 0.02 via SUPCON_VARIANTS, and the redundant inline 0.02 removed;
+(4) concat_diag's naive-TTA classifier was fit on the 128D inv slice but applied to
+256D concat features — now fit per-row on that row's clean features.
+
+**Decision rule for the sweep:** a direction passes if it raises the oracle on
+fog/crosstalk (for the dircons levers: car corr_dir < 1) WITHOUT collapsing the
+naive TTA and WITHOUT hurting the healthy conditions — judgment, not a threshold.
+If no direction moves the ceiling, the representation line is closed and the paper
+rests on the AL framework with the robust extractor (ceiling as a stated
+architectural limitation).
+
+**If the sweep fails — the D3CTTA fallback (why does theirs work?):** D3CTTA's
+reported numbers show a feature extractor that handles fog and crosstalk about as
+well as the healthy conditions, which our extractor family has never achieved at
+any scale. The next step is to understand WHY theirs works, in two parts:
+1. **Feature-space comparison on the D3CTTA extractor.** If their checkpoint is
+   available, run the full diagnostic battery on it: per-class fog/crosstalk
+   feat_cos / dir_retention / corr_tightness, the labeled oracle, and the LP probe
+   (`extractor_diff_diag`, `frozen_ceiling_diag`, `scale_gap_diag`). The key
+   questions: do their corrupted features retain the shifted direction (high
+   recoverable ceiling) while ALSO staying assignable (the thing our dircons could
+   not hold simultaneously)? Is their fog/crosstalk linear separability genuinely
+   high (LP) or is their headline mIoU carried by a different label map / decode?
+2. **The 7-class confound check.** D3CTTA (and GIPSO) report in the 7-class map
+   that folds the fragile rare classes (bicycle, truck, traffic-sign) into
+   background. Iteration 7-class diagnostics showed the 7-class map hides the dead
+   classes rather than fixing them — so test whether their fog/crosstalk gains
+   survive the 17-class map. If their extractor's fog/crosstalk advantage is real
+   at 17 classes, replicate its key training ingredient (which the diagnostics
+   suggest would be either their corruption augmentation regime or their
+   backbone); if it evaporates at 17 classes, the D3CTTA comparison is a label-map
+   artifact and the AL framework remains the honest answer.
