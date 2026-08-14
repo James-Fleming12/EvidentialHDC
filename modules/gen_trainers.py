@@ -188,9 +188,15 @@ for _m in NORM_VARIANTS:
 # variants normalize each scan's valid input channels by its OWN per-scan mean/std
 # instead. _inputin = input-IN only (internal stays BatchNorm); _inputin_in = the
 # stack (input-IN + internal InstanceNorm), attacking both covariate-shift levels.
+# _inputin_in_chan = the Iteration-19.11.2 fix: per-scan normalization restricted to
+# the RANGE and REMISSION channels (indices 0, 4) that carry crosstalk's statistics
+# shift, LEAVING the xyz geometry channels (1-3) untouched so fog's shifted direction
+# survives. (Fog's recoverable classes are shift-driven; crosstalk's are
+# packing-driven -- this is the condition-aware split.)
 INPUT_NORM_VARIANTS = {
     'supcon_vib_dglsspp_inputin': {'norm': 'bn'},
     'supcon_vib_dglsspp_inputin_in': {'norm': 'in'},
+    'supcon_vib_dglsspp_inputin_in_chan': {'norm': 'in', 'norm_channels': (0, 4)},
 }
 for _m in INPUT_NORM_VARIANTS:
     DGLSS_METHODS.add(_m)
@@ -240,6 +246,7 @@ class GenTrainer(Trainer):
             tw = ARCH.setdefault("train", {}).setdefault("twobranch", {})
             tw["norm"] = INPUT_NORM_VARIANTS[self.method]["norm"]
             tw["input_in"] = True
+            tw["norm_channels"] = INPUT_NORM_VARIANTS[self.method].get("norm_channels")
         self.input_in = self.method in INPUT_NORM_VARIANTS
         self._dir_ema = None  # per-class EMA displacement direction for _dircons
 

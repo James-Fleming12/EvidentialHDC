@@ -116,7 +116,8 @@ class Adaptor(nn.Module):
 class ResNet_34(nn.Module):
     def __init__(self, nclasses, aux, block=BasicBlock, layers=[3, 4, 6, 3], if_BN=True, zero_init_residual=False,
                  norm_layer=None, groups=1, width_per_group=64, use_adaptor=True,
-                 corr_dim=0, corr_mode='ind', inv_dim=128, norm='bn', input_in=False):
+                 corr_dim=0, corr_mode='ind', inv_dim=128, norm='bn', input_in=False,
+                 norm_channels=None):
         super(ResNet_34, self).__init__()
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
@@ -153,6 +154,10 @@ class ResNet_34(nn.Module):
         self.corr_mode = corr_mode
         self.inv_dim = inv_dim
         self.input_in = input_in
+        # norm_channels: if set, per-scan input normalization applies ONLY to these
+        # channel indices (e.g. (0,4) = range+remission) and leaves the rest (xyz
+        # geometry) untouched -- the Iteration-19.11.2 condition-aware fix.
+        self.norm_channels = norm_channels
         if corr_dim > 0:
             self.conv_corr = BasicConv2d(256, corr_dim, kernel_size=3, padding=1, norm=norm)
             self.semantic_output = nn.Conv2d(inv_dim + corr_dim, nclasses, 1)
@@ -198,7 +203,22 @@ class ResNet_34(nn.Module):
         statistics. This re-normalizes each scan's valid channels by its OWN per-scan
         mean/std (over valid points only), the training-side mirror of the BN-statistic
         alignment TTA lever. Applied inside forward so it holds at BOTH train and eval
-        time (the diagnostics call model() directly)."""
+        time (the diagnostics call model() directly).
+        With norm_channels set (e.g. (0,4)), only those channels are re-normalized;
+        the geometry channels (xyz) are left in the parser's clean-stat normalization
+        so fog's shifted direction survives (the Iteration-19.11.2 condition-aware fix)."""
+        if self.norm_channels is not None:
+            # normalize only the listed channels; keep the rest unchanged
+            x = in_vol.clone()
+            sub = x[:, self.norm_channels]
+            valid = (x[:, 0:1, :, :] > 0).float()
+            xv = sub * valid
+            denom = valid.sum(dim=(2, 3), keepdim=True).clamp(min=1)
+            mu = xv.sum(dim=(2, 3), keepdim=True) / denom
+            var = ((xv - mu).pow(2) * valid).sum(dim=(2, 3), keepdim=True) / denom
+            std = var.clamp(min=1e-6).sqrt()
+            x[:, self.norm_channels] = ((xv - mu) / std) * valid
+            return x
         valid = (in_vol[:, 0:1, :, :] > 0).float()
         x = in_vol * valid
         denom = valid.sum(dim=(2, 3), keepdim=True).clamp(min=1)

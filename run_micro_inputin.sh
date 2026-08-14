@@ -2,13 +2,16 @@
 # Iteration-19.10 micro sweep: input-level covariate-shift normalization.
 # Tests level-1 (input-IN) alone vs the level-1 + level-2 stack (input-IN + internal
 # InstanceNorm), the training-side mirror of the BN-alignment TTA lever that was our
-# best TTA method.
+# best TTA method. Iteration-19.11 added the channel-restricted variant (the fog fix).
 #
-#   supcon_vib_dglsspp_inputin      : per-scan input normalization only (internal BN)
-#   supcon_vib_dglsspp_inputin_in   : input-IN + internal InstanceNorm (both levels)
+#   supcon_vib_dglsspp_inputin           : per-scan input normalization only (internal BN)
+#   supcon_vib_dglsspp_inputin_in        : input-IN + internal InstanceNorm (both levels)
+#   supcon_vib_dglsspp_inputin_in_chan   : the 19.11.2 fix: input-IN restricted to
+#                                          range+remission channels, xyz geometry left
+#                                          untouched (fog's shift survives)
 #
-# Gate: extractor_diff vs the corsupcon micro reference AND vs the plain-DGLSS++
-# baseline, checking oracle (ceiling) + naive (TTA) on fog/crosstalk.
+# Gate: extractor_diff vs the plain-DGLSS++ baseline, checking oracle (ceiling) +
+# naive (TTA) on fog/crosstalk.
 #
 # Usage:
 #   bash run_micro_inputin.sh 3            # GPU 3, 8 ep / 10%
@@ -42,11 +45,13 @@ run_one() {
 
 run_one "supcon_vib_dglsspp_inputin" "inputin"
 run_one "supcon_vib_dglsspp_inputin_in" "inputin_in"
+run_one "supcon_vib_dglsspp_inputin_in_chan" "inputin_in_chan"
 
 echo ""
 echo "=== INPUT-IN VERDICT ==="
 echo "From logs/micro_gate_*.log, compare each variant vs plain DGLSS++ (A):"
 echo "  - oracle (ceiling) on fog/crosstalk: does per-scan input norm raise it?"
 echo "  - naive (TTA): does it hold or improve?"
-echo "  - inputin vs inputin_in: does adding internal InstanceNorm stack or cancel?"
+echo "  - inputin_in vs inputin_in_chan: does the channel-restricted version keep"
+echo "    the crosstalk gain while recovering the fog oracle (the 19.11.2 fix)?"
 echo "Any variant that raises the oracle without hurting naive -> promote to medium-lite."

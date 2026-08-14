@@ -118,7 +118,8 @@ class DGLSSTrainer():
                                        inv_dim=tw.get("inv_dim", 128),
                                        norm=tw.get("norm", "bn"),
                                        norm_layer=nn.InstanceNorm2d if tw.get("norm", "bn") == "in" else None,
-                                       input_in=tw.get("input_in", False))
+                                       input_in=tw.get("input_in", False),
+                                       norm_channels=tw.get("norm_channels"))
 
                 def convert_relu_to_softplus(model, act):
                     for child_name, child in model.named_children():
@@ -857,7 +858,8 @@ class Trainer():
                                        inv_dim=tw.get("inv_dim", 128),
                                        norm=tw.get("norm", "bn"),
                                        norm_layer=nn.InstanceNorm2d if tw.get("norm", "bn") == "in" else None,
-                                       input_in=tw.get("input_in", False))
+                                       input_in=tw.get("input_in", False),
+                                       norm_channels=tw.get("norm_channels"))
 
                 def convert_relu_to_softplus(model, act):
                     for child_name, child in model.named_children():

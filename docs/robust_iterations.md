@@ -2555,3 +2555,139 @@ ceiling-focus pivot. Their motion win (+14.34) is the one outlier — motion-blu
 shifts statistics more than structure, which our own BN-alignment / InstanceNorm
 lever also targets, reinforcing the covariate-shift direction (InstanceNorm) as the
 ceiling-relevant mechanism to promote to medium-lite.
+
+## Iteration 19.11: input-IN micro sweep (input-IN alone vs the stack)
+
+`run_micro_inputin.sh` micro-gated the two level-1 covariate-shift variants against
+plain DGLSS++ (A row, medium): **inputin** (per-scan input normalization only,
+internal BatchNorm) and **inputin_in** (the stack: input-IN + internal InstanceNorm).
+
+**Aggregates (plain DGLSS++ -> variant):**
+
+| variant | cond | zs | naive | oracle | d_oracle | d_naive |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| inputin | fog | 0.080 | 0.079 | 0.108 | -0.051 | -0.010 |
+| inputin | crosstalk | 0.157 | 0.199 | 0.215 | +0.001 | **+0.081** |
+| inputin_in | fog | 0.132 | 0.119 | 0.134 | -0.025 | +0.030 |
+| inputin_in | crosstalk | 0.254 | 0.241 | 0.245 | **+0.031** | **+0.123** |
+
+**Isotropy decode health:**
+
+| variant | clean HDC | fog HDC | crosstalk HDC | fog LP | crosstalk LP |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| inputin | 0.308 | 0.080 | 0.158 | 0.292 | 0.637 |
+| inputin_in | 0.287 | **0.132** | **0.258** | **0.394** | **0.763** |
+
+**What the sweep shows:**
+
+1. **The stack (inputin_in) is a real crosstalk win.** crosstalk oracle +0.031 over
+   plain DGLSS++ (0.245 vs 0.214), crosstalk naive +0.123 (0.241 vs 0.118), and the
+   crosstalk HDC decode 0.258 vs plain's ~0.10-0.12 — the strongest crosstalk numbers
+   in the whole family. The covariate-shift fix at both levels (input + internal)
+   genuinely helps crosstalk, whose failure was always statistics-like.
+2. **Fog regresses on the oracle** (inputin -0.051, inputin_in -0.025), though the
+   zero-shot and naive IMPROVE (inputin_in fog zs 0.132 vs 0.068, naive 0.119 vs
+   0.089). The fog oracle drop is dominated by car (0.216 -> 0.130 inputin, -> 0.094
+   stack) and road (0.517 -> 0.372). Fog's recoverable structure is NOT statistics-
+   driven the way crosstalk's is — normalizing it away hurts the ceiling.
+3. **This is the same fog-vs-crosstalk asymmetry seen throughout**: crosstalk is a
+   statistics problem (covariate-shift fixes help), fog is a structure problem
+   (normalization erases what little recoverable signal exists). The stack helps the
+   condition where the mechanism applies and hurts the one where it doesn't.
+
+**Verdict: the stack is worth medium-lite for crosstalk, but it is NOT a clean
+ceiling improvement because fog regresses.** The "covariate-shift-aware DGLSS++"
+story would require the crosstalk gain WITHOUT the fog oracle loss. The open
+question — set up below — is WHY fog's oracle falls while its zero-shot/naive rise:
+if the per-scan normalization removes a part of the fog feature that the ORACLE
+re-estimation needs (a structure component), the fix is a condition-aware
+normalization (apply input-IN only where the shift is statistics-like); if instead
+the fog oracle drop is a micro-convergence artifact, medium-lite resolves it.
+
+## Iteration 19.11.1: fog-regression diagnostic (why does input-IN help crosstalk but hurt fog?)
+
+The negative result (fog oracle down under both input-IN variants, while crosstalk
+rises) needs an explanation before any medium commitment. The diagnostic is a
+**per-class structure comparison focused on what the oracle re-estimation needs**,
+run on the existing micro checkpoints (no training):
+
+1. **Does input-IN collapse the fog feature structure that recoverability needs?**
+   The Iteration-12 finding: recoverability needs BOTH intra-class packing AND a
+   retained shifted direction. For the classes that lost oracle (car, road, terrain),
+   measure dir_retention and corr_tightness on the inputin / inputin_in features vs
+   plain DGLSS++: if dir_retention rose toward ~1 (shift erased) or corr_tightness
+   collapsed, the normalization removed exactly the structure the oracle needs.
+2. **Is the fog oracle drop real or a zero-shot artifact?** fog zs rose (0.068 ->
+   0.132) while oracle fell — a rising zero-shot with a falling oracle means the
+   re-estimation from CORRUPTED labeled points got worse, not that the features got
+   worse. Compare the oracle-vs-zero-shot GAP: if the gap narrowed because zero-shot
+   rose, the ceiling is actually fine and the drop is in the re-estimation operator;
+   if the gap widened, the features genuinely lost recoverable structure.
+3. **The condition-aware hypothesis (the actionable outcome):** if (1) shows the
+   shift was erased for fog but not crosstalk, the design fix is to apply the
+   normalization only where the corruption is statistics-like (crosstalk) and keep
+   fog's structure — e.g., per-channel normalization restricted to the channels
+   crosstalk shifts (range/remission) while leaving geometry channels for fog. This
+   is micro-testable directly.
+
+**Diagnostic to run** (on the existing micro checkpoints, eval-only, ~30 min):
+`extractor_diff_diag` already gives per-class feat_cos / dir_retention / corr_tightness
+/ oracle for inputin and inputin_in vs plain DGLSS++. Read those columns for the
+fog-lost classes (car 4, road 11, terrain 13) and compare to the crosstalk-won
+classes (car, road, og 14). The decision: if fog dir_retention rose toward 1 (shift
+erased), implement the condition-aware normalization; if the oracle gap narrowed with
+zero-shot (re-estimation artifact), promote the stack to medium-lite as-is.
+
+### 19.11.2 The fog-regression mechanism — and the fix
+
+Per-class structure comparison (inputin / inputin_in vs plain DGLSS++, from the gate
+JSONs) reveals WHY the stack helps crosstalk but hurts fog:
+
+| cls | cond | dir_ret A->stack | corr_tight A->stack | oracle A->stack | oracle-zs gap A->stack |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| car(4) | fog | 0.27 -> 0.77 | 0.89 -> 0.53 | 0.216 -> 0.094 | 0.124 -> 0.003 |
+| og(14) | fog | 0.27 -> 0.85 | 0.85 -> 0.74 | 0.225 -> 0.178 | 0.214 -> 0.036 |
+| veg(16) | fog | 0.03 -> 0.91 | 0.76 -> 0.57 | 0.102 -> 0.144 | 0.057 -> -0.013 |
+| car(4) | crosstalk | 0.54 -> 0.95 | 0.84 -> 0.62 | 0.305 -> 0.398 | -0.013 -> -0.008 |
+| og(14) | crosstalk | 0.33 -> 0.97 | 0.85 -> 0.70 | 0.243 -> 0.402 | 0.227 -> 0.001 |
+
+**The mechanism is now precise:**
+1. **Fog's recoverable classes are SHIFT-driven.** Plain DGLSS++'s recoverable fog
+   classes (car dir_ret 0.27, og 0.27, veg 0.03) are the ones far from clean. The
+   per-scan normalization erases the shift (dir_ret -> 0.77-0.91) AND loosens the
+   packing (corr_tight 0.89->0.53 for car), so the oracle loses both legs of the
+   Iteration-12 recoverability requirement. The `oracle - zs` gap collapses
+   (0.124->0.003 for car): the re-estimation has nothing left to recover.
+2. **Crosstalk's recoverable classes are PACKING-driven.** Its oracle rises
+   (car 0.305->0.398, og 0.243->0.402, road 0.493->0.583) even though dir_ret also
+   rises toward 1 — because crosstalk's recoverable structure survives in the
+   packing (tightness stays 0.62-0.80) and the statistics normalization gives the
+   classes cleaner separation. Crosstalk never needed the shift; fog does.
+
+**The fix — condition-aware normalization (micro-testable, no architecture change).**
+The per-scan normalization should erase the statistics shift WITHOUT erasing fog's
+geometry-based shift. The concrete design: normalize ONLY the channels that carry
+crosstalk's statistics-shift (range, remission) and leave the GEOMETRY channels
+(xyz) untouched — because fog's recoverable direction lives in the geometry
+(deformation of the projected xyz), while crosstalk's failure is in the
+range/remission statistics. This is a per-channel mask in `_input_instancenorm`,
+fully micro-testable before any medium run. If it holds (fog oracle recovers,
+crosstalk stays up), it's the "covariate-shift-aware" fix without the fog loss.
+Fallback if the channel-split does not resolve it: the full architecture change
+(two-input-stream: one normalized, one not, combined at the bottleneck) — deferred
+until the channel-split is measured.
+
+### 19.11.3 The condition-aware fix implemented (channel-restricted input-IN)
+
+The Iteration-19.11.2 mechanism said: fog's recoverable classes are shift-driven
+(per-scan normalization erases the direction they need), crosstalk's are
+packing-driven (normalization helps). The fix is a **channel-restricted per-scan
+normalization**: normalize only the RANGE and REMISSION channels (indices 0, 4) —
+the channels crosstalk's statistics-shift lives in — and leave the xyz GEOMETRY
+channels (1-3) in the parser's clean-stat normalization, so fog's shifted direction
+survives. Implemented as `supcon_vib_dglsspp_inputin_in_chan` (internal InstanceNorm
++ channel-restricted input-IN), verified: channels 0/4 per-scan normalized (mean ->
+0), channels 1-3 bit-unchanged. Micro-testable before any medium commitment.
+Fallback if the channel-split does not transfer fog: the full two-input-stream
+architecture (one normalized stream + one raw, combined at the bottleneck) — deferred
+until the channel-split is measured.
