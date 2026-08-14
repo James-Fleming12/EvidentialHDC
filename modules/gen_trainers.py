@@ -141,6 +141,13 @@ TEACHER_METHOD = 'supcon_vib_dglsspp'
 #                  binarized geometry: pull the corrupted view's soft HDC code toward
 #                  the class's clean HDC prototype (margin in code space, not in the
 #                  continuous space the dircons geometry lived in).
+#   antianchor   : Iteration-19.8 diagnosis -- every objective we built ERASES the
+#                  corruption shift (GMSIFC/LSCC/SupCon/dircons/corrsc/hdc all pull
+#                  corrupted toward clean or toward a coherence). This variant is the
+#                  inverse: it PENALIZES the corrupted->clean class cosine, so the
+#                  network retains whatever shift develops naturally instead of
+#                  un-learning it. The direct test of "plain DGLSS++ keeps its ceiling
+#                  because it was never told to undo corruption".
 CORRSC_VARIANTS = {
     'supcon_vib_dglsspp_corsupcon_corrsc': 0.1,
     'supcon_vib_dglsspp_corsupcon_corrfree_corrsc': 0.1,
@@ -154,7 +161,25 @@ SUPCON_VARIANTS['supcon_vib_dglsspp_corsupcon_corrsc'] = {'weight': 0.02}
 HDC_VARIANTS = {
     'supcon_vib_dglsspp_corsupcon_hdc': 0.1,
 }
-for _m in (*CORRSC_VARIANTS, *HDC_VARIANTS):
+# Anti-anchor: penalize the corrupted->clean class cosine (positive term added to the
+# loss), so the network is DISCOURAGED from erasing the corruption shift. The one
+# objective none of the failed variants tried (Iteration-19.8 diagnosis).
+ANTI_ANCHOR_VARIANTS = {
+    'supcon_vib_dglsspp_antianchor': 0.1,
+}
+for _m in (*CORRSC_VARIANTS, *HDC_VARIANTS, *ANTI_ANCHOR_VARIANTS):
+    DGLSS_METHODS.add(_m)
+
+# InstanceNorm variants (Iteration-19.8 candidate): BatchNorm's running stats are a
+# known covariate-shift failure point, and BN-statistic alignment was the best TTA
+# lever (it FIXED the stats at test time). Training with InstanceNorm removes that
+# sensitivity at the source. Two bases: plain DGLSS++ (beam-drop) and the robust
+# corruption-view base, so the norm effect is isolated from the view effect.
+NORM_VARIANTS = {
+    'supcon_vib_dglsspp_instancenorm': {'norm': 'in'},
+    'supcon_vib_dglsspp_cor_instancenorm': {'norm': 'in'},
+}
+for _m in NORM_VARIANTS:
     DGLSS_METHODS.add(_m)
 
 class GenTrainer(Trainer):
@@ -190,6 +215,12 @@ class GenTrainer(Trainer):
             self.res_w, self.lscc_corr, self.dir_w = 0.0, True, 0.0
             self.dir_fragile = False
             self.teacher_w = 0.0
+
+        # InstanceNorm variants: set the norm type in the twobranch config so the model
+        # constructor builds with InstanceNorm instead of BatchNorm.
+        if self.method in NORM_VARIANTS:
+            tw = ARCH.setdefault("train", {}).setdefault("twobranch", {})
+            tw["norm"] = NORM_VARIANTS[self.method]["norm"]
         self._dir_ema = None  # per-class EMA displacement direction for _dircons
 
         # HDC-aware variants: build the seeded projection ONCE (get_hdc_projection
@@ -586,6 +617,38 @@ class GenTrainer(Trainer):
         logits = ua @ protos.T / tau
         return F.cross_entropy(logits, lbl)
 
+    def anti_anchor_loss(self, z8, z8_aug, proj_labels, max_pts=2000):
+        """Anti-anchor (Iteration-19.8 diagnosis): PENALIZE the corrupted->clean class
+        cosine so the network retains the corruption shift instead of erasing it.
+        Every objective in the family (GMSIFC/LSCC/SupCon/dircons/corrsc/hdc) pulls
+        corrupted toward clean or toward a coherence; this is the inverse. For each
+        corrupted point, compute the cosine to its CLEAN class centroid (mean of the
+        clean view's same-class features, detached) and ADD that cosine to the loss --
+        so the optimizer is discouraged from moving the corrupted feature onto the
+        clean centroid. This directly tests whether plain DGLSS++'s ceiling comes
+        from never being told to undo corruption."""
+        mask = proj_labels > 0
+        zc = z8.permute(0, 2, 3, 1)[mask]
+        za = z8_aug.permute(0, 2, 3, 1)[mask]
+        lbl = proj_labels[mask]
+        if len(lbl) == 0:
+            return torch.tensor(0.0, device=z8.device)
+        if len(lbl) > max_pts:
+            idx = torch.randperm(len(lbl), device=z8.device)[:max_pts]
+            zc, za, lbl = zc[idx], za[idx], lbl[idx]
+        # clean class centroids (detached) from the clean view
+        K = int(lbl.max()) + 1
+        D = zc.shape[1]
+        csum = torch.zeros(K, D, device=z8.device)
+        csum.scatter_add_(0, lbl.unsqueeze(1).expand(-1, D), zc)
+        cnt = torch.bincount(lbl, minlength=K).float().unsqueeze(1).clamp(min=1)
+        centroids = F.normalize(csum / cnt, p=2, dim=1).detach()
+        zn_a = F.normalize(za, p=2, dim=1)
+        cos2clean = (zn_a * centroids[lbl]).sum(dim=1)
+        # penalize the corrupted->clean cosine: high cosine (aligned) is penalized,
+        # so the shift is retained. Clamp to [0,1] so it never goes negative/explodes.
+        return cos2clean.clamp(min=0.0, max=1.0).mean()
+
     def train_epoch(self, train_loader, model, criterion, optimizer, epoch, evaluator, scheduler, color_fn, report=10, show_scans=False):
         losses = AverageMeter()
         acc = AverageMeter()
@@ -866,6 +929,11 @@ class GenTrainer(Trainer):
                             # soft HDC code toward the class's clean HDC prototype
                             # (margin in the binarized geometry, not the continuous one).
                             loss_total = loss_total + HDC_VARIANTS[self.method] * self.hdc_loss(
+                                z8, z8_aug, proj_labels)
+                        if self.method in ANTI_ANCHOR_VARIANTS:
+                            # anti-anchor: penalize the corrupted->clean cosine so the
+                            # corruption shift is retained (Iteration-19.8 diagnosis).
+                            loss_total = loss_total + ANTI_ANCHOR_VARIANTS[self.method] * self.anti_anchor_loss(
                                 z8, z8_aug, proj_labels)
                     if self.method == 'supcon_vib_dglsspp_vib':
                         loss_total = loss_total + 0.01 * self.vib_loss(z8, z8_aug)

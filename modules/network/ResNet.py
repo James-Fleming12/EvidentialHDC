@@ -13,13 +13,17 @@ def conv1x1(in_planes, out_planes, stride=1):
     return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
 
 class BasicConv2d(nn.Module):
-    def __init__(self, in_planes, out_planes, kernel_size, stride=1, padding=0, dilation=1, relu=True):
+    def __init__(self, in_planes, out_planes, kernel_size, stride=1, padding=0, dilation=1, relu=True,
+                 norm='bn'):
         super(BasicConv2d, self).__init__()
         self.relu = relu
         self.conv = nn.Conv2d(in_planes, out_planes,
                               kernel_size=kernel_size, stride=stride,
                               padding=padding, dilation=dilation, bias=False)
-        self.bn = nn.BatchNorm2d(out_planes)
+        if norm == 'in':
+            self.bn = nn.InstanceNorm2d(out_planes, affine=True)
+        else:
+            self.bn = nn.BatchNorm2d(out_planes)
         if self.relu:
             self.relu = nn.LeakyReLU()
 
@@ -48,10 +52,10 @@ class BasicBlock(nn.Module):
     expansion = 1
 
     def __init__(self, inplanes, planes, stride=1, downsample=None, groups=1,
-                 base_width=64, dilation=1, if_BN=None, use_adaptor=False):
+                 base_width=64, dilation=1, if_BN=None, use_adaptor=False, norm_layer=None):
         super(BasicBlock, self).__init__()
         self.if_BN = if_BN
-        if self.if_BN:
+        if self.if_BN and norm_layer is None:
             norm_layer = nn.BatchNorm2d
         if groups != 1 or base_width != 64:
             raise ValueError('BasicBlock only supports groups=1 and base_width=64')
@@ -112,7 +116,7 @@ class Adaptor(nn.Module):
 class ResNet_34(nn.Module):
     def __init__(self, nclasses, aux, block=BasicBlock, layers=[3, 4, 6, 3], if_BN=True, zero_init_residual=False,
                  norm_layer=None, groups=1, width_per_group=64, use_adaptor=True,
-                 corr_dim=0, corr_mode='ind', inv_dim=128):
+                 corr_dim=0, corr_mode='ind', inv_dim=128, norm='bn'):
         super(ResNet_34, self).__init__()
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
@@ -124,9 +128,9 @@ class ResNet_34(nn.Module):
         self.groups = groups
         self.base_width = width_per_group
 
-        self.conv1 = BasicConv2d(5, 64, kernel_size=3, padding=1)
-        self.conv2 = BasicConv2d(64, 128, kernel_size=3, padding=1)
-        self.conv3 = BasicConv2d(128, 128, kernel_size=3, padding=1)
+        self.conv1 = BasicConv2d(5, 64, kernel_size=3, padding=1, norm=norm)
+        self.conv2 = BasicConv2d(64, 128, kernel_size=3, padding=1, norm=norm)
+        self.conv3 = BasicConv2d(128, 128, kernel_size=3, padding=1, norm=norm)
 
         self.inplanes = 128
 
@@ -137,8 +141,8 @@ class ResNet_34(nn.Module):
         self.layer3 = self._make_layer(block, 128, layers[2], stride=2, use_adaptor=use_adaptor)
         self.layer4 = self._make_layer(block, 128, layers[3], stride=2, use_adaptor=use_adaptor)
 
-        self.conv_1 = BasicConv2d(640, 256, kernel_size=3, padding=1)
-        self.conv_2 = BasicConv2d(256, inv_dim, kernel_size=3, padding=1)
+        self.conv_1 = BasicConv2d(640, 256, kernel_size=3, padding=1, norm=norm)
+        self.conv_2 = BasicConv2d(256, inv_dim, kernel_size=3, padding=1, norm=norm)
         # Decoupling branch (Iteration-15 shortlist): a SECOND bottleneck head with its
         # own capacity. The invariant head (conv_2) keeps the full inv_dim and carries
         # GMSIFC+LSCC+SupCon; the corruption head (conv_corr) is either an independent
@@ -149,7 +153,7 @@ class ResNet_34(nn.Module):
         self.corr_mode = corr_mode
         self.inv_dim = inv_dim
         if corr_dim > 0:
-            self.conv_corr = BasicConv2d(256, corr_dim, kernel_size=3, padding=1)
+            self.conv_corr = BasicConv2d(256, corr_dim, kernel_size=3, padding=1, norm=norm)
             self.semantic_output = nn.Conv2d(inv_dim + corr_dim, nclasses, 1)
         else:
             self.conv_corr = None
@@ -179,10 +183,10 @@ class ResNet_34(nn.Module):
                 )
 
         layers = []
-        layers.append(block(self.inplanes, planes, stride, downsample, self.groups, self.base_width, previous_dilation, if_BN=self.if_BN, use_adaptor=use_adaptor))
+        layers.append(block(self.inplanes, planes, stride, downsample, self.groups, self.base_width, previous_dilation, if_BN=self.if_BN, use_adaptor=use_adaptor, norm_layer=norm_layer))
         self.inplanes = planes * block.expansion
         for _ in range(1, blocks):
-            layers.append(block(self.inplanes, planes, groups=self.groups, base_width=self.base_width, dilation=self.dilation, if_BN=self.if_BN, use_adaptor=use_adaptor))
+            layers.append(block(self.inplanes, planes, groups=self.groups, base_width=self.base_width, dilation=self.dilation, if_BN=self.if_BN, use_adaptor=use_adaptor, norm_layer=norm_layer))
             
         return nn.Sequential(*layers)
 

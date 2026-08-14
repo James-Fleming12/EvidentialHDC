@@ -115,7 +115,9 @@ class DGLSSTrainer():
                 self.model = ResNet_34(self.parser.get_n_classes(), self.ARCH["train"]["aux_loss"],
                                        corr_dim=tw.get("corr_dim", 0),
                                        corr_mode=tw.get("corr_mode", "ind"),
-                                       inv_dim=tw.get("inv_dim", 128))
+                                       inv_dim=tw.get("inv_dim", 128),
+                                       norm=tw.get("norm", "bn"),
+                                       norm_layer=nn.InstanceNorm2d if tw.get("norm", "bn") == "in" else None)
 
                 def convert_relu_to_softplus(model, act):
                     for child_name, child in model.named_children():
@@ -851,7 +853,9 @@ class Trainer():
                 self.model = ResNet_34(self.parser.get_n_classes(), self.ARCH["train"]["aux_loss"],
                                        corr_dim=tw.get("corr_dim", 0),
                                        corr_mode=tw.get("corr_mode", "ind"),
-                                       inv_dim=tw.get("inv_dim", 128))
+                                       inv_dim=tw.get("inv_dim", 128),
+                                       norm=tw.get("norm", "bn"),
+                                       norm_layer=nn.InstanceNorm2d if tw.get("norm", "bn") == "in" else None)
 
                 def convert_relu_to_softplus(model, act):
                     for child_name, child in model.named_children():

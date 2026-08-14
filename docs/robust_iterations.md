@@ -2163,3 +2163,130 @@ any scale. The next step is to understand WHY theirs works, in two parts:
    suggest would be either their corruption augmentation regime or their
    backbone); if it evaporates at 17 classes, the D3CTTA comparison is a label-map
    artifact and the AL framework remains the honest answer.
+
+## Iteration 19.7: the overnight broad-sweep verdict
+
+`run_overnight.sh` micro-gated five directions against the corsupcon micro reference
+(8 ep / 10%, frames=50 / pool=50k harness): the dircons L_res closure (0.01 / 0.02),
+**corrsc** (corruption-manifold multi-positive SupCon), **corrfree_corrsc** (free corr
+head + corrupted-manifold supervision), **hdc** (HDC-aware soft-prototype CE), and the
+eval-only **concat_diag** (do the FROZEN robust + plain DGLSS++ features combine in
+one HDC decoder — the teacher-premise falsification). The harness bugs from the
+sweep's own run (unaligned dual extraction, key mismatch) were fixed and re-run.
+
+**Aggregates (ref -> variant; fog / crosstalk oracle):**
+
+| variant | fog oracle | fog naive | xtalk oracle | xtalk naive | verdict |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| corsupcon ref | 0.112 | 0.085 | 0.208 | 0.127 | — |
+| dircons_res01 (L_res 0.01) | 0.106 | 0.075 | 0.203 | 0.130 | flat/negative |
+| dircons_res02 (L_res 0.02) | 0.108 | 0.072 | 0.188 | 0.117 | negative |
+| corrsc | 0.115 | 0.089 | 0.194 | 0.131 | flat (fog +0.002, xtalk -0.014) |
+| corrfree_corrsc | 0.111 | 0.070 | 0.184 | 0.112 | negative |
+| hdc | 0.105 | 0.072 | 0.213 | 0.117 | flat (xtalk +0.005, fog -0.007) |
+
+**Per-branch (car corr_dir on the residual variants):**
+
+| variant | car corr_dir fog | car corr_dir xtalk |
+| :--- | :--- | :--- |
+| dircons_res01 | 0.93 | 0.96 |
+| dircons_res02 | — | — |
+
+**Concat falsification (frozen, mean over present classes):**
+
+| row | fog oracle | crosstalk oracle | snow oracle |
+| :--- | :--- | :--- | :--- |
+| robust inv | 0.177 | 0.211 | 0.500 |
+| plain DGLSS++ | **0.198** | **0.249** | 0.483 |
+| concat | 0.194 | 0.238 | 0.501 |
+
+**Isotropy clean-decode health (LP / HDC-zs):** all variants kept clean decode
+(HDC 0.415-0.422, LP 0.86-0.87); corrsc fog LP 0.197 / crosstalk LP 0.328 are the
+best of the sweep, matching the earlier supcon_vib-era numbers.
+
+**What the sweep shows:**
+
+1. **The representation line is closed.** No direction moved the ceiling: every
+   variant is flat-to-negative on fog/crosstalk oracle vs the reference, and none
+   beat plain DGLSS++'s ceiling (fog 0.198 / crosstalk 0.249). The dircons L_res
+   lever did NOT shift car either (corr_dir 0.93-0.96, still anchored) — confirming
+   Iteration 19.5 that the residual coupling is not the sole blocker; the geometry
+   simply will not move for the dominant classes at micro scale.
+2. **The teacher premise FAILS at the frozen level — the cheapest possible
+   falsification.** Concatenating the frozen robust + plain DGLSS++ features into
+   one 256D HDC decoder gives fog 0.194 / crosstalk 0.238, *below* plain DGLSS++'s
+   own 0.198 / 0.249. If the free concatenation cannot combine the two geometries
+   better than plain DGLSS++ alone, no distillation training objective is going to —
+   the teacher-preserved branch is not worth a 10h run.
+3. **No training-time representation loss tested in the whole iteration history
+   (coclust, nnpull, soft-anchor, blend, two-head, residual, dircons, corrsc, hdc)
+   has raised the frozen labeled ceiling above plain DGLSS++.** The single measured
+   ceiling gain in the family remains the dircons MEDIUM run (crosstalk oracle 0.203
+   vs robust 0.177, Iteration 18) — which still did not clear plain DGLSS++'s 0.214
+   and cost the naive TTA.
+
+**Verdict: the Robust-DGLSS++-as-ceiling-improver direction is closed.** The paper
+rests on the AL-primary framing (per the README pivot): the robust extractor is the
+TTA component, plain DGLSS++'s ceiling is the AL recovery target, and the next step
+is the D3CTTA fallback (Iteration 19.6): understand why a feature extractor can
+handle fog/crosstalk as well as the healthy conditions, and whether that survives
+the 17-class map — the only remaining lead that does not require the extractor to
+learn a geometry the evidence says it will not retain.
+
+## Iteration 19.8: the common-failure diagnosis (why nothing beats DGLSS++'s ceiling)
+
+The Iteration-19.7 micro verdict was KNOWN-unreliable (three documented micro-to-
+medium reversals: norm gate +0.58 -> +0.20, micro fog naive near-ceiling -> negative,
+blend05 +0.72/+0.39 -> -0.24/-0.01 — Iterations 4.5, 5, 11). So instead of more
+micros, this iteration diagnoses what the failed variants have in COMMON vs DGLSS++,
+using the medium-scale per-class structure already measured.
+
+**The pattern, per class (medium scale, fog):**
+
+| extractor | car feat_cos | car dir_ret | car oracle | ts oracle |
+| :--- | :--- | :--- | :--- | :--- |
+| plain DGLSS++ | 0.32 | 0.37 | **0.303** | **0.241** |
+| robust (corsupcon) | 0.83 | 0.87 | 0.149 | 0.204 |
+| dircons_med | 0.81 | 0.86 | 0.211 | 0.227 |
+
+**The correlation that exposes the shared failure:**
+
+| extractor | rho(feat_cos, oracle) fog | rho(feat_cos, oracle) crosstalk |
+| :--- | :--- | :--- |
+| plain DGLSS++ | **+0.67** | **+0.76** |
+| robust (corsupcon) | +0.10 | +0.55 |
+| dircons_med | +0.18 | +0.48 |
+| blend05_med | +0.13 | +0.69 |
+
+**What this shows — every variant we built trains AGAINST the property that gives
+DGLSS++ its ceiling.** In plain DGLSS++, the classes closest to the clean prototype
+are the most recoverable (rho +0.67/+0.76) — meaning the recoverable classes are the
+ones that DID shift (low feat_cos = far from clean = recoverable, and it's a positive
+correlation because feat_cos high = recoverable). Every variant's objectives
+(GMSIFC cross-view alignment, LSCC, SupCon clean-anchor, dircons direction,
+corrsc manifold, hdc code-margin) all push corrupted features back toward the clean
+manifold, which is exactly the direction that ERASES the shift the oracle needs. The
+shared mechanism of every failure: "corrupted = a distortion to undo". DGLSS++ was
+never told to undo corruption, so its corrupted features stayed in the shifted,
+recoverable position.
+
+**The untried direction (the one thing none of us did): train to PRESERVE the shift,
+not erase it.** Every objective we tested either (a) pulls corrupted toward clean
+(anchor), (b) pulls corrupted toward a self-referential coherence (dircons/corrsc),
+or (c) is invariant-to-corruption (GMSIFC/LSCC). None explicitly says "the corrupted
+features of a class should keep the SAME relationship to the clean features that the
+untrained/plain model had" — i.e., distill the PLAIN DGLSS++ geometry itself, not the
+extractor's own dynamics.
+
+The diagnostics to run next (all medium-scale, since micro is unreliable):
+1. **Per-class shift-retention sweep**: for each variant we have, plot dir_retention
+   vs oracle per class (fog + crosstalk) to confirm the recoverable set is exactly
+   the shifted set, and that every variant's added term pushes dir_retention toward 1.
+2. **The "don't-erase" control**: train a variant whose ONLY added term is a soft
+   penalty on the corrupted->clean pull (i.e., an ANTI-anchor: penalize the cosine
+   between corrupted and clean class means), so the network keeps whatever shift
+   develops naturally, without imposing a target direction.
+3. **Teacher-from-plain-DGLSS++ at medium**: the concat_diag FAILED at frozen level
+   (Iteration 19.7), but the failure diagnosis reframes it — the question is not
+   "do the two frozen spaces concatenate" but "can training reproduce the plain
+   DGLSS++ per-class shift" (dir_retention ~0.37 for car fog) instead of erasing it.
