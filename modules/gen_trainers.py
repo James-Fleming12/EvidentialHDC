@@ -81,15 +81,23 @@ SUPCON_VARIANTS = {
 #   _dircons    : residual + displacement-direction consistency L_dir = 1 - cos(dz,
 #                 sg(delta_c)) with a per-class EMA displacement direction (idea #3:
 #                 same-class corrupted points move coherently; direction, not magnitude)
+#   _dircons_w02 : dircons at dir_w=0.2 (Iteration-19 follow-up: reach the classes
+#                 that did not shift at 0.1, e.g. car, to push the crosstalk ceiling
+#                 past DGLSS++'s 0.214)
+#   _dircons_frag: dircons applied ONLY to the casualty classes (2/7/13/14/15), so
+#                 the healthy classes' residual stays uncoupled (Iteration-19 finding:
+#                 the all-class coupling costs the healthy conditions ~0.01-0.02)
 # Each is micro-gated on the feature-space mechanism (corr dir_retention < 1, inv
 # feat_cos high, concatenated oracle up) before any medium commitment.
-# method key -> (inv_dim, corr_dim, corr_mode, res_w, lscc_corr, dir_w)
+# method key -> (inv_dim, corr_dim, corr_mode, res_w, lscc_corr, dir_w, dir_fragile)
 DECOUPLE_VARIANTS = {
-    'supcon_vib_dglsspp_corsupcon_twobranch_128_64':        (128, 64, 'ind', 0.0, True, 0.0),
-    'supcon_vib_dglsspp_corsupcon_twobranch_128_128':       (128, 128, 'ind', 0.0, True, 0.0),
-    'supcon_vib_dglsspp_corsupcon_residual_128_128':        (128, 128, 'res', 0.05, True, 0.0),
-    'supcon_vib_dglsspp_corsupcon_twobranch_128_64_corrfree': (128, 64, 'ind', 0.0, False, 0.0),
-    'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons':  (128, 128, 'res', 0.05, True, 0.1),
+    'supcon_vib_dglsspp_corsupcon_twobranch_128_64':        (128, 64, 'ind', 0.0, True, 0.0, False),
+    'supcon_vib_dglsspp_corsupcon_twobranch_128_128':       (128, 128, 'ind', 0.0, True, 0.0, False),
+    'supcon_vib_dglsspp_corsupcon_residual_128_128':        (128, 128, 'res', 0.05, True, 0.0, False),
+    'supcon_vib_dglsspp_corsupcon_twobranch_128_64_corrfree': (128, 64, 'ind', 0.0, False, 0.0, False),
+    'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons':  (128, 128, 'res', 0.05, True, 0.1, False),
+    'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons_w02': (128, 128, 'res', 0.05, True, 0.2, False),
+    'supcon_vib_dglsspp_corsupcon_residual_128_128_dircons_frag': (128, 128, 'res', 0.05, True, 0.1, True),
 }
 for _m in DECOUPLE_VARIANTS:
     DGLSS_METHODS.add(_m)
@@ -118,12 +126,13 @@ class GenTrainer(Trainer):
         dec = DECOUPLE_VARIANTS.get(self.method)
         if dec is not None:
             (self.inv_dim, self.corr_dim, self.corr_mode,
-             self.res_w, self.lscc_corr, self.dir_w) = dec
+             self.res_w, self.lscc_corr, self.dir_w, self.dir_fragile) = dec
             ARCH.setdefault("train", {})["twobranch"] = {
                 "inv_dim": self.inv_dim, "corr_dim": self.corr_dim, "corr_mode": self.corr_mode}
         else:
             self.inv_dim, self.corr_dim, self.corr_mode = 128, 0, 'ind'
             self.res_w, self.lscc_corr, self.dir_w = 0.0, True, 0.0
+            self.dir_fragile = False
         self._dir_ema = None  # per-class EMA displacement direction for _dircons
         
         # Call super with path=None to prevent it from immediately loading the checkpoint
@@ -372,7 +381,8 @@ class GenTrainer(Trainer):
         best = sim[has].max(dim=1).values
         return (1.0 - best).mean()
 
-    def dircons_loss(self, z8, z8_aug, proj_labels, max_pts=2000, momentum=0.99):
+    def dircons_loss(self, z8, z8_aug, proj_labels, max_pts=2000, momentum=0.99,
+                     fragile_only=False):
         """Displacement-direction consistency (Iteration-15 idea #3, Iteration-16
         direction #2): each point's residual corr-shift dz = z_corr - z_inv is pulled
         toward its class's EMA displacement DIRECTION (detached target), so same-class
@@ -381,12 +391,21 @@ class GenTrainer(Trainer):
         targets rho(dir_retention, oracle) = +0.55..+0.81. The corr branch must be
         residual mode (corr = inv + dz); operates on the corrupted (augmented) view
         only -- the clean view's residual stays small via L_res. Runs on the same
-        subsample as the SupCon, so ~1% of the step time."""
+        subsample as the SupCon, so ~1% of the step time.
+        With fragile_only=True the consistency is applied ONLY to the casualty classes
+        (2/7/13/14/15), leaving the healthy classes' residual uncoupled -- the
+        Iteration-19 finding that the all-class coupling costs the healthy conditions."""
         mask = proj_labels > 0
         z_a = z8_aug.permute(0, 2, 3, 1)[mask]
         lbl = proj_labels[mask]
         if len(lbl) == 0:
             return torch.tensor(0.0, device=z8.device)
+        if fragile_only:
+            frag = torch.tensor(sorted(FRAGILE_CLASSES), device=lbl.device)
+            keep = torch.isin(lbl, frag)
+            if not keep.any():
+                return torch.tensor(0.0, device=z8.device)
+            z_a, lbl = z_a[keep], lbl[keep]
         if len(lbl) > max_pts:
             idx = torch.randperm(len(lbl), device=z8.device)[:max_pts]
             z_a, lbl = z_a[idx], lbl[idx]
@@ -642,7 +661,7 @@ class GenTrainer(Trainer):
                             # displacement-direction consistency (idea #3): same-class
                             # corrupted points move coherently (direction-only).
                             loss_total = loss_total + self.dir_w * self.dircons_loss(
-                                z8, z8_aug, proj_labels)
+                                z8, z8_aug, proj_labels, fragile_only=self.dir_fragile)
                     if self.method == 'supcon_vib_dglsspp_vib':
                         loss_total = loss_total + 0.01 * self.vib_loss(z8, z8_aug)
                 elif self.method.startswith('supcon_vib'):

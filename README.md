@@ -61,28 +61,41 @@ because those live in the features.
 
 ### The three pillars
 
-The method is intended to rest on three pillars. Pillars 1 and 2 are placeholders
-at this stage: the general direction is set, the concrete design is still being
-measured and will be filled in as the diagnostics land. Pillar 3 is designed and
-detailed in Section 4.
+The method rests on three pillars, ordered by the *primary deployment path*:
+backprop-free active learning is the core framework; label-free TTA is used in the
+conditions where it works well enough that active learning is not needed; the robust
+extractor is what makes both possible. Pillars 1 and 2 are placeholders at this
+stage: the general direction is set, the concrete design is still being measured and
+will be filled in as the diagnostics land. Pillar 3 is designed and detailed in
+Section 4.
 
 1. **Robust feature extractor pretraining** (intended to improve on DGLSS++).
-   [to be filled: the pretraining objective and architecture. The goal is a 128D
-   feature space that survives fog and crosstalk before the HDC projection, with a
+   [to be filled: the pretraining objective and architecture. The goal is a feature
+   space that survives fog and crosstalk before the HDC projection, with a
    higher recoverable ceiling than the DGLSS++ baseline currently measured.]
 
-2. **Test-time adaptation, with an adaptively activated active-learning fallback**
-   for the particularly bad scenarios. [to be filled: the form of the TTA. The
-   measurements so far bound it: the label-free update is flat in full-coverage
-   mIoU, and the labeled ceiling is the wall, so a small label budget, activated
-   only in the worst conditions, is the current direction.]
+2. **Backprop-free active learning** (the PRIMARY framework). Query one point per
+   dense per-class cluster under a very strict label-or-don't gate, re-estimate the
+   prototypes from the labeled cluster representatives, and repeat. This is what
+   closes the residual gap on the conditions label-free adaptation cannot handle —
+   the ones where the representation is gone (fog, crosstalk) and the label ceiling
+   is the wall. The balanced allocation of the label budget across classes is part
+   of this pillar. [Section 4.]
 
-3. **Backprop-free active learning** (the fallback that closes the residual
-   label-free gap). When the label-free TTA can no longer close the gap to the
-   supervised ceiling, query one point per dense per-class cluster under a very
-   strict label-or-don't gate, and re-estimate the prototypes from the labeled
-   cluster representatives. The balanced allocation of the label budget across
-   classes is part of this pillar. [Section 4.]
+3. **Label-free test-time adaptation** (used WHERE active learning is not needed).
+   On the conditions where the representation survives and the label-free update is
+   accurate — the healthy conditions, and any extractor/condition combination whose
+   label-free gap-closed is high — run the gated prototype update with no labels at
+   all, so the label budget is spent only where it is actually required.
+   [to be filled: the form of the TTA. The measurements so far bound it: the
+   label-free update is flat in full-coverage mIoU, and the labeled ceiling is the
+   wall, so TTA is viable exactly where the ceiling is reachable label-free.]
+
+This is the pivot from the earlier framing: active learning is no longer a fallback
+added on top of a TTA pipeline that should handle everything. It is the primary
+framework, and TTA is engaged only in the regimes where the label-free path is
+demonstrably sufficient — so the label budget is preserved for exactly the
+conditions that need it.
 
 ---
 
@@ -171,16 +184,18 @@ shift to keep the fog recoverable ceiling.
 
 ---
 
-## 3. Pillar 2: Test-time adaptation, with an active-learning fallback
+## 3. Pillar 3 (primary): backprop-free active learning
 
-The framework has two threads, now evaluated in the 7-class setting. Together they
-support a path from the current target (active learning) to the ultimate goal
-(label-free prototype adaptation).
+The framework's primary deployment path is active learning. The measurements that
+bounded the older "TTA-first" framing are what make this the right priority: a
+label-free signal can detect *which* points are wrong but not *what class* they
+belong to (the assignment wall), so the label-free thread is capped by its own
+ceiling, and only labels cross it. Active learning supplies exactly the missing
+class labels, on exactly the conditions where they are needed.
 
-The first thread is robust feature-extractor training, and it is the current focus
-(Pillar 1). The second thread is adaptive prototype updates when necessary: at
-deployment, the distance to the nearest clean prototype decides which points may
-update the prototypes, and the decoder re-decodes.
+The first thread is robust feature-extractor training (Pillar 1), and it is the
+current focus. The second thread — adaptive prototype updates when necessary — is
+the label-free path that is engaged only where it is sufficient (see Section 5.5).
 
 What the measurements bound so far (full-coverage mIoU):
 
@@ -194,17 +209,16 @@ What the measurements bound so far (full-coverage mIoU):
   ceiling is about 0.15 on fog and 0.27 on crosstalk, and it is the same for every
   encoder, so only the encoder thread can move it.
 
-The near-term bridge between the threads is active learning. The measured facts
-line up for it: the recoverable set of points is identifiable label-free, the
-recoverable points cluster by class in the local feature structure, and the
-full-label oracle is well above what any label-free update reaches. A small budget
-of labels, spent on exactly the ranked hard points, should update the prototypes
-far more effectively than any label-free signal, activated only in the
-particularly bad scenarios. The robust encoder is what makes the selection signal
-informative and the ceiling worth reaching.
+The measured facts line up for active learning as the primary path: the recoverable
+set of points is identifiable label-free, the recoverable points cluster by class in
+the local feature structure, and the full-label oracle is well above what any
+label-free update reaches. A small budget of labels, spent on exactly the ranked
+hard points, updates the prototypes far more effectively than any label-free signal.
+The robust encoder is what makes the selection signal informative and the ceiling
+worth reaching.
 
-[To be filled: the form of the TTA, and how the active-learning fallback is
-activated.]
+[To be filled: the form of the active-learning framework and its activation policy,
+and where the label-free TTA path (Section 5.5) is engaged instead.]
 
 A design rule: prior correction and prototype updates must not share a pathway.
 The prior is an inference-time constant that shifts decision boundaries; it does
@@ -214,13 +228,13 @@ pathway may use the prior-corrected score; the adaptation pathway must not.
 
 ---
 
-## 4. Pillar 3: Backprop-free active learning
+## 4. Pillar 2 (primary): Backprop-free active learning
 
-The fallback that closes the residual gap when label-free TTA cannot. The design
-is built entirely from measured facts: it exists because a label-free signal can
-say *which* points are wrong but not *what class* they are, and it is viable
-because the corrupted points are still densely packed in per-class clusters, so
-one label per cluster can label the cluster.
+The primary framework that closes the residual gap on the conditions label-free TTA
+cannot handle. The design is built entirely from measured facts: it exists because a
+label-free signal can say *which* points are wrong but not *what class* they are, and
+it is viable because the corrupted points are still densely packed in per-class
+clusters, so one label per cluster can label the cluster.
 
 ### 4.1 The wall that motivates it: detection without assignment
 
@@ -285,7 +299,7 @@ Backprop-free (no extractor fine-tuning, only prototype re-estimation):
 5. **Re-estimate.** Update the prototypes from the labeled cluster representatives
    with the per-point weighting that we know beats zero-shot (the oracle
    operator). Optionally freeze the saturated majority classes and bound the
-   budget per class (the balanced-allocation rule from the original Pillar 3).
+    budget per class (the balanced-allocation rule from Pillar 2).
 
 The leverage is that the label budget scales with the number of clusters, not the
 number of points: each queried cluster is worth many correct labels, so a small
@@ -293,14 +307,17 @@ budget recovers most of the oracle gap.
 
 ### 4.4 When it activates
 
-Pillar 3 is the fallback. The near-term plan is first the robust extractor
-(Pillar 1, currently the corruption-augmented + SupCon DGLSS++ variant, section 2),
-then label-free TTA
-(Pillar 2). If after those the TTA-to-supervised gap is not >90% closed, the
-strict one-point-per-cluster active learning takes over: it spends the small label
-budget on exactly the clusters the label-free thread cannot name, and converts the
-surviving cluster structure into prototypes. It is the only path that closes the
-remaining gap, because it is the only one that supplies the missing class labels.
+Pillar 2 (active learning) is the primary framework, not a fallback. It is engaged
+whenever the label-free path (Section 5.5) is not demonstrably sufficient — which
+the measurements say is the default on the collapsed conditions (fog, crosstalk),
+where the assignment wall caps any label-free update well below the labeled ceiling.
+The deployment policy is: run the extractor, attempt the label-free TTA path, and
+activate active learning on exactly the conditions/clusters where the label-free
+gap-closed is below a threshold (or where the TTA-to-supervised gap is not >90%
+closed). It spends the small label budget on exactly the clusters the label-free
+thread cannot name, and converts the surviving cluster structure into prototypes.
+It is the only path that closes the residual gap, because it is the only one that
+supplies the missing class labels.
 
 ---
 
@@ -316,8 +333,8 @@ remaining gap, because it is the only one that supplies the missing class labels
 | **Pretraining objective (Pillar 1)** | Decoupled supervised contrastive + variational information bottleneck + cross-entropy, with physics-based augmentations only |
 | **HDC encoding** | Seeded random bipolar projection 128D to 10,000D, then sign binarization (information-preserving: 49.4% to 49.0% to 47.8%) |
 | **Prototypes** | Per-class means of the binarized clean features (frozen) |
-| **Adaptation (Pillar 2)** | Adaptive prototype updates when necessary, gated by distance-to-clean-prototype, bounded by the measured label-free ceiling |
-| **Active learning (Pillar 3)** | Backprop-free fallback: query one point per dense per-class cluster under a strict label-or-don't gate, re-estimate prototypes from the labeled cluster representatives (Section 4) |
+| **Adaptation (Pillar 3)** | Label-free gated prototype updates, used where the label-free path is sufficient (the healthy conditions); engaged instead of active learning | 
+| **Active learning (Pillar 2)** | Backprop-free primary framework: query one point per dense per-class cluster under a strict label-or-don't gate, re-estimate prototypes from the labeled cluster representatives (Section 4) |
 
 ### 5.2 Previous performance: the original model per condition
 
@@ -441,9 +458,45 @@ beats medium supcon_vib on the frozen labeled ceilings (HDC oracle mean 0.399 vs
 (0.20 fog vs 0.58 micro); at scale it matches naive EMA and stays below BN
 alignment. Full tables and interpretation in the iterations doc (Iteration 4).
 
+### 5.5 The label-free TTA path (used where active learning is not needed)
+
+The label-free prototype update is the light path, engaged per-condition only where
+it is sufficient — so the label budget is spent where it is actually required.
+The decision rule: run the extractor, attempt the label-free update, and measure the
+gap-closed; if it is not demonstrably closing the gap to the labeled ceiling, the
+condition falls back to the primary active-learning framework (Pillar 2, Section 4).
+
+What the measurements show about where this path is viable:
+
+- **The update operator is not the bottleneck — the condition is.** The naive EMA
+  closes a third to three-quarters of the fog gap depending on the extractor, and
+  BN-statistic alignment is the strongest label-free lever on every extractor. On
+  the healthy conditions (snow, wet_ground, motion_blur, beam_missing,
+  incomplete_echo, cross_sensor) the label-free numbers sit at or near the labeled
+  ceiling, so the update needs no labels at all.
+- **Fog and crosstalk are where the label-free path is not sufficient.** The
+  assignment wall caps any label-free update well below the labeled ceiling there
+  (the zero-shot-wrong points cannot be named, fog rec@3 ~0.14 vs ~0.19 random),
+  so those conditions route to active learning.
+- **The dircons extractor (Iterations 16-19) sharpens this.** Its decoupled
+  corruption branch raises the crosstalk labeled ceiling toward/above DGLSS++
+  (crosstalk oracle 0.203 vs 0.214) while keeping a label-free lever (BN crosstalk
+  0.145 vs robust 0.132) — evidence that the extractor can make the label-free path
+  viable on more conditions, and that the residual conditions are precisely the ones
+  the active-learning framework should own.
+
+So the deployment is: TTA where the label-free path is sufficient (the healthy
+conditions, and any extractor/condition combination with high gap-closed), active
+learning on fog/crosstalk where it is not. This preserves the TTA machinery as the
+efficiency lever without depending on it to solve the conditions the representation
+cannot.
+
 ---
 
 ## 6. Order of work (current state)
+
+The pivot: active learning is the primary framework; label-free TTA is the light
+path used where it is sufficient. The order reflects that priority.
 
 1. The 7-class evaluation map is adopted, using the existing 17-class-trained
    encoders (no retraining needed). The 14-class middle ground is closed: it is
@@ -453,16 +506,17 @@ alignment. Full tables and interpretation in the iterations doc (Iteration 4).
    isotropy comparison is complete: DGLSS++ decodes best at medium scale (clean
    HDC mIoU 0.530, 8-condition mean 0.369), and the corruption-targeted
    augmentation variant is the leading lever to raise the fog/crosstalk ceiling.
-3. Then label-free TTA on the improved extractor (Pillar 2), with the 
-   update/don't-update and support-threshold gates.
-4. If the TTA-to-supervised gap is not >90% closed after 2 and 3, pivot to the
-   backprop-free active learning framework (Pillar 3, Section 4): rank the dense
-   per-class clusters with the detection signal, query one point per cluster under
-   a strict label-or-don't gate, and re-estimate the prototypes from the labeled
-   cluster representatives. This is the only path that closes the residual gap,
-   because it is the only one that supplies the missing class labels.
-5. The label-free TTA thread remains the long-term goal and is bounded: the
-   label-free gated update is flat in full-coverage mIoU, and the oracle ceiling
-   is the wall only labels cross.
-6. Balanced allocation of the label budget across classes is folded into Pillar 3,
+   The dircons decoupling variant (Iterations 16-19) is the current best lead for a
+   higher crosstalk ceiling than DGLSS++ while keeping a label-free lever (BN TTA).
+3. Backprop-free active learning (Pillar 2, Section 4) is the primary framework:
+   rank the dense per-class clusters with the detection signal, query one point per
+   cluster under a strict label-or-don't gate, and re-estimate the prototypes from
+   the labeled cluster representatives. This closes the residual gap on the
+   conditions where the label-free thread is capped, because it supplies the missing
+   class labels.
+4. Label-free TTA (Pillar 3, Section 5.5) is used WHERE active learning is not
+   needed: the conditions where the label-free gap-closed is high enough that the
+   label budget would be wasted. This keeps the TTA machinery as the efficiency
+   lever, not the whole answer.
+5. Balanced allocation of the label budget across classes is folded into Pillar 2,
    to be engaged once the active-learning updates produce headroom to harvest.

@@ -49,7 +49,7 @@ CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/extractor_diff_diag.py
 
 CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/ttacollapse_diag.py \
   --json "robust_diagnostic/logs/extractor_diff_dircons_med.json" \
-  --label_a "robust_21ep" --label_b "$METHOD" \
+  --label_a "robust_21ep" --label_b "dircons_med" \
   --out "robust_diagnostic/logs/ttacollapse_dircons_med.json" \
   2>&1 | tee "logs/ttacollapse_dircons_med.log" || fail "collapse diagnosis"
 

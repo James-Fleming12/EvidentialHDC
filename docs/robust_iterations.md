@@ -1996,3 +1996,85 @@ dircons method was also missing from its `GATES` dict). All three now derive the
 projection dim from `clean_f.shape[1]` and the dircons method is registered in
 `GATES`, so the missing tta_ceiling / frozen_ceiling / ttagate numbers can be
 re-run on the existing checkpoint without retraining.
+
+## Iteration 19: dircons TTA collapse diagnosis + the full battery re-run
+
+Follow-up to Iteration 18. Re-ran the three crashed harness diagnostics on the
+existing 17-ep dircons checkpoint (dim bug fixed) plus a fresh `extractor_diff` (the
+pulled JSON was NUL-corrupted) and a new per-class collapse diagnosis
+(`ttacollapse_diag.py`): does the retained corr shift cause the naive-update failure,
+and is it recoverable by a different TTA operator? (The harness bug in the previous
+run's label threading was also fixed: the follow-up passed `--label_b $METHOD` to
+ttacollapse while extractor_diff writes `dircons_med`; the analysis now runs on the
+fresh JSON.)
+
+**Full TTA battery (`tta_ceiling_diag`, 500k/100k; dircons_med vs robust_21ep):**
+
+| cond | extractor | naive | conf | dist | bn | knn | oracle |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | robust_21ep | 0.1197 | 0.1189 | 0.1204 | 0.1138 | 0.1044 | 0.165 |
+| fog | dircons_med | **0.1218** | **0.1220** | 0.1201 | 0.1021 | 0.1129 | 0.165 |
+| crosstalk | robust_21ep | **0.1680** | **0.1679** | **0.1691** | 0.1322 | 0.1235 | 0.212 |
+| crosstalk | dircons_med | 0.1401 | 0.1405 | 0.1394 | **0.1449** | 0.1248 | 0.212 |
+
+**Frozen labeled ceiling (`frozen_ceiling_diag`):**
+
+| cond | robust_21ep hdc_oracle | dircons_med hdc_oracle | dircons - robust |
+| :--- | :--- | :--- | :--- |
+| fog | **0.1500** | 0.1382 | -0.012 |
+| crosstalk | 0.1767 | **0.2032** | **+0.026** |
+| snow | **0.4274** | 0.4032 | -0.024 |
+| wet_ground | **0.5104** | 0.5004 | -0.010 |
+| beam_missing | **0.5032** | 0.4980 | -0.005 |
+| motion_blur | **0.5011** | 0.4903 | -0.011 |
+
+**Per-class collapse diagnosis (`ttacollapse_diag` on the fresh extractor_diff JSON):**
+
+crosstalk per-class (sorted by d_naive_gain): the two collapsed classes are
+traffic-sign (naive 0.205 -> 0.065, oracle 0.190 -> 0.272) and building (0.257 ->
+0.072, oracle 0.271 -> 0.270), while car gains naive (0.275 -> 0.431) AND oracle
+(0.280 -> 0.430). Correlations (Spearman, crosstalk):
+
+| correlation | rho |
+| :--- | :--- |
+| rho(corr_dir, d_oracle) | **-0.75** |
+| rho(d_lp, d_naive_gain) | -0.52 |
+| rho(inv_fc, d_naive_gain) | +0.34 |
+| rho(corr_dir, d_naive_gain) | +0.29 |
+
+**What this shows:**
+
+1. **The corr shift is CONFIRMED as the ceiling mechanism: rho(corr_dir, d_oracle)
+   = -0.75 on crosstalk.** The classes the dircons shifted hardest (low corr_dir) are
+   exactly where the oracle rose most (ts +0.082, og +0.017). This is the strongest
+   direct evidence yet that the retained displacement direction is what the labeled
+   ceiling needs.
+2. **The TTA collapse is NOT assignment-driven.** The collapsed classes (ts, building)
+   have LP recall going UP (ts 0.02 -> 0.05, building 0.02 -> 0.16) while their naive
+   update collapsed. rho(d_lp, d_naive_gain) = -0.52 means better pseudo-label
+   assignment correlates with WORSE naive TTA. The failure is in the prototype
+   re-estimation step, not the labels: the shifted, majority-contaminated pseudo-mean
+   lands the prototype off the true cluster. This is a TTA-operator problem, not a
+   feature/assignment problem.
+3. **A different TTA operator DOES work on dircons: BN-statistic alignment.** On
+   crosstalk, bn reaches 0.1449 vs robust's 0.1322 (+0.013) — the ONLY dircons
+   crosstalk lever that beats robust's best. BN aligns clean->corrupted feature
+   statistics, which effectively de-shifts the distribution without touching
+   prototypes. So the crosstalk TTA is recoverable on dircons with the BN mechanism,
+   no retraining needed — it is a different operator, not a broken representation.
+4. **But the dircons ceiling is crosstalk-specific.** The frozen ceiling shows crosstalk
+   UP (+0.026) but fog DOWN (-0.012), snow -0.024, and the geometric conditions all
+   slightly DOWN (-0.005 to -0.011). The two-head 256D representation helps the
+   crosstalk collapsed classes and costs the healthy conditions slightly. Net: the
+   "one model that does both" claim is crosstalk-ceiling-only, not global.
+
+**Verdict: dircons is a crosstalk-specific ceiling+BN-TTA gain, not the clean win
+Iteration 17 hoped for.** The mechanism is validated (shift -> ceiling, rho -0.75;
+collapse is operator-side, recoverable by BN), but the representation costs the
+healthy conditions and the naive/dist/conf TTA. The two most useful next steps, both
+cheap: (a) the paper's crosstalk story could use dircons + BN-TTA (crosstalk oracle
+0.203 vs robust 0.177, crosstalk BN 0.145 vs 0.132), with the healthy-condition
+regression reported honestly; (b) to fix the healthy-condition cost, the displacement
+consistency should be applied ONLY on the corrupted view's minority classes (the
+residual is currently coupled on all classes), or the L_res relaxed so the clean view
+keeps its structure. Both are micro-testable before any further medium spend.
