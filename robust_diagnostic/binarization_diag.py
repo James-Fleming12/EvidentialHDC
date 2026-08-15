@@ -103,60 +103,73 @@ def mean_iou(d, classes):
     return sum(vs) / len(vs) if vs else float('nan')
 
 
-def encode(feats, proj, mode, bias=None, scale=None, device='cuda'):
-    """Encode features into the HDC space. proj is the projection/frequency matrix.
-    Returns the code (n, code_dim) on cpu.
+def encode(feats, proj, mode, bias=None, scale=None, device='cuda', chunk=200000):
+    """Encode features into the HDC space, CHUNKED to bound memory (the clean pool is
+    millions of points x 10000 dims; one matmul is hundreds of GB). proj is the
+    projection/frequency matrix. Returns the code (n, code_dim) on cpu.
     mode:
       'sign'    : sign(z @ R), threshold 0
       'bias'    : sign(z @ R - b), b per-coordinate clean bias
       'zscore'  : sign((z @ R - b) / s), b and s per-coordinate clean stats
       'fourier' : [cos(z @ w), sin(z @ w)] with random frequencies w
     """
-    f = feats.to(device)
-    p = f @ proj
-    if mode == 'sign':
-        return torch.sign(p).cpu()
-    if mode == 'bias':
-        return torch.sign(p - bias.to(device)).cpu()
-    if mode == 'zscore':
-        return torch.sign((p - bias.to(device)) / (scale.to(device) + 1e-6)).cpu()
-    if mode == 'fourier':
-        # dim_out here is the number of frequencies; code is 2*dim_out
-        c = torch.cos(p)
-        s = torch.sin(p)
-        return torch.cat([c, s], dim=1).cpu()
-    raise ValueError(mode)
+    out_chunks = []
+    bias_d = bias.to(device) if bias is not None else None
+    scale_d = scale.to(device) if scale is not None else None
+    for i in range(0, len(feats), chunk):
+        f = feats[i:i + chunk].to(device)
+        p = f @ proj
+        if mode == 'sign':
+            out_chunks.append(torch.sign(p).cpu())
+        elif mode == 'bias':
+            out_chunks.append(torch.sign(p - bias_d).cpu())
+        elif mode == 'zscore':
+            out_chunks.append(torch.sign((p - bias_d) / (scale_d + 1e-6)).cpu())
+        elif mode == 'fourier':
+            out_chunks.append(torch.cat([torch.cos(p), torch.sin(p)], dim=1).cpu())
+        else:
+            raise ValueError(mode)
+    return torch.cat(out_chunks, dim=0)
 
 
-def build_protos(codes, lbls, num_classes=17, chunk=50000, fourier=False):
-    """Per-class mean of codes, L2-normalized (drop the sign-normalization assumption
-    for the fourier continuous codes)."""
-    D = codes.shape[1]
-    protos = torch.zeros(num_classes, D, device=codes.device)
-    counts = torch.zeros(num_classes, device=codes.device)
-    for i in range(0, len(codes), chunk):
-        ch = codes[i:i + chunk]
-        cl = lbls[i:i + chunk].to(codes.device)
+def build_protos_stream(feats, lbls, enc_fn, num_classes=17, chunk=200000, device='cuda'):
+    """Build per-class mean codes from the (possibly huge) clean pool in a streaming
+    pass: encode each chunk, accumulate per-class sums, then discard the chunk. This
+    avoids ever materializing the full n x code_dim code (which is hundreds of GB for
+    the 8M-point clean pool). enc_fn maps a chunk (n x d) -> codes (n x code_dim) on cpu."""
+    code_dim = None
+    protos = None
+    counts = None
+    for i in range(0, len(feats), chunk):
+        codes = enc_fn(feats[i:i + chunk])            # (c, code_dim) on cpu
+        cl = lbls[i:i + chunk]
+        if protos is None:
+            code_dim = codes.shape[1]
+            protos = torch.zeros(num_classes, code_dim, device=codes.device)
+            counts = torch.zeros(num_classes, device=codes.device)
         for c in range(num_classes):
             m = cl == c
             if m.sum() > 0:
-                protos[c] += ch[m].sum(dim=0)
+                protos[c] += codes[m].sum(dim=0)
                 counts[c] += m.sum()
+        del codes
     for c in range(num_classes):
         if counts[c] > 0:
             protos[c] /= counts[c].clamp(min=1)
     valid = counts > 0
     base = F.normalize(protos[valid], p=2, dim=1)
-    return base, torch.arange(num_classes, device=codes.device)[valid]
+    return base, torch.arange(num_classes, device=protos.device)[valid]
 
 
 def decode(codes, protos, proto_lbls, device, chunk=50000):
     protos = F.normalize(protos, p=2, dim=1)
     preds = []
+    protos_d = protos.to(device)
     for i in range(0, len(codes), chunk):
         c = codes[i:i + chunk].to(device)
-        sims = c @ protos.T
-        preds.append(proto_lbls[sims.argmax(dim=1)].cpu())
+        sims = c @ protos_d.T
+        idx = sims.argmax(dim=1)
+        preds.append(proto_lbls[idx.cpu()])
     return torch.cat(preds)
 
 
@@ -165,6 +178,16 @@ def margin_fraction(pre_proj, eps=0.1):
     threshold-hugging coordinates that flip sign on small noise."""
     p = pre_proj
     return float((p.abs() < eps).float().mean().item())
+
+
+def margin_frac_chunked(feats, proj, eps=0.1, device='cuda', chunk=200000):
+    """margin_fraction computed on the FULL clean pool without OOM (chunked)."""
+    tot, near = 0.0, 0.0
+    for i in range(0, len(feats), chunk):
+        p = (feats[i:i + chunk].to(device) @ proj).cpu()
+        tot += p.numel()
+        near += int((p.abs() < eps).sum().item())
+    return near / tot
 
 
 def main():
@@ -211,7 +234,13 @@ def main():
 
     # per-coordinate clean bias / scale for the adaptive binarizations
     def clean_stats(f_clean, proj):
-        p = f_clean.to(device) @ proj
+        # chunked: the full clean pool (millions of points) x 10000 dims is far too
+        # large for one matmul (8M x 10000 = 320GB). Chunk to bound the peak tensor.
+        p_chunks = []
+        chunk = 200000
+        for i in range(0, len(f_clean), chunk):
+            p_chunks.append((f_clean[i:i + chunk].to(device) @ proj).cpu())
+        p = torch.cat(p_chunks, dim=0)
         b = p.median(dim=0).values
         s = p.std(dim=0) + 1e-6
         return b.cpu(), s.cpu()
@@ -239,8 +268,8 @@ def main():
 
         results[cond] = {}
         # pre-sign margin (current sign binarization) -- the "what is lost" quantity
-        ma = float(((fa.to(device) @ R).abs() < eps).float().mean().item())
-        mb = float(((fb.to(device) @ R).abs() < eps).float().mean().item())
+        ma = margin_frac_chunked(fa, R, eps, device)
+        mb = margin_frac_chunked(fb, R, eps, device)
         results[cond]['margin_frac_clean_A'] = ma
         results[cond]['margin_frac_clean_B'] = mb
         print(f"\n--- {cond} ---")
@@ -261,24 +290,21 @@ def main():
                     return encode(f, R, mode, bias_b if mode != 'sign' else None,
                                   scale_b if mode == 'zscore' else None, device)
 
-            ca_c = enc_a(fa)
-            cb_c = enc_b(fb)
+            # clean prototypes: streaming (the full clean pool is hundreds of GB)
+            proto_a, lbl_a = build_protos_stream(fa, la, enc_a, device=device)
+            proto_b, lbl_b = build_protos_stream(fb, lb, enc_b, device=device)
 
-            # prototypes from the CLEAN features
-            proto_a, lbl_a = build_protos(ca_c, la, fourier=(mode == 'fourier'))
-            proto_b, lbl_b = build_protos(cb_c, lb, fourier=(mode == 'fourier'))
-
-            # frozen-prototype decode on val
+            # frozen-prototype decode on val (bounded, 100k)
             va_c = enc_a(va)
             vb_c = enc_b(vb)
             zs_a = mean_iou(per_class_iou(decode(va_c, proto_a, lbl_a, device), vl, range(1, NUM_CLASSES)), range(1, NUM_CLASSES))
             zs_b = mean_iou(per_class_iou(decode(vb_c, proto_b, lbl_b, device), vl, range(1, NUM_CLASSES)), range(1, NUM_CLASSES))
 
-            # oracle: re-estimate from corrupted labeled POOL points
+            # oracle: re-estimate from corrupted labeled POOL points (bounded, 100k)
             poa_c = enc_a(po_a)
             pob_c = enc_b(po_b)
-            ora_a, ol_a = build_protos(poa_c, po_l, fourier=(mode == 'fourier'))
-            ora_b, ol_b = build_protos(pob_c, po_l, fourier=(mode == 'fourier'))
+            ora_a, ol_a = build_protos_stream(po_a, po_l, enc_a, device=device)
+            ora_b, ol_b = build_protos_stream(po_b, po_l, enc_b, device=device)
             or_a = mean_iou(per_class_iou(decode(va_c, ora_a, ol_a, device), vl, range(1, NUM_CLASSES)), range(1, NUM_CLASSES))
             or_b = mean_iou(per_class_iou(decode(vb_c, ora_b, ol_b, device), vl, range(1, NUM_CLASSES)), range(1, NUM_CLASSES))
 
