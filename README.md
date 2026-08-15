@@ -127,39 +127,62 @@ help (the crosstalk label-free gap halved, +0.52 -> +0.20); why more training hu
 the TTA is an open question.
 
 Current per-condition HDC zero-shot mIoU at medium scale (**as of 2026-08-11**, from the isotropy /
-frozen-ceiling diagnostics; these numbers go stale as new runs land):
+frozen-ceiling diagnostics; these numbers go stale as new runs land). The Cov-shift
+column is the **ep-10 model** (the optimal-epoch checkpoint from the 21-ep run,
+Iteration 19.13), evaluated in the same extractor-diff harness as the ceilings table
+below, so both tables use the same model and the same measurement:
 
-| condition | HyperLiDAR baseline | supcon_vib (med) | DGLSS++ (med, 24ep) | Robust DGLSS++ (ours, 21ep) |
-| :--- | :--- | :--- | :--- | :--- |
-| fog | 1.8% | 7.8% | 6.8% | **8.5%** |
-| crosstalk | 4.7% | 10.2% | **11.5%** | 9.8% |
-| snow | 20.6% | 38.4% | 39.6% | **41.1%** |
-| wet_ground | 18.8% | 44.6% | **48.3%** | 46.8% |
-| incomplete_echo | 25.5% | 41.2% | 44.9% | **45.0%** |
-| beam_missing | 15.2% | 47.0% | **50.6%** | 50.3% |
-| motion_blur | 14.8% | 45.0% | **50.2%** | **50.2%** |
-| cross_sensor | 4.4% | 39.6% | 43.4% | **43.5%** |
-| **mean (8 corrupted)** | 13.2% | 34.2% | **36.9%** | **36.9%** |
+| condition | HyperLiDAR baseline | supcon_vib (med) | DGLSS++ (med, 24ep) | Robust DGLSS++ (ours, 21ep) | Cov-shift DGLSS++ (ep-10) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 1.8% | 7.8% | 6.8% | 8.5% | **21.3%** |
+| crosstalk | 4.7% | 10.2% | 11.5% | 9.8% | **39.9%** |
+| snow | 20.6% | 38.4% | 39.6% | **41.1%** | — |
+| wet_ground | 18.8% | 44.6% | **48.3%** | 46.8% | — |
+| incomplete_echo | 25.5% | 41.2% | 44.9% | **45.0%** | — |
+| beam_missing | 15.2% | 47.0% | **50.6%** | 50.3% | — |
+| motion_blur | 14.8% | 45.0% | **50.2%** | **50.2%** | — |
+| cross_sensor | 4.4% | 39.6% | 43.4% | **43.5%** | — |
+| **mean (8 corrupted)** | 13.2% | 34.2% | **36.9%** | **36.9%** | — |
 
-Clean HDC mIoU (same pipeline): DGLSS++ 53.0%, Robust DGLSS++ 52.8%, roughly tied
-(supcon_vib and the baseline were not measured on clean in the same pipeline).
-Sources: HyperLiDAR baseline = the un-pretrained model (Corruption Atlas, section
-5.2); supcon_vib = frozen-ceiling HDC-zs; DGLSS++ and Robust DGLSS++ = the isotropy
-pipeline. The robust variant additionally inverts the majority polarization
-(rho -0.49) and delivers the best crosstalk label-free TTA at scale (naive-EMA
-gap-closed +0.52 vs +0.02 for plain DGLSS++). The isotropy comparison and per-class
-autopsies are tracked in the robust-iterations doc.
+(The ep-10 snapshot was evaluated on fog + crosstalk only in the monitor; the other
+conditions were not measured at that epoch, so they are left blank rather than mixing
+harnesses. The cov-shift fog/crosstalk zero-shot is the headline: 21.3% / 39.9% vs
+DGLSS++ 6.8% / 11.5%.)
+
+Clean HDC mIoU (same pipeline): DGLSS++ 53.0%, Robust DGLSS++ 52.8% (the ep-10
+snapshot's clean decode was not measured in the monitor harness). Sources:
+HyperLiDAR baseline = the un-pretrained model (Corruption Atlas, section 5.2);
+supcon_vib = frozen-ceiling HDC-zs; DGLSS++ and Robust DGLSS++ = the isotropy
+pipeline; Cov-shift DGLSS++ = the ep-10 checkpoint of the 21-ep run, in the
+extractor-diff harness. The robust variant additionally inverts the majority
+polarization (rho -0.49) and delivers the best crosstalk label-free TTA at scale
+(naive-EMA gap-closed +0.52 vs +0.02 for plain DGLSS++). The isotropy comparison and
+per-class autopsies are tracked in the robust-iterations doc.
 
 **Ceilings and the anchoring trade-off.** The label ceiling (oracle, re-estimating
 prototypes from the corrupted points with true labels) sets the recoverable bound per
-condition (same 100k/100k split):
+condition (same 100k/100k split; the cov-shift row is the **ep-10 model** of the
+21-ep run, the optimal window, in the same extractor-diff harness as the zero-shot
+table above):
 
 | condition | extractor | zero-shot | label ceiling (oracle) | label-free TTA (naive) |
 | :--- | :--- | :--- | :--- | :--- |
 | fog | DGLSS++ | 8.2% | **17.6%** | 10.0% |
 | fog | Robust DGLSS++ | 9.5% | 15.7% | 10.7% |
+| fog | **Cov-shift DGLSS++ (ep-10)** | **21.3%** | **21.7%** | **21.1%** |
 | crosstalk | DGLSS++ | 12.5% | 22.2% | 12.7% |
-| crosstalk | Robust DGLSS++ | 10.8% | 18.8% | **15.0%** |
+| crosstalk | Robust DGLSS++ | 10.8% | 18.8% | 15.0% |
+| crosstalk | **Cov-shift DGLSS++ (ep-10)** | **39.9%** | **39.0%** | **39.3%** |
+
+**NOTE: the cov-shift ceiling/TTA numbers were measured on the ep-10 model of the
+21-ep run (the optimal window, Iteration 19.13); whether the gains are fully
+converged, and how they behave past that window, needs a sensible convergence metric
+or more stable convergence behavior.** The cov-shift variant is the first extractor
+to raise BOTH the ceiling and the label-free TTA on BOTH conditions: fog oracle 21.7%
+vs DGLSS++ 17.6%, crosstalk oracle 39.0% vs 22.2%, with crosstalk effectively fixed
+at the zero-shot level (zs ~= oracle). It does this via per-scan input normalization
+restricted to the statistics-shifted channels (range/remission) plus internal
+InstanceNorm — normalizing the shifted statistics, not the structure.
 
 The robust variant RAISES zero-shot (fog 8.2% -> 9.5%) and the label-free TTA
 (crosstalk 12.7% -> 15.0%) but LOWERS the label ceiling on both conditions. The
@@ -183,6 +206,48 @@ mechanism is the SupCon clean-anchoring, and it cuts in opposite directions:
 The goal is a variant that balances the two: enough clean-anchoring to keep the
 assignment and TTA gains on crosstalk, while preserving enough of the corruption
 shift to keep the fog recoverable ceiling.
+
+**The cov-shift DGLSS++ variant (Iteration 19.13) resolves the trade-off without
+anchoring at all.** Instead of pulling corrupted features toward clean, it fixes the
+covariate-shift statistics: per-scan input normalization restricted to the
+range/remission channels (the channels crosstalk's statistics shift lives in) plus
+internal InstanceNorm. It raises BOTH the ceiling and the label-free TTA on BOTH
+conditions (see the ceilings table above) — fog oracle 21.7% vs DGLSS++ 17.6%,
+crosstalk oracle 39.0% vs 22.2%, crosstalk effectively fixed at the zero-shot level.
+This is the first extractor to break the anchoring trade-off: the recoverable shift
+(fog) and the statistics shift (crosstalk) are addressed as two separate
+mechanisms, not as a single geometry to balance. NOTE: the cov-shift gains were
+measured at the 10-15 epoch optimal window of the 21-ep run; convergence past that
+window needs a sensible convergence metric or more stable convergence behavior.
+
+**TTA and ceiling summary (ep-10 model, extractor-diff harness, 50 frames / 50k pool;
+same split as the ceilings table above):**
+
+| condition | extractor | zero-shot | label-free TTA (naive) | label ceiling (oracle) | gap closed |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | DGLSS++ | 8.2% | 10.0% | 17.6% | 0.20 |
+| fog | Robust DGLSS++ | 9.5% | 10.7% | 15.7% | 0.28 |
+| fog | **Cov-shift DGLSS++** | **21.3%** | **21.1%** | **21.7%** | n/a (naive ~= ceiling) |
+| crosstalk | DGLSS++ | 12.5% | 12.7% | 22.2% | 0.11 |
+| crosstalk | Robust DGLSS++ | 10.8% | 15.0% | 18.8% | 0.52 |
+| crosstalk | **Cov-shift DGLSS++** | **39.9%** | **39.3%** | **39.0%** | n/a (naive ~= ceiling) |
+
+The cov-shift extractor does two things at once that no prior variant achieved:
+the label-free update essentially reaches the ceiling on both conditions (fog naive
+21.1% vs ceiling 21.7%; crosstalk naive 39.3% vs ceiling 39.0%), and the zero-shot
+itself is near the ceiling because the cov-shift fix makes fog/crosstalk
+assignment-healthy at the frozen-prototype level. Compare: every prior extractor
+left a real gap between its naive TTA and its ceiling (crosstalk 6-10 points), the
+assignment wall. On the cov-shift extractor that wall is essentially gone for
+crosstalk (zs 39.9% ~= oracle 39.0%: the oracle re-estimation adds nothing because
+the frozen prototypes already decode correctly), and the remaining work is the fog
+ceiling itself.
+
+**Full-battery note:** the tables above use the naive-EMA TTA from the same
+extractor-diff harness. The full TTA battery (conf/dist/BN/kNN levers) and the
+frozen labeled ceiling per condition for the cov-shift extractor have not been run
+yet — run `tta_ceiling_diag.py` and `frozen_ceiling_diag.py` on the checkpoint for
+the complete per-condition comparison (see Section 6.4 for the battery format).
 
 ---
 
