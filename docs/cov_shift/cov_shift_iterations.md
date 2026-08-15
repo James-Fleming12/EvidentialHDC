@@ -306,3 +306,43 @@ recoverable structure on the healthy conditions, and the levers are:
 This is a clean negative that redirects the effort from the HDC decoder (projection /
 binarization design) back to the extractor's normalization scope — which is where the
 cov-shift method's actual lever is.
+
+## Potential next step: changing the HDC classification rule
+
+The C8 negative covers the *encoding* (how a feature becomes a code) but not the
+*decision rule* (how a code is assigned to a class). All C7/C8 variants still end in
+the same nearest-centroid rule: unit-norm cosine to per-class prototypes
+(`decode`/`decode_preds` in the diagnostic harness). If the training-side levers
+above fail to recover the healthy-condition packing, the decision rule itself is the
+remaining decoder-side lever. This is distinct from the encoding changes C8 ruled out.
+
+The key observation: C6's packing loss is PER-CLASS (og 0.86->0.67, car only
+0.96->0.85), but the C8 re-encodings were GLOBAL (one bias/scale per dimension,
+applied identically to all classes). A class-conditional decision rule is the
+untested alternative, and the LP evidence supports it: the continuous linear probe
+recovers the healthy conditions far better than the centroid rule (LP wet_ground
+~85->77, ~9% relative drop; HDC oracle ~51->37, ~27% relative drop). No rule fully
+recovers the clean ceiling, but a learned/conditioned rule loses ~3x less than
+nearest-centroid.
+
+Candidate rules, in order of how much of the HDC/TTA story they keep:
+
+1. **Per-class scaled HDC distance.** Keep sign-projection + prototypes, but replace
+   the unit-norm cosine with a class-conditional scaled cosine: weight each
+   prototype's contribution by that class's scale (inverse of its within-class
+   spread / corr_tight). Re-tightens the decision boundary per class without touching
+   the extractor, and keeps the label-free prototype re-estimation machinery
+   (naive/oracle) intact. The most method-preserving fallback.
+2. **Learned decision rule on the continuous 128-d features.** A train-time
+   LogisticRegression on the full features (what LP measures). Strongest recovery,
+   but abandons HDC decoding; TTA becomes re-fitting the probe on pseudo-labels
+   instead of re-estimating prototypes.
+3. **Per-class scale before the existing prototype distance.** The targeted version
+   of (1): estimate each class's feature scale on the corrupted pool, divide before
+   the cosine. Minimal code, directly attacks corr_tight.
+
+Status: deferred until the C8 training-side micro runs come back (they are quick).
+If they recover the healthy packing, no decision-rule change is needed; if not, (1)
+is the first decision-rule experiment.
+
+
