@@ -2848,3 +2848,39 @@ three-way confirmation.
 at ep 4; the geometry-heavy class where range/remission normalization helps least),
 but the aggregate fog is up and the final decode is strong — a per-class detail for
 the paper's honesty, not a blocker.
+
+## Iteration 19.14: why does cov-shift hurt healthy-condition ceilings?
+
+The cov-shift extractor fixes fog/crosstalk but the frozen ceilings on the healthy
+conditions DROP: wet_ground oracle 51.4% -> 40.5% (ep10) / 36.6% (ep21), beam_missing
+50.6% -> 44.2% / 44.8%, motion_blur 50.3% -> 44.0% / 44.6%, cross_sensor 45.1% ->
+38.5% / 39.4%. The diagnostic question: is it a CONTINUOUS-separability loss (LP) or
+a HDC-BINARIZATION loss (recoverability through sign)?
+
+**What the data already shows:** the LP accuracy is mostly preserved (snow 79% -> 82%,
+wet_ground 85% -> 77%, incomplete_echo 91% -> 90%) while the HDC-oracle drops sharply
+(wet_ground -11, beam_missing -6, motion_blur -6). The feature-space structure
+(participation ratio, dead-fraction ~0, Hamming) is essentially unchanged on the
+healthy conditions. So the continuous class structure SURVIVES; the recoverable
+structure through the HDC sign-binarization DEGRADES.
+
+**Hypothesis:** InstanceNorm (internal) and the per-scan input normalization change
+the per-dimension feature scale/magnitude distribution on the healthy conditions. The
+HDC random projection + sign binarization is sensitive to how features sit relative to
+the per-coordinate sign threshold: if InstanceNorm makes the healthy-condition features
+more evenly scaled (less anisotropic), more coordinates sit near the threshold and
+binarize unpredictably, destroying the Hamming-distance recoverability even though the
+continuous LP structure is intact.
+
+**Diagnostic to run** (`cond_structure_diag.py`, eval-only): per-class feat_cos /
+dir_retention / corr_tightness / zs on a healthy condition (snow + wet_ground) for
+plain DGLSS++ vs the cov-shift model. This isolates WHICH classes lose recoverable
+structure under B, and whether it is a direction-retention loss (dir_ret) or a
+packing loss (corr_tight) -- the two components recoverability needs (Iteration 12).
+
+**The improvement this would enable:** if the HDC-binarization hypothesis holds, the
+fix is to make the cov-shift normalization preserve the healthy conditions' anisotropy
+(scale the features to match the clean scale before InstanceNorm, or apply InstanceNorm
+only to the bottleneck channels that fog/crosstalk recover through, not the whole
+backbone). That would recover the healthy-condition ceilings WITHOUT reintroducing
+the fog/crosstalk loss -- the next cov-shift improvement.
