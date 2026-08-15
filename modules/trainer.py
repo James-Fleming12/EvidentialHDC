@@ -120,7 +120,9 @@ class DGLSSTrainer():
                                        norm_layer=nn.InstanceNorm2d if tw.get("norm", "bn") == "in" else None,
                                        input_in=tw.get("input_in", False),
                                        norm_channels=tw.get("norm_channels"),
-                                       scale_only=tw.get("scale_only", False))
+                                       scale_only=tw.get("scale_only", False),
+                                       norm_scope=tw.get("norm_scope", "all"),
+                                       scale_in=tw.get("scale_in", False))
 
                 def convert_relu_to_softplus(model, act):
                     for child_name, child in model.named_children():
@@ -682,6 +684,27 @@ class DGLSSTrainer():
 
                 loss_total = loss_sem + (self.lam1 * loss_gmsifc) + (self.lam2 * loss_lscc)
 
+                # Iteration C8 lever 3: healthy-condition feature-scale regularizer.
+                # C8 proved the cov-shift healthy-ceiling loss is CONTINUOUS (survives
+                # every decoding), and the lever-3 hypothesis is that InstanceNorm erodes
+                # the healthy (clean-view) feature scale over training, producing the
+                # packing loss. Pull the clean-view bottleneck z8's per-dimension std
+                # toward its own EMA so the model cannot drift its healthy scale.
+                if getattr(self, 'scale_reg', False):
+                    Bz, Cz, Hz, Wz = z8.shape
+                    z8_flat = z8.permute(0, 2, 3, 1).reshape(Bz * Hz * Wz, Cz)
+                    # only valid (labeled) points, matching the contrastive mask
+                    vm = (proj_labels > 0).reshape(-1)
+                    if vm.any():
+                        z8_valid = z8_flat[vm]
+                        dim_std = z8_valid.std(dim=0)
+                        if not hasattr(self, '_scale_ema'):
+                            self._scale_ema = dim_std.detach()
+                        loss_scale_reg = F.mse_loss(dim_std, self._scale_ema.detach())
+                        with torch.no_grad():
+                            self._scale_ema = 0.99 * self._scale_ema + 0.01 * dim_std
+                        loss_total = loss_total + 0.1 * loss_scale_reg
+
             optimizer.zero_grad()
             scaler.scale(loss_total).backward()
             scaler.step(optimizer)
@@ -861,7 +884,9 @@ class Trainer():
                                        norm_layer=nn.InstanceNorm2d if tw.get("norm", "bn") == "in" else None,
                                        input_in=tw.get("input_in", False),
                                        norm_channels=tw.get("norm_channels"),
-                                       scale_only=tw.get("scale_only", False))
+                                       scale_only=tw.get("scale_only", False),
+                                       norm_scope=tw.get("norm_scope", "all"),
+                                       scale_in=tw.get("scale_in", False))
 
                 def convert_relu_to_softplus(model, act):
                     for child_name, child in model.named_children():

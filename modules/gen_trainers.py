@@ -198,6 +198,19 @@ INPUT_NORM_VARIANTS = {
     'supcon_vib_dglsspp_inputin_in': {'norm': 'in'},
     'supcon_vib_dglsspp_inputin_in_chan': {'norm': 'in', 'norm_channels': (0, 4)},
     'supcon_vib_dglsspp_inputin_in_scale': {'norm': 'in', 'scale_only': True},
+    # Iteration C8 levers (the continuous-features healthy-loss fix). C8 proved the
+    # healthy-ceiling loss survives every decoding, so it is a continuous loss in the
+    # cov-shift extractor's features. These three attack it training-side:
+    #  - _scope: InstanceNorm only in the late stages (layer3/4 + bottleneck conv_1/2);
+    #    the early geometry blocks keep BatchNorm so the healthy conditions' early-stage
+    #    per-dimension anisotropy survives while fog/crosstalk robustness stays.
+    #  - _scalein: scale-only internal InstanceNorm (divide by per-scan per-channel std
+    #    without centering), preserving the per-dimension offset structure.
+    #  - _scalereg: feature-scale regularizer in the trainer (clean view scale pulled
+    #    toward the beam-drop view's), preventing the packing erosion.
+    'supcon_vib_dglsspp_inputin_in_chan_scope': {'norm': 'in', 'norm_channels': (0, 4), 'norm_scope': 'in_late'},
+    'supcon_vib_dglsspp_inputin_in_chan_scalein': {'norm': 'in', 'norm_channels': (0, 4), 'scale_in': True},
+    'supcon_vib_dglsspp_inputin_in_chan_scalereg': {'norm': 'in', 'norm_channels': (0, 4), 'scale_reg': True},
 }
 for _m in INPUT_NORM_VARIANTS:
     DGLSS_METHODS.add(_m)
@@ -249,6 +262,12 @@ class GenTrainer(Trainer):
             tw["input_in"] = True
             tw["norm_channels"] = INPUT_NORM_VARIANTS[self.method].get("norm_channels")
             tw["scale_only"] = INPUT_NORM_VARIANTS[self.method].get("scale_only", False)
+            # C8 levers
+            tw["norm_scope"] = INPUT_NORM_VARIANTS[self.method].get("norm_scope", "all")
+            tw["scale_in"] = INPUT_NORM_VARIANTS[self.method].get("scale_in", False)
+            self.scale_reg = INPUT_NORM_VARIANTS[self.method].get("scale_reg", False)
+        else:
+            self.scale_reg = False
         self.input_in = self.method in INPUT_NORM_VARIANTS
         self._dir_ema = None  # per-class EMA displacement direction for _dircons
 

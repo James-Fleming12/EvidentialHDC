@@ -264,3 +264,45 @@ confirms the packing loss, the mechanism is validated and the fix is a scale-awa
 bias-aware binarization.
 
 Run: `bash run_binarization_diag.sh 3` (both ep10 + ep21, eval-only, ~1-1.5h).
+
+### Iteration C8: the binarization diagnostic — the loss is continuous, not binarized
+
+The C7 hypothesis was that the cov-shift healthy-ceiling loss is a BINARIZATION loss
+(features pushed toward the sign threshold). The C8 diagnostic (`binarization_diag.py`)
+tested this on frozen features with four encodings (current `sign`, per-coordinate
+`bias`, `zscore`, and the continuous Fourier `[cos, sin]` style) plus the pre-sign
+margin fraction.
+
+**Result: the hypothesis is REJECTED, and the finding reframes the problem.**
+
+1. **margin_frac is nearly identical between extractors** (0.0255 vs 0.0263 ep10;
+   0.0256 vs 0.0306 ep21). The cov-shift healthy features do NOT sit closer to the
+   sign threshold — the "threshold-hugging → unreliable binarization" mechanism does
+   not occur.
+2. **No alternative encoding recovers the healthy oracle.** On wet_ground (the
+   worst case), the cov-shift oracle is ~0.22 (ep10) / ~0.19 (ep21) across sign /
+   bias / zscore / fourier — all far below DGLSS++'s 0.27. The encoding choice barely
+   changes anything (spread < 0.006).
+3. **The loss is in the CONTINUOUS features, not the binarization.** If it were a
+   binarization artifact, the continuous Fourier encoding (no sign) would retain the
+   packing that sign() loses. It does not — so the cov-shift extractor's healthy
+   features have genuinely lost recoverable structure at the continuous level.
+
+**What this means for the fix.** Decoder-side projection/binarization redesign
+(bias, zscore, Fourier, or any scale-aware threshold) CANNOT recover the
+healthy-condition ceiling — the information is not in the binarized code because it
+is not in the continuous features. The fix must be TRAINING-SIDE: the cov-shift
+normalization (per-scan input-IN + internal InstanceNorm) is erasing a continuous
+recoverable structure on the healthy conditions, and the levers are:
+- **Scope the normalization**: apply InstanceNorm only to the bottleneck channels
+  that fog/crosstalk recover through, not the whole backbone — so the healthy
+  conditions' continuous structure is untouched.
+- **Scale-normalize-then-InstanceNorm ordering**: preserve the healthy conditions'
+  per-dimension anisotropy before InstanceNorm re-scales it.
+- **Condition-aware regularization**: keep the healthy-condition feature scale
+  closer to clean during training (the C6 packing loss is a real continuous loss,
+  and the fix is to not compress it, not to re-binarize it).
+
+This is a clean negative that redirects the effort from the HDC decoder (projection /
+binarization design) back to the extractor's normalization scope — which is where the
+cov-shift method's actual lever is.

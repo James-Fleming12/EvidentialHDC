@@ -12,18 +12,53 @@ def conv1x1(in_planes, out_planes, stride=1):
     """1x1 convolution"""
     return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
 
+class ScaleOnlyInstanceNorm2d(nn.Module):
+    """Iteration C8 lever 2: scale-only internal InstanceNorm. Normalizes each
+    (sample, channel) by its own std over spatial dims but does NOT subtract the mean,
+    so the per-dimension offset structure survives. Affine scale/bias still applied
+    after division, mirroring InstanceNorm2d's affine=True behavior."""
+    def __init__(self, num_features, eps=1e-5, affine=True, momentum=None, track_running_stats=False):
+        super(ScaleOnlyInstanceNorm2d, self).__init__()
+        self.num_features = num_features
+        self.eps = eps
+        self.affine = affine
+        if affine:
+            self.weight = nn.Parameter(torch.ones(num_features))
+            self.bias = nn.Parameter(torch.zeros(num_features))
+        else:
+            self.register_parameter('weight', None)
+            self.register_parameter('bias', None)
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+        # mean per (sample, channel); x is uncentered so mean survives
+        mu = x.mean(dim=(2, 3), keepdim=True)
+        var = x.var(dim=(2, 3), keepdim=True, unbiased=False)
+        std = (var + self.eps).sqrt()
+        x = x / std
+        if self.affine:
+            x = x * self.weight.view(1, C, 1, 1) + self.bias.view(1, C, 1, 1)
+        return x
+
+def norm_layer_for(norm, scale_in=False):
+    """Map a norm string to the layer class. 'bn' -> BatchNorm2d, 'in' ->
+    InstanceNorm2d, 'in_scale' -> ScaleOnlyInstanceNorm2d. scale_in=True forces the
+    scale-only variant regardless of the string (used by the C8 lever-2 micro)."""
+    if norm == 'in_scale' or scale_in:
+        return ScaleOnlyInstanceNorm2d
+    if norm == 'in':
+        return nn.InstanceNorm2d
+    return nn.BatchNorm2d
+
 class BasicConv2d(nn.Module):
     def __init__(self, in_planes, out_planes, kernel_size, stride=1, padding=0, dilation=1, relu=True,
-                 norm='bn'):
+                 norm='bn', scale_in=False):
         super(BasicConv2d, self).__init__()
         self.relu = relu
         self.conv = nn.Conv2d(in_planes, out_planes,
                               kernel_size=kernel_size, stride=stride,
                               padding=padding, dilation=dilation, bias=False)
-        if norm == 'in':
-            self.bn = nn.InstanceNorm2d(out_planes, affine=True)
-        else:
-            self.bn = nn.BatchNorm2d(out_planes)
+        self.bn = norm_layer_for(norm, scale_in)(out_planes)
         if self.relu:
             self.relu = nn.LeakyReLU()
 
@@ -117,33 +152,49 @@ class ResNet_34(nn.Module):
     def __init__(self, nclasses, aux, block=BasicBlock, layers=[3, 4, 6, 3], if_BN=True, zero_init_residual=False,
                  norm_layer=None, groups=1, width_per_group=64, use_adaptor=True,
                  corr_dim=0, corr_mode='ind', inv_dim=128, norm='bn', input_in=False,
-                 norm_channels=None, scale_only=False):
+                 norm_channels=None, scale_only=False, norm_scope='all', scale_in=False):
         super(ResNet_34, self).__init__()
         if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
+            norm_layer = norm_layer_for(norm, scale_in)
         self._norm_layer = norm_layer
+        # norm_scope (Iteration C8 lever 1): 'all' = current behavior (every stage uses
+        # `norm`); 'in_late' = InstanceNorm only in the LATE stages (layer3/layer4 + the
+        # bottleneck conv_1/conv_2) while the early geometry blocks (conv1-3, layer1/2)
+        # keep BatchNorm. The C8 diagnostic showed the healthy-condition ceiling loss is
+        # CONTINUOUS (survives every decoding), and the hypothesis is that InstanceNorm
+        # throughout the whole backbone erases the early-stage per-dimension anisotropy
+        # the healthy conditions recover through; scoping it to the late bottleneck
+        # keeps the fog/crosstalk covariate-shift robustness where it acts.
+        self.norm_scope = norm_scope
+        # scale_in (Iteration C8 lever 2): use a SCALE-ONLY internal InstanceNorm that
+        # divides by the per-scan per-channel std but does NOT center. Full InstanceNorm
+        # forces every healthy scan's channels to zero-mean, erasing the per-dimension
+        # offset structure (the packing loss); keeping the mean preserves that
+        # anisotropy while still absorbing the magnitude shift.
+        self.scale_in = scale_in
+        early_norm = 'bn' if norm_scope == 'in_late' else norm
+        late_norm = norm if norm_scope == 'all' else ('in' if norm_scope == 'in_late' else norm)
+
+        self.conv1 = BasicConv2d(5, 64, kernel_size=3, padding=1, norm=early_norm, scale_in=scale_in)
+        self.conv2 = BasicConv2d(64, 128, kernel_size=3, padding=1, norm=early_norm, scale_in=scale_in)
+        self.conv3 = BasicConv2d(128, 128, kernel_size=3, padding=1, norm=early_norm, scale_in=scale_in)
+
+        self.inplanes = 128
+
+        self.groups = groups
+        self.base_width = width_per_group
+        self.use_adaptor = use_adaptor
         self.if_BN = if_BN
         self.dilation = 1
         self.aux = aux
 
-        self.groups = groups
-        self.base_width = width_per_group
+        self.layer1 = self._make_layer(block, 128, layers[0], use_adaptor=use_adaptor, norm=early_norm)
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2, use_adaptor=use_adaptor, norm=early_norm)
+        self.layer3 = self._make_layer(block, 128, layers[2], stride=2, use_adaptor=use_adaptor, norm=late_norm)
+        self.layer4 = self._make_layer(block, 128, layers[3], stride=2, use_adaptor=use_adaptor, norm=late_norm)
 
-        self.conv1 = BasicConv2d(5, 64, kernel_size=3, padding=1, norm=norm)
-        self.conv2 = BasicConv2d(64, 128, kernel_size=3, padding=1, norm=norm)
-        self.conv3 = BasicConv2d(128, 128, kernel_size=3, padding=1, norm=norm)
-
-        self.inplanes = 128
-
-        self.use_adaptor = use_adaptor
-
-        self.layer1 = self._make_layer(block, 128, layers[0], use_adaptor=use_adaptor)
-        self.layer2 = self._make_layer(block, 128, layers[1], stride=2, use_adaptor=use_adaptor)
-        self.layer3 = self._make_layer(block, 128, layers[2], stride=2, use_adaptor=use_adaptor)
-        self.layer4 = self._make_layer(block, 128, layers[3], stride=2, use_adaptor=use_adaptor)
-
-        self.conv_1 = BasicConv2d(640, 256, kernel_size=3, padding=1, norm=norm)
-        self.conv_2 = BasicConv2d(256, inv_dim, kernel_size=3, padding=1, norm=norm)
+        self.conv_1 = BasicConv2d(640, 256, kernel_size=3, padding=1, norm=late_norm, scale_in=scale_in)
+        self.conv_2 = BasicConv2d(256, inv_dim, kernel_size=3, padding=1, norm=late_norm, scale_in=scale_in)
         # Decoupling branch (Iteration-15 shortlist): a SECOND bottleneck head with its
         # own capacity. The invariant head (conv_2) keeps the full inv_dim and carries
         # GMSIFC+LSCC+SupCon; the corruption head (conv_corr) is either an independent
@@ -162,7 +213,7 @@ class ResNet_34(nn.Module):
         # direction -- the Iteration-19.12 candidate for the cleaner general fix).
         self.scale_only = scale_only
         if corr_dim > 0:
-            self.conv_corr = BasicConv2d(256, corr_dim, kernel_size=3, padding=1, norm=norm)
+            self.conv_corr = BasicConv2d(256, corr_dim, kernel_size=3, padding=1, norm=late_norm, scale_in=scale_in)
             self.semantic_output = nn.Conv2d(inv_dim + corr_dim, nclasses, 1)
         else:
             self.conv_corr = None
@@ -173,8 +224,8 @@ class ResNet_34(nn.Module):
             self.aux_head2 = nn.Conv2d(128, nclasses, 1)
             self.aux_head3 = nn.Conv2d(128, nclasses, 1)
 
-    def _make_layer(self, block, planes, blocks, stride=1, dilate=False, use_adaptor=False):
-        norm_layer = self._norm_layer
+    def _make_layer(self, block, planes, blocks, stride=1, dilate=False, use_adaptor=False, norm=None):
+        norm_layer = self._norm_layer if norm is None else norm_layer_for(norm, self.scale_in)
         downsample = None
         previous_dilation = self.dilation
         if dilate:
