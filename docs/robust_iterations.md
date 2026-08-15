@@ -2763,3 +2763,26 @@ non-zero (direction preserved) with stds ~1, vs full IN which erases the means.
 Micro-gate it against the channel-restricted winner (19.12) before the medium run:
 if scale-only matches or beats inputin_in_chan on both conditions, it is the simpler
 and more general paper story; the medium run then commits whichever wins.
+
+### 19.12.2 The scale-only test is negative — chan is confirmed as the design
+
+The scale-only variant (divide by per-scan std, no mean subtraction, on ALL channels)
+was micro-gated vs plain DGLSS++:
+
+| metric | plain DGLSS++ | scale-only | chan (19.12 winner) |
+| :--- | :--- | :--- | :--- |
+| fog oracle | 0.159 | 0.086 | **0.175** |
+| crosstalk oracle | 0.214 | 0.113 | **0.303** |
+| fog naive | 0.089 | 0.065 | 0.157 |
+| crosstalk naive | 0.118 | 0.089 | 0.291 |
+
+**Scale-only is clearly negative.** Dividing ALL channels by per-scan std — including
+the xyz geometry — collapsed the class structure the clean-stat normalization
+provided (corr_tightness car fog 0.89->0.47, crosstalk 0.84->0.51; AL purity 0.435 /
+0.364 vs 0.560 / 0.506). The xyz channels' ABSOLUTE scale carries the near-vs-far
+class separation; per-scan std normalization erases it. This is a valuable negative:
+it confirms the channel-restricted design (leave xyz in clean stats entirely) is not
+one option among many but the necessary design. The Iteration-19.12 winner
+`inputin_in_chan` stands as the covariate-shift-aware candidate.
+
+**Decision: commit `supcon_vib_dglsspp_inputin_in_chan` to the full medium run.**
