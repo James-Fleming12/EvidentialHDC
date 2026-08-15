@@ -218,3 +218,49 @@ instead of the current ordering).
 2. **Convergence**: the gains are measured at the ep-10 optimal window; does a
    sensible convergence metric or more stable convergence behavior confirm the
    extractor's peak is stable?
+
+### Iteration C7: the binarization diagnostic (2026-08-15)
+
+**Goal.** C6 found the healthy-condition ceiling loss is a PACKING loss in binarized
+space (continuous structure kept, HDC-oracle drops). This iteration diagnoses what
+the current `sign(z @ R)` binarization loses and tests whether an alternative
+encoding recovers the healthy ceilings without losing the fog/crosstalk gains.
+
+**What the current binarization does.** `get_hdc_projection` builds a random +-1
+matrix R (dim_in x 10000); features are binarized as `sign(z @ R)` — threshold 0 per
+coordinate, all coordinates equally weighted. Prototypes are per-class means of the
+binarized clean codes.
+
+**What the diagnostic measures (on frozen features, no training):**
+
+1. **A: the pre-sign margin fraction** — the fraction of `|z @ R| < eps` coordinates
+   (default eps=0.1). A coordinate near 0 is threshold-hugging: it flips sign on
+   small feature noise. If the cov-shift HEALTHY features have a higher near-0
+   fraction than DGLSS++ (B > A on snow/wet_ground), that is the quantitative
+   signature of the packing loss — the cov-shift normalization moved the healthy
+   features closer to the sign decision boundary, so sign() binarizes them
+   unreliably.
+2. **B: three alternative encodings, on the same frozen features:**
+   - `bias`   : `sign(z @ R - b)` with per-coordinate b = median of the CLEAN
+     projection. Each coordinate binarizes around its clean-typical value, not an
+     arbitrary 0 — so healthy-condition coordinates that cov-shift scaled away from 0
+     are re-centered.
+   - `zscore` : `sign((z @ R - b) / s)` with per-coordinate clean mean and std.
+     Z-scores the projection so every coordinate contributes equally before
+     binarization — undoes the per-dimension scale change InstanceNorm introduced.
+   - `fourier`: the other standard HDC style — `[cos(z @ w), sin(z @ w)]` with random
+     frequencies w (dim_in x 10000, continuous codes, dim 20000). No sign; a smooth
+     periodic encoding. Tests whether retaining continuous phase information fixes
+     what hard sign() loses.
+
+   For each encoding, on each condition: the frozen-prototype decode (zs) and the
+   oracle decode (re-estimate prototypes from corrupted labeled points).
+
+**Decision rule.** If on the healthy conditions an alternative encoding recovers the
+cov-shift oracle toward (or above) DGLSS++'s level WITHOUT dropping the fog/crosstalk
+gain, that encoding is the fix — and it can be adopted decoder-side (the extractor is
+unchanged, only the HDC projection/binarization is swapped). If `margin_frac` B > A
+confirms the packing loss, the mechanism is validated and the fix is a scale-aware or
+bias-aware binarization.
+
+Run: `bash run_binarization_diag.sh 3` (both ep10 + ep21, eval-only, ~1-1.5h).
