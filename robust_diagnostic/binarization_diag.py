@@ -103,7 +103,7 @@ def mean_iou(d, classes):
     return sum(vs) / len(vs) if vs else float('nan')
 
 
-def encode(feats, proj, mode, bias=None, scale=None, device='cuda', chunk=200000):
+def encode(feats, proj, mode, bias=None, scale=None, device='cuda', chunk=100000):
     """Encode features into the HDC space, CHUNKED to bound memory (the clean pool is
     millions of points x 10000 dims; one matmul is hundreds of GB). proj is the
     projection/frequency matrix. Returns the code (n, code_dim) on cpu.
@@ -180,7 +180,7 @@ def margin_fraction(pre_proj, eps=0.1):
     return float((p.abs() < eps).float().mean().item())
 
 
-def margin_frac_chunked(feats, proj, eps=0.1, device='cuda', chunk=200000):
+def margin_frac_chunked(feats, proj, eps=0.1, device='cuda', chunk=100000):
     """margin_fraction computed on the FULL clean pool without OOM (chunked)."""
     tot, near = 0.0, 0.0
     for i in range(0, len(feats), chunk):
@@ -224,6 +224,14 @@ def main():
     clean_parser = build_parser(args.kitti_dir, DATA, ARCH)
     fa, la = extract_features(model_a, clean_parser, device, args.frames)
     fb, lb = extract_features(model_b, clean_parser, device, args.frames)
+    # Cap the clean pool: the full 8M-point set is unnecessary for prototypes and is
+    # the main CPU-memory driver. Use a bounded sample for the clean prototypes too.
+    MAX_CLEAN = 1000000
+    ca_idx = torch.randperm(len(fa))[:MAX_CLEAN]
+    fa, la = fa[ca_idx], la[ca_idx]
+    cb_idx = torch.randperm(len(fb))[:MAX_CLEAN]
+    fb, lb = fb[cb_idx], lb[cb_idx]
+    print(f"clean pool capped to {MAX_CLEAN} points per extractor")
 
     # projections: sign-style R (dim_in x DIM_OUT) and fourier frequencies w (dim_in x DIM_OUT)
     torch.manual_seed(42)
@@ -232,18 +240,24 @@ def main():
     w = torch.randn(fa.shape[1], DIM_OUT) * 0.5
     R, w = R.to(device), w.to(device)
 
-    # per-coordinate clean bias / scale for the adaptive binarizations
-    def clean_stats(f_clean, proj):
-        # chunked: the full clean pool (millions of points) x 10000 dims is far too
-        # large for one matmul (8M x 10000 = 320GB). Chunk to bound the peak tensor.
-        p_chunks = []
-        chunk = 200000
-        for i in range(0, len(f_clean), chunk):
-            p_chunks.append((f_clean[i:i + chunk].to(device) @ proj).cpu())
-        p = torch.cat(p_chunks, dim=0)
-        b = p.median(dim=0).values
-        s = p.std(dim=0) + 1e-6
-        return b.cpu(), s.cpu()
+    # per-coordinate clean bias / scale for the adaptive binarizations. Uses a BOUNDED
+    # sample of the clean pool (the full 8M-point projection is hundreds of GB) and
+    # incremental mean/var (no torch.cat of the full projection). Bias = the per-coord
+    # mean (a robust central tendency for re-centering; exact median is not worth 40GB).
+    def clean_stats(f_clean, proj, max_pts=1000000):
+        idx = torch.randperm(len(f_clean))[:max_pts]
+        f_sub = f_clean[idx]
+        n = len(f_sub)
+        mean = torch.zeros(DIM_OUT)
+        sq = torch.zeros(DIM_OUT)
+        for i in range(0, n, 200000):
+            p = (f_sub[i:i + 200000].to(device) @ proj).cpu().float()
+            k = p.shape[0]
+            mean += p.sum(dim=0)
+            sq += (p ** 2).sum(dim=0)
+        mean = mean / n
+        var = (sq / n - mean ** 2).clamp(min=1e-6)
+        return mean.cpu(), var.sqrt().cpu()
 
     bias_a, scale_a = clean_stats(fa, R)
     bias_b, scale_b = clean_stats(fb, R)
@@ -258,6 +272,11 @@ def main():
         pa, pl = extract_features(model_a, build_parser(cdir, DATA, ARCH), device, args.frames)
         pb, plb = extract_features(model_b, build_parser(cdir, DATA, ARCH), device, args.frames)
         assert torch.equal(pl, plb), f"{cond} labels must align"
+        # keep only pool + val points; the full 8M-point pool is unnecessary and the
+        # main CPU-memory driver
+        keep = min(len(pa), args.pool_size + args.val_size)
+        keep_idx = torch.randperm(len(pa))[:keep]
+        pa, pb, pl = pa[keep_idx], pb[keep_idx], pl[keep_idx]
         torch.manual_seed(42)
         perm = torch.randperm(len(pa))
         pa, pb = pa[perm], pb[perm]
@@ -301,12 +320,12 @@ def main():
             zs_b = mean_iou(per_class_iou(decode(vb_c, proto_b, lbl_b, device), vl, range(1, NUM_CLASSES)), range(1, NUM_CLASSES))
 
             # oracle: re-estimate from corrupted labeled POOL points (bounded, 100k)
-            poa_c = enc_a(po_a)
-            pob_c = enc_b(po_b)
             ora_a, ol_a = build_protos_stream(po_a, po_l, enc_a, device=device)
             ora_b, ol_b = build_protos_stream(po_b, po_l, enc_b, device=device)
             or_a = mean_iou(per_class_iou(decode(va_c, ora_a, ol_a, device), vl, range(1, NUM_CLASSES)), range(1, NUM_CLASSES))
             or_b = mean_iou(per_class_iou(decode(vb_c, ora_b, ol_b, device), vl, range(1, NUM_CLASSES)), range(1, NUM_CLASSES))
+            # free the large val codes before the next mode (fourier codes are 8GB each)
+            del va_c, vb_c
 
             results[cond][mode] = {'zs_A': zs_a, 'zs_B': zs_b, 'oracle_A': or_a, 'oracle_B': or_b}
             print(f"  {mode:<8} zs A {zs_a:.4f} B {zs_b:.4f} | oracle A {or_a:.4f} B {or_b:.4f}")
