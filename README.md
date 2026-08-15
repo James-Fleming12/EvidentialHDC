@@ -260,6 +260,11 @@ reaches fog 0.244 (kNN) and crosstalk 0.456 (BN) per the
 across the healthy conditions — the complete per-condition comparison is in those
 logs.
 
+**The cov-shift extractor's development, per-iteration method details, the
+healthy-condition ceiling-loss diagnostic (a packing/binarization loss, not a
+direction loss), and the open projection/binarization design questions are tracked
+in [`docs/cov_shift/cov_shift_iterations.md`](docs/cov_shift/cov_shift_iterations.md).**
+
 ---
 
 ## 3. Pillar 2: label-free test-time adaptation (raises mIoU on the healthy conditions)

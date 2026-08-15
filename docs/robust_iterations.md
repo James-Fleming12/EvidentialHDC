@@ -2884,3 +2884,12 @@ fix is to make the cov-shift normalization preserve the healthy conditions' anis
 only to the bottleneck channels that fog/crosstalk recover through, not the whole
 backbone). That would recover the healthy-condition ceilings WITHOUT reintroducing
 the fog/crosstalk loss -- the next cov-shift improvement.
+
+### 19.14.1 The cov-shift dedicated doc
+
+The cov-shift extractor's full development — method, measured performance, the
+healthy-condition ceiling-loss diagnostic (a packing/binarization loss, not a
+direction loss), and the open projection/binarization design questions — is tracked
+in its own dedicated doc: `docs/cov_shift/cov_shift_iterations.md` (Iterations
+C1-C6). The README Pillar-1 tables summarize the extractor comparison; the per-class
+diagnostic numbers are in that doc.
