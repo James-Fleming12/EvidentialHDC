@@ -23,6 +23,7 @@
 set -u
 GPU="${1:-3}"
 SLEEP="${2:-1800}"
+STALL_MIN="${3:-60}"   # minutes of no checkpoint-write before declaring training done
 METHOD="supcon_vib_dglsspp_inputin_in_chan"
 MED_DIR="robust_diagnostic/logs/med_$METHOD"
 CKPT="$MED_DIR/$METHOD/SENet"
@@ -32,7 +33,8 @@ SNAP_DIR="robust_diagnostic/logs/monitor_covshift"
 mkdir -p "$SNAP_DIR"
 LOG="logs/covshift_med_monitor.log"
 : > "$LOG"
-echo "Monitoring $CKPT every ${SLEEP}s; results -> $LOG" | tee -a "$LOG"
+echo "Monitoring $CKPT every ${SLEEP}s + analysis time; results -> $LOG" | tee -a "$LOG"
+echo "Stall detection: exit only if the checkpoint has not been written for >${STALL_MIN} min" | tee -a "$LOG"
 
 while [ ! -f "$CKPT" ]; do
   echo "[$(date +%H:%M)] checkpoint not present yet, waiting..." | tee -a "$LOG"
@@ -41,15 +43,38 @@ done
 
 last_ep=-1
 while true; do
+  # NOTE: the interval between two epoch-reads is SLEEP + the extractor_diff analysis
+  # time (~10-15 min), and the analysis runs on the SAME GPU, slowing training. So a
+  # single "same epoch as last time" read is NOT a stall -- the checkpoint may simply
+  # not have completed one epoch yet under the contention. Stall is judged by the
+  # checkpoint FILE's last-write time: training overwrites SENet every epoch, so an
+  # old mtime is the reliable signal that training is done/stuck.
   ep=$(python3 -c "
 import torch
 try:
     print(torch.load('$CKPT', map_location='cpu')['epoch'])
 except Exception:
     print('?')" 2>/dev/null)
+
+  # seconds since the checkpoint was last written (training's per-epoch save)
+  age_s=$(python3 -c "
+import os, time
+p = '$CKPT'
+if os.path.exists(p):
+    print(int(time.time() - os.path.getmtime(p)))
+else:
+    print(999999)" 2>/dev/null)
+  age_min=$(( ${age_s:-999999} / 60 ))
+
   if [ "$ep" = "$last_ep" ]; then
-    echo "[$(date +%H:%M)] epoch $ep unchanged (training done or stalled); exiting" | tee -a "$LOG"
-    exit 0
+    if [ "$age_min" -gt "$STALL_MIN" ]; then
+      echo "[$(date +%H:%M)] epoch $ep unchanged AND checkpoint unwritten for "
+           "${age_min} min (>${STALL_MIN}); training done or stuck -- exiting" | tee -a "$LOG"
+      exit 0
+    else
+      echo "[$(date +%H:%M)] epoch $ep still current but checkpoint written ${age_min} min "
+           "ago -- training slowed by the analysis, continuing..." | tee -a "$LOG"
+    fi
   fi
   last_ep="$ep"
 
