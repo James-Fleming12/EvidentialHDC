@@ -36,6 +36,7 @@
 #   bash run_micro_c8fix.sh 3 8 0.1 scope,scalein   # subset
 #   bash run_micro_c8fix.sh 3 8 0.1 scope,scalein,scalereg resume   # continue training
 #   bash run_micro_c8fix.sh 3 8 0.1 scope,scalein,scalereg gate     # skip training, gate only
+#   SKIP_EVAL=1 bash run_micro_c8fix.sh 3 8 0.1 scalereg gate        # gate only, no hdc_rule/nusc
 
 set -u
 set -o pipefail
@@ -45,7 +46,10 @@ CUTOFF="${3:-0.1}"
 VARIANTS="${4:-scope,scalein,scalereg}"
 MODE="${5:-train}"
 NUSC_DIR="${NUSC_DIR:-/mnt/alpha/jmfleming/nuscenes_kitti}"
-echo "Using GPU $GPU, $EPOCHS ep / $CUTOFF cutoff, mode=$MODE, NuScenes=$NUSC_DIR"
+# SKIP_EVAL=1 skips the overnight eval stages (hdc_rule + nusc) -- use when those
+# already produced logs/JSONs and you only need to re-run the training/gates.
+SKIP_EVAL="${SKIP_EVAL:-0}"
+echo "Using GPU $GPU, $EPOCHS ep / $CUTOFF cutoff, mode=$MODE, NuScenes=$NUSC_DIR, SKIP_EVAL=$SKIP_EVAL"
 
 BASE="supcon_vib_dglsspp_inputin_in_chan"
 FAIL=false
@@ -128,11 +132,15 @@ run_nusc() {
 }
 
 echo ""
-echo "=== Overnight eval stages (ep10 + ep21 cov-shift weights) ==="
-run_hdc_rule "$EP10_CKPT" "covshift_ep10"
-run_hdc_rule "$EP21_CKPT" "covshift_ep21"
-run_nusc "$EP10_CKPT" "covshift_ep10"
-run_nusc "$EP21_CKPT" "covshift_ep21"
+if [ "$SKIP_EVAL" = "1" ]; then
+  echo "=== SKIP_EVAL=1: skipping hdc_rule + nusc overnight stages ==="
+else
+  echo "=== Overnight eval stages (ep10 + ep21 cov-shift weights) ==="
+  run_hdc_rule "$EP10_CKPT" "covshift_ep10"
+  run_hdc_rule "$EP21_CKPT" "covshift_ep21"
+  run_nusc "$EP10_CKPT" "covshift_ep10"
+  run_nusc "$EP21_CKPT" "covshift_ep21"
+fi
 
 echo ""
 echo "=== C8 LEVER VERDICT ==="
