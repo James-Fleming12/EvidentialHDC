@@ -157,6 +157,10 @@ def main():
     parser.add_argument("--frames", type=int, default=100)
     parser.add_argument("--pool_size", type=int, default=100000)
     parser.add_argument("--val_size", type=int, default=100000)
+    parser.add_argument("--max_clean", type=int, default=200000,
+                        help="cap on the clean points used for the R4 HDC-code probe fit "
+                             "(binarizing the full 8M-point clean pool is 320GB; the probe "
+                             "only needs a bounded subsample)")
     parser.add_argument("--path_b", type=str, default=DGLSSPP_PATH)
     parser.add_argument("--method_b", type=str, default=DGLSSPP_METHOD)
     parser.add_argument("--label_b", type=str, default="covshift")
@@ -186,10 +190,18 @@ def main():
     # R4: is the HDC CODE itself linearly separable? Fit a LogisticRegression on the
     # binarized 10k-d code. clean-fit = frozen reference (zs); per-condition pool-refit
     # = oracle. If R4 >> R1, the nearest-centroid rule misses a strong linear signal.
-    clean_codes = hdc_codes(fa, proj, device)
+    # BOUNDED: binarizing the full 8M-point clean pool is 8M x 10000 = 320GB. The R4
+    # probe fit only needs a capped subsample (and it's a probe, not a prototype
+    # estimate), so compute the clean codes once on a bounded random sample.
+    max_clean = min(args.max_clean, len(fa))
+    clean_idx = torch.randperm(len(fa))[:max_clean]
+    fa_s, la_s = fa[clean_idx], la[clean_idx]
+    clean_codes = hdc_codes(fa_s, proj, device)
     clf_hdc = LogisticRegression(max_iter=1000, C=1.0)
     hdc_fit_n = min(100000, len(clean_codes))
-    clf_hdc.fit(clean_codes[:hdc_fit_n].numpy(), la[:hdc_fit_n].numpy())
+    clf_hdc.fit(clean_codes[:hdc_fit_n].numpy(), la_s[:hdc_fit_n].numpy())
+    # clean spreads for R2-zs also use the bounded sample
+    spread_clean = per_class_spread(clean_codes, la_s, base_lbls)
 
     results = {}
     print(f"\n{'='*100}\n=== {args.label_b}: HDC decision-rule diagnostic ===\n{'='*100}")
@@ -207,8 +219,7 @@ def main():
         codes = hdc_codes(val, proj, device)
         # zero-shot: frozen clean prototypes / probes, all four rules
         r1_zs = compute_miou(decode_rule1(codes, base_protos, base_lbls, device), vl)
-        # R2 zero-shot needs the CLEAN class spreads (the frozen prototypes' own scale)
-        spread_clean = per_class_spread(hdc_codes(fa, proj, device), la, base_lbls)
+        # R2 zero-shot uses the clean class spreads computed once above
         r2_zs = compute_miou(decode_rule2(codes, base_protos, base_lbls, spread_clean, device), vl)
         r3_zs = compute_miou(decode_rule3(val, clf), vl)
         r4_zs = compute_miou(decode_rule4(codes, clf_hdc), vl)
