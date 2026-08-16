@@ -32,7 +32,7 @@ if [[ ",$STAGES," == *",scope,"* ]]; then
   CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/isotropy_diag.py \
     --methods "${BASE}_scope" --epochs 1 --cutoff 0.05 \
     --log_dir "$DRY_DIR/scope" \
-    2>&1 | tee "logs/micro_c8_dry_scope_train.log" || fail "scope train"
+    > "logs/micro_c8_dry_scope_train.log" 2>&1 || fail "scope train"
 
   echo "=== [scope] dry cond_structure gate (2 frames) ==="
   CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/cond_structure_diag.py \
@@ -41,7 +41,7 @@ if [[ ",$STAGES," == *",scope,"* ]]; then
     --frames 2 --pool_size 2000 --val_size 2000 \
     --conds snow,wet_ground,fog,crosstalk \
     --out "$DRY_DIR/gate_scope.json" \
-    2>&1 | tee "logs/micro_c8_dry_scope_gate.log" || fail "scope gate"
+    > "logs/micro_c8_dry_scope_gate.log" 2>&1 || fail "scope gate"
 fi
 
 if [[ ",$STAGES," == *",hdc_rule,"* ]]; then
@@ -52,7 +52,7 @@ if [[ ",$STAGES," == *",hdc_rule,"* ]]; then
     --frames 2 --pool_size 2000 --val_size 2000 \
     --conds snow,wet_ground,fog,crosstalk \
     --out "$DRY_DIR/hdc_rule.json" \
-    2>&1 | tee "logs/micro_c8_dry_hdc_rule.log" || fail "hdc_rule"
+    > "logs/micro_c8_dry_hdc_rule.log" 2>&1 || fail "hdc_rule"
 fi
 
 if [[ ",$STAGES," == *",nusc,"* ]]; then
@@ -63,7 +63,7 @@ if [[ ",$STAGES," == *",nusc,"* ]]; then
     --frames 2 --pool_size 2000 --val_size 2000 \
     --nusc_dir "$NUSC_DIR" \
     --out "$DRY_DIR/nusc.json" \
-    2>&1 | tee "logs/micro_c8_dry_nusc.log" || fail "nusc"
+    > "logs/micro_c8_dry_nusc.log" 2>&1 || fail "nusc"
 fi
 
 echo ""

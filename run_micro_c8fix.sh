@@ -38,6 +38,7 @@
 #   bash run_micro_c8fix.sh 3 8 0.1 scope,scalein,scalereg gate     # skip training, gate only
 
 set -u
+set -o pipefail
 GPU="${1:-3}"
 EPOCHS="${2:-8}"
 CUTOFF="${3:-0.1}"

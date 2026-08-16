@@ -101,7 +101,8 @@ def proto_miou(feats, lbls, base_protos, proto_lbls, proj, device, chunk=100000)
     preds = []
     for s in range(0, len(feats), chunk):
         hc = F.normalize(torch.sign(feats[s:s + chunk].to(device) @ proj), p=2, dim=1)
-        preds.append(proto_lbls[hc @ F.normalize(base_protos, p=2, dim=1).T].cpu())
+        sims = hc @ F.normalize(base_protos, p=2, dim=1).T
+        preds.append(proto_lbls[sims.argmax(dim=1)].cpu())
     preds = torch.cat(preds, dim=0)
     return compute_miou(preds, lbls)
 
