@@ -124,6 +124,7 @@ def class_means(codes, lbls, num_classes=NUM_CLASSES):
 def dec_cosine(codes, P, lbls, chunk=100000):
     """Cosine to prototype rows P (C x d). P rows are pre-normalized (or -inf for
     absent classes). Scores = h . P_c with ||h|| constant for +/-1 codes."""
+    P = P.detach().cpu()
     preds = []
     for s in range(0, len(codes), chunk):
         h = codes[s:s + chunk].float()          # ||h|| = sqrt(d), constant
