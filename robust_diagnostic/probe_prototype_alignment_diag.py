@@ -44,7 +44,6 @@ import json
 import yaml
 import torch
 import torch.nn.functional as F
-from sklearn.linear_model import LogisticRegression
 
 from dataset.kitti.parser import Parser
 from modules.gen_trainers import GenTrainer
@@ -189,11 +188,12 @@ def main():
         pool_codes = hdc_codes(pool, proj, device)
         val_codes = hdc_codes(val, proj, device)
 
-        # learned probe (the reference it must match)
+        # learned probe (the reference it must match). W = ridge W (d x C, full 17-class
+        # row space). The intercept/prior is a separate design constraint (the README
+        # separates it from the weight pathway), so the reference uses a zero intercept
+        # and the candidates are matched in the same full-class space.
         W = ridge_fit(pool_codes, pl, args.lam, device)
-        lr = LogisticRegression(max_iter=1000, C=1.0)
-        lr.fit(pool_codes.numpy(), pl.numpy())
-        b = torch.tensor(lr.intercept_, dtype=torch.float32)
+        b = torch.zeros(W.shape[1])
 
         # candidate prototypes. W is (d x C): the per-class prototype is W_c (row c).
         P_mean = class_means(pool_codes, pl)                    # R1 class mean
