@@ -189,8 +189,8 @@ def main():
         # ---- Diagonal probe: shared coordinate weighting q, W_c = q * mu_c ----
         # q_j = 1/var_j (pooled across classes) -- the shared-diagonal transform.
         var_j = (mu ** 2).mean(dim=0)                      # pooled per-coord "variance"
-        q = 1.0 / (var_j + args.lam)
-        W_shared = (q.unsqueeze(1) * mu).t()               # (d, C) W_c = q .* mu_c
+        q = 1.0 / (var_j + args.lam)                       # (d,)
+        W_shared = (mu * q).t()                            # (d, C) W_c = q .* mu_c
         r['shared_diag'] = {'miou': compute_miou(decode(W_shared, val_codes), vl),
                             'update_s': 0.0, 'order': '1st'}
 
