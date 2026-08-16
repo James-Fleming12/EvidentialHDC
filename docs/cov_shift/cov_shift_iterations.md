@@ -211,11 +211,19 @@ instead of the current ordering).
 
 ## Open questions
 
-1. **Can the projection matrix or binarization be redesigned** so the healthy-
+1. ~~**Can the projection matrix or binarization be redesigned** so the healthy-
    condition packing survives the cov-shift normalization without losing the
-   fog/crosstalk gains? (The C6 diagnostic says: it is a packing/binarization loss —
-   the direction survives.)
-2. **Convergence**: the gains are measured at the ep-10 optimal window; does a
+   fog/crosstalk gains?~~ **CLOSED.** C8 rejected encoding changes (all encodings lose
+   equally); C9 rejected the training-side normalization-scope levers at micro scale.
+   The packing loss is not recoverable by changing the extractor's normalization or
+   the binarization.
+2. **Can a LEARNED HDC-code decoder replace nearest-centroid?** C10 says yes (R4 =
+   1.24-1.77x), but it needs labeled data (frozen clean-fit is the label-free
+   version). Open: does a label-free pool-refit R4 hold the C10 gain without labels?
+3. **Does the NuScenes cross-domain gap give TTA real headroom?** C11 found a
+   +0.05-0.06 oracle-zs gap on NuScenes vs ~0 on KITTI clean. Open: can naive TTA
+   (re-estimating the decoder on the NuScenes pool) take that gap?
+4. **Convergence**: the gains are measured at the ep-10 optimal window; does a
    sensible convergence metric or more stable convergence behavior confirm the
    extractor's peak is stable?
 
@@ -341,9 +349,9 @@ Candidate rules, in order of how much of the HDC/TTA story they keep:
    of (1): estimate each class's feature scale on the corrupted pool, divide before
    the cosine. Minimal code, directly attacks corr_tight.
 
-Status: deferred until the C8 training-side micro runs come back (they are quick).
-If they recover the healthy packing, no decision-rule change is needed; if not, (1)
-is the first decision-rule experiment.
+Status: RESOLVED by C10 -- the decision rule IS the recovery path. C10 showed a
+learned probe on the HDC code (R4) recovers 1.24-1.77x over nearest-centroid on
+every condition, decisively. See Iteration C10.
 
 
 
@@ -359,18 +367,128 @@ medium baselines (plain DGLSS++ is a full medium run). The micro gate is a
 DIRECTIONAL test: does the lever change the corr_tight / zs trajectory toward
 recovering the healthy packing, while keeping the fog/crosstalk direction?
 
-**scope gate (micro, dict epoch 7 vs plain DGLSS++):**
-- On the HEALTHY conditions the scope variant does NOT recover the packing at micro
-  scale: wet_ground corr_tight B < A for most classes (car 0.96->0.69, road
-  0.98->0.90, og 0.86->0.71) and zs_B < zs_A (car 0.867->0.444, road 0.658->0.318,
-  og 0.775->0.188). The healthy zs are much lower than even the cov-shift ep10
-  baseline's healthy zs (which was ~0.40 on wet_ground) -- consistent with the micro
-  model being undertrained AND the scoping not recovering the packing.
-- On FOG/CROSSTALK the scope micro still shows the cov-shift recovery signature
-  (direction/feat_cos B >> A: fog og 0.02->0.77, crosstalk og -0.03->0.76) though the
-  zs are low because the micro model is weak.
+**Gate results (micro B vs plain DGLSS++ medium A), mean over present classes:**
 
-**Interpretation.** Scoping InstanceNorm to the late stages did not obviously recover
-the healthy packing at micro scale, but this is a weak (undertrained) comparison. The
-full C8 verdict needs the medium runs. scalein/scalereg micros ran in the same sweep.
+| variant | cond | corr_tight A->B | zs A->B |
+| :--- | :--- | :--- | :--- |
+| scope | snow | 0.836 -> 0.797 | 0.422 -> 0.317 |
+| scope | wet_ground | 0.860 -> 0.771 | 0.468 -> 0.237 |
+| scope | fog | 0.852 -> 0.762 | 0.082 -> 0.157 |
+| scope | crosstalk | 0.875 -> 0.784 | 0.126 -> 0.296 |
+| scalein | snow | 0.836 -> 0.805 | 0.422 -> 0.301 |
+| scalein | wet_ground | 0.860 -> 0.783 | 0.468 -> 0.270 |
+| scalein | fog | 0.852 -> 0.759 | 0.082 -> 0.161 |
+| scalein | crosstalk | 0.875 -> 0.790 | 0.126 -> 0.294 |
+| scalereg | snow | 0.836 -> 0.780 | 0.422 -> 0.297 |
+| scalereg | wet_ground | 0.860 -> 0.754 | 0.468 -> 0.253 |
+| scalereg | fog | 0.852 -> 0.701 | 0.082 -> 0.152 |
+| scalereg | crosstalk | 0.875 -> 0.761 | 0.126 -> 0.288 |
+
+**Result: none of the three levers recovers the healthy packing at micro scale.**
+- On the healthy conditions (snow/wet_ground), all three variants have corr_tight_B
+  below A and healthy zs_B far below A (wet_ground zs ~0.24-0.27 vs A's 0.47). The
+  cov-shift healthy-condition packing loss is NOT reduced by scoping InstanceNorm,
+  scale-only normalization, or the feature-scale regularizer.
+- On fog/crosstalk the variants still show the cov-shift recovery signature (zs_B
+  > zs_A: fog ~0.15-0.16 vs 0.08, crosstalk ~0.29-0.30 vs 0.13), consistent with the
+  cov-shift direction surviving at micro scale -- but this is the same pattern as the
+  baseline cov-shift, not a lever-specific recovery.
+
+**Interpretation.** The training-side levers did not obviously recover the healthy
+packing in the directional micro test. The caveat stands: micro models are
+undertrained (zs levels are well below the cov-shift ep10 baseline's healthy zs of
+~0.40), so a medium run could still show a lever effect. But the micro signal is
+weak for all three, which combined with C8 (continuous-features loss, encoding-
+independent) points away from the normalization-scope levers and toward the decision
+rule (C10) as the more promising recovery path.
+
+### Iteration C10: the HDC decision-rule diagnostic (2026-08-16)
+
+C8 proved the healthy-ceiling loss survives every ENCODING change. C10 tests the
+DECISION RULE instead: on the frozen ep10/ep21 cov-shift features, compare four rules
+on the same code/prototypes:
+- **R1** baseline: unit-norm cosine to per-class prototypes (the current rule).
+- **R2** class-conditional: per-class scaled cosine (similarity / class spread).
+- **R3** learned 128-d probe: LogisticRegression on the continuous features.
+- **R4** learned HDC-code probe: LogisticRegression fit on the binarized 10k-d code
+  itself (clean-fit = zs, pool-refit = oracle).
+
+**Result: the HDC space IS linearly separable in a way the current implementation
+misses, decisively.**
+
+| cond | R1-orc | R2-orc | R3-orc | R4-orc | R4/R1 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| snow (ep10) | 0.408 | 0.349 | 0.329 | 0.510 | 1.25 |
+| wet_ground (ep10) | 0.425 | 0.362 | 0.349 | 0.683 | 1.61 |
+| fog (ep10) | 0.261 | 0.246 | 0.193 | 0.433 | 1.66 |
+| crosstalk (ep10) | 0.461 | 0.376 | 0.414 | 0.594 | 1.29 |
+| snow (ep21) | 0.395 | 0.350 | 0.333 | 0.491 | 1.24 |
+| wet_ground (ep21) | 0.405 | 0.384 | 0.336 | 0.668 | 1.65 |
+| fog (ep21) | 0.219 | 0.207 | 0.184 | 0.387 | 1.77 |
+| crosstalk (ep21) | 0.451 | 0.377 | 0.389 | 0.586 | 1.30 |
+
+- **R4 (linear probe on the HDC code) beats R1 (nearest-centroid) by 1.24-1.77x on
+  every condition and both checkpoints.** On fog it nearly doubles (0.26->0.43 ep10,
+  0.22->0.39 ep21); on wet_ground +61-65%. The recoverable signal IS in the binarized
+  code, and the nearest-centroid cosine throws a large fraction of it away.
+- **R2 (per-class scaled cosine) does NOT help** (R2 <= R1 everywhere). The per-class
+  spread rescaling does not capture the structure a learned linear boundary does.
+- **R3 (learned 128-d probe) is the WEAKEST of the four** on the oracle, including
+  below R4. The continuous 128-d space is less linearly separable than the binarized
+  10k-d code (consistent with the HDC projection preserving/expanding the class
+  structure).
+
+**Interpretation.** The current prototype-decoder is the bottleneck, and a learned
+decision rule on the HDC code is the fix. This is the "strong signal missed by the
+current implementation" the C8 thread was looking for. It does NOT require changing
+the extractor or the HDC encoding -- only the decode rule (R4-style: a linear probe
+fit on the code, either frozen or re-fit on a labeled pool). This is method-preserving
+in the sense that the code/prototype pipeline stays; the decoder gains a learned
+boundary. Caveat: the R4 probe is FIT on labeled data (clean or pool), so it changes
+the label-free story -- the label-free version is the FROZEN clean-fit probe (R4-zs),
+which at 0.43-0.50 healthy still beats R1-oracle (0.40-0.43) at zero-shot.
+
+### Iteration C11: NuScenes cross-domain zero-shot + oracle (2026-08-16)
+
+The ep10/ep21 KITTI-trained cov-shift weights are evaluated on real NuScenes
+(converted KITTI format, 32-beam sensor, shared 17-class space) for a zero-shot ->
+oracle gap: is there TTA headroom on the cross-domain target that did not exist on
+KITTI clean?
+
+| model | domain | zs | oracle | gap (oracle-zs) | lp_miou |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| cov-shift ep10 | KITTI clean | 0.492 | 0.493 | +0.001 | 0.437 |
+| cov-shift ep10 | NuScenes | 0.129 | 0.192 | +0.063 | 0.125 |
+| cov-shift ep21 | KITTI clean | 0.464 | 0.468 | +0.003 | 0.444 |
+| cov-shift ep21 | NuScenes | 0.127 | 0.181 | +0.054 | 0.110 |
+
+**Result: a cross-domain TTA gap exists that did not exist on KITTI.**
+- On KITTI clean, the cov-shift extractor's zs and oracle are essentially identical
+  (gap ~0.001-0.003) -- the "no headroom" pattern (naive TTA ~= ceiling) that makes
+  the healthy conditions a closed case.
+- On NuScenes, the gap opens to +0.054-0.063 (oracle 0.18-0.19 vs zs 0.13), i.e. the
+  frozen KITTI prototypes decode NuScenes ~26% worse than a NuScenes-labeled oracle.
+  That is recoverable structure TTA could take: the features DO retain domain-
+  transferable signal, but the frozen prototypes don't align to NuScenes.
+- The LP mIoU on NuScenes is low (0.11-0.13), so the continuous features transferred
+  weakly in absolute terms -- the gap is real but the base is low.
+
+**Interpretation.** NuScenes is a genuinely harder transfer than KITTI clean for the
+cov-shift extractor, and the oracle-zs gap is TTA-addressable headroom that did not
+exist on KITTI. Combined with C10 (a learned HDC-code probe recovers a large missed
+signal), the strongest next direction is a LABEL-FREE decoder that re-estimates a
+learned boundary on the NuScenes pool -- which is exactly what the cov-shift method's
+naive TTA could become on the cross-domain target. Note the dry-run caveat: these
+numbers are from the full 100-frame run, so they are the real result (the earlier
+2-frame dry-run numbers were only a smoke test).
+
+### Iteration C8.1: reproducibility fix in cond_structure_diag (2026-08-16)
+
+The scalereg gate crashed on fog with "labels must align": the parser randomly drops
+points per scan (`drop_points = random.uniform(0, 0.5)`), so two separate
+feature-extraction passes consumed different points and produced misaligned label
+streams. Fixed by extracting both models in one SHARED pass
+(`extract_features_pair`), guaranteeing A and B are evaluated on identical points.
+This was a latent bug that could have hit any cross-extractor gate.
+
 

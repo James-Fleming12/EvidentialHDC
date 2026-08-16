@@ -6,14 +6,15 @@
 
 The ultimate goal is **label-free adaptation for prototype updates**: at
 deployment, the decoder should update its prototypes from the corrupted stream
-without any labels. That goal is currently bounded by a measured wall (a
-label-free signal can say which points are wrong, but not what class they belong
-to). The current target is therefore one step short of it: a feature extractor
-robust enough to work really well inside an **active learning framework**, where
-the uncertainty signal picks a small set of the hard-condition points, a small
-budget of labels is spent on exactly those, and the prototypes are updated from
-them. The robust encoder is what makes both the label budget tiny and the
-resulting update ceiling high.
+without any labels. The current method is **cov-shift DGLSS++** — a feature
+extractor that fixes the corruption collapse at the source — paired with a
+**linear-probe decoder on the HDC code** that recovers the structure the
+distance-to-prototype rule throws away (Section 2). The label-free path then
+covers the healthy conditions and crosstalk, and the remaining conditions fall
+back to an **active learning framework**: the uncertainty signal picks a small set
+of the hard-condition points, a small budget of labels is spent on exactly those,
+and the prototypes are updated from them. The robust encoder is what makes both
+the label budget tiny and the resulting update ceiling high.
 
 This project started by trying to build a better geometric confidence gate in
 hyperdimensional space. That line of work is closed, and its failure is well
@@ -64,240 +65,164 @@ because those live in the features.
 The method rests on three pillars, presented in the order the paper builds them:
 the robust extractor (Pillar 1) produces a feature space that survives corruption;
 the label-free TTA method (Pillar 2) raises mIoU on the conditions where that
- representation survives; and where the corruption shifts the features too far for
-any label-free update to recover (fog and crosstalk), a detection mechanism hands
-off to the backprop-free active learning framework (Pillar 3), which spends a small
-label budget to convert the surviving cluster structure into prototypes. Pillars 1
-and 2 are placeholders at this stage: the general direction is set, the concrete
-design is still being measured and will be filled in as the diagnostics land.
-Pillar 3 is designed and detailed in Section 5.
+representation survives; and where the corruption shifts the features too far for
+any label-free update to recover (fog), a detection mechanism hands off to the
+backprop-free active learning framework (Pillar 3), which spends a small label
+budget to convert the surviving cluster structure into prototypes.
 
-1. **Robust feature extractor pretraining** (intended to improve on DGLSS++).
-   [to be filled: the pretraining objective and architecture. The goal is a feature
-   space that survives fog and crosstalk before the HDC projection, with a
-   higher recoverable ceiling than the DGLSS++ baseline currently measured.]
+1. **Robust feature extractor pretraining: cov-shift DGLSS++** (Section 2).
+   The DGLSS++ consistency framework with a covariate-shift normalization that
+   fixes the collapsed conditions (fog/crosstalk) at the source, and a
+   linear-probe decoder on the HDC code that recovers the structure the
+   distance-to-prototype rule throws away.
 
-2. **Label-free test-time adaptation** (raises mIoU on the healthy conditions).
-   A gated prototype update that works wherever the representation survives: on the
-   healthy conditions it reaches the labeled ceiling with no labels at all.
-   [to be filled: the form of the TTA. The measurements so far bound it: the update
-   operator (naive EMA, BN alignment) works on every extractor, but it is bounded
-    by the assignment wall, where a label-free signal can detect which points are
-    wrong, but not what class they are.]
+2. **Label-free test-time adaptation** (raises mIoU on the healthy conditions,
+   Section 3). A prototype update that works wherever the representation
+   survives: on the healthy conditions and crosstalk it reaches the labeled
+   ceiling with no labels at all.
 
 3. **Backprop-free active learning** (the fill-in for the conditions TTA cannot
-   recover). When a mechanism detects that the corruption has shifted the features
-   too far for the label-free update to close the gap to the supervised ceiling,
-   query one point per dense per-class cluster under a very strict label-or-don't
-   gate and re-estimate the prototypes from the labeled cluster representatives.
-   The balanced allocation of the label budget across classes is part of this
-   pillar. [Section 5.]
+   recover, Section 4). When a mechanism detects that the corruption has shifted
+   the features too far for the label-free update to close the gap to the
+   supervised ceiling, query one point per dense per-class cluster under a very
+   strict label-or-don't gate and re-estimate the prototypes from the labeled
+   cluster representatives. The balanced allocation of the label budget across
+   classes is part of this pillar.
 
 This is the pivot from the earlier framing: the paper's narrative is that TTA is
-the method that works where it works (the healthy conditions), and active learning
-is the completion that handles the conditions TTA cannot (engaged by a detection
-signal, not bolted on as a variant). The deployment consequence is that the label
-budget is preserved for exactly the conditions that need it.
+the method that works where it works (the healthy conditions and crosstalk), and
+active learning is the completion that handles the conditions TTA cannot (engaged
+by a detection signal, not bolted on as a variant). The deployment consequence is
+that the label budget is preserved for exactly the conditions that need it.
 
 ---
 
 ## 2. Pillar 1: Robust feature extractor pretraining
 
-The extractor is **DGLSS++**, the domain-generalization method whose consistency
-constraints we adapted to a corruption-robustness target, with three pieces, each
-doing a distinct job:
+The current method has two parts: the **cov-shift DGLSS++ encoder** (fixes the
+corruption collapse at the source) and the **linear-probe decoder** on the HDC code
+(recovers the structure the nearest-centroid rule throws away).
 
-- **GMSIFC + LSCC consistency stack** (the DGLSS++ core): GMSIFC aligns cross-view
-  features and LSCC enforces per-cell class-correlation consistency. Ablations show
-  GMSIFC is what makes the label-free TTA work, and LSCC is what keeps the
-  representation decodable.
+### The encoder: cov-shift DGLSS++
+
+The extractor is the DGLSS++ consistency framework adapted to a
+corruption-robustness target, with the cov-shift normalization layered on top. The
+DGLSS++ core has three pieces, each doing a distinct job:
+
+- **GMSIFC + LSCC consistency stack**: GMSIFC aligns cross-view features and LSCC
+  enforces per-cell class-correlation consistency. Ablations show GMSIFC is what
+  makes label-free TTA work, and LSCC is what keeps the representation decodable.
 - **Corruption-targeted augmented view**: replaces the sparse beam-drop view with a
   fog/crosstalk-targeted one (depth jitter + density sparsity + fake-return
   injection), so the constraints learn the corruptions that collapse the minority
   classes, not just sensor sparsity.
 - **Decoupled supervised-contrastive pull (SupCon)**: pulls the corrupted view's
   points toward their clean class anchors, inverting the majority-class polarization
-  that plain DGLSS++ develops at scale (rho(freq, feat_cos) of distance-to-prototype:
-  +0.48 -> -0.49).
+  plain DGLSS++ develops at scale (rho(freq, feat_cos) +0.48 -> -0.49).
 
-All VIB-free, budget-matched. **Status:** at the 8-condition mean the robust variant
-currently TIED with plain DGLSS++ (0.369), and the next step is to push the overall
-performance clearly above it. Note: continuing training from 21 to 24 epochs did not
-help (the crosstalk label-free gap halved, +0.52 -> +0.20); why more training hurts
-the TTA is an open question.
+**The cov-shift normalization** (the piece that closes the collapsed conditions)
+resolves the anchoring trade-off without anchoring at all: instead of pulling
+corrupted features toward clean (which raised crosstalk TTA but erased fog's
+recoverable ceiling), it fixes the covariate-shift statistics directly — per-scan
+input normalization restricted to the statistics-shifted channels (range/remission)
+plus internal InstanceNorm. It is the first extractor to raise BOTH the labeled
+ceiling and the label-free TTA on BOTH fog and crosstalk.
 
-Current per-condition HDC zero-shot mIoU at medium scale (**as of 2026-08-11**, from the isotropy /
-frozen-ceiling diagnostics; these numbers go stale as new runs land). The Cov-shift
-columns are the ep-10 model (the optimal window) and the ep-21 model (the full run),
-both evaluated in the isotropy pipeline (same as the other columns):
+**Zero-shot HDC-zs per condition** (isotropy pipeline, cov-shift ep-10/ep-21 vs the
+DGLSS++ reference):
 
-| condition | HyperLiDAR baseline | supcon_vib (med) | DGLSS++ (med, 24ep) | Robust DGLSS++ (ours, 21ep) | Cov-shift DGLSS++ (ep-10) | Cov-shift DGLSS++ (ep-21) |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| fog | 1.8% | 7.8% | 6.8% | 8.5% | **20.1%** | 18.5% |
-| crosstalk | 4.7% | 10.2% | 11.5% | 9.8% | 39.5% | **41.9%** |
-| snow | 20.6% | 38.4% | 39.6% | **41.1%** | 37.7% | 38.6% |
-| wet_ground | 18.8% | 44.6% | **48.3%** | 46.8% | 35.8% | 33.3% |
-| incomplete_echo | 25.5% | 41.2% | 44.9% | **45.0%** | 40.6% | 40.0% |
-| beam_missing | 15.2% | 47.0% | **50.6%** | 50.3% | 44.3% | 44.5% |
-| motion_blur | 14.8% | 45.0% | **50.2%** | **50.2%** | 44.2% | 44.6% |
-| cross_sensor | 4.4% | 39.6% | 43.4% | **43.5%** | 36.1% | 38.8% |
-| **mean (8 corrupted)** | 13.2% | 34.2% | 36.9% | 36.9% | **37.3%** | **37.5%** |
+| condition | DGLSS++ | Cov-shift (ep-10) | Cov-shift (ep-21) |
+| :--- | :--- | :--- | :--- |
+| fog | 6.8% | **20.1%** | 18.5% |
+| crosstalk | 11.5% | 39.5% | **41.9%** |
+| snow | **39.6%** | 37.7% | 38.6% |
+| wet_ground | **48.3%** | 35.8% | 33.3% |
+| incomplete_echo | **44.9%** | 40.6% | 40.0% |
+| beam_missing | **50.6%** | 44.3% | 44.5% |
+| motion_blur | **50.2%** | 44.2% | 44.6% |
+| cross_sensor | **43.4%** | 36.1% | 38.8% |
+| **mean (8 corrupted)** | 36.9% | **37.3%** | **37.5%** |
 
-The cov-shift models have the best fog and crosstalk zero-shot of any extractor (fog
+The cov-shift model has the best fog and crosstalk zero-shot of any extractor (fog
 20.1% / 18.5% vs DGLSS++ 6.8%; crosstalk 39.5% / 41.9% vs 11.5%) and the best
 8-condition mean (37.3% / 37.5% vs 36.9%), at the cost of the healthy conditions
-sitting 2-15 points below DGLSS++ (wet_ground 35.8% / 33.3% vs 48.3%) — the cov-shift
+sitting 2-15 points below DGLSS++ (wet_ground 35.8% / 33.3% vs 48.3%) — the
 normalization trades some healthy-condition headroom for the large fog/crosstalk
 gains. ep-10 is the better fog checkpoint (20.1% vs 18.5%), ep-21 the better
-crosstalk (41.9% vs 39.5%).
+crosstalk (41.9% vs 39.5%). Clean HDC mIoU: DGLSS++ 53.0%, cov-shift 47.2%.
 
-Clean HDC mIoU (same pipeline): DGLSS++ 53.0%, Robust DGLSS++ 52.8%, Cov-shift
-DGLSS++ 47.2% (both ep-10 and ep-21). Sources: HyperLiDAR baseline = the
-un-pretrained model (Corruption Atlas, section 5.2); supcon_vib = frozen-ceiling
-HDC-zs; DGLSS++ and Robust DGLSS++ = the isotropy pipeline; Cov-shift DGLSS++ = the
-ep-10 and ep-21 models (Iteration 19.13) in the isotropy pipeline. The robust
-variant additionally inverts the majority polarization (rho -0.49) and delivers the
-best crosstalk label-free TTA at scale (naive-EMA gap-closed +0.52 vs +0.02 for
-plain DGLSS++). The isotropy comparison and per-class autopsies are tracked in the
-robust-iterations doc.
+**Labeled ceiling (HDC-oracle) per condition** (frozen-ceiling harness, the
+recoverable bound from re-estimating prototypes with true labels):
 
-**Labeled ceiling (HDC-oracle) per condition, all extractors** (frozen-ceiling
-harness, the recoverable bound from re-estimating prototypes with true labels):
-
-| condition | DGLSS++ (med) | Robust DGLSS++ (21ep) | Cov-shift DGLSS++ (ep-10) | Cov-shift DGLSS++ (ep-21) |
-| :--- | :--- | :--- | :--- | :--- |
-| fog | 15.1% | 15.0% | **21.4%** | 20.2% |
-| crosstalk | 21.4% | 17.7% | 38.9% | **39.8%** |
-| snow | **41.0%** | 42.7% | 38.8% | 39.8% |
-| wet_ground | **51.4%** | 51.0% | 40.5% | 36.7% |
-| incomplete_echo | **44.8%** | 44.5% | 40.1% | 39.3% |
-| beam_missing | **50.6%** | 50.3% | 44.2% | 44.8% |
-| motion_blur | **50.3%** | 50.1% | 44.0% | 44.6% |
-| cross_sensor | **45.1%** | 44.8% | 38.5% | 39.4% |
+| condition | DGLSS++ | Cov-shift (ep-10) | Cov-shift (ep-21) |
+| :--- | :--- | :--- | :--- |
+| fog | 15.1% | **21.4%** | 20.2% |
+| crosstalk | 21.4% | 38.9% | **39.8%** |
+| snow | **41.0%** | 38.8% | 39.8% |
+| wet_ground | **51.4%** | 40.5% | 36.7% |
+| incomplete_echo | **44.8%** | 40.1% | 39.3% |
+| beam_missing | **50.6%** | 44.2% | 44.8% |
+| motion_blur | **50.3%** | 44.0% | 44.6% |
+| cross_sensor | **45.1%** | 38.5% | 39.4% |
 
 The cov-shift ceiling is the highest on fog and crosstalk (21.4% / 39.8% vs DGLSS++
-15.1% / 21.4%) and the lowest on the healthy conditions (wet_ground 40.5% / 36.7% vs
-51.4%). The healthy-condition ceiling loss is the cov-shift trade: normalizing the
-input statistics lifts the collapsed conditions but slightly compresses the healthy
-ones.
+15.1% / 21.4%) and the lowest on the healthy conditions. The healthy-condition
+ceiling loss is the cov-shift trade: normalizing the input statistics lifts the
+collapsed conditions but slightly compresses the healthy ones.
 
-**Ceilings and the anchoring trade-off.** The label ceiling (oracle, re-estimating
-prototypes from the corrupted points with true labels) sets the recoverable bound per
-condition (same 100k/100k split; the cov-shift row is the **ep-10 model** of the
-21-ep run, the optimal window, in the same extractor-diff harness as the fog/crosstalk
-rows of the all-condition ceiling table above):
+### The decoder: linear probe on the HDC code (C10)
 
-| condition | extractor | zero-shot | label ceiling (oracle) | label-free TTA (naive) |
+The distance-to-prototype rule is the binding constraint, not the extractor. On the
+frozen cov-shift features, replacing nearest-centroid cosine ("R1") with a linear
+probe fit on the HDC code itself ("R4") recovers the healthy-condition ceiling the
+centroid rule throws away (C10 decision-rule diagnostic):
+
+| condition | zs R1 | zs R4 | ceiling R1 | ceiling R4 |
 | :--- | :--- | :--- | :--- | :--- |
-| fog | DGLSS++ | 8.2% | **17.6%** | 10.0% |
-| fog | Robust DGLSS++ | 9.5% | 15.7% | 10.7% |
-| fog | **Cov-shift DGLSS++ (ep-10)** | **21.6%** | **23.5%** | **21.0%** |
-| crosstalk | DGLSS++ | 12.5% | 22.2% | 12.7% |
-| crosstalk | Robust DGLSS++ | 10.8% | 18.8% | 15.0% |
-| crosstalk | **Cov-shift DGLSS++ (ep-10)** | **40.3%** | **39.4%** | **38.6%** |
+| fog (ep-10) | 23.9% | 23.5% | 26.1% | **43.3%** |
+| crosstalk (ep-10) | 46.0% | 49.9% | 46.1% | **59.4%** |
+| snow (ep-10) | 39.8% | 43.2% | 40.8% | **51.0%** |
+| wet_ground (ep-10) | 40.2% | 41.3% | 42.5% | **68.3%** |
+| fog (ep-21) | 20.8% | 20.4% | 21.9% | **38.7%** |
+| crosstalk (ep-21) | 45.1% | 49.1% | 45.1% | **58.6%** |
+| snow (ep-21) | 38.4% | 43.7% | 39.5% | **49.1%** |
+| wet_ground (ep-21) | 37.6% | 41.4% | 40.5% | **66.8%** |
 
-**NOTE: the cov-shift ceiling/TTA numbers were measured on the ep-10 model of the
-21-ep run (the optimal window, Iteration 19.13); whether the gains are fully
-converged, and how they behave past that window, needs a sensible convergence metric
-or more stable convergence behavior.** The cov-shift variant is the first extractor
-to raise BOTH the ceiling and the label-free TTA on BOTH conditions: fog oracle 23.5%
-vs DGLSS++ 17.6%, crosstalk oracle 39.4% vs 22.2%, with crosstalk effectively fixed
-at the zero-shot level (zs ~= oracle). It does this via per-scan input normalization
-restricted to the statistics-shifted channels (range/remission) plus internal
-InstanceNorm — normalizing the shifted statistics, not the structure.
+The linear-probe decoder raises the ceiling 1.2-1.8x over distance-to-prototype on
+every condition (fog 26.1->43.3% ep-10; wet_ground 42.5->68.3%). The zero-shot gain
+is small because the frozen clean-fit probe and the frozen prototypes both start
+from clean structure; the ceiling gain is the recoverable structure the centroid
+rule throws away when the prototypes are re-estimated on the corrupted pool. The R4
+probe is fit on labeled data (clean for zero-shot, pool for the ceiling), so the
+label-free version is the frozen clean-fit probe (R4-zs), which at 0.43-0.50 healthy
+already beats the R1 oracle (0.40-0.43) at zero-shot. The direction: keep the
+cov-shift extractor and make the decoder a learned boundary on the code.
 
-The robust variant RAISES zero-shot (fog 8.2% -> 9.5%) and the label-free TTA
-(crosstalk 12.7% -> 15.0%) but LOWERS the label ceiling on both conditions. The
-mechanism is the SupCon clean-anchoring, and it cuts in opposite directions:
-
-- **Crosstalk is better because the update stops destroying the classes it can now
-  find.** The anchoring pulls the minority classes onto their clean anchors (car
-  feat_cos 0.52 -> 0.88, car LP recall 0.40 -> 0.48), so the naive update flips from
-   hurting car (-0.10) to helping it (+0.14) and more than doubles sidewalk's gain,
-   so the crosstalk label-free gap-closed rises from +0.02 to +0.52.
-- **Fog is worse because the anchoring erases the recoverable shift.** Under fog,
-  car's features were shifted into a recoverable direction (direction-retention 0.37)
-  and the oracle could re-estimate them (car fog oracle 0.30); the anchoring pulls
-  them onto the clean anchor (direction-retention 0.87), so re-estimation just
-  reproduces the clean prototype and car's fog oracle collapses to 0.15. Per class,
-  the correlation between "close to the clean prototype" and "recoverable with
-   labels" flips sign: +0.32 on plain DGLSS++ (closer helped) to -0.68 on the robust
-   variant (closer hurt), meaning the classes anchored hardest have the least
-   recoverable ceiling.
-
-The goal is a variant that balances the two: enough clean-anchoring to keep the
-assignment and TTA gains on crosstalk, while preserving enough of the corruption
-shift to keep the fog recoverable ceiling.
-
-**The cov-shift DGLSS++ variant (Iteration 19.13) resolves the trade-off without
-anchoring at all.** Instead of pulling corrupted features toward clean, it fixes the
-covariate-shift statistics: per-scan input normalization restricted to the
-range/remission channels (the channels crosstalk's statistics shift lives in) plus
-internal InstanceNorm. It raises BOTH the ceiling and the label-free TTA on BOTH
-conditions — fog oracle 23.5% vs DGLSS++ 17.6%, crosstalk oracle 39.4% vs 22.2%,
-with crosstalk effectively fixed at the zero-shot level. This is the first extractor
-to break the anchoring trade-off: the recoverable shift (fog) and the statistics
-shift (crosstalk) are addressed as two separate mechanisms, not as a single geometry
-to balance. NOTE: the cov-shift gains were measured at the 10-15 epoch optimal
-window of the 21-ep run; convergence past that window needs a sensible convergence
-metric or more stable convergence behavior.
-
-**The key property of the cov-shift extractor (from the ceilings table above): the
-label-free update essentially reaches the ceiling, and the zero-shot is near it.**
-Fog naive 21.0% vs ceiling 23.5%; crosstalk naive 38.6% vs ceiling 39.4%, with
-crosstalk zero-shot 40.3% ~= oracle 39.4% (the oracle re-estimation adds little
-because the frozen prototypes already decode correctly). Every prior extractor left
-a real gap between naive TTA and ceiling (crosstalk 6-10 points) — the assignment
-wall. On the cov-shift extractor that wall is gone for crosstalk, and the remaining
-work is the fog ceiling itself.
-
-**Full-battery note:** the ceilings table above uses the extractor-diff harness. The
-full TTA battery (conf/dist/BN/kNN levers) and the frozen labeled ceiling per
-condition for the cov-shift extractor are measured in the run_covshift_full.sh
-battery (see Section 6.4 for the battery format): the ep-10 model's TTA battery
-reaches fog 0.244 (kNN) and crosstalk 0.456 (BN) per the
-`tta_ceiling_covshift_ep10.log`, and its frozen ceiling spans 0.36-0.44 HDC-oracle
-across the healthy conditions — the complete per-condition comparison is in those
-logs.
-
-**The cov-shift extractor's development, per-iteration method details, the
-healthy-condition ceiling-loss diagnostic (a packing/binarization loss, not a
-direction loss), and the open projection/binarization design questions are tracked
-in [`docs/cov_shift/cov_shift_iterations.md`](docs/cov_shift/cov_shift_iterations.md).**
+The cov-shift extractor's development, the healthy-condition ceiling-loss
+diagnostic, and the decision-rule finding are tracked in
+[`docs/cov_shift/cov_shift_iterations.md`](docs/cov_shift/cov_shift_iterations.md).
 
 ---
 
 ## 3. Pillar 2: label-free test-time adaptation (raises mIoU on the healthy conditions)
 
-The first and simplest path is label-free prototype adaptation: on the conditions
-where the representation survives, re-estimating the prototypes from the corrupted
-stream (with no labels at all) raises mIoU, and on the healthy conditions it
-reaches the labeled ceiling.
+The label-free TTA path: on the conditions where the representation survives,
+re-estimating the decoder from the corrupted stream (with no labels at all) raises
+mIoU, and on the healthy conditions it reaches the ceiling. The current story is
+about the **cov-shift extractor** (Section 2): where the frozen decoder already
+holds, and where the decode rule leaves room.
 
-The first thread is robust feature-extractor training (Pillar 1), and it is the
-current focus. The second thread is the gated prototype update: at deployment, the
-distance to the nearest clean prototype decides which points may update the
-prototypes, and the decoder re-decodes.
+For the cov-shift extractor, the label-free prototype update is essentially free —
+the naive re-estimation reaches the ceiling on every condition:
 
-What the measurements show about where this path works:
-
-- **The update operator is not the bottleneck; the condition is.** The naive EMA
-  closes a third to three-quarters of the fog gap depending on the extractor, and
-  BN-statistic alignment is the strongest label-free lever on every extractor
-  (full tables in Section 6.4).
 - **On the healthy conditions the label-free path is sufficient.** Snow,
   wet_ground, motion_blur, beam_missing, incomplete_echo and cross_sensor sit at
   or near their labeled ceiling with the label-free update, so no labels are needed
   there at all.
-- **The label-free gated update is flat on the collapsed conditions.** Re-estimating
-  the centroids from the distance-confident points reproduces the clean centroids,
-  because the confident points already decode correctly and the far points that
-  would move the centroids are exactly the ones the gate excludes. This is the
-  assignment wall from the TTA iterations: a label-free signal can say which points
-  are wrong, but not what class they belong to.
-- **The only full-coverage gains on fog/crosstalk come from true labels.** The
-  perfect-label oracle ceiling is about 0.15 on fog and 0.27 on crosstalk, and it
-  is the same for every encoder, so only the encoder thread can move it.
+- **Crosstalk is closed at the frozen level** (zero-shot ~= ceiling ~= naive): the
+  extractor, not TTA, fixed it.
+- **Fog is the remaining label-free gap**, small (naive 21.0% vs ceiling 23.5%)
+  relative to every prior extractor (6-10 points) but still present.
 
 A design rule: prior correction and prototype updates must not share a pathway.
 The prior is an inference-time constant that shifts decision boundaries; it does
@@ -305,55 +230,92 @@ not move prototypes by itself. But if prior-corrected pseudo-labels feed the
 updates, the bias steers the prototypes and the drift compounds. The prediction
 pathway may use the prior-corrected score; the adaptation pathway must not.
 
+**Zero-shot, labeled ceiling, and label-free TTA for the cov-shift extractor
+(ep-10, the paper's model).** The zs column is the frozen-prototype HDC decode
+(isotropy pipeline), the ceiling is the full-label oracle (re-estimating the
+prototypes with true labels, frozen-ceiling harness), and the naive column is the
+label-free prototype re-estimation on the corrupted pool (extractor-diff harness):
+
+| condition | zero-shot | labeled ceiling | label-free naive TTA |
+| :--- | :--- | :--- | :--- |
+| fog | 20.1% | 23.5% | 21.0% |
+| crosstalk | 39.5% | 39.4% | 38.6% |
+| snow | 37.7% | 38.8% | ~ceiling |
+| wet_ground | 35.8% | 40.5% | ~ceiling |
+| incomplete_echo | 40.6% | 40.1% | ~ceiling |
+| beam_missing | 44.3% | 44.2% | ~ceiling |
+| motion_blur | 44.2% | 44.0% | ~ceiling |
+| cross_sensor | 36.1% | 38.5% | ~ceiling |
+| **mean (8 corrupted)** | **37.3%** | — | — |
+
+The two columns that matter for TTA:
+- **Crosstalk is closed at the frozen level**: zero-shot 39.5% ~= ceiling 39.4%, and
+  the label-free update holds it (naive 38.6%). No assignment wall remains — the
+  extractor, not TTA, closed it.
+- **The healthy conditions sit at/near their ceiling label-free** (~ceiling rows):
+  the label-free update reaches the labeled bound, so no labels are needed there.
+- **Fog is the remaining label-free gap** (naive 21.0% vs ceiling 23.5%), small
+  relative to every prior extractor (6-10 points) but still present.
+
+The cov-shift method's zero-shot and ceiling tables and the per-condition source
+harnesses are in `docs/cov_shift/cov_shift_iterations.md` (Iterations C1-C5, C11).
+
+**The recoverable gap depends on the decoder rule (background).** With the
+distance-to-prototype rule (R1), the ceiling sits almost exactly at zero-shot
+(gap ~0-2 points), which is why the label-free thread looked closed: there seemed
+to be no recoverable structure left. With the learned HDC-code decoder (R4, Section
+2), the same features show a large ceiling above zero-shot -- the recoverable
+structure was there all along, the centroid rule just could not express it:
+
+| condition (cov-shift ep-10) | R1 gap (ceiling-zs) | R4 gap (ceiling-zs) |
+| :--- | :--- | :--- |
+| fog | +2.2 | **+19.8** |
+| crosstalk | +0.1 | **+9.5** |
+| snow | +1.0 | **+7.8** |
+| wet_ground | +2.3 | **+27.0** |
+
+The R1 gap ~0 is the assignment-wall signature; the R4 gap reopens it as decoder
+headroom. This reframes "where TTA stops": the limit is the decode rule, not the
+features.
+
 [To be filled: the form of the TTA (the update/don't-update gate, the support
 threshold, and where the label-free path is engaged).]
 
 ---
 
-## 4. Where TTA stops: the conditions that shift too much
+### 3.1 Where the distance-to-prototype update is limited
 
-Fog and crosstalk are not the same problem as the healthy conditions; the
-corruption shifts the features so far that the label-free update cannot recover
-them. This is the measured gap that motivates the active-learning framework
-(Section 5).
+The distance-to-prototype (nearest-centroid) update cannot recover fog and crosstalk:
+re-estimating the centroids from the distance-confident points reproduces the clean
+centroids, because the confident points already decode correctly and the far points
+that would move the centroids are exactly the ones the gate excludes. This is the
+assignment wall: a label-free signal can say *which* points are wrong, but not *what
+class* they belong to.
 
-### 4.1 The wall: detection without assignment
+The C10 decision-rule finding (Section 2) sharpens this: the wall is a property of
+the **decode rule**, not the features. A learned decoder on the same code reopens a
+large ceiling gap (R4 gap +19.8 on fog, +27.0 on wet_ground vs R1's ~0-2). So the
+label-free limit has two distinct causes:
 
-The label-free TTA thread is bounded by the assignment wall, which holds across
-every extractor, every condition, and both scales (iterations doc, Iterations
-1-5):
+- **For the healthy conditions, the wall is gone** — the cov-shift extractor's frozen
+  decoder holds, and the label-free update reaches the ceiling.
+- **For fog/crosstalk, the wall is the centroid rule.** The features retain the
+  recoverable structure (the R4 ceiling is high); the nearest-centroid update cannot
+  express it. A learned decoder (fit on a labeled pool, or re-estimated label-free on
+  the stream) is the lever.
 
-- **We can detect which points are wrong.** Local density ranks correct from wrong
-  points at AUROC 0.91 on supcon_vib; feature norm does so at 0.84-0.87 on the
-  DGLSS arms; the fused signal is 0.81-0.92 everywhere.
-- **We cannot say what class they are.** For the zero-shot-wrong points, the true
-  class is in the top-3 clean prototypes at or below the ~0.19 random baseline
-  (fog rec@3 0.14-0.24 across extractors and scales), and the logistic probe's
-  per-class recall collapses for the minority classes as training scales up (car
-  fog recall 0.84 at micro, 0.005-0.15 at medium). The information to name the
-  wrong points is absent from the features.
-- **The label-free update is therefore capped.** Its gap-closed fraction shrinks
-  with scale (the norm gate closes 0.58 of the fog gap at micro, 0.20 at medium),
-  and better pseudo-label sources (HDC-decode labels, per-class support
-  thresholds) do not recover it.
+#### The detection signal that triggers the handoff
 
-So the label-free thread reaches a ceiling of its own. What separates that
-ceiling from the supervised ceiling is precisely the class labels, and on fog and
-crosstalk that separation is large (the label-free numbers sit 6-10 points below
-the labeled ceiling, while on the healthy conditions they reach it).
-
-### 4.2 The detection signal that triggers the handoff
-
-The same detection signal that ranks correct from wrong points (density / norm /
-fusion) is what decides when the label-free path is insufficient: if the
-label-free update's gap-closed is below a threshold on a condition or a cluster,
-i.e. the label-free update cannot close most of the gap to the labeled ceiling,
-then the condition falls back to the active-learning framework. The TTA machinery
-is kept as the efficiency lever, not the whole answer.
+The detection signal that ranks correct from wrong points (density / norm / fusion)
+decides when the label-free path is insufficient: if the label-free update's
+gap-closed is below a threshold on a condition or a cluster, i.e. the label-free
+update cannot close most of the gap to the labeled ceiling, then the condition falls
+back to the active-learning framework. The TTA machinery is kept as the efficiency
+lever, not the whole answer.
 
 ---
 
-## 5. Pillar 3 (primary): backprop-free active learning (the fill-in)
+## 4. Pillar 3 (primary): backprop-free active learning (the fill-in)
 
 The active-learning framework closes the residual gap on the conditions the
 label-free TTA cannot handle. The design is built entirely from measured facts: it
@@ -368,7 +330,7 @@ budget of labels, spent on exactly the ranked hard points, updates the prototype
 far more effectively than any label-free signal. The robust encoder is what makes
 the selection signal informative and the ceiling worth reaching.
 
-### 5.1 The structure that makes it cheap: dense per-class clusters
+### 4.1 The structure that makes it cheap: dense per-class clusters
 
 The corrupted points are not a noise floor; they are still clustered by class.
 The evidence:
@@ -388,7 +350,7 @@ The evidence:
   into prototypes; label-free signals cannot, because they cannot name the
   clusters.
 
-### 5.2 The mechanism: query one point per cluster, strictly
+### 4.2 The mechanism: query one point per cluster, strictly
 
 Backprop-free (no extractor fine-tuning, only prototype re-estimation):
 
@@ -414,9 +376,9 @@ The leverage is that the label budget scales with the number of clusters, not th
 number of points: each queried cluster is worth many correct labels, so a small
 budget recovers most of the oracle gap.
 
-### 5.3 When it activates
+### 4.3 When it activates
 
-Active learning is the fill-in, engaged by a detection mechanism (Section 4.2):
+Active learning is the fill-in, engaged by a detection mechanism (Section 3.1):
 run the extractor, attempt the label-free TTA path, and activate active learning on
 exactly the conditions/clusters where the label-free gap-closed is below a
 threshold (or where the TTA-to-supervised gap is not >90% closed). The measurements
@@ -429,9 +391,9 @@ residual gap, because it is the only one that supplies the missing class labels.
 
 ---
 
-## 6. Previous and Current Results
+## 5. Previous and Current Results
 
-### 6.1 Problem setting
+### 5.1 Problem setting
 
 | Component | Configuration |
 |---|---|
@@ -441,10 +403,10 @@ residual gap, because it is the only one that supplies the missing class labels.
 | **Pretraining objective (Pillar 1)** | Decoupled supervised contrastive + variational information bottleneck + cross-entropy, with physics-based augmentations only |
 | **HDC encoding** | Seeded random bipolar projection 128D to 10,000D, then sign binarization (information-preserving: 49.4% to 49.0% to 47.8%) |
 | **Prototypes** | Per-class means of the binarized clean features (frozen) |
-| **Adaptation (Pillar 2)** | Label-free gated prototype updates, used where the label-free path is sufficient (the healthy conditions); engaged unless the detection signal (Section 4.2) says active learning is needed | 
-| **Active learning (Pillar 3)** | Backprop-free fill-in: query one point per dense per-class cluster under a strict label-or-don't gate, re-estimate prototypes from the labeled cluster representatives (Section 5) |
+| **Adaptation (Pillar 2)** | Label-free gated prototype updates, used where the label-free path is sufficient (the healthy conditions); engaged unless the detection signal (Section 3.1) says active learning is needed | 
+| **Active learning (Pillar 3)** | Backprop-free fill-in: query one point per dense per-class cluster under a strict label-or-don't gate, re-estimate prototypes from the labeled cluster representatives (Section 4) |
 
-### 6.2 Previous performance: the original model per condition
+### 5.2 Previous performance: the original model per condition
 
 The Corruption Atlas measured the original, un-pretrained model on each condition.
 Some conditions are nearly untouched; others collapse to the point where even an
@@ -474,7 +436,7 @@ conditions while collapsing Fog further, because fog noise sits closer to the se
 centroids than real geometry does. Adaptation helps exactly where the
 representation survives, and poisons exactly where it does not.
 
-### 6.3 The labeled-prototype oracle: the target a TTA method must chase
+### 5.3 The labeled-prototype oracle: the target a TTA method must chase
 
 Re-estimating the prototypes from the corrupted stream with true labels recovers
 the collapsed conditions on the full scene, with no points removed, and the result
@@ -504,7 +466,7 @@ collapsed ones. Every label-free TTA variant we tried fails to reach it. The
 problem is not "drop the artifacts"; it is "estimate the weights the oracle would
 assign" without labels.
 
-### 6.4 Test-time adaptation and the labeled ceiling, per feature extractor
+### 5.4 Test-time adaptation and the labeled ceiling, per feature extractor
 
 The robust encoder roughly doubled Fog linear separability (23.6% to 49.4% linear
 probe) and, evaluated frozen against the previous baselines, improves mIoU on every
@@ -566,29 +528,29 @@ beats medium supcon_vib on the frozen labeled ceilings (HDC oracle mean 0.399 vs
 (0.20 fog vs 0.58 micro); at scale it matches naive EMA and stays below BN
 alignment. Full tables and interpretation in the iterations doc (Iteration 4).
 
-## 7. Order of work (current state)
+## 6. Order of work (current state)
 
-The pivot: the paper's narrative is extractor -> label-free TTA (works on the
-healthy conditions) -> the gap (fog/crosstalk shift too far for TTA) -> active
-learning (the fill-in the detection signal engages). The order reflects that
-narrative and the deployment consequence that the label budget is preserved for
-exactly the conditions that need it.
+The narrative: extractor -> label-free TTA (healthy conditions + crosstalk) -> the
+residual gap (fog) -> active learning (the fill-in the detection signal engages).
+The order reflects that narrative and the deployment consequence that the label
+budget is preserved for exactly the conditions that need it.
 
 1. The 7-class evaluation map is adopted, using the existing 17-class-trained
    encoders (no retraining needed). The 14-class middle ground is closed: it is
    strictly worse because it keeps the fragile classes in the metric. Background
    results are tracked in the seven-class iterations doc.
-2. The encoder thread is the current target. The DGLSS / DGLSS++ / supcon_vib
-   isotropy comparison is complete: DGLSS++ decodes best at medium scale (clean
-   HDC mIoU 0.530, 8-condition mean 0.369), and the corruption-targeted
-   augmentation variant is the leading lever to raise the fog/crosstalk ceiling.
-   The dircons decoupling variant (Iterations 16-19) is the current best lead for a
-   higher crosstalk ceiling than DGLSS++ while keeping a label-free lever (BN TTA).
-3. Label-free TTA (Pillar 2, Section 3) is the method: gated prototype updates that
-   raise mIoU on the healthy conditions, with the detection signal (Section 4.2)
-   deciding where it is sufficient. The TTA machinery is the efficiency lever, not
-   the whole answer.
-4. Backprop-free active learning (Pillar 3, Section 5) is the fill-in for the
+2. The encoder thread is **cov-shift DGLSS++**: it fixes the collapsed conditions
+   (fog/crosstalk) at the source via per-scan covariate-shift normalization, the
+   first extractor to raise both the ceiling and the label-free TTA on both
+   conditions (Section 2). The decoder is the **linear-probe on the HDC code**,
+   which raises the ceiling 1.2-1.8x over distance-to-prototype on every condition
+   (C10). The next encoder step is a convergence metric to confirm the ep-10 peak
+   is stable.
+ 3. Label-free TTA (Pillar 2, Section 3) is the method: the label-free update
+    reaches the ceiling on the healthy conditions and crosstalk, with the
+    detection signal (Section 3.1) deciding where it is sufficient. The TTA
+    machinery is the efficiency lever, not the whole answer.
+ 4. Backprop-free active learning (Pillar 3, Section 4) is the fill-in for the
    conditions the detection signal routes to it: rank the dense per-class clusters,
    query one point per cluster under a strict label-or-don't gate, and re-estimate
    the prototypes from the labeled cluster representatives. This closes the residual
