@@ -219,7 +219,7 @@ def main():
         t0 = time.time()
         # the label-free prototype update = re-estimate with true labels (oracle form)
         w = torch.ones(len(pool))
-        adapted = weighted_mean_update(base_protos, base_lbls, pool, pl, w, proj, device)
+        adapted = weighted_mean_update(base_protos, base_lbls, pool, pl.to(device), w, proj, device)
         ref['proto_update_s'] = time.time() - t0
         ref['proto_update_pts_s'] = len(pool) / ref['proto_update_s']
         t0 = time.time()
