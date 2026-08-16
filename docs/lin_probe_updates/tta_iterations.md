@@ -248,13 +248,67 @@ unreliable, not a real win. FLDA (option 3) is dropped as an update rule.
 **Verdict.** The ridge accumulate-and-solve update (option 2) is the gradient-free
 rule the TTA/AL gate should iterate on. The design constraint it must respect: the
 accumulation uses (pseudo-)labels from the prediction pathway, never the
-prior-corrected score (The method, design constraint). The next open question is the
-label-free version (Iteration 2).
+prior-corrected score (The method, design constraint).
 
-## Next: Iteration 2 — the label-free probe-update test
+## Iteration 2: the efficiency scan (2026-08-16)
+
+Iteration 1 validated the ridge update's accuracy but the update at d=10000 is
+~7-8x slower than the R1 prototype pipeline. This scan finds cheaper ways to
+compute the SAME update, HDC-native first, with two sections:
+- **Section A** stays at the 10000-d code and uses the binarization: the
+  diagonal-ridge bound (for +/-1 codes $\mathrm{diag}(X^{\top} X) = n$, so the
+  diagonal ridge is the prototype up to scale), the dual/Woodbury form (inversion
+  in the sample dim n), and RLS streaming.
+- **Section B** is the dimension check: does the probe's linear-separability gain
+  survive a smaller code dim d' or a second random projection to k? (If yes, the
+  LARGE projection size never helped — the gain is the binarized geometry.)
+
+Results (pool 10k, val 100k; mIoU + fit throughput pts/s):
+
+| cond (ep10) | proto | diag-ridge | dual | jl-512 | code-256 | code-512 | code-1000 | code-2000 | code-5000 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| wet_ground mIoU | 0.425 | 0.295 | 0.052 | 0.517 | 0.518 | 0.544 | 0.567 | **0.587** | 0.572 |
+| wet_ground pts/s | 0.51M | 0.11M | 0.10M | 0.05M | 12.4M | 6.7M | 3.2M | 1.5M | 0.40M |
+| fog mIoU | 0.259 | 0.113 | 0.038 | 0.257 | 0.260 | 0.288 | 0.315 | **0.334** | 0.313 |
+| fog pts/s | 2.8M | 0.11M | 0.11M | 0.05M | 11.8M | 6.7M | 3.4M | 1.5M | 0.40M |
+
+(ep21 is the same pattern: code-2000 peaks at 0.550 wet_ground / 0.281 fog.)
+
+**Result: the projection size never helped — the probe peaks at d'=2000, not 10000.**
+- The probe mIoU at code-2000 (wet_ground 0.587, fog 0.334) is the HIGHEST of any
+  representation tested, ABOVE code-5000 (0.572 / 0.313) and far above the 10000-d
+  reference the earlier runs used. The 10000-d projection's large dimension is not
+  the source of the gain.
+- The throughput is the real win: code-1000 (3.2M pts/s) and code-2000 (1.5M pts/s)
+  run at **or above the R1 prototype fit's throughput** (0.51M-2.8M pts/s) while
+  ALSO beating the prototype's mIoU. The 7-8x overhead is gone at ~1000-2000-d.
+
+**Two caveats (diagnostic artifacts, not results):**
+- **Section A diag-ridge (0.295) does NOT equal proto (0.425)** — the "diagonal
+  ridge == prototype" identity holds for the FIT (W proportional to the class-mean
+  code), but the DECODE here used the un-normalized W row; the prototype decode
+  cosine-normalizes. With per-class row normalization the numbers would match. The
+  identity is mathematically true; the diagnostic's decode just needs the same
+  normalization.
+- **dual/Woodbury at n=10000 collapses (0.05)** — the same lam-too-small
+  conditioning artifact from the earlier efficiency table (dual is only stable at
+  small n). Not a real method failure.
+
+**Design note (the important one).** This is HDC paper, and the dimension reduction
+is an IMPLEMENTATION trick, not a smart HDC-aligned design decision. If an HDC
+method at the SAME 10000-d dimension achieves the same ~7x speedup, that is the
+preferred direction (it uses the binarization rather than shrinking the projection).
+Section B's finding ("the projection size never helped") is a paper statement, but
+the method should stay at 10000-d unless the HDC-native route is exhausted. The
+HDC-native levers to pursue at full dimension: the integer +/-1 dual form (G = X X^T
+computed via Hamming/popcount on packed bits — the exactness of the binarization)
+and RLS streaming. The next step is to measure THOSE at 10000-d with a correct lam,
+rather than adopting the reduced-dimension code.
+
+## Next: Iteration 3 — the label-free probe-update test
 
 Iteration 1 validated the ridge accumulate-and-solve update with TRUE labels (the
-oracle). Iteration 2 asks whether a LABEL-FREE version climbs toward the R4-oracle
+oracle). Iteration 3 asks whether a LABEL-FREE version climbs toward the R4-oracle
 ceiling the way naive prototype TTA reaches the R1 ceiling:
 - **naive probe-refit**: the ridge accumulate-and-solve with PSEUDO-labels
   (accumulate S/T on the pool from the frozen probe's predictions, one solve) — the
@@ -264,6 +318,9 @@ ceiling the way naive prototype TTA reaches the R1 ceiling:
   budget; the label-free question is how much pseudo-labels degrade it.)
 - **bias-only control**: freeze W, update b from the pool class proportions — kept
   as a control only (Iteration 0 already showed it is 0-4% of the gap).
+- **HDC-native efficiency at 10000-d**: the integer +/-1 dual (Hamming/popcount on
+  packed bits) and RLS, with lam scaled to the pool — the preferred efficiency
+  direction per the Iteration 2 design note (avoid the reduced-dimension trick).
 
 Verdict rule: if the label-free ridge refit recovers most of the R4-oracle ceiling
 on the healthy conditions and crosstalk without hurting fog, the linear-probe
