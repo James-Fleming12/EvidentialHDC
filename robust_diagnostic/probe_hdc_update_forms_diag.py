@@ -52,6 +52,21 @@ DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
 
+def sync():
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
+def tic():
+    sync()
+    return time.time()
+
+
+def toc(t0):
+    sync()
+    return time.time() - t0
+
+
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
@@ -137,13 +152,13 @@ def cg_update(codes, lbls, lam, device, iters=5):
     """Accumulate full dense S/T, then CG solve."""
     X = codes.float().to(device)
     Y = onehot(lbls, NUM_CLASSES).to(device)
-    t0 = time.time()
+    t0 = tic()
     S = X.T @ X
     T = X.T @ Y
-    t_acc = time.time() - t0
-    t0 = time.time()
+    t_acc = toc(t0)
+    t0 = tic()
     W = cg_solve(S, T, lam, device, iters)
-    t_solve = time.time() - t0
+    t_solve = toc(t0)
     return W, t_acc, t_solve
 
 
@@ -156,14 +171,14 @@ def delta_rule(codes, lbls, alpha, device, epochs=3):
     X = codes.float()
     Y = onehot(lbls, C)
     W = torch.zeros(d, C, device=device)
-    t0 = time.time()
+    t0 = tic()
     for _ in range(epochs):
         for i in range(len(codes)):
             h = X[i:i + 1].to(device).T          # (d,1)
             y = Y[i:i + 1].to(device).T          # (C,1)
             err = y - W.T @ h                    # (C,1)
             W = W + alpha * (h @ err.T)          # (d,C)
-    t_wall = time.time() - t0
+    t_wall = toc(t0)
     return W, 0.0, t_wall
 
 
@@ -172,16 +187,16 @@ def nystrom_update(codes, lbls, lam, device, P, use_sign=False):
     W = P A. P is a random sign matrix (d x m): every m-dim mixes all d HDC dims."""
     X = codes.float().to(device)
     Y = onehot(lbls, NUM_CLASSES).to(device)
-    t0 = time.time()
+    t0 = tic()
     XP = X @ P.to(device)                        # (n, m)
     Shat = XP.T @ XP                             # (m, m)
     That = XP.T @ Y                              # (m, C)
-    t_acc = time.time() - t0
-    t0 = time.time()
+    t_acc = toc(t0)
+    t0 = tic()
     m = Shat.shape[0]
     A = torch.linalg.solve(Shat + lam * torch.eye(m, device=device), That)
     W = P.to(device) @ A                         # (d, C)
-    t_solve = time.time() - t0
+    t_solve = toc(t0)
     return W, t_acc, t_solve
 
 
@@ -197,8 +212,9 @@ def main():
     parser.add_argument("--lam", type=float, default=1e-3)
     parser.add_argument("--cg_sweep", type=str, default="5,10,30")
     parser.add_argument("--delta_sweep", type=str,
-                        default="0.005:5,0.005:10,0.001:30",
-                        help="comma-separated alpha:epochs pairs for the delta rule")
+                        default="0.0001:5,0.0001:10,0.0001:30,0.0002:30",
+                        help="comma-separated alpha:epochs pairs for the delta rule "
+                             "(for +/-1 codes ||h||^2 = d = 10000, so alpha ~ 1/d ~ 1e-4)")
     parser.add_argument("--nystrom_sweep", type=str, default="100,500,1000,2000")
     parser.add_argument("--delta_max_n", type=int, default=5000,
                         help="cap on the delta rule's pool (sequential O(C*d)/point loop)")

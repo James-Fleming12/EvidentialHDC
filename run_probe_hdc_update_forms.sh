@@ -6,6 +6,11 @@
 # Each reported with float AND sign (quantized +-1 W) decode mIoU, update wall-clock,
 # and pts/s. Eval-only, full 10000-d space, no block mask.
 #
+# NOTE: all timings now use torch.cuda.synchronize() so the pts/s are real GPU wall
+# time (the previous run's CG/Nystrom numbers were async-understated). Delta rule
+# alpha is 1/d ~ 1e-4 for +/-1 codes (the previous 5e-3 was 50x too large and
+# diverged to all-class-0).
+#
 # Usage:
 #   bash run_probe_hdc_update_forms.sh 3                # ep10+ep21, wet_ground,fog
 #   bash run_probe_hdc_update_forms.sh 3 "fog" ep10
