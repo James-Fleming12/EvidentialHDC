@@ -27,42 +27,62 @@
 #   bash run_micro_c8fix.sh 3            # GPU 3, 8 ep / 10%
 #   bash run_micro_c8fix.sh 3 8 0.1      # GPU 3, 8 epochs, 10% data
 #   bash run_micro_c8fix.sh 3 8 0.1 scope,scalein   # subset
+#   bash run_micro_c8fix.sh 3 8 0.1 scope,scalein,scalereg resume   # continue training
+#   bash run_micro_c8fix.sh 3 8 0.1 scope,scalein,scalereg gate     # skip training, gate only
 
 set -u
 GPU="${1:-3}"
 EPOCHS="${2:-8}"
 CUTOFF="${3:-0.1}"
 VARIANTS="${4:-scope,scalein,scalereg}"
-echo "Using GPU $GPU, $EPOCHS ep / $CUTOFF cutoff"
+MODE="${5:-train}"
+echo "Using GPU $GPU, $EPOCHS ep / $CUTOFF cutoff, mode=$MODE"
 
 BASE="supcon_vib_dglsspp_inputin_in_chan"
-REF_METHOD="supcon_vib_dglsspp_corsupcon"
-REF_PATH="robust_diagnostic/logs/micro_corsupcon/$REF_METHOD"
 DGLSSPP_PATH="robust_diagnostic/logs/supcon_vib_dglsspp"     # plain DGLSS++ medium
 DGLSSPP_METHOD="supcon_vib_dglsspp"
 FAIL=false
 fail() { echo "ERROR: $1 failed (exit $?)" >&2; FAIL=true; }
 
+# split the comma-separated variant list properly (whitespace splitting is the bug
+# that turned 'scope,scalein,scalereg' into one garbage method name)
+IFS=',' read -ra VAR_LIST <<< "$VARIANTS"
+
+TRAIN_FLAG=""
+if [ "$MODE" = "resume" ]; then
+  TRAIN_FLAG="--resume"
+fi
+
 run_one() {
   local suffix="$1"; local label="$2"
   local method="${BASE}_${suffix}"
+  local ckpt_dir="robust_diagnostic/logs/micro_c8_$label/$method"
   echo ""
-  echo "=== [$label] micro training ($EPOCHS ep / $CUTOFF cutoff) ==="
-  CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/isotropy_diag.py \
-    --methods "$method" --epochs "$EPOCHS" --cutoff "$CUTOFF" \
-    --log_dir "robust_diagnostic/logs/micro_c8_$label" \
-    2>&1 | tee "logs/micro_c8_${label}_train.log" || fail "train $label"
+  if [ "$MODE" = "gate" ]; then
+    echo "=== [$label] gate only (checkpoint already trained) ==="
+    if [ ! -f "$ckpt_dir/SENet" ]; then
+      echo "ERROR: no checkpoint at $ckpt_dir/SENet -- run mode 'train' or 'resume' first" >&2
+      FAIL=true
+      return 1
+    fi
+  else
+    echo "=== [$label] micro training ($EPOCHS ep / $CUTOFF cutoff, mode=$MODE) ==="
+    CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/isotropy_diag.py \
+      --methods "$method" --epochs "$EPOCHS" --cutoff "$CUTOFF" $TRAIN_FLAG \
+      --log_dir "robust_diagnostic/logs/micro_c8_$label" \
+      2>&1 | tee "logs/micro_c8_${label}_train.log" || fail "train $label"
+  fi
 
   echo "=== [$label] cond_structure gate vs plain DGLSS++ ==="
   CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/cond_structure_diag.py \
-    --path_b "robust_diagnostic/logs/micro_c8_$label/$method" \
+    --path_b "$ckpt_dir" \
     --method_b "$method" --label_b "$label" \
     --conds snow,wet_ground,fog,crosstalk \
     --out "robust_diagnostic/logs/micro_c8_gate_$label.json" \
     2>&1 | tee "logs/micro_c8_gate_$label.log" || fail "gate $label"
 }
 
-for s in $VARIANTS; do
+for s in "${VAR_LIST[@]}"; do
   run_one "$s" "$s"
 done
 
