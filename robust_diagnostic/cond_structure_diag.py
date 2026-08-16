@@ -44,9 +44,17 @@ def build_parser(root, data, arch):
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
 
 
-def extract_features(model, parser, device, num_frames=100):
-    feats, lbls = [], []
-    model.eval()
+def extract_features_pair(model_a, model_b, parser, device, num_frames=100):
+    """Extract features from BOTH models on the SAME points in one pass.
+
+    The parser randomly drops points per scan (`drop_points = random.uniform(0, 0.5)`
+    in Parser), so two separate extract_features calls can consume different points and
+    produce MISALIGNED label streams (the C8 scalereg gate crashed on fog with
+    "labels must align"). Extracting both models from one shared pass guarantees A and
+    B are evaluated on identical points."""
+    fa, la, fb, lb = [], [], [], []
+    model_a.eval()
+    model_b.eval()
     with torch.no_grad():
         for i, batch in enumerate(parser.get_train_set()):
             if i >= num_frames:
@@ -54,15 +62,23 @@ def extract_features(model, parser, device, num_frames=100):
             in_vol = batch[0].to(device)
             labels = batch[2].to(device).view(-1)
             mask = (batch[1].to(device) > 0).view(-1)
-            out_tuple = model(in_vol)
-            if len(out_tuple) == 3:
-                _, _, z8 = out_tuple
+            za = model_a(in_vol)
+            if len(za) == 3:
+                za = za[2]
             else:
-                _, z8 = out_tuple
-            z_flat = z8.permute(0, 2, 3, 1).reshape(-1, z8.shape[1])[mask]
-            feats.append(z_flat.cpu())
-            lbls.append(labels[mask].cpu())
-    return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
+                za = za[1]
+            zb = model_b(in_vol)
+            if len(zb) == 3:
+                zb = zb[2]
+            else:
+                zb = zb[1]
+            za_flat = za.permute(0, 2, 3, 1).reshape(-1, za.shape[1])[mask]
+            zb_flat = zb.permute(0, 2, 3, 1).reshape(-1, zb.shape[1])[mask]
+            fa.append(za_flat.cpu())
+            fb.append(zb_flat.cpu())
+            la.append(labels[mask].cpu())
+    return (torch.cat(fa, dim=0), torch.cat(la, dim=0),
+            torch.cat(fb, dim=0), torch.cat(la, dim=0))
 
 
 def per_class_iou(preds, lbls, classes):
@@ -159,8 +175,11 @@ def main():
         cdir = os.path.join(args.kittic_dir, cond, 'heavy')
         if not os.path.exists(cdir):
             cdir = os.path.join(args.kittic_dir, cond, 'moderate')
-        pa, pl = extract_features(model_a, build_parser(cdir, DATA, ARCH), device, args.frames)
-        pb, plb = extract_features(model_b, build_parser(cdir, DATA, ARCH), device, args.frames)
+        # single shared pass so A and B are evaluated on the SAME points (the parser
+        # randomly drops points per scan; two separate passes can misalign labels)
+        pa, pl, pb, plb = extract_features_pair(model_a, model_b,
+                                                build_parser(cdir, DATA, ARCH),
+                                                device, args.frames)
         assert torch.equal(pl, plb), f"{cond} labels must align"
         torch.manual_seed(42)
         perm = torch.randperm(len(pa))
