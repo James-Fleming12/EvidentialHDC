@@ -210,10 +210,11 @@ def main():
     args = parser.parse_args()
 
     args.cg_sweep = [int(x) for x in args.cg_sweep.split(',')]
-    args.delta_sweep = []
+    ds = []
     for p in args.delta_sweep.split(','):
         a, e = p.split(':')
-        args.delta_sweep.append((float(a), int(e)))
+        ds.append((float(a), int(e)))
+    args.delta_sweep = ds
     args.nystrom_sweep = [int(x) for x in args.nystrom_sweep.split(',')]
 
     DATA = yaml.safe_load(open(args.config, 'r'))
