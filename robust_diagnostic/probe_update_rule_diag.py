@@ -120,6 +120,7 @@ def ridge_accumulate(codes, lbls, lam=1e-3, num_classes=17, device='cuda', chunk
 
 
 def ridge_predict(codes, W, chunk=100000):
+    W = W.detach().cpu()
     preds = []
     for s in range(0, len(codes), chunk):
         scores = codes[s:s + chunk].float() @ W

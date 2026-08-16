@@ -28,7 +28,7 @@ run_rule() {
     --path_b "$ckpt" --method_b "$METHOD" --label "$label" \
     --conds snow,wet_ground,fog,crosstalk \
     --out "robust_diagnostic/logs/probe_update_rule_$label.json" \
-    > "logs/probe_update_rule_$label.log" 2>&1 || fail "$label"
+    2>&1 | tee "logs/probe_update_rule_$label.log" || fail "$label"
 }
 
 if [ "$ONLY" = "all" ] || [ "$ONLY" = "ep10" ]; then
