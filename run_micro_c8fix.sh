@@ -48,8 +48,6 @@ NUSC_DIR="${NUSC_DIR:-/mnt/alpha/jmfleming/nuscenes_kitti}"
 echo "Using GPU $GPU, $EPOCHS ep / $CUTOFF cutoff, mode=$MODE, NuScenes=$NUSC_DIR"
 
 BASE="supcon_vib_dglsspp_inputin_in_chan"
-DGLSSPP_PATH="robust_diagnostic/logs/supcon_vib_dglsspp"     # plain DGLSS++ medium
-DGLSSPP_METHOD="supcon_vib_dglsspp"
 FAIL=false
 fail() { echo "ERROR: $1 failed (exit $?)" >&2; FAIL=true; }
 
