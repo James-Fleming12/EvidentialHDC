@@ -150,7 +150,9 @@ def main():
     fa, la = extract_features(model_a, clean_parser, device, args.frames)
     fb, lb = extract_features(model_b, clean_parser, device, args.frames)
     ca, cb = clean_class_means(fa, la), clean_class_means(fb, lb)
-    classes = sorted(ca)
+    # only classes present in BOTH extractors' clean means (rare classes can be
+    # missing from one extractor's sampled clean features, e.g. tiny dry runs)
+    classes = sorted(set(ca) & set(cb))
 
     results = {}
     for cond in conds:

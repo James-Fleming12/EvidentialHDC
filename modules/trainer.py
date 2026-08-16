@@ -980,9 +980,16 @@ class Trainer():
             w_dict = torch.load(path + "/SENet",
                                 map_location=lambda storage, loc: storage)
             self.model.load_state_dict(w_dict['state_dict'], strict=True)
-            self.optimizer.load_state_dict(w_dict['optimizer'])
+            try:
+                self.optimizer.load_state_dict(w_dict['optimizer'])
+            except (ValueError, RuntimeError) as e:
+                print(f"WARNING: could not load optimizer state ({e}); continuing "
+                      f"with a fresh optimizer (model weights loaded)")
             self.epoch = w_dict['epoch'] + 1
-            self.scheduler.load_state_dict(w_dict['scheduler'])
+            try:
+                self.scheduler.load_state_dict(w_dict['scheduler'])
+            except (ValueError, RuntimeError) as e:
+                print(f"WARNING: could not load scheduler state ({e})")
             print("dict epoch:", w_dict['epoch'])
             # self.info = w_dict['info']
             print("info", w_dict['info'])

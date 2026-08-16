@@ -341,10 +341,21 @@ class GenTrainer(Trainer):
             w_dict = torch.load(self.path + "/SENet", map_location=lambda storage, loc: storage)
             # strict=False because logvar_head was not saved in the backbone state_dict
             self.model.load_state_dict(w_dict['state_dict'], strict=False)
-            self.optimizer.load_state_dict(w_dict['optimizer'])
+            # The optimizer state is only needed for RESUMING training. Diagnostics that
+            # load checkpoints for eval-only feature extraction don't use it, and a
+            # param-group mismatch (e.g. checkpoint trained under a different optimizer
+            # config or torch version) should not hard-fail them.
+            try:
+                self.optimizer.load_state_dict(w_dict['optimizer'])
+            except (ValueError, RuntimeError) as e:
+                print(f"WARNING: could not load optimizer state ({e}); continuing with "
+                      f"a fresh optimizer (model weights loaded)")
             self.epoch = w_dict['epoch'] + 1
             if 'scheduler' in w_dict:
-                self.scheduler.load_state_dict(w_dict['scheduler'])
+                try:
+                    self.scheduler.load_state_dict(w_dict['scheduler'])
+                except (ValueError, RuntimeError) as e:
+                    print(f"WARNING: could not load scheduler state ({e})")
             print("dict epoch:", w_dict['epoch'])
             print("info", w_dict['info'])
             self.info = w_dict['info']
