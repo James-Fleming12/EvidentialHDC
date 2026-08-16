@@ -420,10 +420,61 @@ delta rule proves the S-free idea but needs vectorization. The method direction:
 Nystrom-sketch the ridge update, quantize W to +/-1 for the integer-popcount decode
 (Nystrom's sign-decode mIoU is 0.55 wet_ground at m=2000, near its float 0.607).
 
-## Next: Iteration 5 — the label-free probe-update test
+## Iteration 5: the learned-prototype reframing (2026-08-16)
+
+The question: can we redefine "proximity to the prototype" so it aligns with the
+linear probe, keeping the probe's accuracy at prototype-style decode cost? Two
+diagnostics: `probe_prototype_alignment_diag.py` (does cosine to the learned W_c
+reproduce the probe?) and `probe_gauge_diag.py` (can a tiny k-dim gauge gate the
+expensive update?).
+
+**Alignment (decode-side): the learned prototype matches the probe -- but this is a
+DECODE result, not an update one.**
+
+| def (ep10 wet_ground) | agree w/probe | ceiling mIoU | decode pts/s |
+| :--- | :--- | :--- | :--- |
+| class_mean (R1) | 0.158 | ~0 (majority collapse) | ~0.90M |
+| **W_cos_float** (cos to learned W_c) | **0.946** | **0.635** | **~0.91M** |
+| W_cos_sign (cos to sign W_c) | 0.485 | 0.262 | ~0.90M |
+| probe_ref (W_c . h) | 1.0 | 0.670 | -- |
+
+(fog ep10: W_cos_float 0.425 vs probe 0.417, even slightly better; ep21 matches.)
+
+Cosine to the learned prototype `W_c` reproduces the probe's decisions (0.93-0.95
+agreement) and its ceiling (0.635 vs 0.670 wet_ground), at prototype decode speed.
+This is the "proximity aligned with the linear probe" redefinition -- the decoder
+becomes a prototype-style cosine to W_c. **But the UPDATE is unchanged**: W_c still
+comes from the full ridge solve (S = X^T X, d x d). The reframing buys decode speed
+and removes the sign-quantization hit, NOT the update solve. The W_cos_sign
+(integer/popcount) decode costs too much accuracy (0.26 vs 0.64) to be the decode.
+
+**Gauge (update-side): the cheap rank-k correction does NOT reach the rotation, and
+the tiny gauge does not reliably predict the full gain.**
+
+| (ep10) | proto | full probe | rank-k k=32 | rank-k k=64 | delta_gauge k=64 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| wet_ground | 0.419 | 0.671 | 0.421 | 0.421 | +0.008 |
+| fog | 0.222 | 0.369 | 0.223 | 0.223 | -0.023 |
+
+- **The rank-k correction (W = mu + VA, a k x k solve only -- the cheap update)
+  recovers essentially nothing** (0.421 wet_ground vs proto 0.419, vs full 0.671).
+  A k=32/64 random direction set cannot express the boundary rotation the full
+  covariance encodes. The cheap-update lever does not reach the probe.
+- **The tiny gauge does not predict the full gain reliably**: corr(delta_gauge,
+  full_gain) = +0.83 on ep10 but -0.36 on ep21. The k=32/64 gauge is too small to
+  see the separability signal (Iteration 2 showed it emerges around code-1000+).
+
+**Verdict.** The learned-prototype cosine is a decode-side win (prototype-speed
+decode, full probe accuracy, no quantization hit) -- adopt it as the DECODER. But
+the UPDATE cost is unchanged: the choice remains Nystrom (prototype-speed update,
+~0.55-0.61 ceiling) vs full accumulate-and-solve (0.67 ceiling, ~3-10x). The
+gauge/rank-k cheap-update route is a dead end at k=32-64 (it cannot express the
+rotation). The method: Nystrom update + cosine to the learned W_c decode.
+
+## Next: Iteration 6 — the label-free probe-update test
 
 Iteration 1 validated the ridge accumulate-and-solve update with TRUE labels (the
-oracle). Iteration 5 asks whether a LABEL-FREE version climbs toward the R4-oracle
+oracle). Iteration 6 asks whether a LABEL-FREE version climbs toward the R4-oracle
 ceiling the way naive prototype TTA reaches the R1 ceiling:
 - **naive probe-refit**: the ridge accumulate-and-solve with PSEUDO-labels
   (accumulate S/T on the pool from the frozen probe's predictions, one solve) — the
