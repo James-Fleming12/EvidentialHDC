@@ -196,7 +196,7 @@ def main():
         b = torch.tensor(lr.intercept_, dtype=torch.float32)
 
         # candidate prototypes. W is (d x C): the per-class prototype is W_c (row c).
-        P_mean, _, _ = class_means(pool_codes, pl)              # R1 class mean
+        P_mean = class_means(pool_codes, pl)                    # R1 class mean
         Wn = F.normalize(W.T, p=2, dim=1)                        # (C, d), per-class rows
         P_learn = Wn                                            # learned W_c normalized
         P_sign = Wn.sign()
