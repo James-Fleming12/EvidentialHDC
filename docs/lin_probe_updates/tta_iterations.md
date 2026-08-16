@@ -356,10 +356,74 @@ integer popcount decode, block-diagonal = d^3/B^2 update), recovers most of the 
 ceiling, and decodes at prototype speed. The remaining efficiency gap is the
 UPDATE (3-10x the prototype fit), which the dual/RLS forms target for streaming.
 
-## Next: Iteration 4 — the label-free probe-update test
+## Iteration 4: the HDC-aligned update forms sweep (2026-08-16)
+
+block_ridge's block-diagonal mask violates HDC holography (it zeroes cross-block
+correlations). This sweep tests three update forms that keep the FULL dense 10000-d
+space and use HDC-native operations, to find which reaches the ridge ceiling at
+prototype-comparable speed:
+- **CG** (Krylov/Conjugate Gradient): accumulate the full dense S = X^T X, solve
+  (S + lI)W = T iteratively (O(d^2) per iteration, no d^3 inverse). Uses the whole
+  cross-correlated space.
+- **HDC delta rule** (Widrow-Hoff/Kaczmarz): drop S entirely, online
+  W <- W + a(y - W h)h^T. For +/-1 codes h^T is +/-1, so it is pure associative
+  addition: O(C*d) per point, no matrix solve, no 400MB S.
+- **Nystrom** (randomized sketch): P in {+1,-1}^{d x m}, accumulate the sketched
+  S_hat = P^T X^T X P (m x m), solve in m, W = P A. Each m-dim mixes all d=10000
+  HDC dims -- holography preserved, only the solve dimension shrinks.
+
+All timings are CUDA-synchronized (real GPU wall time). Pool 50k, val 100k.
+
+**Accuracy and efficiency (wet_ground ep10; R1 proto = 0.424 at 1.9M pts/s):**
+
+| method | wall_s | pts/s | mIoU |
+| :--- | :--- | :--- | :--- |
+| R1 proto fit | 0.027 | 1.9M | 0.424 |
+| CG-5 | 0.159 | 0.31M | 0.498 |
+| CG-10 | 0.161 | 0.31M | 0.554 |
+| CG-30 | 0.171 | 0.29M | **0.648** |
+| Nystrom m=100 | 0.026 | 1.9M | 0.471 |
+| Nystrom m=500 | 0.013 | 3.8M | 0.550 |
+| Nystrom m=1000 | 0.025 | 2.0M | 0.571 |
+| Nystrom m=2000 | 0.053 | 0.94M | **0.607** |
+| delta a=1e-4, 5ep | 0.981 | 5k | 0.574 |
+| delta a=1e-4, 10ep | 1.97 | 2.5k | 0.570 |
+| delta a=1e-4, 30ep | 5.84 | 0.86k | 0.548 |
+
+(fog ep10: R1 proto 0.260 at 3.1M pts/s; CG-30 0.405 at 0.29M; Nystrom m=2000
+0.354 at 0.94M; delta 10ep 0.332 at 2.5k. ep21 follows the same pattern.)
+
+**Result: the efficiency question is settled.**
+- **CG is NOT faster than the prototype -- it is 6-10x SLOWER on the update.**
+  Its real wall time is 0.16-0.17s (vs proto 0.013-0.045s), because it still must
+  accumulate the full dense S = X^T X (~10 TFLOP for 50k x 10000). The earlier
+  run's 17-70M pts/s was an async timing artifact. CG's value is ACCURACY (cg-30
+  reaches 0.648, the R4 ceiling) and avoiding the d^3 inverse -- but it does not
+  close the efficiency gap vs the prototype update.
+- **Nystrom is the efficiency winner.** It never builds the d x d S (only the m x m
+  sketch), so it runs at 0.94-13M pts/s -- comparable to or FASTER than the
+  prototype fit (fog m=100: 13M pts/s), while accuracy rises with m (m=2000: 0.607
+  wet_ground, 0.354 fog, near the R4 ceiling). Random-sign sketching preserves
+  holography (every m-dim mixes all 10000 dims) -- no block mask. **This is the
+  HDC-aligned method that closes the efficiency gap.**
+- **The delta rule is validated but slow.** With alpha = 1/d = 1e-4 it converges
+  (wet_ground 0.574, fog 0.327) -- the "no S matrix" idea is sound -- but the
+  sequential per-point Python loop runs at ~5k pts/s (hundreds x slower than proto).
+  Its sign-decode also degrades (0.25-0.38). It would need vectorization to be
+  competitive, and even then the accuracy is below Nystrom/CG.
+
+**Verdict.** **Nystrom (m ~ 1000-2000) is the leading HDC-aligned update**: it
+keeps the full holographic 10000-d space (random-sign mixing, no block mask),
+reaches most of the R4 ceiling, and runs at prototype-or-better update speed. CG is
+the accuracy reference (full dense S, 0.648) but pays the dense accumulate; the
+delta rule proves the S-free idea but needs vectorization. The method direction:
+Nystrom-sketch the ridge update, quantize W to +/-1 for the integer-popcount decode
+(Nystrom's sign-decode mIoU is 0.55 wet_ground at m=2000, near its float 0.607).
+
+## Next: Iteration 5 — the label-free probe-update test
 
 Iteration 1 validated the ridge accumulate-and-solve update with TRUE labels (the
-oracle). Iteration 4 asks whether a LABEL-FREE version climbs toward the R4-oracle
+oracle). Iteration 5 asks whether a LABEL-FREE version climbs toward the R4-oracle
 ceiling the way naive prototype TTA reaches the R1 ceiling:
 - **naive probe-refit**: the ridge accumulate-and-solve with PSEUDO-labels
   (accumulate S/T on the pool from the frozen probe's predictions, one solve) — the

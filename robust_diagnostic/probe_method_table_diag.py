@@ -50,6 +50,21 @@ DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
 
+def sync():
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
+def tic():
+    sync()
+    return time.time()
+
+
+def toc(t0):
+    sync()
+    return time.time() - t0
+
+
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
@@ -117,6 +132,28 @@ def block_ridge_fit(codes, lbls, lam, device, n_blocks=20, num_classes=NUM_CLASS
     return W, t_acc + t_solve
 
 
+def nystrom_fit(codes, lbls, lam, device, m=1000, num_classes=NUM_CLASSES, seed=11):
+    """Nystrom-sketch ridge (the Iteration-4 candidate): P in {+1,-1}^{d x m}, each
+    m-dim a random +/-1 mix of ALL d HDC dims (holography preserved). Accumulate the
+    m x m sketch S_hat = P^T X^T X P and T_hat = P^T X^T Y, solve in m, W = P A.
+    Returns W (d x C) and the synchronized accumulate+solve wall-clock."""
+    torch.manual_seed(seed)
+    d = codes.shape[1]
+    P = (torch.rand(d, m) > 0.5).float() * 2 - 1
+    X = codes.float().to(device)
+    Y = onehot(lbls, num_classes).to(device)
+    t0 = tic()
+    XP = X @ P.to(device)                        # (n, m)
+    Shat = XP.T @ XP                             # (m, m)
+    That = XP.T @ Y                              # (m, C)
+    t_acc = toc(t0)
+    t0 = tic()
+    A = torch.linalg.solve(Shat + lam * torch.eye(m, device=device), That)
+    W = P.to(device) @ A                         # (d, C)
+    t_solve = toc(t0)
+    return W, t_acc + t_solve
+
+
 def decode_float(codes, W, chunk=100000):
     preds = []
     for s in range(0, len(codes), chunk):
@@ -153,6 +190,8 @@ def main():
     parser.add_argument("--max_clean", type=int, default=200000)
     parser.add_argument("--lam", type=float, default=1e-3)
     parser.add_argument("--n_blocks", type=int, default=20)
+    parser.add_argument("--nystrom_m", type=int, default=1000,
+                        help="Nystrom sketch dim for the candidate row (m ~ 1000-2000)")
     parser.add_argument("--path_b", type=str, default=DGLSSPP_PATH)
     parser.add_argument("--method_b", type=str, default=DGLSSPP_METHOD)
     parser.add_argument("--label", type=str, default="covshift")
@@ -237,6 +276,21 @@ def main():
         r['block_decode_pts_s'] = len(val) / r['block_decode_s']
         r['rss_mb'] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
+        # Nystrom+sign candidate (Iteration 4): holographic sketch (m ~ 1000-2000),
+        # W quantized to +/-1 for the integer popcount decode.
+        Wn_zs, tn_zs = nystrom_fit(clean_codes, la_s, args.lam, device, args.nystrom_m)
+        Wn_or, tn_or = nystrom_fit(pool_codes, pl, args.lam, device, args.nystrom_m)
+        r['nystrom_fit_zs_s'] = tn_zs
+        r['nystrom_update_s'] = tn_or
+        r['nystrom_update_pts_s'] = len(pool) / tn_or if tn_or > 0 else None
+        r['nystrom_float_zs'] = compute_miou(decode_float(val_codes, Wn_zs), vl)
+        r['nystrom_float_ceiling'] = compute_miou(decode_float(val_codes, Wn_or), vl)
+        t0 = time.time()
+        r['nystrom_sign_zs'] = compute_miou(decode_sign(val_codes, Wn_zs), vl)
+        r['nystrom_sign_ceiling'] = compute_miou(decode_sign(val_codes, Wn_or), vl)
+        r['nystrom_decode_s'] = time.time() - t0
+        r['nystrom_decode_pts_s'] = len(val) / r['nystrom_decode_s']
+
         results['conds'][cond] = r
         print(f"\n--- {cond} ---")
         print(f"  {'decoder':<22} {'zero-shot':>9} {'ceiling':>9} {'update_pts/s':>12} {'decode_pts/s':>12}")
@@ -246,8 +300,10 @@ def main():
               f"{'-':>12} {'-':>12}")
         print(f"  {'block_ridge float':<22} {r['block_float_zs']:>9.4f} {r['block_float_ceiling']:>9.4f} "
               f"{r['block_update_pts_s']:>12,.0f} {r['block_decode_pts_s']:>12,.0f}")
-        print(f"  {'block_ridge sign *':<22} {r['block_sign_zs']:>9.4f} {r['block_sign_ceiling']:>9.4f} "
+        print(f"  {'block_ridge sign':<22} {r['block_sign_zs']:>9.4f} {r['block_sign_ceiling']:>9.4f} "
               f"{r['block_update_pts_s']:>12,.0f} {r['block_decode_pts_s']:>12,.0f}")
+        print(f"  {'Nystrom+sign *':<22} {r['nystrom_sign_zs']:>9.4f} {r['nystrom_sign_ceiling']:>9.4f} "
+              f"{r['nystrom_update_pts_s']:>12,.0f} {r['nystrom_decode_pts_s']:>12,.0f}")
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, 'w') as fh:
