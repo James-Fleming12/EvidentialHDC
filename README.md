@@ -198,6 +198,14 @@ label-free version is the frozen clean-fit probe (R4-zs), which at 0.43-0.50 hea
 already beats the R1 oracle (0.40-0.43) at zero-shot. The direction: keep the
 cov-shift extractor and make the decoder a learned boundary on the code.
 
+**Efficiency.** The probe's training (fit/refit) is the cost — ~40-50x slower than
+building prototypes (77-97s vs 2s per fit; a per-condition pool refit is 112-176s vs
+0.02-0.04s) — but inference is essentially equal (0.22-0.23s vs 0.18s per 100k
+points). Improving the probe's training efficiency (e.g. the closed-form
+accumulate-and-solve update in
+[`docs/lin_probe_updates/tta_iterations.md`](docs/lin_probe_updates/tta_iterations.md))
+is a later step.
+
 The cov-shift extractor's development, the healthy-condition ceiling-loss
 diagnostic, and the decision-rule finding are tracked in
 [`docs/cov_shift/cov_shift_iterations.md`](docs/cov_shift/cov_shift_iterations.md).
