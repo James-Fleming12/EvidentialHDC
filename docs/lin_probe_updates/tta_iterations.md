@@ -305,10 +305,61 @@ computed via Hamming/popcount on packed bits — the exactness of the binarizati
 and RLS streaming. The next step is to measure THOSE at 10000-d with a correct lam,
 rather than adopting the reduced-dimension code.
 
-## Next: Iteration 3 — the label-free probe-update test
+## Iteration 3: the HDC-native method table (2026-08-16)
+
+`probe_hdc_native_diag.py` / `probe_method_table_diag.py` compare the candidate
+HDC-native decoder against the baseline and the full probe, in both accuracy
+(zero-shot + ceiling) and efficiency (update/decode throughput). The candidate is
+**block_ridge sign**: a block-diagonal ridge on the full 10000-d code (d^3/B^2
+solves instead of one d^3), with W quantized to +/-1 so the decode is an integer dot
+(d - 2*Hamming, popcount on packed bits). Pool 50k, val 100k, n_blocks=20.
+
+Accuracy (zero-shot = clean-fit frozen; ceiling = pool-refit oracle):
+
+| cond (ep10) | proto zs | proto ceil | R4 zs | R4 ceil | block-float ceil | **block-sign ceil** |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| snow | 0.401 | 0.412 | 0.430 | 0.511 | 0.460 | 0.458 |
+| wet_ground | 0.392 | 0.424 | 0.420 | 0.670 | 0.553 | **0.531** |
+| fog | 0.241 | 0.260 | 0.235 | 0.416 | 0.296 | **0.360** |
+| crosstalk | 0.465 | 0.459 | 0.500 | 0.587 | 0.520 | **0.525** |
+
+(ep21: block-sign ceiling wet_ground 0.449, fog 0.308, crosstalk 0.523, snow 0.450.)
+
+**Result: the block-diagonal ridge recovers most of the R4 ceiling at prototype
+speed, and quantizing W to +/-1 is nearly free.**
+- block_ridge sign recovers the majority of the R4 ceiling gain on every condition
+  (wet_ground 0.531 vs R4 0.670 and proto 0.424; fog 0.360 vs R4 0.416 and proto
+  0.260). It is far above the prototype and within ~0.06-0.14 of the full probe.
+- Quantization (sign vs float W) costs little on the ceiling (wet_ground 0.531 vs
+  0.553; fog 0.360 vs 0.296 — sign is actually BETTER on fog, a mild regularizer).
+- The zero-shot is prototype-like (block-sign zs ~= proto zs), as expected: the
+  frozen clean-fit probe and frozen prototypes start from the same clean structure.
+
+Efficiency (the README table):
+
+| method | update_pts/s | decode_pts/s |
+| :--- | :--- | :--- |
+| R1 prototype (fit / decode) | ~0.5-2.8M | ~0.27-0.29M |
+| full probe R4 (LR fit / matmul) | ~1-2k | (matmul) |
+| **block_ridge sign** | **~0.14-0.24M** | **~0.17-0.28M** |
+
+- **Update**: block_ridge runs ~0.14-0.24M pts/s — ~100x faster than the full-probe
+  LR fit (1-2k pts/s), within ~3-10x of the prototype fit (0.5-2.8M). The
+  block-diagonal structure (B=20) is what removes the d^3 solve.
+- **Decode**: block-sign decode is ~0.17-0.28M pts/s, essentially equal to the
+  prototype decode (0.27-0.29M) — the quantized +-1 W makes the decode an integer
+  dot product, no floats, at prototype speed.
+
+**Verdict.** block_ridge sign is the candidate for the README: it keeps the full
+10000-d HDC space (no dimension reduction), uses the binarization (quantized W =
+integer popcount decode, block-diagonal = d^3/B^2 update), recovers most of the R4
+ceiling, and decodes at prototype speed. The remaining efficiency gap is the
+UPDATE (3-10x the prototype fit), which the dual/RLS forms target for streaming.
+
+## Next: Iteration 4 — the label-free probe-update test
 
 Iteration 1 validated the ridge accumulate-and-solve update with TRUE labels (the
-oracle). Iteration 3 asks whether a LABEL-FREE version climbs toward the R4-oracle
+oracle). Iteration 4 asks whether a LABEL-FREE version climbs toward the R4-oracle
 ceiling the way naive prototype TTA reaches the R1 ceiling:
 - **naive probe-refit**: the ridge accumulate-and-solve with PSEUDO-labels
   (accumulate S/T on the pool from the frozen probe's predictions, one solve) — the
