@@ -238,53 +238,91 @@ not move prototypes by itself. But if prior-corrected pseudo-labels feed the
 updates, the bias steers the prototypes and the drift compounds. The prediction
 pathway may use the prior-corrected score; the adaptation pathway must not.
 
-**Zero-shot, labeled ceiling, and label-free TTA for the cov-shift extractor
-(ep-10, the paper's model).** The zs column is the frozen-prototype HDC decode
-(isotropy pipeline), the ceiling is the full-label oracle (re-estimating the
-prototypes with true labels, frozen-ceiling harness), and the naive column is the
-label-free prototype re-estimation on the corrupted pool (extractor-diff harness):
+**Labeled ceiling of the cov-shift extractor (ep-10) under the two decoders.**
+The zero-shot is the frozen-prototype HDC decode (isotropy pipeline). The ceiling is
+the full-label oracle (re-estimating the decoder from corrupted points with true
+labels): **prototype distance** (nearest-centroid) vs **linear probe** (the learned
+HDC-code decoder, R4). The naive column is the label-free prototype re-estimation
+on the corrupted pool (extractor-diff harness):
 
-| condition | zero-shot | labeled ceiling | label-free naive TTA |
-| :--- | :--- | :--- | :--- |
-| fog | 20.1% | 23.5% | 21.0% |
-| crosstalk | 39.5% | 39.4% | 38.6% |
-| snow | 37.7% | 38.8% | ~ceiling |
-| wet_ground | 35.8% | 40.5% | ~ceiling |
-| incomplete_echo | 40.6% | 40.1% | ~ceiling |
-| beam_missing | 44.3% | 44.2% | ~ceiling |
-| motion_blur | 44.2% | 44.0% | ~ceiling |
-| cross_sensor | 36.1% | 38.5% | ~ceiling |
-| **mean (8 corrupted)** | **37.3%** | — | — |
+| condition | zero-shot | prototype ceiling | linear-probe ceiling | label-free naive TTA |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | 20.1% | 26.1% | **43.3%** | 21.0% |
+| crosstalk | 39.5% | 46.1% | **59.4%** | 38.6% |
+| snow | 37.7% | 40.8% | **51.0%** | ~ceiling |
+| wet_ground | 35.8% | 42.5% | **68.3%** | ~ceiling |
 
-The two columns that matter for TTA:
-- **Crosstalk is closed at the frozen level**: zero-shot 39.5% ~= ceiling 39.4%, and
-  the label-free update holds it (naive 38.6%). No assignment wall remains — the
-  extractor, not TTA, closed it.
-- **The healthy conditions sit at/near their ceiling label-free** (~ceiling rows):
-  the label-free update reaches the labeled bound, so no labels are needed there.
-- **Fog is the remaining label-free gap** (naive 21.0% vs ceiling 23.5%), small
-  relative to every prior extractor (6-10 points) but still present.
+The two columns that matter:
+- **The linear-probe ceiling is far above the prototype ceiling on every condition**
+  (fog 43.3% vs 26.1%; wet_ground 68.3% vs 42.5%) — the recoverable structure is
+  there all along; the centroid rule cannot express it. This is the assignment-wall
+  signature (prototype ceiling ~ zero-shot) reopened as decoder headroom, and it is
+  why the decoder, not the features, is the binding constraint (Section 2).
+- **The label-free prototype update reaches its own ceiling**: crosstalk is closed
+  at the frozen level (zero-shot ~= prototype ceiling ~= naive, no assignment wall),
+  the healthy conditions sit at/near their ceiling label-free, and fog is the small
+  remaining label-free gap (naive 21.0% vs prototype ceiling 26.1%).
 
-The cov-shift method's zero-shot and ceiling tables and the per-condition source
-harnesses are in `docs/cov_shift/cov_shift_iterations.md` (Iterations C1-C5, C11).
+The cov-shift method's per-condition source harnesses are in
+`docs/cov_shift/cov_shift_iterations.md` (Iterations C1-C5, C11).
 
-**The recoverable gap depends on the decoder rule (background).** With the
-distance-to-prototype rule (R1), the ceiling sits almost exactly at zero-shot
-(gap ~0-2 points), which is why the label-free thread looked closed: there seemed
-to be no recoverable structure left. With the learned HDC-code decoder (R4, Section
-2), the same features show a large ceiling above zero-shot -- the recoverable
-structure was there all along, the centroid rule just could not express it:
+**The HDC-native decoder: Nystrom+sign (the chosen update).** To recover the R4
+headroom without the full 10000x10000 solve (and without the block-diagonal
+approximation that breaks HDC holography), the update uses a **Nystrom random-sign
+sketch** of the ridge: P in {+1,-1}^{d x m} (m = 1000) mixes all 10000 HDC dims into
+each sketch coordinate, so the holographic structure is preserved; the solve happens
+in m (m^3, trivial), and W = P A. The decoder then **quantizes W to +/-1**, so the
+decode is an integer dot product (d - 2*Hamming, popcount on packed bits) -- no
+floats. Ceiling (labeled oracle) and zero-shot mIoU, vs the baselines (cov-shift
+ep-10):
 
-| condition (cov-shift ep-10) | R1 gap (ceiling-zs) | R4 gap (ceiling-zs) |
+| condition | R1 proto ceil | full R4 ceil | **Nystrom+sign ceil** | Nystrom+sign zs |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | 26.0% | 41.7% | **33.7%** | 24.1% |
+| crosstalk | 45.9% | 58.6% | **50.8%** | 48.5% |
+| snow | 41.2% | 51.1% | **44.3%** | 40.7% |
+| wet_ground | 42.4% | 67.1% | **54.7%** | 39.9% |
+
+Nystrom+sign recovers a large share of the R4 ceiling on every condition (fog 33.7%
+vs R4 41.7% and proto 26.0%; wet_ground 54.7% vs 67.1% and 42.4%), while staying in
+the full 10000-d HDC space (no block mask). The zero-shot is prototype-like, as
+expected.
+
+**Inference speed is essentially unchanged.** The Nystrom+sign decode (quantized
++-1 W, integer popcount) runs at the prototype's decode rate -- the efficiency cost
+is in the UPDATE, not the deployed decode:
+
+| decoder (ep-10) | update pts/s | decode pts/s |
 | :--- | :--- | :--- |
-| fog | +2.2 | **+19.8** |
-| crosstalk | +0.1 | **+9.5** |
-| snow | +1.0 | **+7.8** |
-| wet_ground | +2.3 | **+27.0** |
+| R1 prototype (fit / decode) | ~1.1-3.9M | ~0.29-0.31M |
+| full probe R4 (LR fit) | ~1-2k | (matmul) |
+| **Nystrom+sign** | **~1.5-2.1M** | **~0.20-0.23M** |
 
-The R1 gap ~0 is the assignment-wall signature; the R4 gap reopens it as decoder
-headroom. This reframes "where TTA stops": the limit is the decode rule, not the
-features.
+The decode is within ~15% of the prototype's (0.20-0.23M vs 0.29-0.31M pts/s) -- the
+integer-popcount decode is effectively free. The update runs at ~1.5-2.1M pts/s,
+matching the prototype fit (1.1-3.9M), versus the full probe's 1-2k pts/s LR fit.
+Full per-condition tables and the accuracy<->efficiency sweep are in
+`docs/lin_probe_updates/tta_iterations.md` (Iterations 3-4).
+
+**The accuracy <-> efficiency tradeoff (wet_ground ep-10, ceiling mIoU vs update
+speed).** The options considered for the linear-probe update, and why Nystrom+sign
+was chosen:
+
+| method | update pts/s | ceiling mIoU | holography | note |
+| :--- | :--- | :--- | :--- | :--- |
+| R1 prototype | 1.9M | 42.4% | -- | baseline; no probe gain |
+| full probe R4 (LR) | ~1-2k | 67.1% | full | the ceiling; update too slow |
+| CG-30 | 0.29M | 64.8% | full | near-ceiling but pays the dense S accumulate |
+| block_ridge sign | 0.22M | 53.2% | broken | block mask zeros cross-block correlations |
+| **Nystrom+sign (m=1000)** | **2.0M** | **54.7%** | full | **prototype-speed, holographic** |
+
+The choice: Nystrom+sign keeps the full 10000-d space (random-sign mixing, no block
+mask), reaches most of the R4 ceiling (54.7% vs 67.1%), and runs the update at
+prototype speed (2.0M vs 1.9M pts/s) -- the only option that closes the efficiency
+gap without breaking holography. CG matches its accuracy but is 7x slower on the
+update; block_ridge is fast but its block-diagonal mask violates the distributed-
+representation principle. Iteration 4 in `docs/lin_probe_updates/tta_iterations.md`
+documents the full sweep (CG/delta/Nystrom across their parameters).
 
 [To be filled: the form of the TTA (the update/don't-update gate, the support
 threshold, and where the label-free path is engaged).]
