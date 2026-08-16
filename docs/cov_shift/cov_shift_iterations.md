@@ -346,3 +346,31 @@ If they recover the healthy packing, no decision-rule change is needed; if not, 
 is the first decision-rule experiment.
 
 
+
+### Iteration C9: the C8 training-side lever micro runs (2026-08-16)
+
+The three C8 levers (`_scope`, `_scalein`, `_scalereg`) are trained at micro scale
+(8 ep / 10%) and gated with `cond_structure_diag` vs plain DGLSS++ on snow /
+wet_ground / fog / crosstalk.
+
+**Caveat before reading results:** the micro checkpoints are 8-epoch / 10%-data
+models, so their corr_tight and zs are NOT directly comparable in level to the
+medium baselines (plain DGLSS++ is a full medium run). The micro gate is a
+DIRECTIONAL test: does the lever change the corr_tight / zs trajectory toward
+recovering the healthy packing, while keeping the fog/crosstalk direction?
+
+**scope gate (micro, dict epoch 7 vs plain DGLSS++):**
+- On the HEALTHY conditions the scope variant does NOT recover the packing at micro
+  scale: wet_ground corr_tight B < A for most classes (car 0.96->0.69, road
+  0.98->0.90, og 0.86->0.71) and zs_B < zs_A (car 0.867->0.444, road 0.658->0.318,
+  og 0.775->0.188). The healthy zs are much lower than even the cov-shift ep10
+  baseline's healthy zs (which was ~0.40 on wet_ground) -- consistent with the micro
+  model being undertrained AND the scoping not recovering the packing.
+- On FOG/CROSSTALK the scope micro still shows the cov-shift recovery signature
+  (direction/feat_cos B >> A: fog og 0.02->0.77, crosstalk og -0.03->0.76) though the
+  zs are low because the micro model is weak.
+
+**Interpretation.** Scoping InstanceNorm to the late stages did not obviously recover
+the healthy packing at micro scale, but this is a weak (undertrained) comparison. The
+full C8 verdict needs the medium runs. scalein/scalereg micros ran in the same sweep.
+
