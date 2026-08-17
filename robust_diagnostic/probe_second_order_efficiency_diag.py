@@ -91,6 +91,7 @@ def onehot(lbls, num_classes):
 
 
 def decode(W, codes, chunk=100000):
+    W = W.detach().cpu()
     preds = []
     for s in range(0, len(codes), chunk):
         preds.append((codes[s:s + chunk].float() @ W).argmax(dim=1))
