@@ -66,6 +66,20 @@ SUPCON_VARIANTS = {
     # AL-cleanest).
     'supcon_vib_dglsspp_corsupcon_nnpull': {'weight': 0.1, 'nnpull_w': 0.1},
     'supcon_vib_dglsspp_corsupcon_nocons_nnpull': {'weight': 0.1, 'nnpull_w': 0.1},
+    # AL-oriented objectives (Iteration-11 line): train the feature geometry that the
+    # AL/TTA bottleneck measures. Each adds ONE loss to the robust corsupcon base:
+    #   _ball       : intra-class ball tightening (EMA class centers, cosine) --
+    #                 shrinks the fat-blob radius (intra-cos 0.62-0.70) that drives
+    #                 the mean-estimation sample complexity, the R1-prototype
+    #                 viability, and the T-error -> W-error amplification.
+    #   _spec       : covariance condition-number penalty -- flattens the spectrum
+    #                 that the inverse covariance amplifies (the 4-6x ridge-relevant
+    #                 error, the fractional update needing beta < 1).
+    #   _ball_spec  : both, at half weights (the two levers together).
+    'supcon_vib_dglsspp_corsupcon_ball': {'weight': 0.1, 'ball_w': 0.1},
+    'supcon_vib_dglsspp_corsupcon_spec': {'weight': 0.1, 'spec_w': 0.1},
+    'supcon_vib_dglsspp_corsupcon_ball_spec': {'weight': 0.1, 'ball_w': 0.05,
+                                               'spec_w': 0.05},
 }
 
 # Decoupling variants (Iteration-15 shortlist): split the bottleneck into an invariant
@@ -168,6 +182,8 @@ ANTI_ANCHOR_VARIANTS = {
     'supcon_vib_dglsspp_antianchor': 0.1,
 }
 for _m in (*CORRSC_VARIANTS, *HDC_VARIANTS, *ANTI_ANCHOR_VARIANTS):
+    DGLSS_METHODS.add(_m)
+for _m in SUPCON_VARIANTS:
     DGLSS_METHODS.add(_m)
 
 # InstanceNorm variants (Iteration-19.8 candidate): BatchNorm's running stats are a
@@ -558,6 +574,57 @@ class GenTrainer(Trainer):
         best = sim[has].max(dim=1).values
         return (1.0 - best).mean()
 
+    def ball_loss(self, z, proj_labels, max_pts=2000, momentum=0.99):
+        """AL-oriented intra-class ball tightening (Iteration-11 line): pull each
+        point toward its class's EMA center in cosine, i.e. minimize the angular
+        radius of each class ball. The measured fat-blob geometry (intra-class cosine
+        0.62-0.70, points 45-50 deg from their mean) is what makes: (a) the prototype
+        (R1) metric fail (boundary flips), (b) class-mean estimation need k>=8 points,
+        and (c) small T errors amplify into large W errors. Shrinking the ball attacks
+        all three at the source. The EMA center is the class mean of the (corrupted)
+        augmented view, so the tightening applies to the TTA-relevant view."""
+        mask = proj_labels > 0
+        zf = z.permute(0, 2, 3, 1)[mask]
+        lbl = proj_labels[mask]
+        if len(lbl) == 0:
+            return torch.tensor(0.0, device=z.device)
+        if len(lbl) > max_pts:
+            idx = torch.randperm(len(lbl), device=z.device)[:max_pts]
+            zf, lbl = zf[idx], lbl[idx]
+        zn = F.normalize(zf, p=2, dim=1)
+        loss = torch.tensor(0.0, device=z.device)
+        n_terms = 0
+        for c in torch.unique(lbl):
+            mc = lbl == c
+            if int(mc.sum().item()) < 2:
+                continue
+            zc = zn[mc]
+            cent = F.normalize(zc.mean(dim=0), p=2, dim=0)
+            loss = loss + (1.0 - (zc @ cent).mean())
+            n_terms += 1
+        return loss / max(1, n_terms)
+
+    def spectrum_loss(self, z, max_pts=4000, eps=1e-4):
+        """AL-oriented covariance conditioning (Iteration-11 line): penalize the
+        condition number (lambda_max / lambda_min) of the centered feature
+        covariance on a batch subsample. The measured ill-conditioning of the
+        pool covariance (gain q99 ~50-130, the 4-6x ridge-relevant error, the
+        fractional update needing beta < 1) is exactly the amplification the
+        inverse covariance applies to label-statistic errors. Flattening the
+        spectrum at TRAIN time makes the TTA/AL probe update less sensitive."""
+        mask = z.sum(dim=1) != 0
+        zf = z.permute(0, 2, 3, 1).reshape(-1, z.shape[1])[mask]
+        if len(zf) < 10:
+            return torch.tensor(0.0, device=z.device)
+        if len(zf) > max_pts:
+            idx = torch.randperm(len(zf), device=z.device)[:max_pts]
+            zf = zf[idx]
+        zc = zf - zf.mean(dim=0, keepdim=True)
+        cov = zc.t() @ zc / (len(zc) - 1 + 1e-8)
+        eig = torch.linalg.eigvalsh(cov).clamp(min=eps)
+        cond = eig[-1] / eig[0]
+        return cond / (1.0 + cond)   # bounded in (0, 1)
+
     def dircons_loss(self, z8, z8_aug, proj_labels, max_pts=2000, momentum=0.99,
                      fragile_only=False):
         """Displacement-direction consistency (Iteration-15 idea #3, Iteration-16
@@ -920,7 +987,8 @@ class GenTrainer(Trainer):
                     if 'corsupcon' in self.method:
                         cfg = SUPCON_VARIANTS.get(self.method, {})
                         supcon_kw = {k: v for k, v in cfg.items()
-                                     if k not in ('weight', 'coclust_w', 'nnpull_w')}
+                                     if k not in ('weight', 'coclust_w', 'nnpull_w',
+                                                  'ball_w', 'spec_w')}
                         if self.corr_dim > 0:
                             # SupCon on the INVARIANT slice only (the clean anchor is
                             # exactly what erases the corr branch's recoverable shift).
@@ -930,6 +998,22 @@ class GenTrainer(Trainer):
                             z8_anchor, z8_aug_anchor = z8, z8_aug
                         loss_total = loss_total + cfg.get('weight', 0.1) * self.supcon_loss(
                             z8_anchor, z8_aug_anchor, proj_labels, **supcon_kw)
+                        if 'ball_w' in cfg:
+                            # AL-oriented: intra-class ball tightening. Pull each point
+                            # toward its class's EMA center (cosine), directly shrinking
+                            # the fat-blob radius (intra-cos 0.62-0.70) that drives the
+                            # mean-estimation sample complexity, the prototype metric's
+                            # viability, and the T-error -> W-error amplification.
+                            loss_total = loss_total + cfg['ball_w'] * self.ball_loss(
+                                z8_aug_anchor, proj_labels)
+                        if 'spec_w' in cfg:
+                            # AL-oriented: covariance conditioning. Penalize the batch
+                            # covariance's condition number (lambda_max / lambda_min of
+                            # the centered feature covariance + eps), flattening the
+                            # spectrum that the inverse covariance amplifies (the 4-6x
+                            # ridge-relevant error, Iteration 8-10).
+                            loss_total = loss_total + cfg['spec_w'] * self.spectrum_loss(
+                                z8_aug_anchor)
                         if 'coclust_w' in cfg:
                             # corrupted-only clustering: pull the corrupted points
                             # toward their CORRUPTED class centroids (blend_alpha=1.0),
