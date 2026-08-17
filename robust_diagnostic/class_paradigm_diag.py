@@ -57,14 +57,12 @@ MAPS = {
 }
 CONDS = ['clean', 'fog', 'crosstalk']
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=50):
     feats, lbls = [], []
@@ -86,7 +84,6 @@ def extract_features(model, parser, device, num_frames=50):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def class_centroids(z, l):
     means = {}
     for c in range(1, 32):
@@ -94,7 +91,6 @@ def class_centroids(z, l):
         if len(m) > 0:
             means[c] = F.normalize(m.mean(0), p=2, dim=0)
     return means
-
 
 def decode_gate_oracle(z, lbls, centroids, device):
     """Returns dict: zs mIoU, gated mIoU at 0.25/0.1, AUROC, oracle mIoU."""
@@ -130,7 +126,6 @@ def decode_gate_oracle(z, lbls, centroids, device):
     o_preds = torch.tensor(order, device=dev)[o_sims.argmax(dim=1)]
     out['oracle'] = float(compute_miou(o_preds, lbl))
     return out
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -186,7 +181,6 @@ def main():
     with open(args.out, 'w') as f:
         json.dump(results, f, indent=2, default=float)
     print(f"\nSaved to {args.out}")
-
 
 if __name__ == "__main__":
     main()

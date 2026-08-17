@@ -42,14 +42,12 @@ MODELS = {
 CONDS = ['clean', 'fog', 'crosstalk']
 GATED_FRACS = [0.5, 0.25, 0.1]
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=50):
     feats, lbls = [], []
@@ -71,7 +69,6 @@ def extract_features(model, parser, device, num_frames=50):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def class_centroids(z, l):
     means = {}
     for c in range(1, 17):
@@ -79,7 +76,6 @@ def class_centroids(z, l):
         if len(m) > 0:
             means[c] = F.normalize(m.mean(0), p=2, dim=0)
     return means
-
 
 def decode(z, lbls, centroids, device):
     """Nearest-clean-centroid decode -> (mIoU, per-class IoU dict, preds, maxcos)."""
@@ -102,7 +98,6 @@ def decode(z, lbls, centroids, device):
         d = tp + fp + fn
         per_class[c] = tp / d if d > 0 else 0.0
     return miou, per_class, preds, maxcos
-
 
 def gated_update(z, lbls, centroids, keep_frac, device, use_true=False):
     """Re-estimate centroids on the top-keep_frac points, then decode the FULL set.
@@ -134,12 +129,10 @@ def gated_update(z, lbls, centroids, keep_frac, device, use_true=False):
     new_centroids = {c: new_cm[i] for i, c in enumerate(order)}
     return decode(z, lbls, new_centroids, device)
 
-
 def oracle_update(z, lbls, centroids, device):
     """Full-label oracle: re-estimate the centroids on the corrupt pool using the
     TRUE labels (all points), then decode."""
     return gated_update(z, lbls, centroids, 1.0, device, use_true=True)
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -210,7 +203,6 @@ def main():
     with open(args.out, 'w') as f:
         json.dump(results, f, indent=2, default=float)
     print(f"\nSaved to {args.out}")
-
 
 if __name__ == "__main__":
     main()

@@ -53,14 +53,12 @@ NUM_CLASSES = 17
 DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -82,19 +80,16 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def hdc_codes(feats, proj, device, chunk=100000):
     codes = []
     for s in range(0, len(feats), chunk):
         codes.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(codes, dim=0)
 
-
 def onehot(lbls, num_classes):
     y = torch.zeros(len(lbls), num_classes)
     y[torch.arange(len(lbls)), lbls.long()] = 1.0
     return y
-
 
 def ridge_fit(codes, lbls, lam, device, num_classes=NUM_CLASSES):
     """Accumulate-and-solve ridge: W = (X^T X + lI)^{-1} X^T Y (the learned prototype
@@ -106,7 +101,6 @@ def ridge_fit(codes, lbls, lam, device, num_classes=NUM_CLASSES):
     d = X.shape[1]
     W = torch.linalg.solve(S + lam * torch.eye(d, device=device), T)
     return W
-
 
 def class_means(codes, lbls, num_classes=NUM_CLASSES):
     """mu_c = mean of class-c codes, in the FULL num_classes label space. Present
@@ -120,7 +114,6 @@ def class_means(codes, lbls, num_classes=NUM_CLASSES):
             M[c] = F.normalize(mc, p=2, dim=0)
     return M
 
-
 def dec_cosine(codes, P, lbls, chunk=100000):
     """Cosine to prototype rows P (C x d). P rows are pre-normalized (or -inf for
     absent classes). Scores = h . P_c with ||h|| constant for +/-1 codes."""
@@ -131,7 +124,6 @@ def dec_cosine(codes, P, lbls, chunk=100000):
         preds.append((h @ P.T).argmax(dim=1))
     return torch.cat(preds)
 
-
 def dec_dot_prior(codes, W, b, chunk=100000):
     """The probe itself: argmax(W . h + b)."""
     preds = []
@@ -139,10 +131,8 @@ def dec_dot_prior(codes, W, b, chunk=100000):
         preds.append((codes[s:s + chunk].float() @ W + b).argmax(dim=1))
     return torch.cat(preds)
 
-
 def agreement(a, b):
     return float((a == b).float().mean().item())
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -237,7 +227,6 @@ def main():
     print("  - W_cos_sign.agreement -> how much the integer/popcount decode costs.")
     print("  - class_mean agreement is the current R1 (should be low on fog/crosstalk).")
     print("  - ceiling_miou confirms each candidate's recoverable bound.")
-
 
 if __name__ == "__main__":
     main()

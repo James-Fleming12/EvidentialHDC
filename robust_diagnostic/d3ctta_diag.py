@@ -43,14 +43,12 @@ from modules.D3CTTA import D3CTTA_Decoder
 CONDS = ['fog', 'crosstalk', 'snow', 'wet_ground', 'incomplete_echo',
          'beam_missing', 'motion_blur', 'cross_sensor']
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_frames(model, parser, device, num_frames=100):
     """Returns per-frame (feat, lbl) 128D chunks, preserving frame boundaries for the
@@ -73,7 +71,6 @@ def extract_frames(model, parser, device, num_frames=100):
             frames.append((z_flat.cpu(), labels[mask].cpu()))
     return frames
 
-
 def proto_miou_10k(feats, lbls, base_protos, proto_lbls, proj, device):
     feats_d = feats.to(device)
     protos = F.normalize(base_protos, p=2, dim=1)
@@ -84,7 +81,6 @@ def proto_miou_10k(feats, lbls, base_protos, proto_lbls, proj, device):
     sims = torch.cat(sims, dim=0)
     return compute_miou(proto_lbls[sims.argmax(dim=1)], lbls.to(device))
 
-
 def clean_centroids(clean_z, clean_l):
     """Normalized 128D clean class means (aligned to class index)."""
     means = {}
@@ -93,7 +89,6 @@ def clean_centroids(clean_z, clean_l):
         if len(m):
             means[c] = F.normalize(m.mean(0), p=2, dim=0)
     return means
-
 
 def feature_recoverability(z_all, l_all, clean_means, k=3):
     """Feature-extractor issue check: is the recoverable information IN the features?
@@ -135,12 +130,10 @@ def feature_recoverability(z_all, l_all, clean_means, k=3):
             'true_cos': float(np.mean(true_cos)) if true_cos else float('nan')}
 
 
-
 ENCODERS = {
     'plain': ('logs/med_pretrain_supcon_vib', 'supcon_vib'),
     'additive': ('logs/micro_pretrain_additive_retrain/supcon_vib_additive', 'supcon_vib_additive'),
 }
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -265,7 +258,6 @@ def main():
         if enc != encoders[-1]:
             del model, trainer
             torch.cuda.empty_cache()
-
 
 if __name__ == "__main__":
     main()

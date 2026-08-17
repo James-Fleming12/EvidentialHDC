@@ -61,14 +61,12 @@ NUM_CLASSES = 17
 DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -90,19 +88,16 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def hdc_codes(feats, proj, device, chunk=100000):
     codes = []
     for s in range(0, len(feats), chunk):
         codes.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(codes, dim=0)
 
-
 def onehot(lbls, num_classes):
     y = torch.zeros(len(lbls), num_classes)
     y[torch.arange(len(lbls)), lbls.long()] = 1.0
     return y
-
 
 def decode(W, codes, chunk=100000):
     W = W.detach().cpu()
@@ -111,7 +106,6 @@ def decode(W, codes, chunk=100000):
         preds.append((codes[s:s + chunk].float() @ W).argmax(dim=1))
     return torch.cat(preds)
 
-
 def scores(W, codes, chunk=100000):
     W = W.detach().cpu()
     outs = []
@@ -119,21 +113,17 @@ def scores(W, codes, chunk=100000):
         outs.append(codes[s:s + chunk].float() @ W)
     return torch.cat(outs, dim=0)
 
-
 def sync():
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-
 
 def tic():
     sync()
     return time.time()
 
-
 def toc(t0):
     sync()
     return time.time() - t0
-
 
 def cg_solve(X, T, lam, device, iters=8, x0=None):
     X = X.to(device)
@@ -157,7 +147,6 @@ def cg_solve(X, T, lam, device, iters=8, x0=None):
         rs_old = rs_new
     return x.float()
 
-
 def nystrom_w0(codes, lbls, lam, device, m=1000):
     X = codes.float().to(device)
     Y = onehot(lbls, NUM_CLASSES).to(device)
@@ -169,13 +158,11 @@ def nystrom_w0(codes, lbls, lam, device, m=1000):
     A = torch.linalg.solve(Shat + lam * torch.eye(m, device=device), That)
     return (P.to(device) @ A).float()
 
-
 def probe_fit(codes, lbls, lam, device):
     """Nystrom warm start + matrix-free CG-8 (the Iteration-8 update)."""
     x0 = nystrom_w0(codes, lbls, lam, device)
     T = codes.float().to(device).t() @ onehot(lbls, NUM_CLASSES).to(device)
     return cg_solve(codes, T, lam, device, iters=8, x0=x0)
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -372,7 +359,6 @@ def main():
     print("  retain_vs_precision: the gate operating curve (retain vs pseudo precision).")
     print("  wrong_profile: conf/margin/norm of wrong vs correct pseudo-labels -- what a")
     print("    filter would need to separate them (are they LOW-margin, HIGH-norm, etc.).")
-
 
 if __name__ == "__main__":
     main()

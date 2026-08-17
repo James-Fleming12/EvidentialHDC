@@ -57,14 +57,12 @@ DIM_OUT = 10000
 DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -86,7 +84,6 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def per_class_iou(preds, lbls, classes):
     out = {}
     for c in classes:
@@ -97,11 +94,9 @@ def per_class_iou(preds, lbls, classes):
         out[c] = tp / denom if denom > 0 else 0.0
     return out
 
-
 def mean_iou(d, classes):
     vs = [d[c] for c in classes if d[c] == d[c]]
     return sum(vs) / len(vs) if vs else float('nan')
-
 
 def encode(feats, proj, mode, bias=None, scale=None, device='cuda', chunk=100000):
     """Encode features into the HDC space, CHUNKED to bound memory (the clean pool is
@@ -131,7 +126,6 @@ def encode(feats, proj, mode, bias=None, scale=None, device='cuda', chunk=100000
             raise ValueError(mode)
     return torch.cat(out_chunks, dim=0)
 
-
 def build_protos_stream(feats, lbls, enc_fn, num_classes=17, chunk=200000, device='cuda'):
     """Build per-class mean codes from the (possibly huge) clean pool in a streaming
     pass: encode each chunk, accumulate per-class sums, then discard the chunk. This
@@ -160,7 +154,6 @@ def build_protos_stream(feats, lbls, enc_fn, num_classes=17, chunk=200000, devic
     base = F.normalize(protos[valid], p=2, dim=1)
     return base, torch.arange(num_classes, device=protos.device)[valid]
 
-
 def decode(codes, protos, proto_lbls, device, chunk=50000):
     protos = F.normalize(protos, p=2, dim=1)
     preds = []
@@ -172,13 +165,11 @@ def decode(codes, protos, proto_lbls, device, chunk=50000):
         preds.append(proto_lbls[idx.cpu()])
     return torch.cat(preds)
 
-
 def margin_fraction(pre_proj, eps=0.1):
     """Fraction of coordinates with |pre-sign projection| < eps -- the
     threshold-hugging coordinates that flip sign on small noise."""
     p = pre_proj
     return float((p.abs() < eps).float().mean().item())
-
 
 def margin_frac_chunked(feats, proj, eps=0.1, device='cuda', chunk=100000):
     """margin_fraction computed on the FULL clean pool without OOM (chunked)."""
@@ -188,7 +179,6 @@ def margin_frac_chunked(feats, proj, eps=0.1, device='cuda', chunk=100000):
         tot += p.numel()
         near += int((p.abs() < eps).sum().item())
     return near / tot
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -340,7 +330,6 @@ def main():
     print("B. On the healthy conditions, does 'bias', 'zscore', or 'fourier' recover the")
     print("   B oracle toward A's level (or above) WITHOUT losing the fog/crosstalk B gain?")
     print("   That encoding is the fix for the cov-shift healthy-ceiling regression.")
-
 
 if __name__ == "__main__":
     main()

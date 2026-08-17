@@ -26,7 +26,6 @@ from modules.oracle_core import get_hdc_projection, build_hdc_prototypes, comput
 
 FRAGILE = [2, 7, 13, 14, 15]
 
-
 def extract_features(model, parser, device, num_frames=25):
     feats, lbls = [], []
     model.eval()
@@ -47,14 +46,12 @@ def extract_features(model, parser, device, num_frames=25):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def per_class_lp_acc(clf, feats, lbls):
     preds = clf.predict(feats.numpy())
@@ -66,7 +63,6 @@ def per_class_lp_acc(clf, feats, lbls):
         m = (lbls == c).numpy()
         out[c] = float((preds[m] == c).mean()) if m.sum() > 0 else None
     return out
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -174,7 +170,6 @@ def main():
         f"{m}:{r['clean_proto_miou']:.4f}" for m, r in results.items()))
     print("fog proto mIoU:   " + ", ".join(
         f"{m}:{r['fog_proto_miou']:.4f}" for m, r in results.items()))
-
 
 if __name__ == "__main__":
     main()

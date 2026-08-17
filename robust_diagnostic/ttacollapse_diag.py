@@ -26,7 +26,6 @@ import json
 import argparse
 import os
 
-
 def spearman(xs, ys):
     def rank(v):
         order = sorted(range(len(v)), key=lambda i: v[i])
@@ -50,7 +49,6 @@ def spearman(xs, ys):
     dx = (sum((rx[i] - mx) ** 2 for i in range(n))) ** 0.5
     dy = (sum((ry[i] - my) ** 2 for i in range(n))) ** 0.5
     return (cov / (dx * dy)) if dx * dy > 0 else float('nan')
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -127,7 +125,6 @@ def main():
     with open(args.out, 'w') as f:
         json.dump(results, f, indent=2, default=float)
     print(f"\nSaved to {args.out}")
-
 
 if __name__ == "__main__":
     main()

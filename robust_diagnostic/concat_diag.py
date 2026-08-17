@@ -39,14 +39,12 @@ PATH_B = 'robust_diagnostic/logs/supcon_vib_dglsspp'                            
 METHOD_A = 'supcon_vib_dglsspp_corsupcon'
 METHOD_B = 'supcon_vib_dglsspp'
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_aligned(model_a, model_b, parser, device, num_frames=100):
     """Run BOTH models on the SAME batches in ONE parser pass, so the per-frame masks
@@ -72,7 +70,6 @@ def extract_aligned(model_a, model_b, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return (torch.cat(fa, dim=0), torch.cat(fb, dim=0), torch.cat(lbls, dim=0))
 
-
 def per_class_iou(preds, lbls, classes):
     out = {}
     for c in classes:
@@ -83,11 +80,9 @@ def per_class_iou(preds, lbls, classes):
         out[c] = tp / denom if denom > 0 else 0.0
     return out
 
-
 def mean_iou(d, classes):
     vs = [d[c] for c in classes if d[c] == d[c]]
     return sum(vs) / len(vs) if vs else float('nan')
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -196,7 +191,6 @@ def main():
     print("  the two frozen representations combine -> the teacher distillation is worth training.")
     print("Else: close the representation direction, use the AL framework on the robust extractor.")
 
-
 def decode(protos, feats, proto_lbls, proj, device, chunk=50000):
     protos = F.normalize(protos, p=2, dim=1)
     preds = []
@@ -206,9 +200,7 @@ def decode(protos, feats, proto_lbls, proj, device, chunk=50000):
         preds.append(proto_lbls[sims.argmax(dim=1)].cpu())
     return torch.cat(preds)
 
-
 cids = list(range(1, NUM_CLASSES))
-
 
 if __name__ == "__main__":
     main()

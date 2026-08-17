@@ -21,7 +21,6 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
-
 def get_dglss_view(in_vol, p_range=(0.3, 0.7)):
     """DGLSS / DGLSS++ sparse augmentation: drop whole beam rows (range-view rows)
     at a per-sample rate p ~ U(p_range), dense-to-sparse only, exactly as the papers.
@@ -35,7 +34,6 @@ def get_dglss_view(in_vol, p_range=(0.3, 0.7)):
         result[b, :, indices, :] = 0
     return result
 
-
 def single_class_mask(labels):
     """GMSIFC masking (DGLSS++): exclude positions whose 3x3 local neighborhood
     spans multiple classes, so the consistency term only propagates unambiguous
@@ -48,7 +46,6 @@ def single_class_mask(labels):
     local_min = -F.max_pool2d(-pad, 3, stride=1)
     pure = (local_max == local_min) & (labels.unsqueeze(1) > 0)
     return pure.squeeze(1)
-
 
 def dglss_sifc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
                     masked=False, tau=0.7, max_pts=1500, class_bal=False):
@@ -154,7 +151,6 @@ def dglss_sifc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
     if agg_losses:
         loss = loss + torch.stack(agg_losses).mean()
     return loss
-
 
 def dglss_scc_loss(z8, z8_aug, proj_labels, in_vol, in_vol_aug,
                    local=False, cell=256, min_pts=5, max_pts=256, normalize=True,

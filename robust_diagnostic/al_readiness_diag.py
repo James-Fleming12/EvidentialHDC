@@ -46,14 +46,12 @@ CHECKPOINTS = [
      'robust_diagnostic/logs/med_blend05/supcon_vib_dglsspp_corsupcon_blend05'),
 ]
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -75,7 +73,6 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def clean_class_means(feats, lbls):
     means = {}
     for c in range(1, NUM_CLASSES):
@@ -83,7 +80,6 @@ def clean_class_means(feats, lbls):
         if len(m):
             means[c] = F.normalize(m.mean(0), p=2, dim=0)
     return means
-
 
 def decode_preds(protos, feats, proto_lbls, proj, device, chunk=50000):
     protos = F.normalize(protos, p=2, dim=1)
@@ -94,7 +90,6 @@ def decode_preds(protos, feats, proto_lbls, proj, device, chunk=50000):
         preds.append(proto_lbls[sims.argmax(dim=1)].cpu())
     return torch.cat(preds)
 
-
 def per_class_iou(preds, lbls, classes):
     out = {}
     for c in classes:
@@ -104,7 +99,6 @@ def per_class_iou(preds, lbls, classes):
         denom = tp + fp + fn
         out[c] = tp / denom if denom > 0 else 0.0
     return out
-
 
 def nn_purities(pool, pool_l, classes, k=10, max_pts=20000, chunk=4096):
     """Per-class 1-NN and k-NN same-class purity on (a seeded subsample of) the pool.
@@ -140,7 +134,6 @@ def nn_purities(pool, pool_l, classes, k=10, max_pts=20000, chunk=4096):
         means1.append(p1); meansk.append(pk)
     return rows, (sum(means1) / len(means1) if means1 else float('nan'),
                   sum(meansk) / len(meansk) if meansk else float('nan'))
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -234,7 +227,6 @@ def main():
     with open(args.out, 'w') as f:
         json.dump(results, f, indent=2, default=float)
     print(f"\nSaved to {args.out}")
-
 
 if __name__ == "__main__":
     main()

@@ -48,14 +48,12 @@ NUM_CLASSES = 17
 DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -77,19 +75,16 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def hdc_codes(feats, proj, device, chunk=100000):
     codes = []
     for s in range(0, len(feats), chunk):
         codes.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(codes, dim=0)
 
-
 def onehot(lbls, num_classes):
     y = torch.zeros(len(lbls), num_classes)
     y[torch.arange(len(lbls)), lbls.long()] = 1.0
     return y
-
 
 def decode(W, codes, chunk=100000):
     W = W.detach().cpu()
@@ -98,21 +93,17 @@ def decode(W, codes, chunk=100000):
         preds.append((codes[s:s + chunk].float() @ W).argmax(dim=1))
     return torch.cat(preds)
 
-
 def sync():
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-
 
 def tic():
     sync()
     return time.time()
 
-
 def toc(t0):
     sync()
     return time.time() - t0
-
 
 def cg_solve(X, T, lam, device, iters=20, x0=None, subsample=None, dtype=torch.float32):
     """Matrix-free CG: (S + lI) W = T with Sv = X^T(Xv). Optional warm-start x0,
@@ -145,7 +136,6 @@ def cg_solve(X, T, lam, device, iters=20, x0=None, subsample=None, dtype=torch.f
     t_solve = toc(t0)
     return x.float(), t_solve
 
-
 def residual_cg(X, T, lam, device, x0, max_iters=50, tol=1e-3):
     """Solve A dW = R = T - A x0 (the correction to the warm start), early-stop on
     ||r||/||r0|| < tol. Returns the corrected W and the iterations used."""
@@ -173,7 +163,6 @@ def residual_cg(X, T, lam, device, x0, max_iters=50, tol=1e-3):
         rs_old = rs_new
     return x.float(), k
 
-
 def nystrom_w0(codes, lbls, lam, device, m=1000, num_classes=NUM_CLASSES):
     """The Nystrom sketch solution (a cheap warm start)."""
     X = codes.float().to(device)
@@ -185,7 +174,6 @@ def nystrom_w0(codes, lbls, lam, device, m=1000, num_classes=NUM_CLASSES):
     That = XP.T @ Y
     A = torch.linalg.solve(Shat + lam * torch.eye(m, device=device), That)
     return (P.to(device) @ A).float()
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -315,7 +303,6 @@ def main():
     print("D. bf16: does BF16 state (FP32 accum) match FP32 CG (cheaper GEMMs)?")
     print("E. subsample: does a fresh 25k/12.5k/5k subset per iteration keep mIoU?")
     print("   (stochastic CG, NOT a fixed coreset -- no subspace restriction)")
-
 
 if __name__ == "__main__":
     main()

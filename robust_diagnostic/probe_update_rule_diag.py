@@ -54,14 +54,12 @@ NUM_CLASSES = 17
 DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -83,19 +81,16 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def hdc_codes(feats, proj, device, chunk=100000):
     codes = []
     for s in range(0, len(feats), chunk):
         codes.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(codes, dim=0)
 
-
 def onehot(lbls, num_classes):
     y = torch.zeros(len(lbls), num_classes)
     y[torch.arange(len(lbls)), lbls.long()] = 1.0
     return y
-
 
 def ridge_accumulate(codes, lbls, lam=1e-3, num_classes=17, device='cuda', chunk=50000):
     """Option-2 UPDATE form: accumulate S = X^T X and T = X^T Y over the pool in
@@ -118,7 +113,6 @@ def ridge_accumulate(codes, lbls, lam=1e-3, num_classes=17, device='cuda', chunk
     t_solve = time.time() - t0
     return W, t_acc, t_solve
 
-
 def ridge_predict(codes, W, chunk=100000):
     W = W.detach().cpu()
     preds = []
@@ -127,7 +121,6 @@ def ridge_predict(codes, W, chunk=100000):
         preds.append(scores.argmax(dim=1))
     return torch.cat(preds, dim=0)
 
-
 def ridge_batch(codes, lbls, lam=1e-3, num_classes=17, device='cuda'):
     """The BATCH closed form on the full pool at once (reference for equivalence)."""
     X = codes.float().to(device)
@@ -135,7 +128,6 @@ def ridge_batch(codes, lbls, lam=1e-3, num_classes=17, device='cuda'):
     d = X.shape[1]
     I = torch.eye(d, device=device)
     return torch.linalg.solve(X.T @ X + lam * I, X.T @ Y)
-
 
 def bench_rule(name, fn, codes_val, vl):
     """Run fn -> (W, *times), predict on val, return mIoU + timing + RSS."""
@@ -150,7 +142,6 @@ def bench_rule(name, fn, codes_val, vl):
         times = ()
     miou = compute_miou(ridge_predict(codes_val, W), vl)
     return {'miou': miou, 'wall_s': time.time() - t0, 'rss_mb': rss, 'times': times}
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -252,7 +243,6 @@ def main():
     print("3. Is Ridge-accum's accumulate+solve wall-clock comparable to the prototype")
     print("   update (<< the iterative LR fit)? = it keeps the efficiency story.")
     print("4. Does FLDA reach the oracle too? (option 3, if ridge fails on some condition)")
-
 
 if __name__ == "__main__":
     main()

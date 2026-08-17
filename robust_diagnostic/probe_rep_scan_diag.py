@@ -64,14 +64,12 @@ NUM_CLASSES = 17
 DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -93,24 +91,20 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def hdc_codes_at(feats, proj, device, chunk=100000):
     codes = []
     for s in range(0, len(feats), chunk):
         codes.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(codes, dim=0)
 
-
 def onehot(lbls, num_classes):
     y = torch.zeros(len(lbls), num_classes)
     y[torch.arange(len(lbls)), lbls.long()] = 1.0
     return y
 
-
 def predict(W, codes):
     W = W.detach().cpu()
     return (codes.float() @ W).argmax(dim=1)
-
 
 # ---------------- HDC-native methods (Section A) ----------------
 
@@ -124,7 +118,6 @@ def diagonal_ridge(codes, lbls, lam, num_classes=NUM_CLASSES):
     T = X.T @ Y
     W = T / (diag.unsqueeze(1) + lam)
     return W, time.time() - t0
-
 
 def dual_woodbury(codes, lbls, lam, device, num_classes=NUM_CLASSES):
     """W = X^T (X X^T + lI_n)^{-1} Y. Inversion in the sample dim n. G = X X^T is
@@ -141,7 +134,6 @@ def dual_woodbury(codes, lbls, lam, device, num_classes=NUM_CLASSES):
     t_solve = time.time() - t0
     return W, t_acc, t_solve
 
-
 def rls(codes, lbls, lam, device, num_classes=NUM_CLASSES):
     """Sherman-Morrison streaming: maintain P = (S + lI)^{-1}, O(d^2) per point."""
     d = codes.shape[1]
@@ -157,7 +149,6 @@ def rls(codes, lbls, lam, device, num_classes=NUM_CLASSES):
         W = W + (P @ h) @ err.T
     return W, 0.0, time.time() - t0
 
-
 # ---------------- Section B: does the projection help? (ablation) ----------------
 
 def ridge_primal_fit(codes, lbls, lam, device, num_classes=NUM_CLASSES):
@@ -171,7 +162,6 @@ def ridge_primal_fit(codes, lbls, lam, device, num_classes=NUM_CLASSES):
     t0 = time.time()
     W = torch.linalg.solve(S + lam * torch.eye(d, device=device), T)
     return W, t_acc, time.time() - t0
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -326,7 +316,6 @@ def main():
     print("  If jl_k / code_d keep the probe mIoU at small k/d', the projection SIZE")
     print("  never helped -- the gain is the binarized geometry. We keep 10000-d +")
     print("  binarization in the method; this just shows the size was never the power.")
-
 
 if __name__ == "__main__":
     main()

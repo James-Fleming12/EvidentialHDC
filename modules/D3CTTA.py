@@ -18,10 +18,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-
 def softmax_entropy(x):
     return -(x.softmax(1) * x.log_softmax(1)).sum(1)
-
 
 class D3CTTA_Decoder:
     """Online per-domain ridge-classifier adaptation over random-projected 128D features."""

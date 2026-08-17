@@ -49,21 +49,17 @@ CONDS_DEFAULT = ['snow', 'wet_ground', 'fog', 'crosstalk']
 DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
-
 def sync():
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-
 
 def tic():
     sync()
     return time.time()
 
-
 def toc(t0):
     sync()
     return time.time() - t0
-
 
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
@@ -71,7 +67,6 @@ def build_parser(root, data, arch):
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -93,19 +88,16 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def hdc_codes(feats, proj, device, chunk=100000):
     codes = []
     for s in range(0, len(feats), chunk):
         codes.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(codes, dim=0)
 
-
 def onehot(lbls, num_classes):
     y = torch.zeros(len(lbls), num_classes)
     y[torch.arange(len(lbls)), lbls.long()] = 1.0
     return y
-
 
 # ---------------- decoders ----------------
 
@@ -131,7 +123,6 @@ def block_ridge_fit(codes, lbls, lam, device, n_blocks=20, num_classes=NUM_CLASS
         t_solve += time.time() - t0
     return W, t_acc + t_solve
 
-
 def nystrom_fit(codes, lbls, lam, device, m=1000, num_classes=NUM_CLASSES, seed=11):
     """Nystrom-sketch ridge (the Iteration-4 candidate): P in {+1,-1}^{d x m}, each
     m-dim a random +/-1 mix of ALL d HDC dims (holography preserved). Accumulate the
@@ -153,13 +144,11 @@ def nystrom_fit(codes, lbls, lam, device, m=1000, num_classes=NUM_CLASSES, seed=
     t_solve = toc(t0)
     return W, t_acc + t_solve
 
-
 def decode_float(codes, W, chunk=100000):
     preds = []
     for s in range(0, len(codes), chunk):
         preds.append((codes[s:s + chunk].float() @ W.detach().cpu()).argmax(dim=1))
     return torch.cat(preds)
-
 
 def decode_sign(codes, W, chunk=100000):
     Wq = W.detach().cpu().sign()
@@ -168,7 +157,6 @@ def decode_sign(codes, W, chunk=100000):
         preds.append((codes[s:s + chunk].float() @ Wq).argmax(dim=1))
     return torch.cat(preds)
 
-
 def proto_decode(codes, protos, proto_lbls, device, chunk=100000):
     protos = F.normalize(protos, p=2, dim=1)
     preds = []
@@ -176,7 +164,6 @@ def proto_decode(codes, protos, proto_lbls, device, chunk=100000):
         hc = F.normalize(codes[s:s + chunk].to(device), p=2, dim=1)
         preds.append(proto_lbls[(hc @ protos.T).argmax(dim=1)].cpu())
     return torch.cat(preds)
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -315,7 +302,6 @@ def main():
     print("Compare zero-shot/ceiling vs R1 prototype (baseline) and full probe (R4):")
     print("  - does block_ridge sign keep most of the R4 ceiling gain?")
     print("  - is its update_pts/s ~= the prototype's fit rate (efficiency story)?")
-
 
 if __name__ == "__main__":
     main()

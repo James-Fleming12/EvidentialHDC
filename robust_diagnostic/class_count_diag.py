@@ -43,14 +43,12 @@ CONFIGS = [
 ]
 CONDS = ['fog', 'crosstalk']
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=50):
     feats, lbls = [], []
@@ -72,7 +70,6 @@ def extract_features(model, parser, device, num_frames=50):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def proto_miou(feats, lbls, base_protos, proto_lbls, proj, device):
     feats_d = feats.to(device)
     protos = F.normalize(base_protos, p=2, dim=1)
@@ -82,7 +79,6 @@ def proto_miou(feats, lbls, base_protos, proto_lbls, proj, device):
         sims.append(hc @ protos.T)
     sims = torch.cat(sims, dim=0)
     return compute_miou(proto_lbls[sims.argmax(dim=1)], lbls.to(device))
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -158,7 +154,6 @@ def main():
     with open(out_path, 'w') as f:
         json.dump(results, f, indent=2, default=float)
     print(f"\nSaved to {out_path}")
-
 
 if __name__ == "__main__":
     main()

@@ -354,7 +354,6 @@ learned probe on the HDC code (R4) recovers 1.24-1.77x over nearest-centroid on
 every condition, decisively. See Iteration C10.
 
 
-
 ### Iteration C9: the C8 training-side lever micro runs (2026-08-16)
 
 The three C8 levers (`_scope`, `_scalein`, `_scalereg`) are trained at micro scale
@@ -490,5 +489,4 @@ feature-extraction passes consumed different points and produced misaligned labe
 streams. Fixed by extracting both models in one SHARED pass
 (`extract_features_pair`), guaranteeing A and B are evaluated on identical points.
 This was a latent bug that could have hit any cross-extractor gate.
-
 

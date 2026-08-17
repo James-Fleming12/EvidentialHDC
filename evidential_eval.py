@@ -28,14 +28,12 @@ from modules.gen_trainers import GenTrainer
 CONDS = {'fog': 'fog', 'crosstalk': 'crosstalk', 'snow': 'snow',
          'wet_ground': 'wet_ground', 'cross_sensor': 'cross_sensor'}
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract(model, head, parser, device, num_frames=50):
     """Returns z (128D), head output (per-pixel), semantic pred, labels."""
@@ -62,7 +60,6 @@ def extract(model, head, parser, device, num_frames=50):
             lbls.append(labels[mask].cpu())
     return (torch.cat(zs, dim=0), torch.cat(ho, dim=0),
             torch.cat(ps, dim=0), torch.cat(lbls, dim=0))
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -167,7 +164,6 @@ def main():
             top = sorted(per_class.items(), key=lambda kv: -kv[1])
             print("  fog per-class mean uncertainty (highest first): " +
                   ", ".join(f"{c}:{v:.3f}" for c, v in top[:6]))
-
 
 if __name__ == "__main__":
     main()

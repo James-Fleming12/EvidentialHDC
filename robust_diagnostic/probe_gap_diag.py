@@ -54,14 +54,12 @@ NUM_CLASSES = 17
 DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -83,13 +81,11 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def hdc_codes(feats, proj, device, chunk=100000):
     codes = []
     for s in range(0, len(feats), chunk):
         codes.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(codes, dim=0)
-
 
 def fit_probe(codes, lbls, max_fit=100000, C=1.0, max_iter=1000):
     clf = LogisticRegression(max_iter=max_iter, C=C)
@@ -103,7 +99,6 @@ def predict_probe(codes, clf, chunk=100000):
         preds.append(torch.tensor(clf.predict(codes[s:s + chunk].numpy())))
     return torch.cat(preds)
 
-
 def probe_scores(codes, clf, chunk=100000):
     """decision_function = W @ code + b, shape (n, n_classes)."""
     scores = []
@@ -111,12 +106,10 @@ def probe_scores(codes, clf, chunk=100000):
         scores.append(torch.tensor(clf.decision_function(codes[s:s + chunk].numpy())))
     return torch.cat(scores, dim=0)
 
-
 def margin(scores):
     """top-2 margin: scores.max(1) - scores.sort(descending)[0][:, 1]."""
     top2 = torch.topk(scores, 2, dim=1).values
     return top2[:, 0] - top2[:, 1]
-
 
 def norm_per_class(clf, classes):
     """Per-class L2 norm of the probe weight rows (how much each class boundary moved)."""
@@ -128,7 +121,6 @@ def norm_per_class(clf, classes):
         if m.any():
             out[int(c)] = float(W[m].norm(dim=1).mean().item())
     return out
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -301,7 +293,6 @@ def main():
     print("   fixed = inlier boundary points (need boundary movement, not veto).")
     print("5. per_class: the largest-gain classes are the TTA/AL target.")
     print("6. pool_curve: how many labeled points close the gap (the AL budget).")
-
 
 if __name__ == "__main__":
     main()

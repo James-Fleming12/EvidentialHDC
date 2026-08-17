@@ -55,14 +55,12 @@ NUM_CLASSES = 17
 DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -84,23 +82,19 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def hdc_codes(feats, proj, device, chunk=100000):
     codes = []
     for s in range(0, len(feats), chunk):
         codes.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(codes, dim=0)
 
-
 def onehot(lbls, num_classes):
     y = torch.zeros(len(lbls), num_classes)
     y[torch.arange(len(lbls)), lbls.long()] = 1.0
     return y
 
-
 def mIoU_preds(preds, vl):
     return compute_miou(preds, vl)
-
 
 # ---------------- decode variants ----------------
 
@@ -108,13 +102,11 @@ def decode_float(codes, W):
     W = W.detach().cpu()
     return (codes.float() @ W).argmax(dim=1)
 
-
 def decode_sign(codes, W):
     """Quantize W to +-1, decode as integer dot products (d - 2*Hamming on packed
     bits in a real system). Scores are integers; argmax unchanged by the d offset."""
     Wq = W.detach().cpu().sign()
     return (codes.float() @ Wq).argmax(dim=1)
-
 
 # ---------------- update variants (all return W, (times)) ----------------
 
@@ -130,7 +122,6 @@ def dual_float(codes, lbls, lam, device):
     W = X.T @ A
     return W, t_acc, time.time() - t0
 
-
 def dual_int(codes, lbls, lam, device):
     """G = X X^T as INTEGER matmul (exact +-1 dot products), then the same n x n solve.
     Uses int32 so torch.matmul supports it; still exact integer (no float rounding)."""
@@ -145,7 +136,6 @@ def dual_int(codes, lbls, lam, device):
     A = torch.linalg.solve(G + lam * torch.eye(n, device=device), Y)
     W = X.T @ A
     return W, t_acc, time.time() - t0
-
 
 def block_ridge(codes, lbls, lam, device, n_blocks=20):
     """Split d into n_blocks, fit an independent ridge per block, decode as the sum
@@ -169,7 +159,6 @@ def block_ridge(codes, lbls, lam, device, n_blocks=20):
         W[sl] = Wb
         t_solve += time.time() - t0
     return W, t_acc, t_solve
-
 
 def dual_rls(codes, lbls, lam, device):
     """Streaming in the SAMPLE space: append points one at a time, maintaining the
@@ -202,7 +191,6 @@ def dual_rls(codes, lbls, lam, device):
     A = Ginv @ Y.to(device)
     W = Xm.T @ A
     return W, 0.0, time.time() - t0
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -333,7 +321,6 @@ def main():
     print("  block_ridge: B small (d/B)^3 solves instead of one d^3 -- the big win;")
     print("  check mIoU (does the rotation survive block-diagonal approximation?).")
     print("  dual_rls: sample-space streaming, O(n^2)/point, no d^2 at all.")
-
 
 if __name__ == "__main__":
     main()

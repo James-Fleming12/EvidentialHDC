@@ -55,7 +55,6 @@ CONFIG_NUSC = 'config/labels/nuscenes_new.yaml'
 ARCH_KITTI = 'config/arch/senet-2048p.yml'
 NUM_CLASSES = 17
 
-
 def build_parser(root, data, arch, sensor_override=None, sequences=None):
     sensor = sensor_override if sensor_override is not None else arch["dataset"]["sensor"]
     seqs = sequences if sequences is not None else data["split"]["valid"]
@@ -65,7 +64,6 @@ def build_parser(root, data, arch, sensor_override=None, sequences=None):
                   sensor=sensor, max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
 
-
 def nusc_sensor(arch):
     s = arch["dataset"]["sensor"].copy()
     s["fov_up"] = 10.0
@@ -74,7 +72,6 @@ def nusc_sensor(arch):
     s["img_prop"]["height"] = 32
     s["img_prop"]["width"] = 1024
     return s
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -96,7 +93,6 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def proto_miou(feats, lbls, base_protos, proto_lbls, proj, device, chunk=100000):
     preds = []
     for s in range(0, len(feats), chunk):
@@ -105,7 +101,6 @@ def proto_miou(feats, lbls, base_protos, proto_lbls, proj, device, chunk=100000)
         preds.append(proto_lbls[sims.argmax(dim=1)].cpu())
     preds = torch.cat(preds, dim=0)
     return compute_miou(preds, lbls)
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -205,7 +200,6 @@ def main():
     print("    exist on KITTI.")
     print("  - If lp_miou (learned 128-d probe) on NuScenes is high, the continuous")
     print("    features DID transfer and the gap is in the HDC prototype binarization.")
-
 
 if __name__ == "__main__":
     main()

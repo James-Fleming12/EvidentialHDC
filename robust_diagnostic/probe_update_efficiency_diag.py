@@ -52,14 +52,12 @@ NUM_CLASSES = 17
 DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -81,29 +79,24 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def hdc_codes(feats, proj, device, chunk=100000):
     codes = []
     for s in range(0, len(feats), chunk):
         codes.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(codes, dim=0)
 
-
 def onehot(lbls, num_classes):
     y = torch.zeros(len(lbls), num_classes)
     y[torch.arange(len(lbls)), lbls.long()] = 1.0
     return y
-
 
 def predict_ridge(codes, W):
     W = W.detach().cpu()
     scores = codes.float() @ W
     return scores.argmax(dim=1)
 
-
 def proto_lbls_argmax(sims):
     return sims.argmax(dim=1).cpu()
-
 
 # ---------------- the three probe update forms ----------------
 
@@ -123,7 +116,6 @@ def primal(X, Y, lam, device):
     t_solve = time.time() - t0
     return W, t_acc, t_solve
 
-
 def dual(X, Y, lam, device):
     """W = X^T (X X^T + lI_n)^{-1} Y. Flip inversion to the sample dimension n."""
     t0 = time.time()
@@ -136,7 +128,6 @@ def dual(X, Y, lam, device):
     W = Xf.T @ A
     t_solve = time.time() - t0
     return W, t_acc, t_solve
-
 
 def rls(X, Y, lam, device):
     """RLS / Sherman-Morrison: maintain P = (S + lI)^{-1} and W incrementally,
@@ -155,7 +146,6 @@ def rls(X, Y, lam, device):
         W = W + (P @ h) @ err.T
     t_loop = time.time() - t0
     return W, 0.0, t_loop
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -311,7 +301,6 @@ def main():
     print("  - proto_update pts/s is the existing pipeline's update throughput.")
     print("  - the probe forms' pts/s show the overhead of the linear update.")
     print("  - dual wins at small n (n^3 vs d^3 inversion); RLS is streaming; primal baseline.")
-
 
 if __name__ == "__main__":
     main()

@@ -55,14 +55,12 @@ NUM_CLASSES = 17
 MICRO_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp_micro'
 MED_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -84,7 +82,6 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def clean_class_means(feats, lbls):
     means = {}
     for c in range(1, NUM_CLASSES):
@@ -92,7 +89,6 @@ def clean_class_means(feats, lbls):
         if len(m):
             means[c] = F.normalize(m.mean(0), p=2, dim=0)
     return means
-
 
 def decode_preds(protos, feats, proto_lbls, proj, device, chunk=50000):
     protos = F.normalize(protos, p=2, dim=1)
@@ -103,7 +99,6 @@ def decode_preds(protos, feats, proto_lbls, proj, device, chunk=50000):
         preds.append(proto_lbls[sims.argmax(dim=1)].cpu())
     return torch.cat(preds)
 
-
 def per_class_iou(preds, lbls, classes):
     out = {}
     for c in classes:
@@ -113,7 +108,6 @@ def per_class_iou(preds, lbls, classes):
         denom = tp + fp + fn
         out[c] = tp / denom if denom > 0 else 0.0
     return out
-
 
 def spearman(xs, ys):
     """Spearman rho (ties-averaged). Returns (rho, nan)."""
@@ -140,7 +134,6 @@ def spearman(xs, ys):
     dy = (sum((ry[i] - my) ** 2 for i in range(n))) ** 0.5
     return (cov / (dx * dy)) if dx * dy > 0 else float('nan')
 
-
 def pool_per_class_stats(pool, pool_l, lp_preds, preds_pool, means_mat, classes):
     """Per-class feature-robustness stats on the pooled corrupted features."""
     col_of = {c: j for j, c in enumerate(classes)}
@@ -162,7 +155,6 @@ def pool_per_class_stats(pool, pool_l, lp_preds, preds_pool, means_mat, classes)
         }
     return rows
 
-
 def hdc_cos_to_own(pool, pool_l, base_protos, proto_lbls, proj, device, chunk=50000):
     """Per-class mean cosine of a class's points to its own HDC prototype."""
     proto_map = {int(c): k for k, c in enumerate(proto_lbls.tolist())}
@@ -182,7 +174,6 @@ def hdc_cos_to_own(pool, pool_l, base_protos, proto_lbls, proj, device, chunk=50
             sums[c] = sums.get(c, 0.0) + float(cc.sum().item())
             counts[c] = counts.get(c, 0) + int((l == c).sum().item())
     return {c: (sums[c] / counts[c] if counts[c] else float('nan')) for c in sums}
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -391,7 +382,6 @@ def main():
     with open(out, 'w') as f:
         json.dump(all_rows, f, indent=2, default=float)
     print(f"\nSaved to {out}")
-
 
 if __name__ == "__main__":
     main()

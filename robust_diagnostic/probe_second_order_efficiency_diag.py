@@ -47,14 +47,12 @@ NUM_CLASSES = 17
 DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -76,19 +74,16 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def hdc_codes(feats, proj, device, chunk=100000):
     codes = []
     for s in range(0, len(feats), chunk):
         codes.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(codes, dim=0)
 
-
 def onehot(lbls, num_classes):
     y = torch.zeros(len(lbls), num_classes)
     y[torch.arange(len(lbls)), lbls.long()] = 1.0
     return y
-
 
 def decode(W, codes, chunk=100000):
     W = W.detach().cpu()
@@ -96,7 +91,6 @@ def decode(W, codes, chunk=100000):
     for s in range(0, len(codes), chunk):
         preds.append((codes[s:s + chunk].float() @ W).argmax(dim=1))
     return torch.cat(preds)
-
 
 def hard_point_indices(pool_codes, pl, mu, n_select):
     """Select the n_select LOWEST-margin pool points under the prototype decoder
@@ -106,7 +100,6 @@ def hard_point_indices(pool_codes, pl, mu, n_select):
     top2 = torch.topk(scores, 2, dim=1).values
     margin = top2[:, 0] - top2[:, 1]
     return torch.argsort(margin)[:n_select]
-
 
 def dual_ridge(codes, lbls, lam, device, num_classes=NUM_CLASSES):
     """W = X^T (X X^T + lI)^{-1} Y on the (small) selected coreset. m x m solve."""
@@ -122,21 +115,17 @@ def dual_ridge(codes, lbls, lam, device, num_classes=NUM_CLASSES):
     t_solve = toc(t0)
     return W, t_acc, t_solve
 
-
 def sync():
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-
 
 def tic():
     sync()
     return time.time()
 
-
 def toc(t0):
     sync()
     return time.time() - t0
-
 
 def matrix_free_cg(codes, lbls, lam, device, iters=10, num_classes=NUM_CLASSES):
     """CG solve (S + lI) W = T with Sv = X^T (X v) -- never build the 10k x 10k S.
@@ -166,7 +155,6 @@ def matrix_free_cg(codes, lbls, lam, device, iters=10, num_classes=NUM_CLASSES):
     t_solve = toc(t0)
     return x, 0.0, t_solve, d
 
-
 def sparse_cov_ridge(codes, lbls, lam, device, keep_frac, num_classes=NUM_CLASSES):
     """S ~ D + S_sparse: keep diagonal + the top-K off-diagonal |S_jk| entries.
     Solve (S_sparse + lI) W = T. keep_frac = fraction of off-diagonal entries kept."""
@@ -192,7 +180,6 @@ def sparse_cov_ridge(codes, lbls, lam, device, keep_frac, num_classes=NUM_CLASSE
     t_solve = toc(t0)
     kept = int(S_mask.sum().item()) - d  # off-diagonal entries kept
     return W, t_acc, t_solve, kept
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -307,7 +294,6 @@ def main():
     print("   converges in 5-10 iters, it needs only ~10 passes over the pool, no d^2 S.")
     print("3. sparse: does a small fraction of off-diagonal S recover the gain? If 1%")
     print("   suffices, S is mostly diagonal + a few informative pairwise correlations.")
-
 
 if __name__ == "__main__":
     main()

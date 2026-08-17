@@ -51,21 +51,17 @@ NUM_CLASSES = 17
 DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
-
 def sync():
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-
 
 def tic():
     sync()
     return time.time()
 
-
 def toc(t0):
     sync()
     return time.time() - t0
-
 
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
@@ -73,7 +69,6 @@ def build_parser(root, data, arch):
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -95,19 +90,16 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def hdc_codes(feats, proj, device, chunk=100000):
     codes = []
     for s in range(0, len(feats), chunk):
         codes.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(codes, dim=0)
 
-
 def onehot(lbls, num_classes):
     y = torch.zeros(len(lbls), num_classes)
     y[torch.arange(len(lbls)), lbls.long()] = 1.0
     return y
-
 
 def decode_float(codes, W, chunk=100000):
     preds = []
@@ -115,14 +107,12 @@ def decode_float(codes, W, chunk=100000):
         preds.append((codes[s:s + chunk].float() @ W.detach().cpu()).argmax(dim=1))
     return torch.cat(preds)
 
-
 def decode_sign(codes, W, chunk=100000):
     Wq = W.detach().cpu().sign()
     preds = []
     for s in range(0, len(codes), chunk):
         preds.append((codes[s:s + chunk].float() @ Wq).argmax(dim=1))
     return torch.cat(preds)
-
 
 # ---------------- the three HDC-aligned update forms ----------------
 
@@ -147,7 +137,6 @@ def cg_solve(S, T, lam, device, iters=5):
         rs_old = rs_new
     return x
 
-
 def cg_update(codes, lbls, lam, device, iters=5):
     """Accumulate full dense S/T, then CG solve."""
     X = codes.float().to(device)
@@ -160,7 +149,6 @@ def cg_update(codes, lbls, lam, device, iters=5):
     W = cg_solve(S, T, lam, device, iters)
     t_solve = toc(t0)
     return W, t_acc, t_solve
-
 
 def delta_rule(codes, lbls, alpha, device, epochs=3):
     """HDC delta rule (Widrow-Hoff / Kaczmarz): W <- W + a (y - W h) h^T.
@@ -181,7 +169,6 @@ def delta_rule(codes, lbls, alpha, device, epochs=3):
     t_wall = toc(t0)
     return W, 0.0, t_wall
 
-
 def nystrom_update(codes, lbls, lam, device, P, use_sign=False):
     """Nystrom sketch: S_hat = P^T X^T X P (m x m), T_hat = P^T X^T Y, solve in m,
     W = P A. P is a random sign matrix (d x m): every m-dim mixes all d HDC dims."""
@@ -198,7 +185,6 @@ def nystrom_update(codes, lbls, lam, device, P, use_sign=False):
     W = P.to(device) @ A                         # (d, C)
     t_solve = toc(t0)
     return W, t_acc, t_solve
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -349,7 +335,6 @@ def main():
     print("(sign) columns are the quantized +-1 W decode (integer popcount).")
     print("Compare each to R1 proto and the full-probe R4 ceiling; the parameter at")
     print("which accuracy saturates is the 'implementation need' of each method.")
-
 
 if __name__ == "__main__":
     main()

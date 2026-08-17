@@ -58,14 +58,12 @@ NUM_CLASSES = 17
 DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -87,19 +85,16 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def hdc_codes(feats, proj, device, chunk=100000):
     codes = []
     for s in range(0, len(feats), chunk):
         codes.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(codes, dim=0)
 
-
 def onehot(lbls, num_classes):
     y = torch.zeros(len(lbls), num_classes)
     y[torch.arange(len(lbls)), lbls.long()] = 1.0
     return y
-
 
 def decode(W, codes, chunk=100000):
     W = W.detach().cpu()
@@ -108,7 +103,6 @@ def decode(W, codes, chunk=100000):
         preds.append((codes[s:s + chunk].float() @ W).argmax(dim=1))
     return torch.cat(preds)
 
-
 def scores(W, codes, chunk=100000):
     W = W.detach().cpu()
     outs = []
@@ -116,11 +110,9 @@ def scores(W, codes, chunk=100000):
         outs.append(codes[s:s + chunk].float() @ W)
     return torch.cat(outs, dim=0)
 
-
 def sync():
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-
 
 # ---------------- weighted probe update (Nystrom warm start + CG) ----------------
 
@@ -137,7 +129,6 @@ def nystrom_w0(codes, lbls, weights, lam, device, m=1000):
     That = (Xw @ P.to(device)).t() @ Y             # P^T X^T D Y (m x C)
     A = torch.linalg.solve(Shat + lam * torch.eye(m, device=device), That)
     return (P.to(device) @ A).float()
-
 
 def weighted_cg(codes, lbls, weights, lam, device, iters=8, x0=None):
     """Weighted ridge W = (X^T D X + lI)^-1 X^T D Y via CG with matrix-free
@@ -165,11 +156,9 @@ def weighted_cg(codes, lbls, weights, lam, device, iters=8, x0=None):
         rs_old = rs_new
     return x.float()
 
-
 def weighted_probe_fit(codes, lbls, weights, lam, device, iters=8):
     x0 = nystrom_w0(codes, lbls, weights, lam, device)
     return weighted_cg(codes, lbls, weights, lam, device, iters=iters, x0=x0)
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -291,7 +280,6 @@ def main():
     print("  B two-stage: fit on frozen pseudo-labels, then re-gate / reweight by the")
     print("    UPDATED probe's confidence. If the second round climbs (vs Iteration 9's")
     print("    failed first-round gate), the first update cleaned the pseudo-labels.")
-
 
 if __name__ == "__main__":
     main()

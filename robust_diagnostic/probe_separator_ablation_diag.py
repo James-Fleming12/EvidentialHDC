@@ -57,14 +57,12 @@ NUM_CLASSES = 17
 DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -86,19 +84,16 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def hdc_codes(feats, proj, device, chunk=100000):
     codes = []
     for s in range(0, len(feats), chunk):
         codes.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(codes, dim=0)
 
-
 def onehot(lbls, num_classes):
     y = torch.zeros(len(lbls), num_classes)
     y[torch.arange(len(lbls)), lbls.long()] = 1.0
     return y
-
 
 def class_sums(codes, lbls, num_classes=NUM_CLASSES):
     """Per-class coordinate sums s_cj = sum_{i:y_i=c} h_ij and counts. FIRST-ORDER
@@ -112,14 +107,12 @@ def class_sums(codes, lbls, num_classes=NUM_CLASSES):
             n[c] = int(m.sum().item())
     return S, n
 
-
 def decode(W, codes, chunk=100000):
     """argmax over the full class space of codes @ W (W: d x C)."""
     preds = []
     for s in range(0, len(codes), chunk):
         preds.append((codes[s:s + chunk].float() @ W).argmax(dim=1))
     return torch.cat(preds)
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -268,7 +261,6 @@ def main():
     print("   stats? If yes, linear separability does NOT need second-order statistics.")
     print("Compare each to R1 (baseline) and full_ridge (ceiling): which first-order")
     print("separator gets closest to the ceiling, and at what update cost.")
-
 
 if __name__ == "__main__":
     main()

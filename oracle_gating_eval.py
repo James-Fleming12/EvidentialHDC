@@ -52,7 +52,6 @@ CLASS_NAMES = {1: 'car', 2: 'bicycle', 3: 'motorcycle', 4: 'truck', 5: 'other-ve
                11: 'terrain', 12: 'pole', 13: 'traffic-sign', 14: 'other-ground',
                15: 'building', 16: 'other-object'}
 
-
 CORRUPTIONS = [
     'fog', 'snow', 'wet_ground', 'incomplete_echo', 
     'crosstalk', 'beam_missing', 'motion_blur', 'cross_sensor'

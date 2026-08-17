@@ -55,14 +55,12 @@ NUM_CLASSES = 17
 DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -84,13 +82,11 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def hdc_codes(feats, proj, device, chunk=100000):
     codes = []
     for s in range(0, len(feats), chunk):
         codes.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(codes, dim=0)
-
 
 def per_class_spread(codes, lbls, proto_lbls):
     """Per-class within-class spread in the binarized code (1 = the corr_tight proxy):
@@ -107,7 +103,6 @@ def per_class_spread(codes, lbls, proto_lbls):
         spread[c] = float((F.normalize(cc, p=2, dim=1) @ proto.T).mean().item())
     return spread
 
-
 def decode_rule1(codes, protos, proto_lbls, device):
     """R1: unit-norm cosine to prototypes (the current rule)."""
     preds = []
@@ -115,7 +110,6 @@ def decode_rule1(codes, protos, proto_lbls, device):
         sims = F.normalize(codes[s:s + 100000].to(device), p=2, dim=1) @ protos.T
         preds.append(proto_lbls[sims.argmax(dim=1)].cpu())
     return torch.cat(preds)
-
 
 def decode_rule2(codes, protos, proto_lbls, spread, device):
     """R2: per-class scaled cosine. Each class's similarity is divided by its spread
@@ -129,13 +123,11 @@ def decode_rule2(codes, protos, proto_lbls, spread, device):
         preds.append(proto_lbls[sims.argmax(dim=1)].cpu())
     return torch.cat(preds)
 
-
 def decode_rule3(feats, clf):
     """R3: learned 128-d LogisticRegression decision rule (fit on clean, frozen)."""
     n = len(feats)
     preds = torch.tensor(clf.predict(feats[:min(n, 500000)].numpy()))
     return preds
-
 
 def decode_rule4(codes, clf_hdc):
     """R4: linear probe fit on the HDC CODE (the binarized 10k-d space) itself.
@@ -146,7 +138,6 @@ def decode_rule4(codes, clf_hdc):
     n = len(codes)
     preds = torch.tensor(clf_hdc.predict(codes[:min(n, 500000)].numpy()))
     return preds
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -262,7 +253,6 @@ def main():
     print("    current implementation throws away a strong linear signal -> a learned")
     print("    decision rule on the HDC code is the fix.")
     print("If R2 or R4 recovers healthy but holds fog/crosstalk, adopt it decoder-side.")
-
 
 if __name__ == "__main__":
     main()

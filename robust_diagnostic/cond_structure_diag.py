@@ -35,14 +35,12 @@ NUM_CLASSES = 17
 DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -63,7 +61,6 @@ def extract_features(model, parser, device, num_frames=100):
             feats.append(z_flat.cpu())
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
-
 
 def extract_features_pair(model_a, model_b, parser, device, num_frames=100):
     """Extract features from BOTH models on the SAME points in one pass.
@@ -101,7 +98,6 @@ def extract_features_pair(model_a, model_b, parser, device, num_frames=100):
     return (torch.cat(fa, dim=0), torch.cat(la, dim=0),
             torch.cat(fb, dim=0), torch.cat(la, dim=0))
 
-
 def per_class_iou(preds, lbls, classes):
     out = {}
     for c in classes:
@@ -112,7 +108,6 @@ def per_class_iou(preds, lbls, classes):
         out[c] = tp / denom if denom > 0 else 0.0
     return out
 
-
 def decode(protos, feats, proto_lbls, proj, device, chunk=50000):
     protos = F.normalize(protos, p=2, dim=1)
     preds = []
@@ -122,7 +117,6 @@ def decode(protos, feats, proto_lbls, proj, device, chunk=50000):
         preds.append(proto_lbls[sims.argmax(dim=1)].cpu())
     return torch.cat(preds)
 
-
 def clean_class_means(feats, lbls):
     means = {}
     for c in range(1, NUM_CLASSES):
@@ -130,7 +124,6 @@ def clean_class_means(feats, lbls):
         if len(m):
             means[c] = F.normalize(m.mean(0), p=2, dim=0)
     return means
-
 
 def class_structure(pool, pool_l, clean_means, classes):
     col_of = {c: j for j, c in enumerate(classes)}
@@ -152,7 +145,6 @@ def class_structure(pool, pool_l, clean_means, classes):
                    'dir_ret': float((corr_mean * means_mat[col_of[c]]).sum().item()),
                    'corr_tight': float((pts @ corr_mean).mean().item())}
     return rows
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -246,7 +238,6 @@ def main():
     print(f"\nSaved to {args.out}")
     print("Look for: a class whose dir_ret or corr_tight drops under B (cov-shift) while")
     print("zs also drops -- that is the recoverable structure the normalization erases.")
-
 
 if __name__ == "__main__":
     main()

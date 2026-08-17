@@ -38,14 +38,12 @@ NUM_CLASSES = 17
 DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -67,13 +65,11 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def hdc_codes(feats, proj, device, chunk=200000):
     codes = []
     for s in range(0, len(feats), chunk):
         codes.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(codes, dim=0)
-
 
 def bench(label, fn):
     t0 = time.time()
@@ -81,7 +77,6 @@ def bench(label, fn):
     dt = time.time() - t0
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # MB
     return out, dt, rss
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -187,7 +182,6 @@ def main():
     with open(args.out, 'w') as fh:
         json.dump(results, fh, indent=2, default=float)
     print(f"\nSaved to {args.out}")
-
 
 if __name__ == "__main__":
     main()

@@ -48,14 +48,12 @@ NUM_CLASSES = 17
 PATH_A = 'robust_diagnostic/logs/supcon_vib_dglsspp'               # plain DGLSS++ medium
 PATH_B = 'robust_diagnostic/logs/med_corsupcon_21ep/supcon_vib_dglsspp_corsupcon'  # robust 21ep
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -77,7 +75,6 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def clean_class_means(feats, lbls):
     means = {}
     for c in range(1, NUM_CLASSES):
@@ -85,7 +82,6 @@ def clean_class_means(feats, lbls):
         if len(m):
             means[c] = F.normalize(m.mean(0), p=2, dim=0)
     return means
-
 
 def decode_preds(protos, feats, proto_lbls, proj, device, chunk=50000):
     protos = F.normalize(protos, p=2, dim=1)
@@ -96,7 +92,6 @@ def decode_preds(protos, feats, proto_lbls, proj, device, chunk=50000):
         preds.append(proto_lbls[sims.argmax(dim=1)].cpu())
     return torch.cat(preds)
 
-
 def per_class_iou(preds, lbls, classes):
     out = {}
     for c in classes:
@@ -106,7 +101,6 @@ def per_class_iou(preds, lbls, classes):
         denom = tp + fp + fn
         out[c] = tp / denom if denom > 0 else 0.0
     return out
-
 
 def spearman(xs, ys):
     def rank(v):
@@ -131,7 +125,6 @@ def spearman(xs, ys):
     dx = (sum((rx[i] - mx) ** 2 for i in range(n))) ** 0.5
     dy = (sum((ry[i] - my) ** 2 for i in range(n))) ** 0.5
     return (cov / (dx * dy)) if dx * dy > 0 else float('nan')
-
 
 def class_structure(pool, pool_l, clean_f, clean_l, clean_means, classes):
     """Per-class feature-structure on the pooled corrupted features + clean tightness."""
@@ -165,7 +158,6 @@ def class_structure(pool, pool_l, clean_f, clean_l, clean_means, classes):
             (F.normalize(clean_f[m], p=2, dim=1) @ means_mat[col_of[c]]).mean().item())
     return rows
 
-
 def branch_structure(pool, pool_l, clean_f, clean_l, clean_means, classes, inv_ch):
     """Two-branch decoupling check (Iteration-15 gate): split the concatenated
     bottleneck at channel inv_ch into the invariant slice [0:inv_ch] and the corruption
@@ -188,7 +180,6 @@ def branch_structure(pool, pool_l, clean_f, clean_l, clean_means, classes, inv_c
             out[c][f'{name}_dir_retention'] = rows[c]['dir_retention']
             out[c][f'{name}_tightness'] = rows[c]['corr_tightness']
     return out
-
 
 def cluster_al_stats(pool, pool_l, classes):
     """Active-learning readiness: per class, the fraction of the class's CORRUPTED
@@ -219,7 +210,6 @@ def cluster_al_stats(pool, pool_l, classes):
         out[str(c)] = p
         vals.append(p)
     return out, (sum(vals) / len(vals) if vals else float('nan'))
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -422,7 +412,6 @@ def main():
     with open(args.out, 'w') as f:
         json.dump(data, f, indent=2, default=float)
     print(f"\nSaved to {args.out}")
-
 
 if __name__ == "__main__":
     main()

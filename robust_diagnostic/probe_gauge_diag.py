@@ -54,14 +54,12 @@ NUM_CLASSES = 17
 DGLSSPP_PATH = 'robust_diagnostic/logs/supcon_vib_dglsspp'
 DGLSSPP_METHOD = 'supcon_vib_dglsspp'
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -83,19 +81,16 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def hdc_codes(feats, proj, device, chunk=100000):
     codes = []
     for s in range(0, len(feats), chunk):
         codes.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(codes, dim=0)
 
-
 def onehot(lbls, num_classes):
     y = torch.zeros(len(lbls), num_classes)
     y[torch.arange(len(lbls)), lbls.long()] = 1.0
     return y
-
 
 def proto_decode(codes, mu, lbls_present, device, chunk=100000):
     """Cosine to the class-mean prototypes (R1). mu: (n_present, d) normalized rows;
@@ -109,7 +104,6 @@ def proto_decode(codes, mu, lbls_present, device, chunk=100000):
         preds.append(lbls_present[row_ids])
     return torch.cat(preds)
 
-
 def ridge_gauge(g_codes, lbls, lam, device):
     """Fit a ridge probe in the k-dim gauge space: A = (G^T G + lI)^{-1} G^T Y (k x C)."""
     G = g_codes.float().to(device)
@@ -117,7 +111,6 @@ def ridge_gauge(g_codes, lbls, lam, device):
     k = G.shape[1]
     A = torch.linalg.solve(G.T @ G + lam * torch.eye(k, device=device), G.T @ Y)
     return A
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -247,7 +240,6 @@ def main():
     print("  - rank-k corr: how much of the R4 ceiling the cheap correction W=mu+VA recovers")
     print("    (the boundary-rotation correction without the full 10000-d ridge).")
     print("  - The gauge is sparse (only the reservoir is used), so per-point cost stays O(Cd).")
-
 
 if __name__ == "__main__":
     main()
