@@ -248,9 +248,16 @@ pathway may use the prior-corrected score; the adaptation pathway must not.
 
 The linear probe (fit on the HDC code) raises the labeled ceiling far above the
 prototype rule on every condition, because it learns per-coordinate weights and a
-boundary rotation that the centroid rule cannot express. It is fit with the
+boundary rotation that the centroid rule cannot express. The probe is the ridge
+solution on the binarized code $X \in \{-1,+1\}^{n \times d}$:
+
+$$
+W = (S + \lambda I)^{-1} T, \qquad S = X^{\top} X, \qquad T = X^{\top} Y,
+$$
+
+where $Y$ is the one-hot (or soft) label matrix of the pool. It is fit with the
 **Nystrom-warm-started matrix-free CG** update (see the efficiency section below),
-and the decoder is cosine to the learned W.
+and the decoder is cosine to the learned $W$.
 
 **The efficiency <-> accuracy table** (wet_ground ep-10, ceiling mIoU vs update
 speed), for the baseline and the probe-update variants:
@@ -265,7 +272,13 @@ speed), for the baseline and the probe-update variants:
 
 The winner is **Nystrom warm-start + matrix-free CG**: the Nystrom sketch (m=1000)
 provides a cheap approximate second-order geometry, then CG-8 finishes in the full
-10000-d space via Sv = X^T(Xv), never building the d x d S. CG-8 from the Nystrom
+10000-d space via the matrix-free matvec
+
+$$
+Sv = X^{\top}(X v),
+$$
+
+never building the $d \times d$ matrix $S$. CG-8 from the Nystrom
 start reaches 0.62 wet_ground / 0.38 fog (ep10), essentially the plain CG-20
 accuracy, in ~8 iterations instead of 20 (0.034s, ~1.5M pts/s). The warm start is
 the key: CG-5 from Nystrom already matches CG-20 from scratch. The prototype is NOT
@@ -311,8 +324,11 @@ property below is measured, and each kills a family of label-free methods:
    0.38-0.61: the correct points are a biased, low-coverage subset of the pool.
    The rotation needs labels spread over the whole geometry; clean-but-sparse
    supervision is structurally insufficient (Iteration 11).
-6. **The second-order solve amplifies the contaminated half.** W = (S + lI)^-1
-   X^T Y applies the inverse geometry to the label statistics; with S fixed and
+6. **The second-order solve amplifies the contaminated half.** The update
+   $$
+   W = (S + \lambda I)^{-1} X^{\top} Y
+   $$
+   applies the inverse geometry to the label statistics; with $S$ fixed and
    correct, the wrong-label contribution is amplified by the same inverse that
    would recover the rotation. S=all, T=gated never beats S=all, T=all at scale
    because the geometry faithfully represents the pool -- and the pool's
@@ -457,8 +473,13 @@ The cluster packing is real (1-NN purity 0.51-0.77, intra vs inter cosine
 MASS, not the clusters. Three measured mechanisms:
 
 1. **The gap is the missing mass.** The probe update is a sum over labeled
-   points: W_labeled = W_oracle - (S + lI)^-1 (sum over UNLABELED points of
-   x_i y_i^T). Scaling W does not change the decode, but DIRECTION does -- and
+   points: the labeled solution differs from the oracle exactly by the
+   contribution of the points NOT labeled,
+   $$
+   W_{\mathrm{labeled}} = W_{\mathrm{oracle}} -
+   (S + \lambda I)^{-1} \sum_{i \notin L} x_i y_i^{\top}.
+   $$
+   Scaling $W$ does not change the decode, but DIRECTION does -- and
    a partial sum's direction is only right when the labeled subset's per-class
    sums are proportional to the full per-class sums. The labeled ceiling is
    only reached by labeling ~40-60% of the pool (measured across every code
@@ -494,25 +515,31 @@ fails (Iterations 0-2), the missing-mass argument is real but the class means
 ARE estimable (8-32 points per class reach cos 0.95-0.99, Iteration 7), the
 T-synthesis chain is exact, and the soft-mass counts/assignments are both
 wrong (8D WEAK, Iteration 8). The final bottleneck is the DECODER UPDATE
-itself: the inverse covariance (S + lI)^-1 amplifies small unavoidable T
-errors into large W errors (the ridge-relevant error is 4-6x; the ordinary
-Euclidean quality of T stops mattering once it is past ~0.7 cosine).
+itself: the inverse covariance $(S + \lambda I)^{-1}$ amplifies small
+unavoidable $T$ errors into large $W$ errors (the ridge-relevant error is
+4-6x; the ordinary Euclidean quality of $T$ stops mattering once it is past
+~0.7 cosine).
 
 The fix is a sensitivity-bounded parameterization. With the spectrum of
-S normalized (S/N, T/N, l/N -- the ridge is exactly unchanged), the update
+$S$ normalized (scaling $S$, $T$ and $\lambda$ by $1/N$ leaves the ridge
+solution exactly unchanged), the update is
 
-  W_new = W_frozen + eta (W_beta - W_frozen),   W_beta = (S + lI)^-beta T_hat
+$$
+W_{\mathrm{new}} = W_{\mathrm{frozen}} + \eta\, (W_{\beta} - W_{\mathrm{frozen}}),
+\qquad
+W_{\beta} = (S + \lambda I)^{-\beta}\, T_{\mathrm{hat}},
+$$
 
-with beta ~0.75 and eta ~0.1:
-- the FRACTIONAL direction W_beta moves the classifier toward the labeled
+with $\beta \approx 0.75$ and $\eta \approx 0.1$:
+- the FRACTIONAL direction $W_{\beta}$ moves the classifier toward the labeled
   estimate without the full inverse's amplification (the robustness/ceiling
-  tradeoff is real and monotone across beta, Iteration 9);
-- the RESIDUAL ANCHOR keeps the update close to the frozen decoder (eta=0
-  reproduces frozen exactly, so the method is never worse than the frozen
-  baseline -- the safety property, Iteration 9-10);
-- the label cost is the class means: 64-72 labels (random-k means per class,
-  k=8) -- and the budget curve is flat, so more labels do not help (Iteration
-  10).
+  tradeoff is real and monotone across $\beta$, Iteration 9);
+- the RESIDUAL ANCHOR keeps the update close to the frozen decoder
+  ($\eta = 0$ reproduces frozen exactly, so the method is never worse than the
+  frozen baseline -- the safety property, Iteration 9-10);
+- the label cost is the class means: 64-72 labels total (random-$k$ means per
+  class, $k = 8$) -- and the budget curve is flat, so more labels do not help
+  (Iteration 10).
 
 The frozen vs labeled-ceiling vs method table (ep10; the labeled ceiling is
 the SPECTRAL-exact oracle -- the matrix-free CG-8 approximation previously
@@ -530,6 +557,34 @@ substantially toward the ceiling on every condition -- the first label-
 efficient update in the AL thread to do so. The update is a spectral solve
 (~4s) plus matrix-free decode; the remaining deployment step is replacing the
 oracle-informed class counts with the source-count prior (Iteration 8F).
+
+**Efficiency and the path to a cheaper solve.** The current spectral solve
+materializes the full $d \times d$ covariance and eigendecomposes it
+(~4s per condition, a diagnostic cost). Three measured facts say this is
+avoidable, and the eventual cheaper method must preserve them:
+
+1. **The useful spectrum is low-rank.** The participation rank of the
+   normalized covariance is 6-9, and the 9E unstable-removal diagnostic is
+   flat (dropping the bottom 40% of eigen-directions changes mIoU by <0.01):
+   most directions carry no label signal. A truncated spectral factorization
+   (Lanczos or randomized SVD over the top ~100-500 directions, matrix-free
+   via $Sv = X^{\top}(X v)$) replaces the 4s eigh with a cost in the CG-8
+   class (~0.03-0.1s) -- the filter $(\lambda + \sigma)^{-\beta}$ is then a
+   scalar operation on the returned eigenvalues.
+2. **The fractional power needs only the top-K filter, not the full inverse.**
+   The sensitivity problem is the amplification of the near-zero directions;
+   the fractional (and clipped, 9B) filters shape those gains directly. A
+   top-K spectral filter with the tail handled by the frozen residual anchor
+   ($\eta$ small) reproduces the mechanism without ever forming the full
+   inverse.
+3. **The method's per-iteration cost is already dominated by the class-mean
+   estimation and one spectral solve.** The means come from $k \times$
+   (#classes) points (64-72 labels), the decode is the matrix-free cosine at
+   the prototype rate, and the update itself is one filtered solve. The
+   cheaper version keeps: the fractional gain shaping (property 1), the
+   residual safety anchor (property 2), the class-mean estimation from a few
+   labels (property 3), and the matrix-free decode -- while replacing the
+   full eigh with the truncated spectral filter.
 
 ---
 
