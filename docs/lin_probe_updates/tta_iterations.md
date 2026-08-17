@@ -673,10 +673,47 @@ the wrong pseudo-labels poison it. The levers are:
    UPDATED probe's confidence for a second-round gate (the first update may already
    clean the pseudo-labels enough that a second gate works).
 
-## Next: Iteration 10: the label-free probe-update test
+## Iteration 10: weighted and two-stage pseudo-label updates (2026-08-16)
+
+Iteration 9's hard gates starve the covariance. This tests the two levers that
+avoid the hard gate (`probe_weighted_two_stage_diag.py`): (A) confidence-WEIGHTED
+updates (each point contributes to S/T scaled by its confidence, keeping all
+points' covariance), and (B) TWO-STAGE updates (fit on frozen pseudo-labels, then
+re-gate / reweight by the UPDATED probe's confidence). Weighted ridge verified
+exact vs (X^T D X + lI)^-1 X^T D Y.
+
+Results (wet_ground ep10; frozen 0.424, oracle 0.616, no_gate 0.416):
+
+| method | mIoU | note |
+| :--- | :--- | :--- |
+| no_gate | 0.416 | baseline label-free |
+| A w=conf / conf^2 / margin | 0.416 / 0.416 / 0.412 | all flat at no_gate |
+| B hard_regate 30% | 0.403 | worse |
+| B soft_weighted | 0.414 | flat |
+| B soft_then_hard | 0.404 | worse |
+
+(fog ep10: A 0.256 vs no_gate 0.256, B 0.243-0.255; ep21 identical pattern.)
+
+**Result: BOTH levers fail.** Soft weighting is flat at `no_gate` (0.416), and
+two-stage is worse (0.40-0.41). The wrong pseudo-labels contaminate the update even
+when down-weighted by confidence, and the updated probe's confidence does not become
+clean enough for a second-round gate to work. This CLOSES the pseudo-label
+supervision route for the Nystrom+CG probe update: neither gating nor weighting
+pseudo-labels recovers the oracle.
+
+**The fundamental conclusion.** The 33-55% wrong pseudo-labels (frozen probe on the
+corrupted pool) are too contaminated for ANY pseudo-label-supervised refit of the
+probe. Label-free TTA holds where the FROZEN probe already works (healthy conditions,
+crosstalk); the conditions that need the second-order rotation (fog) are exactly
+where pseudo-labels cannot supply the supervision. This is the active-learning
+handoff (Pillar 3), not a pseudo-label fix. The probe's label-free ceiling is the
+frozen decoder; the oracle rotation is the labeled bound that AL (one label per
+cluster) closes.
+
+## Next: Iteration 11: the label-free probe-update test
 
 Iteration 1 validated the ridge accumulate-and-solve update with TRUE labels (the
-oracle). Iteration 10 asks whether a LABEL-FREE version climbs toward the R4-oracle
+oracle). Iteration 11 asks whether a LABEL-FREE version climbs toward the R4-oracle
 ceiling the way naive prototype TTA reaches the R1 ceiling:
 - **naive probe-refit**: the Nystrom-warm-started matrix-free CG update with
   PSEUDO-labels (Sv = X^T(Xv) on the pool with the frozen probe's pseudo-labels,

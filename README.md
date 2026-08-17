@@ -212,25 +212,29 @@ diagnostic, and the decision-rule finding are tracked in
 
 ---
 
-## 3. Pillar 2: label-free test-time adaptation (raises mIoU on the healthy conditions)
+## 3. Pillar 2: label-free test-time adaptation
 
-The label-free TTA path: on the conditions where the representation survives,
-re-estimating the decoder from the corrupted stream (with no labels at all) raises
-mIoU, and on the healthy conditions it reaches the ceiling. The current story is
-about the **cov-shift extractor** (Section 2): where the frozen decoder already
-holds, and where the decode rule leaves room.
+Test-time adaptation re-estimates the decoder from the corrupted stream with no
+labels. The story has two chapters: what the previous (prototype) method could do,
+and what the linear-probe decoder changes.
 
-For the cov-shift extractor, the label-free prototype update is essentially free:
-the naive re-estimation reaches the ceiling on every condition:
+### 3.0 What the previous method saw
 
-- **On the healthy conditions the label-free path is sufficient.** Snow,
-  wet_ground, motion_blur, beam_missing, incomplete_echo and cross_sensor sit at
-  or near their labeled ceiling with the label-free update, so no labels are needed
-  there at all.
-- **Crosstalk is closed at the frozen level** (zero-shot ~= ceiling ~= naive): the
-  extractor, not TTA, fixed it.
-- **Fog is the remaining label-free gap**, small (naive 21.0% vs ceiling 23.5%)
-  relative to every prior extractor (6-10 points) but still present.
+The original decoder was **distance to the class-mean prototype** (nearest-centroid
+cosine). Under that decoder the label-free picture was:
+
+- **On the healthy conditions, label-free TTA is sufficient.** Snow, wet_ground,
+  motion_blur, beam_missing, incomplete_echo and cross_sensor sit at or near their
+  *prototype* ceiling with the label-free update, so no labels are needed there.
+- **Crosstalk is closed at the frozen level** (zero-shot ~= prototype ceiling ~=
+  naive): the cov-shift extractor, not TTA, fixed it.
+- **Fog is the remaining gap** (naive 21.0% vs prototype ceiling 26.1%): the
+  prototype's recoverable ceiling is low and label-free TTA reaches most of it.
+
+But the *prototype* ceiling is low on fog/crosstalk (26.1% / 46.1%): the centroid
+rule cannot express the rotation that corruption induces. This is the assignment
+wall: a label-free signal can say *which* points are wrong, but not *what class*
+they belong to. A learned decoder reopens this as large recoverable headroom.
 
 A design rule: prior correction and prototype updates must not share a pathway.
 The prior is an inference-time constant that shifts decision boundaries; it does
@@ -238,131 +242,75 @@ not move prototypes by itself. But if prior-corrected pseudo-labels feed the
 updates, the bias steers the prototypes and the drift compounds. The prediction
 pathway may use the prior-corrected score; the adaptation pathway must not.
 
-**Labeled ceiling of the cov-shift extractor (ep-10) under the two decoders.**
-The zero-shot is the frozen-prototype HDC decode (isotropy pipeline). The ceiling is
-the full-label oracle (re-estimating the decoder from corrupted points with true
-labels): **prototype distance** (nearest-centroid) vs **linear probe** (the learned
-HDC-code decoder, R4). The naive column is the label-free prototype re-estimation
-on the corrupted pool (extractor-diff harness):
+### 3.1 What the linear probe in HDC space adds
 
-| condition | zero-shot | prototype ceiling | linear-probe ceiling | label-free naive TTA |
-| :--- | :--- | :--- | :--- | :--- |
-| fog | 20.1% | 26.1% | **43.3%** | 21.0% |
-| crosstalk | 39.5% | 46.1% | **59.4%** | 38.6% |
-| snow | 37.7% | 40.8% | **51.0%** | ~ceiling |
-| wet_ground | 35.8% | 42.5% | **68.3%** | ~ceiling |
+The linear probe (fit on the HDC code) raises the labeled ceiling far above the
+prototype rule on every condition, because it learns per-coordinate weights and a
+boundary rotation that the centroid rule cannot express. It is fit with the
+**Nystrom-warm-started matrix-free CG** update (see the efficiency section below),
+and the decoder is cosine to the learned W.
 
-The two columns that matter:
-- **The linear-probe ceiling is far above the prototype ceiling on every condition**
-  (fog 43.3% vs 26.1%; wet_ground 68.3% vs 42.5%). The recoverable structure is
-  there all along; the centroid rule cannot express it. This is the assignment-wall
-  signature (prototype ceiling ~ zero-shot) reopened as decoder headroom, and it is
-  why the decoder, not the features, is the binding constraint (Section 2).
-- **The label-free prototype update reaches its own ceiling**: crosstalk is closed
-  at the frozen level (zero-shot ~= prototype ceiling ~= naive, no assignment wall),
-  the healthy conditions sit at/near their ceiling label-free, and fog is the small
-  remaining label-free gap (naive 21.0% vs prototype ceiling 26.1%).
-
-The cov-shift method's per-condition source harnesses are in
-`docs/cov_shift/cov_shift_iterations.md` (Iterations C1-C5, C11).
-
-**The HDC-native decoder and update.** To recover the R4 headroom without the full
-10000x10000 solve (and without the block-diagonal approximation that breaks HDC
-holography), the update is **Nystrom-warm-started matrix-free conjugate gradient**:
-the Nystrom sketch (P in {+1,-1}^{d x m}, m = 1000) provides a cheap approximate
-second-order geometry, then a few CG iterations (Sv = X^T(Xv), never building S)
-finish the solution in the full 10000-d space. The decoder is cosine to the learned W.
-An earlier candidate was the **Nystrom random-sign sketch** alone: P mixes all 10000
-HDC dims into
-each sketch coordinate, so the holographic structure is preserved; the solve happens
-in m (m^3, trivial), and W = P A. The decoder then **quantizes W to +/-1**, so the
-decode is an integer dot product (d - 2*Hamming, popcount on packed bits), so no
-floats are needed. Ceiling (labeled oracle) and zero-shot mIoU, vs the baselines (cov-shift
-ep-10):
-
-| condition | R1 proto ceil | full R4 ceil | **Nystrom+sign ceil** | Nystrom+sign zs |
-| :--- | :--- | :--- | :--- | :--- |
-| fog | 26.0% | 41.7% | **33.7%** | 24.1% |
-| crosstalk | 45.9% | 58.6% | **50.8%** | 48.5% |
-| snow | 41.2% | 51.1% | **44.3%** | 40.7% |
-| wet_ground | 42.4% | 67.1% | **54.7%** | 39.9% |
-
-Nystrom+sign recovers a large share of the R4 ceiling on every condition (fog 33.7%
-vs R4 41.7% and proto 26.0%; wet_ground 54.7% vs 67.1% and 42.4%), while staying in
-the full 10000-d HDC space (no block mask). The zero-shot is prototype-like, as
-expected. Matrix-free CG supersedes it on accuracy (CG-20 reaches 62.0% wet_ground,
-beating Nystrom's 54.7% at comparable update cost); see the tradeoff table below.
-
-**Inference speed is essentially unchanged.** The learned-prototype decode (cosine
-to W, or the quantized integer-popcount variant) runs at the prototype's decode
-rate; the efficiency cost is in the UPDATE, not the deployed decode:
-
-| decoder (ep-10) | update pts/s | decode pts/s |
-| :--- | :--- | :--- |
-| R1 prototype (fit / decode) | ~1.1-3.9M | ~0.29-0.31M |
-| full probe R4 (LR fit) | ~1-2k | (matmul) |
-| **Nystrom warm-start + CG-8 + cosine decode** | **~1.5M** | **~0.20-0.29M** |
-
-The decode (cosine to the learned W) is within ~15% of the prototype's, and the
-Nystrom-warm-started CG update (~1.5M pts/s) is ~1-2x the prototype fit. This is
-the cost of the second-order structure the rotation needs, versus the full probe's
-1-2k pts/s LR fit. Full per-condition tables and the accuracy<->efficiency sweep
-are in
-`docs/lin_probe_updates/tta_iterations.md` (Iterations 3-7).
-
-**The accuracy <-> efficiency tradeoff (wet_ground ep-10, ceiling mIoU vs update
-speed).** The options considered for the second-order probe update, and the winner
-(failed forms such as first-order separators, low-margin coresets, and sparse
-covariance are documented in the iterations doc):
+**The efficiency <-> accuracy table** (wet_ground ep-10, ceiling mIoU vs update
+speed), for the baseline and the probe-update variants:
 
 | method | update pts/s | ceiling mIoU | note |
 | :--- | :--- | :--- | :--- |
-| R1 prototype | 1.9M | 42.4% | baseline; no probe gain |
-| full probe R4 (LR) | ~1-2k | 67.1% | the ceiling; update too slow |
-| Nystrom+sign (m=1000) | 2.0M | 54.7% | sketch; good balance |
+| R1 prototype (baseline) | 1.9M | 42.4% | no probe gain; the old decoder |
+| full matrix probe (LR) | ~1-2k | 67.1% | the ceiling; update too slow |
+| Nystrom sketch (m=1000) | 2.0M | 54.7% | fast, lower ceiling |
 | matrix-free CG-20 | ~0.64M | 62.0% | accurate but 20 iters |
 | **Nystrom warm-start + CG-8** | **~1.5M** | **61.6%** | **best accuracy/efficiency** |
 
 The winner is **Nystrom warm-start + matrix-free CG**: the Nystrom sketch (m=1000)
 provides a cheap approximate second-order geometry, then CG-8 finishes in the full
-space via Sv = X^T(Xv), never building the 10000x10000 S. CG-8 from the Nystrom start
-reaches 0.62 wet_ground / 0.38 fog (ep10), essentially the plain CG-20 accuracy, in
-~8 iterations instead of 20 (0.034s, ~1.5M pts/s). The warm start is the key: CG-5
-from Nystrom (0.60) already matches CG-20 from scratch (0.62), and CG-10 from the
-start (0.63) beats it. The prototype is NOT a good warm start (residual CG fails),
-but the Nystrom sketch is. The first-order forms (diagonal LDA, perceptron), the
-low-margin coreset, and sparse covariance all fail to recover the rotation: the gain
-genuinely needs the second-order cross-coordinate structure, and Nystrom-warm-started
-matrix-free CG is the efficient way to get it. Iterations 4-7 in
-`docs/lin_probe_updates/tta_iterations.md` document the full sweep.
+10000-d space via Sv = X^T(Xv), never building the d x d S. CG-8 from the Nystrom
+start reaches 0.62 wet_ground / 0.38 fog (ep10), essentially the plain CG-20
+accuracy, in ~8 iterations instead of 20 (0.034s, ~1.5M pts/s). The warm start is
+the key: CG-5 from Nystrom already matches CG-20 from scratch. The prototype is NOT
+a good warm start; the Nystrom sketch is. The full sweep and the failed alternatives
+(first-order separators, low-margin coresets, sparse covariance) are in
+`docs/lin_probe_updates/tta_iterations.md` (Iterations 4-7).
 
-[To be filled: the form of the TTA (the update/don't-update gate, the support
-threshold, and where the label-free path is engaged).]
+**Inference (decode) speed is unchanged** by the probe: cosine to the learned W
+runs at the prototype's decode rate (~0.20-0.29M pts/s vs 0.29-0.31M). The
+efficiency cost of the probe is in the UPDATE, not the deployed decode.
 
----
+### 3.2 Label-free TTA is bounded at the frozen level
 
-### 3.1 Where the distance-to-prototype update is limited
+The linear probe's LABELED ceiling is high (43.3% fog, 68.3% wet_ground), but its
+label-free ceiling is the FROZEN decoder: Iterations 9-10 showed that neither
+gating nor weighting pseudo-labels lets the probe update beat the frozen decode,
+because the 33-55% wrong pseudo-labels contaminate any supervised refit. So under
+the linear probe, **label-free TTA does not reach the (higher) probe ceiling on any
+condition** -- it is bounded at what the frozen decoder already achieves. This is a
+different statement from the prototype story (where label-free TTA reached the
+prototype's lower ceiling on the healthy conditions).
 
-The distance-to-prototype (nearest-centroid) update cannot recover fog and crosstalk:
-re-estimating the centroids from the distance-confident points reproduces the clean
-centroids, because the confident points already decode correctly and the far points
-that would move the centroids are exactly the ones the gate excludes. This is the
-assignment wall: a label-free signal can say *which* points are wrong, but not *what
-class* they belong to.
+Zero-shot (frozen decoder), the current label-free TTA, and the labeled ceiling for
+the current setup (cov-shift ep-10). TTA is a PLACEHOLDER for now -- the label-free
+update that matches the frozen decoder (the Iteration 9-10 finding) is what the
+next improvements will target:
 
-The C10 decision-rule finding (Section 2) sharpens this: the wall is a property of
-the **decode rule**, not the features. A learned decoder on the same code reopens a
-large ceiling gap (R4 gap +19.8 on fog, +27.0 on wet_ground vs R1's ~0-2). So the
-label-free limit has two distinct causes:
+| condition | zero-shot (frozen) | label-free TTA | label ceiling (probe) | AL-closeable gap |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | 20.1% | TBD | **43.3%** | +23.2 |
+| crosstalk | 39.5% | TBD | **59.4%** | +19.9 |
+| snow | 37.7% | TBD | **51.0%** | +13.3 |
+| wet_ground | 35.8% | TBD | **68.3%** | +32.5 |
 
-- **For the healthy conditions, the wall is gone**: the cov-shift extractor's frozen
-  decoder holds, and the label-free update reaches the ceiling.
-- **For fog/crosstalk, the wall is the centroid rule.** The features retain the
-  recoverable structure (the R4 ceiling is high); the nearest-centroid update cannot
-  express it. A learned decoder (fit on a labeled pool, or re-estimated label-free on
-  the stream) is the lever.
+The gap (label ceiling - frozen) is the recoverable headroom that only true labels
+close, which is the active-learning handoff (Pillar 3): a small true-label budget
+(one label per dense cluster) re-estimates the probe from labeled points and
+converts the headroom into prototypes. Crosstalk's frozen ceiling (39.5%) is
+already high -- the extractor, not TTA, closed most of it; fog and wet_ground are
+where the label budget buys the most.
 
-#### The detection signal that triggers the handoff
+The cov-shift method's per-condition source harnesses are in
+`docs/cov_shift/cov_shift_iterations.md` (Iterations C1-C5, C11); the label-free
+probe-update closure and the efficiency sweep are in
+`docs/lin_probe_updates/tta_iterations.md` (Iterations 3-10).
+
+### 3.3 The detection signal that triggers the handoff
 
 The detection signal that ranks correct from wrong points (density / norm / fusion)
 decides when the label-free path is insufficient: if the label-free update's
@@ -436,7 +384,7 @@ budget recovers most of the oracle gap.
 
 ### 4.3 When it activates
 
-Active learning is the fill-in, engaged by a detection mechanism (Section 3.1):
+Active learning is the fill-in, engaged by a detection mechanism (Section 3.3):
 run the extractor, attempt the label-free TTA path, and activate active learning on
 exactly the conditions/clusters where the label-free gap-closed is below a
 threshold (or where the TTA-to-supervised gap is not >90% closed). The measurements
@@ -461,7 +409,7 @@ residual gap, because it is the only one that supplies the missing class labels.
 | **Pretraining objective (Pillar 1)** | Decoupled supervised contrastive + variational information bottleneck + cross-entropy, with physics-based augmentations only |
 | **HDC encoding** | Seeded random bipolar projection 128D to 10,000D, then sign binarization (information-preserving: 49.4% to 49.0% to 47.8%) |
 | **Prototypes** | Per-class means of the binarized clean features (frozen) |
-| **Adaptation (Pillar 2)** | Label-free gated prototype updates, used where the label-free path is sufficient (the healthy conditions); engaged unless the detection signal (Section 3.1) says active learning is needed | 
+| **Adaptation (Pillar 2)** | Label-free gated prototype updates, used where the label-free path is sufficient (the healthy conditions); engaged unless the detection signal (Section 3.3) says active learning is needed | 
 | **Active learning (Pillar 3)** | Backprop-free fill-in: query one point per dense per-class cluster under a strict label-or-don't gate, re-estimate prototypes from the labeled cluster representatives (Section 4) |
 
 ### 5.2 Previous performance: the original model per condition
@@ -606,7 +554,7 @@ budget is preserved for exactly the conditions that need it.
    is stable.
  3. Label-free TTA (Pillar 2, Section 3) is the method: the label-free update
     reaches the ceiling on the healthy conditions and crosstalk, with the
-    detection signal (Section 3.1) deciding where it is sufficient. The TTA
+    detection signal (Section 3.3) deciding where it is sufficient. The TTA
     machinery is the efficiency lever, not the whole answer.
  4. Backprop-free active learning (Pillar 3, Section 4) is the fill-in for the
    conditions the detection signal routes to it: rank the dense per-class clusters,
