@@ -342,22 +342,158 @@ code space, and the pairwise alignment 0.16-0.30 is modest).
    pieces; what is still missing is a mechanism that turns ~tens of labels into
    a T that beats frozen.
 
-## Next: Iteration 3: class-conditional clusters and labels-direct-in-T
+## Iteration 3: the one-label information content (2026-08-17)
 
-Iterations 1-2 closed the cluster-propagation and diffusion routes. The
-untested fixes from the Iteration-1 plan remain:
-- **class-conditional clustering**: cluster within each pseudo-class's points
-  (the probe's prediction as the class prior), so clusters are ~pure by
-  construction -- one label per class-subcluster propagates correctly, no
-  cross-class contamination.
-- **labels-direct-in-T**: use only the K labeled points directly in T (no
-  propagation), measuring how far pure sparse labels go before contamination
-  vs coverage trade-offs matter.
-- **hybrid**: class-conditional clusters for grounding + labels-direct-in-T for
-  the few uncertain classes.
+The decisive reframe after Iteration 2: the bottleneck is anchor density, not the
+propagation rule. So instead of trying to expand labels, this iteration asks what
+ONE true label tells us about the decision rule (`al_label_information_diag.py`,
+ep10 + ep21, all 4 conditions). The A/B/C experiment compares three ways of
+turning K labels (1 per class, influence-selected) into T -- nearest-anchor
+propagation (A), class-centroid cosine (B), decision correction (C:
+(frozen_pred, margin_bin) -> true label) -- plus the direct-sparse baseline and
+the soft-confusion family:
 
-Verdict rule: if class-conditional clusters + labels-direct-in-T lift the budget
-curve above frozen toward the oracle, the Pillar-3 mechanism is confirmed; if
-not, the AL framework's leverage must be re-thought -- the fallback is that the
-oracle ceiling itself (S_all, T_oracle on all pool points) is what the paper can
-claim, with the budget story being how close a small labeled set gets to it.
+| condition | frozen | oracle | direct_sparse | A_best | B_best | C_best | C_soft_est | C_soft_ORACLE |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 0.259 | 0.375 | 0.033 | 0.068 | 0.068 | 0.062 | 0.062 | 0.218 |
+| crosstalk | 0.524 | 0.554 | 0.054 | 0.080 | 0.080 | 0.087 | 0.133 | 0.508 |
+| snow | 0.456 | 0.493 | 0.045 | 0.122 | 0.122 | 0.014 | 0.017 | 0.414 |
+| wet_ground | 0.428 | 0.614 | 0.067 | 0.035 | 0.035 | 0.071 | 0.070 | 0.412 |
+
+**Result: every expansion fails at 1 label/class, and the confusion family has a
+real ceiling.** A and B are identical (1 anchor = the centroid) and useless -- the
+HDC code similarities saturate (all cosines ~0.98), so the nearest-anchor/centroid
+gate cannot differentiate. C's lookup is too noisy from 8-9 labels (anchor acc
+0.11-0.38). C_soft_est <= 0.133 everywhere. BUT **C_soft_ORACLE (the confusion
+matrix from ALL pool labels) nearly reaches frozen on crosstalk (0.508 vs 0.524)**
+-- the systematic error structure exists (top pairs: 13->14 at 0.25-0.62,
+15->16, 7->15 -- the same pairs as every prior diagnostic), it just cannot be
+estimated from 1 label/class (est-vs-oracle row-cos 0.18-0.58). direct_sparse is
+the floor everywhere (0.03-0.07).
+
+**Verdict: the confusion structure exists but 1 label/class cannot estimate it.**
+The `labels_per_class=2` variant (32 labels) is the immediate follow-up; if
+C_soft_est climbs toward C_soft_ORACLE on crosstalk, the correction family is the
+mechanism with a measured budget.
+
+## Iteration 4: the 128-d geometry promises (2026-08-17)
+
+The A/B failure in Iteration 3 had a systematic cause: the expansions computed
+similarity in the SATURATED 10k-d HDC code space, while the packing we keep
+citing (1-NN purity, intra vs inter cosine) was measured in the 128-d features.
+This iteration measures the intrinsic information content of each geometric
+property IN THE 128-d SPACE, with robustness: mean +- std over R=10 repeated
+RANDOM anchor draws (no selection rule can hide a weak property, no lucky draw
+can fake a strong one) (`al_geometry_promise_diag.py`, ep10 + ep21, all 4
+conditions).
+
+| condition | A nearest t0.9 | B oracle-centroid t0.9 | C min-agreement t0.9 | spatial P4 | per-class nn1 mean |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 0.56 @ cov 0.16 | 0.57 @ cov 0.39 | **0.73 @ cov 0.07** | 0.810 | 0.638 |
+| crosstalk | 0.60 @ cov 0.29 | **0.82 @ cov 0.55** | 0.61 @ cov 0.12 | 0.929 | 0.787 |
+| snow | 0.78 @ cov 0.31 | **0.82 @ cov 0.53** | **0.87 @ cov 0.15** | 0.879 | 0.774 |
+| wet_ground | 0.72 @ cov 0.21 | 0.73 @ cov 0.39 | **0.78 @ cov 0.07** | 0.931 | 0.846 |
+
+**The 128-d space carries real signal where the HDC space was saturated:**
+- **B_centroid_oracle is the best feature-space promise**: crosstalk/snow reach
+  0.82 precision at 0.5+ coverage -- class-level geometry DOES carry labels at
+  0.8+ precision. But B_centroid_1 == A (1 anchor is the centroid), so the
+  centroid needs k >= 2-4 anchors/class (32-64 labels) to approach the oracle.
+- **C min-agreement is the contamination-free certificate**: precision climbs
+  with the agreement gate (snow 0.87 @ cov 0.15, fog 0.73 @ cov 0.07) -- the
+  operating curve the mechanism needs.
+- **SPATIAL adjacency is the standout**: P4 = P(same class | projection
+  neighbor) is 0.81 (fog) / 0.93 (crosstalk) / 0.88 (snow) / 0.93 (wet_ground).
+  The sensor's own geometry -- label one point, its projection neighbors
+  inherit -- is more reliable than every feature-space signal, and it survives
+  fog where the feature packing collapses (nn1 0.51). Caveat: the min per-class
+  coherence is 0.075-0.77 (fog classes 15/7 are spatially scattered), so the
+  budget must target the incoherent classes.
+- **Nearest-anchor alone is too weak** (0.44-0.78 at t0.9): single-anchor
+  propagation cannot beat frozen; the geometry only pays when aggregated
+  (centroid), certified (agreement), or spatial (superpixel).
+- F (confidence-conditioned packing): the frozen probe's ABSOLUTE confidence is
+  < 0.3 on every corrupted pool point (the Iteration-11 calibration finding), so
+  absolute gates are vacuous; the relative-quantile version is in the rerun.
+
+**Net: two live mechanisms** -- spatial superpixels (new, strongest, sensor
+geometry) and k-anchor class centroids + min-agreement (feature geometry, needs
+2-4 labels/class). They are complementary: superpixels expand a label into many
+points cheaply; centroids turn those expanded points into a decode.
+
+## Iteration 5: the hybrid superpixel + centroid + gate ablation ladder (2026-08-17)
+
+The compound mechanism and its ablation ladder (`al_hybrid_grounding_diag.py`,
+ep10 + ep21, all 4 conditions): connected components on the projection mask
+(CCL, no labels), query the top-B components by influence, ground the component
+with the rep's TRUE label, then five T constructions per budget:
+S0_direct (reps only) / S1_spatial (whole component) / S2_centroid (128-d
+centroid decode, cosine gate) / S3_hybrid_AND (spatial AND feature agree) /
+S4_union (both expansions).
+
+| condition | frozen | oracle | superpixels | CCL time |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | 0.209 | 0.375 | 288k (mean size 5) | 4.6s |
+| crosstalk | 0.414 | 0.553 | 224k (mean size 6) | 5.0s |
+| snow | 0.350 | 0.493 | 241k (mean size 6) | 4.7s |
+| wet_ground | 0.362 | 0.614 | 95k (mean size 8) | 3.2s |
+
+Full-budget ladder (every component queried; ep10):
+
+| condition | S0 direct | S1 spatial | S2 centroid | S3 AND | S4 union |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 0.211 (cov 0.18) | 0.129 (cov 1.0) | 0.197 | 0.166 (prec 0.889) | 0.129 |
+| crosstalk | 0.286 (cov 0.17) | 0.215 | 0.378 | 0.308 (prec 0.913) | 0.215 |
+| snow | 0.277 (cov 0.16) | 0.166 | 0.219 | 0.192 (prec 0.891) | 0.166 |
+| wet_ground | 0.310 (cov 0.12) | 0.213 | 0.287 | 0.278 (prec 0.828) | 0.213 |
+
+**Result: the spatial hypothesis is real but the superpixels are tiny, and
+nothing beats frozen.**
+
+1. **The superpixels are small (mean 5-8 points)**: the range-view projection is
+   fragmented into islands, not large coherent regions. The P4=0.81-0.93 promise
+   does not translate into large pure components. S1's propagated labels are
+   only 0.16-0.48 precise -- spatial grounding alone is weak.
+2. **S0_direct beats everything at small budgets and at full budget**: the
+   influence-ranked reps are valuable AS THEMSELVES (prec 1.0 by construction),
+   and propagation dilutes them. At full budget S0 reaches 0.21-0.31 -- the best
+   rung -- but still sits at or below frozen.
+3. **The AND gate (S3) is the only clean-T path** (prec 0.79-0.92 at full
+   budget) but coverage collapses to 0.11-0.24, so there are not enough agreed
+   points to move the probe; mIoU stays below frozen.
+4. **The ladder's verdict: no rung beats frozen at any budget.** The AL
+   mechanism -- in all four forms tried (cluster+propagation, diffusion, sparse,
+   spatial/centroid/gated) -- cannot beat the frozen probe with the tested
+   budgets, because the budgets that would work (thousands of labels) are no
+   longer ultra-cheap, and the small budgets do not provide enough clean T.
+
+**The synthesis: the AL-closeable gap exists (the oracle proves it), but no
+label expansion mechanism converts a small budget into it.** The ladder's
+S0-curve (still climbing at 9k labels) points to the honest question: how many
+DIRECT labels (no expansion) are needed to cross frozen -- the cost of the gap.
+
+## Next: Iteration 6: the dimension test -- does a smaller code space make
+labels cheaper?
+
+The estimation argument: in the binarized code space, the per-class contribution
+to T is a sum of +-1 vectors, so the class-centroid estimate has noise ~ 1/sqrt
+(n_c) per coordinate while the signal is tiny after sign-binarization spreads the
+128-d signal over 10k dims -- relative estimation error scales as sqrt(d / n_c).
+To keep the T direction accurate, the labels per class must scale with d: ~10k in
+the 10k-d space (i.e. the whole pool, which is why only the oracle works), ~1k in
+the 1k-d space, ~128 in the 128-d space. The measured evidence fits: the 10k-d
+similarities saturate (~0.98), the 128-d promise curves reach 0.82-0.93 with 1-2
+anchors/class, and S0's perfect labels at 9k points ~= frozen in 10k-d. And the
+CEILING does not move with the encoding (the C8 finding: encoding changes lose
+equally), so the dim is a path-cheapening lever, not a ceiling lever.
+
+The test (reuses the ladder): run the S0/direct-label budget curve across code
+dims {128 real-valued features, 512, 1k, 2k, 5k, 10k binarized} and measure
+where each crosses frozen and approaches the oracle as a function of budget. If
+128-d or 1k-d reaches the oracle with 100-1000 labels where 10k-d needs 50k, the
+dimension is the bottleneck -- quantitatively.
+
+Verdict rule: if a smaller code dim reaches the oracle at a budget 10-100x below
+the 10k-d budget, the paper's AL story becomes "the code dim is a free parameter
+(encoding changes lose equally); we choose it so the label budget is tractable",
+and the Pillar-3 mechanism is the S0/direct-labeled ridge at the reduced dim.
