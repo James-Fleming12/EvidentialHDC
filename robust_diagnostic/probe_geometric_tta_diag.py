@@ -324,7 +324,7 @@ def main():
         # ---- eigenspaces of S_c and S_t (randomized SVD, matrix-free on X) ----
         # Spectral overlap: singular values of U_c^T U_t. All ~1 = the shift is a
         # pure rotation of the same subspace; decaying = new directions.
-        k_max = min(args.nystrom_m, 512)
+        k_max = min(args.nystrom_m, 1000)
         eig_c, U_c = rsvd_eig(Xc, P, k_max)
         eig_t, U_t = rsvd_eig(Xd, P, k_max)
         ov = torch.linalg.svdvals(U_c.t() @ U_t)
@@ -333,29 +333,38 @@ def main():
         r['refs']['eig_t_top'] = [float(v) for v in eig_t[:8]]
 
         # ---- A. Subspace alignment / Procrustes (d-dim eigenspaces) ----
-        # PLAIN basis match: W_new = U_t (U_c^T W_zs). If the corruption is a pure
-        # rotation of the same subspace (overlap ~1), U_t = R^T U_c and this is
-        # EXACT: X_t W_new = X_c R (R^T U_c U_c^T W_zs) = X_c W_zs (W_zs in span U_c).
-        # The SVD-rotation variants handle permuted / rotated basis conventions.
+        # Two families per k:
+        #   *proj: the textbook projection -- rotates W_zs THROUGH the k-dim
+        #     subspace. Exact only if W_zs in span(U_c), i.e. k ~= rank(W_zs);
+        #     at small k it truncates the probe (expected loss).
+        #   *res: RESIDUAL-PRESERVING -- rotate the dominant k-dim component,
+        #     keep the complement untouched:
+        #       W_new = (I - U_t U_t^T) W_zs + U_t (R (U_c^T W_zs))   (t2c)
+        #       W_new = (I - U_c U_c^T) W_zs + U_c (R^T (U_t^T W_zs))  (c2t)
+        #     If the corruption rotates the dominant directions, this captures
+        #     the rotation without truncating the probe.
         for k in p_ks:
             if k > k_max:
                 continue
             Uc_k = U_c[:, :k]
             Ut_k = U_t[:, :k]
-            W_plain = Ut_k @ (Uc_k.t() @ W_zs)
-            r['procrustes'][f'k{k}_plain'] = {'miou': mw(W_plain),
-                                              'cos_oracle': cos_sim(W_plain, W_oracle)}
-            # t2c: rotate the target basis onto the clean basis
             M = Uc_k.t() @ Ut_k
             U, _, Vt = torch.linalg.svd(M)
-            Rk = U @ Vt
+            Rk = U @ Vt                            # k x k rotation
+            # t2c: align the target basis onto the clean basis
             W_t2c = Ut_k @ (Rk @ (Uc_k.t() @ W_zs))
-            r['procrustes'][f'k{k}_t2c'] = {'miou': mw(W_t2c),
-                                            'cos_oracle': cos_sim(W_t2c, W_oracle)}
+            r['procrustes'][f'k{k}_t2c_proj'] = {'miou': mw(W_t2c),
+                                                 'cos_oracle': cos_sim(W_t2c, W_oracle)}
+            W_t2c_res = (W_zs - Ut_k @ (Ut_k.t() @ W_zs)) + Ut_k @ (Rk @ (Uc_k.t() @ W_zs))
+            r['procrustes'][f'k{k}_t2c_res'] = {'miou': mw(W_t2c_res),
+                                                'cos_oracle': cos_sim(W_t2c_res, W_oracle)}
             # c2t: rotate the clean basis into the target frame
             W_c2t = Uc_k @ (Rk.t() @ (Ut_k.t() @ W_zs))
-            r['procrustes'][f'k{k}_c2t'] = {'miou': mw(W_c2t),
-                                            'cos_oracle': cos_sim(W_c2t, W_oracle)}
+            r['procrustes'][f'k{k}_c2t_proj'] = {'miou': mw(W_c2t),
+                                                 'cos_oracle': cos_sim(W_c2t, W_oracle)}
+            W_c2t_res = (W_zs - Uc_k @ (Uc_k.t() @ W_zs)) + Uc_k @ (Rk.t() @ (Ut_k.t() @ W_zs))
+            r['procrustes'][f'k{k}_c2t_res'] = {'miou': mw(W_c2t_res),
+                                                'cos_oracle': cos_sim(W_c2t_res, W_oracle)}
 
         # ---- B. CORAL covariance alignment (d-dim eigenbases) ----
         # W_new = S_t^-1/2 S_c^1/2 W_zs with S^+/-1/2 ~= U diag(eig^+/-1/2) U^T
@@ -435,9 +444,11 @@ def main():
     print("  plain basis-match (k*_plain) is EXACT. Decaying = the corruption adds")
     print("  NEW directions a rotation alone cannot span; CORAL's eigenvalue")
     print("  reweighting is then the ceiling.")
-    print("A. procrustes k*_plain / t2c / c2t: if mIoU climbs toward oracle as k")
-    print("   grows, the corruption IS a subspace rotation and S-only alignment")
-    print("   works label-free.")
+    print("A. procrustes k*_proj / k*_res: the proj family truncates W_zs to the")
+    print("   k-dim subspace (exact only if W_zs in span(U_c), i.e. k ~ rank); the")
+    print("   res family keeps the complement untouched and is the safe version.")
+    print("   If a res variant climbs toward oracle as k grows, the corruption")
+    print("   rotates the dominant directions and S-only alignment helps.")
     print("B. coral rank-k: the eigenvalue-aware alignment; whiten_only control.")
     print("C. diffusion: the only method touching labels (top-K% confident anchors);")
     print("   the ridge keeps S=all so coverage is preserved. oracle_anch is the")
