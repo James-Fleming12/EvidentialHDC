@@ -378,8 +378,8 @@ def main():
         syn.append(f"  ridge(norm) oracle w_cos {up['_ridge_oracle_w_cos']:.3f} "
                    f"(validation: ~1.0 = the fix is exact)")
         syn.append(f"  9A frac (k={mean_ks[-1]}): " + " ".join(
-            f"b{b}:{up['9A_fractional'][str(b)][str(mean_ks[-1])]['miou']:.3f}"
-            f"(w {up['9A_fractional'][str(b)][str(mean_ks[-1])]['w_cos']:.3f})"
+            f"b{b}:{up['9A_fractional'][str(b)][mean_ks[-1]]['miou']:.3f}"
+            f"(w {up['9A_fractional'][str(b)][mean_ks[-1]]['w_cos']:.3f})"
             for b in betas))
         syn.append(f"  10-COMB (k={mean_ks[-1]}): " + " ".join(
             f"b{b}:{max((up['10_combo'][str(b)][e]['hat']['miou'] for e in etas), default=0):.3f}"
@@ -391,9 +391,9 @@ def main():
                        f"beta {e['best_beta']}, eta {e['best_eta']}) vs frozen "
                        f"{r['refs']['frozen']:.3f}")
         syn.append(f"  9B clip (k={mean_ks[-1]}): " + " ".join(
-            f"g{g}:{up['9B_clipped'][str(g)][str(mean_ks[-1])]['miou']:.3f}" for g in gammas))
+            f"g{g}:{up['9B_clipped'][str(g)][mean_ks[-1]]['miou']:.3f}" for g in gammas))
         syn.append(f"  9E drop (k={mean_ks[-1]}): " + " ".join(
-            f"p{p}:{up['9E_unstable'][str(p)][str(mean_ks[-1])]['miou']:.3f}" for p in drop_ps))
+            f"p{p}:{up['9E_unstable'][str(p)][mean_ks[-1]]['miou']:.3f}" for p in drop_ps))
 
         results['conds'][cond] = r
         print(f"\n=== {cond} ({(toc(t_cond)):.0f}s) ===")
