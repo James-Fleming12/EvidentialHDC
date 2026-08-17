@@ -448,6 +448,10 @@ def main():
             return {'miou': mw(W), 'cos_oracle': cos_sim(W, W_oracle),
                     'retain': float(mask.float().mean().item()), 'n': n}
 
+        def prec_or_none(mask):
+            n = int(mask.sum().item())
+            return float(pseudo_correct[mask].float().mean().item()) if n > 0 else None
+
         st['s_all_t_all'] = st_entry(W_nogate)
         st['s_all_t_oracle'] = st_entry(W_oracle)
 
@@ -456,14 +460,14 @@ def main():
             thr = torch.quantile(pconf, 1 - fr)
             mask = pconf >= thr
             e = gated_entry(mask)
-            e['precision'] = float(pseudo_correct[mask].float().mean().item())
+            e['precision'] = prec_or_none(mask)
             st[f's_all_t_conf_top{fr}'] = e
         # S=all, T gated hard by margin quantile
         for fr in [0.3, 0.5]:
             thr = torch.quantile(pmargin, 1 - fr)
             mask = pmargin >= thr
             e = gated_entry(mask)
-            e['precision'] = float(pseudo_correct[mask].float().mean().item())
+            e['precision'] = prec_or_none(mask)
             st[f's_all_t_margin_top{fr}'] = e
         # S=all, T weighted soft by confidence
         for wname, w in [('conf', pconf), ('conf2', pconf ** 2)]:
@@ -576,7 +580,7 @@ def main():
         thr = torch.quantile(I, 0.7)
         mask = I >= thr
         e = gated_entry(mask)
-        e['precision'] = float(pseudo_correct[mask].float().mean().item())
+        e['precision'] = prec_or_none(mask)
         inf['top_i_gate'] = e
         inf['time_s'] = t_inf
 
@@ -643,11 +647,11 @@ def main():
         ag['populations'] = pops
         # agree-only gate and disagree-high-conf gate (S=all, T gated)
         e = gated_entry(agree.float())
-        e['precision'] = float(pseudo_correct[agree].float().mean().item())
+        e['precision'] = prec_or_none(agree)
         ag['agree_only'] = e
         m_dis = (~agree) & (pconf >= 0.9)
         e = gated_entry(m_dis.float())
-        e['precision'] = float(pseudo_correct[m_dis].float().mean().item())
+        e['precision'] = prec_or_none(m_dis)
         ag['disagree_hi_conf'] = e
         # region-conditional gate: within each prototype region, keep top-30% conf
         mask_region = torch.zeros(len(pool), dtype=torch.bool)
@@ -656,7 +660,7 @@ def main():
             thr = torch.quantile(pconf[m], 0.7)
             mask_region |= m & (pconf >= thr)
         e = gated_entry(mask_region)
-        e['precision'] = float(pseudo_correct[mask_region].float().mean().item())
+        e['precision'] = prec_or_none(mask_region)
         ag['region_cond_top30'] = e
         # per-class-conditional gate: within each predicted class, keep top-30% conf
         mask_class = torch.zeros(len(pool), dtype=torch.bool)
@@ -667,7 +671,7 @@ def main():
             thr = torch.quantile(pconf[m], 0.7)
             mask_class |= m & (pconf >= thr)
         e = gated_entry(mask_class)
-        e['precision'] = float(pseudo_correct[mask_class].float().mean().item())
+        e['precision'] = prec_or_none(mask_class)
         ag['class_cond_top30'] = e
 
         # ---- F. coverage per gate ----
@@ -701,7 +705,7 @@ def main():
                 thr = torch.quantile(pconf[m], 0.7)
                 mask |= m & (pconf >= thr)
             e = gated_entry(mask)
-            e['precision'] = float(pseudo_correct[mask].float().mean().item())
+            e['precision'] = prec_or_none(mask)
             ag[f'cluster_k{K}_top30'] = e
 
         # ---- H. oracle gate decomposition: precision -> mIoU per strategy ----
