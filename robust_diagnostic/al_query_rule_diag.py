@@ -385,7 +385,7 @@ def main():
                     if int(idx.sum().item()) < 1:
                         spent += 1
                         continue
-                    Y_g[idx] = onehot(pl[rep_idx[ci]], NUM_CLASSES)
+                    Y_g[idx] = onehot(pl[rep_idx[ci]].unsqueeze(0), NUM_CLASSES)
                     spent += 1
                 return Y_g, spent
 
@@ -424,7 +424,7 @@ def main():
                     continue
                 idx = (labs == c) & grounded
                 if int(idx.sum().item()) > 0:
-                    Y_all[idx] = onehot(pl[rep_idx[c]], NUM_CLASSES).unsqueeze(0)
+                    Y_all[idx] = onehot(pl[rep_idx[c]].unsqueeze(0), NUM_CLASSES)
             W_gall = ridge_fit_t_gated(Xd, Y_all, args.lam, args.cg_iters,
                                        args.nystrom_m, device)
             r['refs'][f'grounded_all_K{K}'] = mw(W_gall)
