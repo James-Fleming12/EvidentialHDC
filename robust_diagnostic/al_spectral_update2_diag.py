@@ -300,6 +300,14 @@ def main():
         def apply_filter(UtT, gains):
             return (Uc @ (gains.unsqueeze(1) * UtT)).cpu().float()
 
+        # the SPECTRAL-EXACT oracle: W = (S + lI)^-1 T_oracle via eigh. This is
+        # the correct reference for all spectral variants (the matrix-free
+        # CG-8 W_oracle may not be converged at hard condition numbers); the
+        # agreement between the two is a convergence diagnostic.
+        W_oracle_spec = apply_filter(UtT_or, 1.0 / sig_d)
+        r['refs']['oracle_spec_miou'] = mw(W_oracle_spec)
+        r['refs']['cg_vs_spectral_cos'] = cos_sim(W_oracle, W_oracle_spec)
+
         def tcos(T_hat):
             coss = []
             for c in classes:
@@ -312,9 +320,9 @@ def main():
             out = {}
             for k in mean_ks:
                 W = apply_filter(UtT_hats[str(k)], make_gains())
-                out[k] = {'w_cos': cos_sim(W, W_oracle), 'miou': mw(W)}
+                out[k] = {'w_cos': cos_sim(W, W_oracle_spec), 'miou': mw(W)}
             W_or_w = apply_filter(UtT_or, make_gains())
-            out['oracle'] = {'w_cos': cos_sim(W_or_w, W_oracle),
+            out['oracle'] = {'w_cos': cos_sim(W_or_w, W_oracle_spec),
                              'miou': mw(W_or_w)}
             return out
 
@@ -337,12 +345,12 @@ def main():
             up['10_combo'][str(beta)] = {}
             for eta in etas:
                 W = Wf + eta * (W_beta - Wf)
-                # oracle-retention arm: residual toward the oracle W at beta=1
+                # oracle-retention arm: residual toward the spectral-exact oracle
                 up['10_combo'][str(beta)][str(eta)] = {
-                    'hat': {'w_cos': cos_sim(W, W_oracle), 'miou': mw(W)}}
-                W_or_r = Wf + eta * (W_oracle.cpu() - Wf)
+                    'hat': {'w_cos': cos_sim(W, W_oracle_spec), 'miou': mw(W)}}
+                W_or_r = Wf + eta * (W_oracle_spec - Wf)
                 up['10_combo'][str(beta)][str(eta)]['oracle'] = {
-                    'w_cos': cos_sim(W_or_r, W_oracle), 'miou': mw(W_or_r)}
+                    'w_cos': cos_sim(W_or_r, W_oracle_spec), 'miou': mw(W_or_r)}
 
         # 9B-clip retest (normalized gains bind now)
         up['9B_clipped'] = {}
@@ -381,8 +389,13 @@ def main():
                    f"q99 {sp['gain_quantiles']['q99']:.3f} max "
                    f"{sp['gain_quantiles']['max']:.2f} | part-rank "
                    f"{sp['participation_rank']:.0f}")
-        syn.append(f"  ridge(norm) oracle w_cos {up['_ridge_oracle_w_cos']:.3f} "
-                   f"(validation: ~1.0 = the fix is exact)")
+        syn.append(f"  ridge(norm) oracle w_cos "
+                   f"{up['9A_fractional']['1.0']['oracle']['w_cos']:.3f} "
+                   f"(validation: ~1.0 = the exact inverse reproduces the "
+                   f"spectral oracle) | cg-vs-spectral cos "
+                   f"{r['refs']['cg_vs_spectral_cos']:.3f} | spec-oracle miou "
+                   f"{r['refs']['oracle_spec_miou']:.3f} vs cg-oracle "
+                   f"{r['refs']['oracle']:.3f}")
         syn.append(f"  9A frac (k={mean_ks[-1]}): " + " ".join(
             f"b{b}:{up['9A_fractional'][str(b)][mean_ks[-1]]['miou']:.3f}"
             f"(w {up['9A_fractional'][str(b)][mean_ks[-1]]['w_cos']:.3f})"
