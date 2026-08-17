@@ -373,7 +373,8 @@ def main():
                                       'cos_oracle': cos_sim(W_coral, W_oracle)}
         # whitening-only control: M = S_t^-1/2 (no clean recoloring)
         k = min(256, k_max)
-        W_w = U_t[:, :k] @ (U_t[:, :k].t() @ W_zs) / eig_t[:k].clamp(min=1e-8).sqrt().unsqueeze(1)
+        W_w = U_t[:, :k] @ ((U_t[:, :k].t() @ W_zs) /
+                            eig_t[:k].clamp(min=1e-8).sqrt().unsqueeze(1))
         r['controls']['whiten_only'] = {'miou': mw(W_w),
                                         'cos_oracle': cos_sim(W_w, W_oracle)}
 
