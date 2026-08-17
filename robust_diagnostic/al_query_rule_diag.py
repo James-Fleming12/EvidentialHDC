@@ -269,6 +269,17 @@ def main():
         ci = torch.randperm(len(fa))[:mc]
         clean_codes = hdc_codes(fa[ci], proj, device)
 
+        # prototype (R1) predictions from the clean class means (HDC); computed
+        # BEFORE clean_codes is freed (they are the pseudo-label context too)
+        proto_pairs = []
+        for c in range(1, NUM_CLASSES):
+            m = la[ci] == c
+            if int(m.sum().item()) > 0:
+                proto_pairs.append((c, clean_codes[m].float().mean(dim=0)))
+        proto_ids = torch.tensor([c for c, _ in proto_pairs])
+        proto_mat = torch.stack([p for _, p in proto_pairs])
+        proto_mat = proto_mat / (proto_mat.norm(dim=1, keepdim=True) + 1e-8)
+
         # frozen probe (the pseudo-label source + frozen reference)
         Xc = clean_codes.float().to(device)
         W_clean = ridge_fit_t_gated(Xc, onehot(la[ci], NUM_CLASSES), args.lam,
@@ -282,15 +293,6 @@ def main():
         ppred = sm.argmax(dim=1)
         pseudo_correct = (ppred == pl)
         I = nystrom_influence(Xd, args.lam, args.nystrom_m, device)
-        # prototype (R1) predictions from the clean class means (HDC)
-        proto_pairs = []
-        for c in range(1, NUM_CLASSES):
-            m = la[ci] == c
-            if int(m.sum().item()) > 0:
-                proto_pairs.append((c, clean_codes[m].float().mean(dim=0)))
-        proto_ids = torch.tensor([c for c, _ in proto_pairs])
-        proto_mat = torch.stack([p for _, p in proto_pairs])
-        proto_mat = proto_mat / (proto_mat.norm(dim=1, keepdim=True) + 1e-8)
         proto_pred = proto_ids[(pool_codes.float() @ proto_mat.t()).argmax(dim=1)]
         del pool_codes
 
