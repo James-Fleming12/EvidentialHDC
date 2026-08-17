@@ -559,8 +559,8 @@ def main():
                    f"{mr['3b_oracle_counts']['miou']:.3f} (t "
                    f"{mr['3b_oracle_counts']['t_cos']:.3f})")
         syn.append(f"  3c shrink: " + " ".join(
-            f"r{r}:{mr['3c_shrinkage'][r]['miou']:.3f}"
-            f"(w {mr['3c_shrinkage'][r]['whitened_err']:.3f})" for r in rho_sweep))
+            f"r{r}:{mr['3c_shrinkage'][str(r)]['miou']:.3f}"
+            f"(w {mr['3c_shrinkage'][str(r)]['whitened_err']:.3f})" for r in rho_sweep))
 
         results['conds'][cond] = r
         print(f"\n=== {cond} ({(toc(t_cond)):.0f}s) ===")
