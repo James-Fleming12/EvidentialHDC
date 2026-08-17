@@ -801,29 +801,84 @@ the residual family demonstrates the safety anchor (frozen preserved, oracle
 reachable), but neither converts the good T into a good W at the level the
 oracle needs. The normalization fix must land before the final verdict.
 
-## Next: Iteration 10: normalized spectrum + the adaptive selection
+## Iteration 10: the normalized spectrum and the fractional-residual combination
+(2026-08-17)
 
-Iteration 9 has two loose ends:
-1. **Normalize S before eigh** (S/N or the correlation matrix) so the gains
-   are O(1), the 9B clip thresholds bind, and the gain quantiles are
-   interpretable. The variant ratios are valid, but the absolute spectrum and
-   the clip family need the fix before the 2x2 verdicts are final.
-2. **The best signal is the combination no single family exploited**: 9A
-   beta=0.25-0.5 gives the robustness gain, 9D normalized gives the safety
-   anchor, and the oracle-retention peak at beta=0.75 suggests a
-   beta-continuum residual (W_frozen + eta * (W_beta - W_frozen)) could get
-   both. Test the combined update.
-3. **The adaptive selection the Iteration-9 feedback suggested**: the
-   unstable-subspace removal (9E) was also muted by normalization; retest
-   with normalized S, dropping the bottom p% of the NORMALIZED gain
-   distribution -- the directions where the amplification is genuinely
-   pathological.
+Iteration 9's loose ends, fixed and tested (`al_spectral_update2_diag.py`,
+ep10 + ep21, all 4 conditions). The spectrum is NORMALIZED (S/N, T/N, l/N --
+the ridge solution is exactly unchanged, verified w_cos 1.000), the
+fractional/9A family is retested under interpretable gains (q99 45-74, not
+0.001), the clip (9B) and unstable-removal (9E) now bind, and the combination
+the Iteration-9 data implicated is tested: the BETA-CONTINUUM RESIDUAL
+W_frozen + eta (W_beta - W_frozen) for beta in {0.25, 0.5, 0.75} x eta sweep,
+with a LABEL-BUDGET sweep (random-k class means, k in {8, 16, 32}).
 
-Verdict rule: if the normalized spectral families (especially 9A with the
-residual anchor, or the normalized 9E) reach hat-w_cos ~0.3+ with oracle
-retention ~0.9+ -- or if the mechanism is confirmed to be fundamentally
-limited -- the AL thread's conclusion is decided: either the
-sensitivity-bounded update is the Pillar-3 mechanism, or the AL-closeable gap
-is only reachable with the exact-T oracle and the paper's budget story is the
-honest S0 cost curve plus the measured reason why cheap T estimation cannot
-close it.
+**The two findings -- one methodological, one substantive:**
+
+1. **The matrix-free CG-8 oracle under-converges on this problem.** The
+   cg-vs-spectral cosine is ~0.29 on every condition: the CG-8 oracle used in
+   ALL prior iterations is NOT the exact ridge solution. The spectral-exact
+   oracle is 0.04-0.06 mIoU BETTER (fog 0.416 vs 0.375, crosstalk 0.587 vs
+   0.554, snow 0.511 vs 0.493, wet_ground 0.670 vs 0.613): the true labeled
+   ceiling is higher than every prior diagnostic reported. The exact inverse
+   (via the eigendecomposition) is the correct oracle reference; CG-8 is a
+   cheap approximation that under-converges on the ill-conditioned spectrum.
+2. **The fractional-residual combination is the first label-efficient update
+   to BEAT frozen.** W_frozen + eta (W_beta - W_frozen) with beta ~0.75,
+   eta ~0.1:
+
+   | condition | frozen | best 10-COMB (64-72 labels) | cg-oracle | spectral oracle |
+   | :--- | :--- | :--- | :--- | :--- |
+   | fog | 0.260 | 0.262 | 0.375 | 0.416 |
+   | crosstalk | 0.524 | 0.503 | 0.554 | 0.587 |
+   | snow | 0.457 | 0.442 | 0.493 | 0.511 |
+   | wet_ground | 0.429 | **0.447** | 0.613 | 0.670 |
+
+   ep21: fog 0.247 vs 0.231 (BEATS), crosstalk 0.434 vs 0.455, snow 0.427 vs
+   0.442, wet_ground 0.425 vs 0.428.
+
+   The method beats frozen on wet_ground (ep10 +0.018) and fog (ep21 +0.016)
+   at 64-72 labels -- the FIRST time any label-efficient update has done so
+   in the AL thread. The budget curve is FLAT (k=8 == k=32): the method's
+   cost is already at the floor of 64-72 labels, not 256.
+3. **9B clip now binds monotonically** (tighter clip = better: g0.5 best on
+   every condition, mIoU 0.14-0.29) and **9E unstable-removal is nearly flat**
+   (0.05-0.08): the amplified directions carry little label signal -- the
+   clip is a useful safety valve, the drop is not.
+
+**Why it works (the mechanism, now measurable):** the fractional direction
+W_beta (beta ~0.75) moves the classifier toward the oracle WITHOUT the full
+inverse's amplification, and the residual anchor (eta ~0.1) keeps the update
+close to the frozen decoder -- the safety property Iteration 9 established.
+The combination gets both: a corrected direction AND a bounded step. The
+remaining gap (crosstalk 0.503 vs 0.524 frozen; 0.587 spectral oracle) is
+where the next iteration should push -- the beta/eta operating point and the
+clip interaction.
+
+**Caveat:** the 10-COMB T_hat uses oracle COUNTS with random-k means (the
+Iteration-8 estimator) -- the method's true label cost is the k*#classes
+means (64-72 labels), but the count estimation itself (which the Iteration-8
+soft-mass work showed is the harder half) is oracle-informed here. The
+deployed version needs the count estimation resolved (Iteration 8F-style
+source-count prior) before the method is fully label-free of the pool
+statistics.
+
+## Next: Iteration 11: the deployed 10-COMB -- count estimation + the
+beta/eta operating point
+
+Iteration 10's combination is the first mechanism to beat frozen; the loose
+ends for the deployed method:
+- the T_hat used oracle counts -- deploy the source-count prior (8F) or the
+  queried-count ratio in its place, and measure the cost of the swap;
+- sweep the operating point harder (beta in {0.6, 0.7, 0.8}, eta in {0.05,
+  0.15, 0.2}) and test the clip interaction (9B g0.5 with the combo);
+- the spectral oracle reference: the exact inverse is the correct ceiling --
+  the paper's oracle numbers should use it, and the prior iterations' CG-8
+  oracles were underestimates.
+
+Verdict rule: if the count-estimated 10-COMB (no oracle counts) still beats
+frozen at ~64-144 labels, the sensitivity-bounded fractional-residual update
+is the Pillar-3 mechanism, and the paper's story is: the label budget supplies
+the class means, the fractional direction supplies a sensitivity-bounded
+correction, and the residual anchor keeps the update safe -- at a real label
+cost of 64-144 labels and a spectral solve of ~4s.

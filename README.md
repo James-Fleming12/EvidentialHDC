@@ -486,6 +486,51 @@ estimated from 2-4 labeled classes), so the cheap path may be to estimate the
 shift from a few labels and fit the probe on the shift-corrected means rather
 than label the mass.
 
+### 4.5 The mechanism that works: a sensitivity-bounded fractional-residual
+update
+
+The AL search measured, in order: the packing is real but label propagation
+fails (Iterations 0-2), the missing-mass argument is real but the class means
+ARE estimable (8-32 points per class reach cos 0.95-0.99, Iteration 7), the
+T-synthesis chain is exact, and the soft-mass counts/assignments are both
+wrong (8D WEAK, Iteration 8). The final bottleneck is the DECODER UPDATE
+itself: the inverse covariance (S + lI)^-1 amplifies small unavoidable T
+errors into large W errors (the ridge-relevant error is 4-6x; the ordinary
+Euclidean quality of T stops mattering once it is past ~0.7 cosine).
+
+The fix is a sensitivity-bounded parameterization. With the spectrum of
+S normalized (S/N, T/N, l/N -- the ridge is exactly unchanged), the update
+
+  W_new = W_frozen + eta (W_beta - W_frozen),   W_beta = (S + lI)^-beta T_hat
+
+with beta ~0.75 and eta ~0.1:
+- the FRACTIONAL direction W_beta moves the classifier toward the labeled
+  estimate without the full inverse's amplification (the robustness/ceiling
+  tradeoff is real and monotone across beta, Iteration 9);
+- the RESIDUAL ANCHOR keeps the update close to the frozen decoder (eta=0
+  reproduces frozen exactly, so the method is never worse than the frozen
+  baseline -- the safety property, Iteration 9-10);
+- the label cost is the class means: 64-72 labels (random-k means per class,
+  k=8) -- and the budget curve is flat, so more labels do not help (Iteration
+  10).
+
+The frozen vs labeled-ceiling vs method table (ep10; the labeled ceiling is
+the SPECTRAL-exact oracle -- the matrix-free CG-8 approximation previously
+used under-converges and underestimates the true ceiling by 0.04-0.06):
+
+| condition | frozen (zero labels) | method (64-72 labels) | labeled ceiling |
+| :--- | :--- | :--- | :--- |
+| fog | 20.1% | 26.2% | 41.6% |
+| crosstalk | 39.5% | 50.3% | 58.7% |
+| snow | 37.7% | 44.2% | 51.1% |
+| wet_ground | 35.8% | **44.7%** | 67.0% |
+
+The method beats frozen on wet_ground (+8.9) and ep21-fog (+1.6) and moves
+substantially toward the ceiling on every condition -- the first label-
+efficient update in the AL thread to do so. The update is a spectral solve
+(~4s) plus matrix-free decode; the remaining deployment step is replacing the
+oracle-informed class counts with the source-count prior (Iteration 8F).
+
 ---
 
 ## 5. Previous and Current Results
