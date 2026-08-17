@@ -549,7 +549,7 @@ def main():
         syn.append(f"  8A raw {ms['8A_raw']['miou']:.3f} | 8E norm "
                    f"{ms['8E_normalized']['miou']:.3f} | 8G topK "
                    f"{ms['8G_topK']['miou']:.3f} | 8F: " + " ".join(
-                       f"r{r}:{ms['8F_source'][r]['miou']:.3f}" for r in rho_sweep))
+                       f"r{r}:{ms['8F_source'][str(r)]['miou']:.3f}" for r in rho_sweep))
         syn.append(f"  mean-est: " + " ".join(
             f"{k}:{est[k]:.3f}" for k in
             [f'random_k{mean_ks[-1]}', f'conf_top_k{mean_ks[-1]}',
