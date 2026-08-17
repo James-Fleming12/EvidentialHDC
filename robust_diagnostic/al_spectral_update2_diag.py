@@ -382,7 +382,7 @@ def main():
             f"(w {up['9A_fractional'][str(b)][mean_ks[-1]]['w_cos']:.3f})"
             for b in betas))
         syn.append(f"  10-COMB (k={mean_ks[-1]}): " + " ".join(
-            f"b{b}:{max((up['10_combo'][str(b)][e]['hat']['miou'] for e in etas), default=0):.3f}"
+            f"b{b}:{max((up['10_combo'][str(b)][str(e)]['hat']['miou'] for e in etas), default=0):.3f}"
             for b in combo_betas))
         for k in mean_ks:
             e = bd[str(k)]
