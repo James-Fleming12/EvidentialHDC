@@ -110,7 +110,84 @@ conditions) and measures how few labels the space actually needs
   agreement vs distance to centroid (the probe is more right near centroids ->
   its own confidence ranks the query candidates).
 
-Result: (filled after the run; the synthesis per condition is in the JSON).
+Result (ep10; ep21 identical pattern, fog slightly worse; full synthesis per
+condition in the JSONs):
+
+**A. The packing survives, degraded exactly where the label budget is needed.**
+Corrupted-pool 1-NN purity vs the clean reference (nn1 0.771 all conditions):
+
+| condition | pool nn1 | pool nnk | intra / inter cosine | k-means purity K=#classes |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | 0.513 | 0.380 | 0.628 / 0.015 | 0.649 |
+| crosstalk | 0.688 | 0.594 | 0.670 / 0.055 | 0.652 |
+| snow | 0.586 | 0.525 | 0.704 / 0.039 | 0.644 |
+| wet_ground | 0.770 | 0.639 | 0.621 / 0.004 | 0.635 |
+
+The clusters are strongly separated (inter-class cosine ~0.01-0.06 vs intra
+~0.6-0.7) and ~65% of the pool falls in a same-class cluster at K = #classes.
+The per-class picture is the important one: on fog, class 15 (nn1 0.341) and
+class 7 (0.434) are badly loosened while class 11 is tight (0.849); on
+wet_ground, classes 7/15 are again the weak ones (0.62-0.63) while 4/11/14/16
+are tight (0.83-0.92). The weakly-packed classes are rare (n = 50-300 in the
+pool) -- they are hard to ground AND they are exactly the classes the frozen
+probe gets wrong.
+
+**B. The label budget is small and the curve is flat.** One label per cluster
+(representative = centroid-nearest point, label = its true label):
+
+| condition | coverage K=17 | K=34 | K=68 | K=136 | K=272 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 0.669 | 0.646 | 0.649 | 0.679 | 0.692 |
+| crosstalk | 0.506 | 0.641 | 0.674 | 0.690 | 0.683 |
+| snow | 0.640 | 0.618 | 0.667 | 0.696 | 0.695 |
+| wet_ground | 0.495 | 0.623 | 0.625 | 0.657 | 0.655 |
+
+Coverage = fraction of the pool correctly grounded by K labels. The marginal
+gain from K=68 to K=272 is +0.01-0.04: ~34-68 labels capture essentially all
+the grounding the cluster structure offers. Per-class grounding at K=68 shows
+the same weak classes as A (fog class 7 grounded 0.000, class 15 0.054, class 16
+0.258, class 14 0.286; class 11 0.813).
+
+The distance-gated operating curve works as the mechanism predicts -- coverage
+is higher for points close to their representative:
+
+| condition | q=0.5 | q=0.75 | q=0.9 | radius q90 (128-d units) |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | 0.707 | 0.677 | 0.660 | 1.92 |
+| crosstalk | 0.781 | 0.731 | 0.699 | 1.96 |
+| snow | 0.819 | 0.734 | 0.693 | 2.06 |
+| wet_ground | 0.702 | 0.661 | 0.642 | 2.81 |
+
+The "label if close, else ask" gate: points within the q=0.5 radius are grounded
+at 0.70-0.82, and the radius for 90% coverage is ~1.9-2.1 units (2.81 for
+wet_ground -- its clusters are the loosest, which matches it having the largest
+AL-closeable gap, +32.5).
+
+**C. Label-reduction properties -- all three hold.**
+
+- **Classes are near-mono-modal**: within-class k-means dominant fraction at
+  K_c = 4 is ~1.000 on every condition and checkpoint. The per-class clusters
+  are single tight modes, so the label budget scales with CLASSES, not modes:
+  ~4 labels per class fully cover it (and K = #classes clusters already ground
+  ~65%).
+- **The frozen probe self-selects the query points**: corr(confidence, distance
+  to centroid) is negative everywhere (fog -0.15, crosstalk -0.36/-0.40, snow
+  -0.42/-0.46, wet_ground -0.15/-0.18): the high-confidence points ARE the
+  centroid-near representatives, so the probe's own confidence ranks the query
+  candidates for free (and the pseudo-accuracy is higher near centroids:
+  fog 0.61 nearest-quartile vs 0.47 outer-quartile in the dry run).
+- **Partial shift carry-over**: corrupted-vs-clean class-mean shift vectors are
+  only moderately aligned across classes (pairwise cosine 0.20-0.37, wet_ground
+  highest at 0.37). The corruption shift is partially shared (some cross-class
+  carry-over possible) but not a near-global transform; a few classes' labels
+  estimate the shift for the rest only partially.
+
+**Net for the framework design**: ~34-68 labels (2-4 per class) ground most of
+the pool correctly; the classes that escape grounding are the rare, badly-loosened
+ones (7, 15 on fog/wet_ground) -- the query rule must spend its budget on them
+first (influence-based ranking, per the TTA Iteration-11 findings), not on the
+tight majority classes. The distance gate (label if within ~1.9 units, else ask)
+and the confidence self-selection are both validated.
 
 ## Next: Iteration 1: the one-label-per-cluster query simulation
 
