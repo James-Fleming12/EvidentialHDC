@@ -174,8 +174,7 @@ def nystrom_influence(Xd, lam, m, device):
     M = torch.linalg.inv(Shat)
     C = Xd @ P
     MC = C @ M
-    return MC.norm(dim=1) * (Xd.shape[1] ** 0.5)
-
+    return (MC.norm(dim=1) * (Xd.shape[1] ** 0.5)).cpu()
 # ---------------- the ridge (S_all + T_gated, matrix-free CG) ----------------
 
 def ridge_fit_t_gated(Xd, Y_gated, lam, iters, m, device):
