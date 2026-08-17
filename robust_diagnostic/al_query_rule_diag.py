@@ -397,6 +397,7 @@ def main():
             t_fit = toc(t_fit)
 
             for rname, sig, desc, gate in rules:
+                order = cluster_order(sig, desc, gate)
                 # budgets: full K and (if explicit) the CLI list
                 if args.budgets:
                     budgets = [int(x) for x in args.budgets.split(',')]
