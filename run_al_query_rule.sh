@@ -32,11 +32,18 @@ fail() { echo "ERROR: $1 failed (exit $?)" >&2; FAIL=true; }
 run_rule() {
   local ckpt="$1"; local label="$2"
   echo ""
-  echo "=== [al_query_rule] $label [$CONDS]: query-rule comparison ==="
+  echo "=== [al_query_rule] $label [$CONDS]: query-rule comparison (agreement-gated grounding) ==="
   CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/al_query_rule_diag.py \
     --path_b "$ckpt" --method_b "$METHOD" --label "$label" --conds "$CONDS" \
     --out "robust_diagnostic/logs/al_query_rule_${label}.json" \
     2>&1 | tee "logs/al_query_rule_${label}.log" || fail "$label"
+  echo ""
+  echo "=== [al_query_rule] $label [$CONDS]: DISTANCE-ONLY grounding control ==="
+  CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/al_query_rule_diag.py \
+    --path_b "$ckpt" --method_b "$METHOD" --label "${label}_nodistgate" --conds "$CONDS" \
+    --ground_agreement 0 \
+    --out "robust_diagnostic/logs/al_query_rule_${label}_nodistgate.json" \
+    2>&1 | tee "logs/al_query_rule_${label}_nodistgate.log" || fail "${label}_nodistgate"
 }
 
 if [ "$ONLY" = "all" ] || [ "$ONLY" = "ep10" ]; then
@@ -49,9 +56,11 @@ fi
 echo ""
 if [ "$FAIL" = false ]; then
   echo "=== AL-QUERY-RULE OK ==="
-  echo "Check logs/al_query_rule_{covshift_ep10,covshift_ep21}.log"
-  echo "and the .json: per-K budget->mIoU for the four rules, grounded_all"
-  echo "ceiling, efficiency (fit_time_s, kmeans_time_s, labels_per_label)."
+  echo "Check logs/al_query_rule_{covshift_ep10,covshift_ep21}.log (agreement-gated)"
+  echo "and the *_nodistgate variants (distance-only grounding control): per-K"
+  echo "budget->mIoU for the four rules, grounded_all ceiling, efficiency."
+  echo "Compare the two: the agreement gate should lift grounded_all above frozen"
+  echo "(distance-only poisons T with ~35% wrong propagated labels)."
 else
   echo "=== AL-QUERY-RULE FAILED ==="
   exit 1

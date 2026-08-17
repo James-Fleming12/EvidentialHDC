@@ -3,8 +3,14 @@ one-label-per-cluster AL framework (eval-only, no plots). Oracle-simulated.
 
 Grounding mechanism (Iteration 0): cluster the corrupted pool, query ONE point
 per cluster (the representative), label it TRUE (simulated oracle), ground the
-cluster by distance (points within the gate radius of the representative inherit
-its label; beyond it they are not grounded -- "label if close, else ask").
+cluster by distance -- points within the gate radius of the representative
+inherit its label; beyond it they are not grounded ("label if close, else ask").
+With --ground_agreement=1 (default) the propagated label is additionally only
+accepted where the FROZEN PROBE agrees with the representative's class
+("label if close AND consistent, else ask"): the Iteration-0 grounding is only
+~65% class-pure, and systematic label errors poison T below the frozen ceiling
+(README 3.2 property 1), so the agreement gate is what keeps the propagated
+labels clean.
 The probe update is the established ridge with S = ALL pool points and
 T = grounded points only (the S_all, T_oracle-gated construction).
 
@@ -224,6 +230,11 @@ def main():
                         help="grounding gate radius: 'auto' = quantile of the "
                              "dist-to-representative distribution, or a float")
     parser.add_argument("--gate_quantile", type=float, default=0.6)
+    parser.add_argument("--ground_agreement", type=int, default=1,
+                        help="1 = propagate the rep label only to points whose "
+                             "frozen-probe prediction AGREES with the rep's true "
+                             "class (strict 'label if close AND consistent, else "
+                             "ask'); 0 = distance-only grounding")
     parser.add_argument("--budgets", type=str, default="",
                         help="comma list of label budgets (default: per-K "
                              "quarters/halves/full)")
@@ -348,8 +359,21 @@ def main():
             else:
                 radius = float(args.gate_mode)
 
-            # per-cluster grounding: points within radius of the rep
-            grounded = d_rep <= radius
+            # per-cluster grounding: points within radius of the rep. With
+            # ground_agreement, ALSO require the frozen probe to predict the
+            # rep's true class for the point (strict gate: only ground where
+            # the probe confirms the propagated label; inconsistent points are
+            # left unlabeled, they need their own query).
+            d_ok = d_rep <= radius
+            if args.ground_agreement:
+                rep_class = torch.zeros(K, dtype=torch.long)
+                for c in range(K):
+                    if rep_idx[c] >= 0:
+                        rep_class[c] = pl[rep_idx[c]]
+                agree_rep = (ppred == rep_class[labs])
+                grounded = d_ok & agree_rep
+            else:
+                grounded = d_ok
             cluster_disagree = torch.zeros(K, dtype=torch.bool)
             for c in range(K):
                 if rep_idx[c] < 0:
@@ -371,6 +395,7 @@ def main():
             ]
             r['rules'][f'K{K}'] = {'radius': radius, 'n_grounded': int(grounded.sum().item()),
                                    'n_disagree_clusters': int(cluster_disagree.sum().item()),
+                                   'ground_agreement': bool(args.ground_agreement),
                                    'kmeans_time_s': t_kmeans, 'rules': {}}
 
             def run_budget(order, budget):
@@ -461,7 +486,10 @@ def main():
     print("refs: frozen (0 labels) / oracle (all pool labeled, the label ceiling) /")
     print("  grounded_all (K labels, every cluster grounded -- the grounding")
     print("  scheme's own ceiling). The gap grounded_all -> oracle is the loss from")
-    print("  grounding by distance instead of labeling everything.")
+    print("  grounding by distance (with the agreement gate) instead of labeling")
+    print("  everything. NOTE: with ground_agreement=0 the propagated labels are")
+    print("  only ~65% pure and poison T below frozen (Iteration-0 clusters are")
+    print("  mixed); the default agreement gate is what keeps them clean.")
     print("rules (budget -> mIoU, labels_spent, n_grounded):")
     print("  influence      : rank clusters by J_c = sum I_i (the exact W-magnitude)")
     print("  confidence     : rank by representative confidence, ascending")
