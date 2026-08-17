@@ -86,7 +86,7 @@ def extract_positions(model, parser, device, num_frames=100):
             feats.append(z_flat.cpu())
             lbls.append(labels[mask].cpu())
             H, W = lab_grid.shape
-            pos_flat = torch.arange(H * W).view(H, W)[msk_grid].cpu()
+            pos_flat = torch.arange(H * W, device=device).view(H, W)[msk_grid].cpu()
             poss.append(pos_flat)
             grids.append((lab_grid.cpu(), msk_grid.cpu()))
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0), torch.cat(poss, dim=0), grids
