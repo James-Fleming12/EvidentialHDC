@@ -440,7 +440,7 @@ def main():
             syn.append(f"COND {cond} K={K}: frozen {r['refs']['frozen']:.3f} / oracle "
                        f"{r['refs']['oracle']:.3f} / grounded_all {r['refs'][f'grounded_all_K{K}']:.3f} "
                        f"| radius {radius:.2f}, grounded {int(grounded.sum().item())}/{n}")
-            for rname in rules:
+            for rname, _, _, _ in rules:
                 line = f"  {rname}: " + " ".join(
                     f"b{b}:{v['miou']:.3f}({v['labels_spent']}l,{v['n_grounded']}g)"
                     if v.get('miou') is not None else f"b{b}:skip"
