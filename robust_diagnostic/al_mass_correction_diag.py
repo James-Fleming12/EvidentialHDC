@@ -326,12 +326,14 @@ def main():
             idx = cls_idx[c]
             if len(idx) == 0:
                 continue
-            picks = [int(idx[int(I[idx].argmax().item())].item())]
+            pos0 = int(I[idx].argmax().item())
+            picks = [int(idx[pos0].item())]
             if args.labels_per_class > 1:
                 m2 = torch.ones(len(idx), dtype=torch.bool)
-                m2[picks[0] - int(idx[0].item())] = False
+                m2[pos0] = False
                 if int(m2.sum().item()) > 0:
-                    picks.append(int(idx[m2][int(I[idx[m2]].argmax().item())].item()))
+                    pos1 = int(I[idx[m2]].argmax().item())
+                    picks.append(int(idx[m2][pos1].item()))
             qidx.extend(picks)
         qidx = torch.tensor(qidx)
         qlbl = pl[qidx]
