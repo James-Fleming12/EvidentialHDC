@@ -432,10 +432,10 @@ def main():
         syn.append(f"  spatial: P4 {sp['p4']:.3f} / P8 {sp['p8']:.3f} | "
                    f"per-class 4-neighbor min {min(v for k, v in sp.items() if k not in ('p4', 'p8') and v is not None):.3f}")
         syn.append(f"  per-class nn1: mean {r['per_class']['_mean']:.3f} | "
-                   f"min {min(v['nn1_purity'] for v in pc.values()):.3f} "
-                   f"(class {min(pc, key=lambda k: pc[k]['nn1_purity'])}) | "
-                   f"max {max(v['nn1_purity'] for v in pc.values()):.3f} "
-                   f"(class {max(pc, key=lambda k: pc[k]['nn1_purity'])})")
+                   f"min {min(v['nn1_purity'] for k, v in pc.items() if k != '_mean'):.3f} "
+                   f"(class {min((k for k in pc if k != '_mean'), key=lambda k: pc[k]['nn1_purity'])}) | "
+                   f"max {max(v['nn1_purity'] for k, v in pc.items() if k != '_mean'):.3f} "
+                   f"(class {max((k for k in pc if k != '_mean'), key=lambda k: pc[k]['nn1_purity'])})")
         for q in [0.3, 0.5, 0.7]:
             line = f"  F conf>={q}: " + " ".join(
                 f"t{t}:{pr['F_conf_cond'][str(q)][str(t)]['precision']:.3f}@"
