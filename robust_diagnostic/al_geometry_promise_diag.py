@@ -258,6 +258,7 @@ def main():
             cdir = os.path.join(args.kittic_dir, cond, 'moderate')
         f, l, grids = extract_full(model, build_parser(cdir, DATA, ARCH), device,
                                    args.frames)
+        proj = get_hdc_projection(dim_in=f.shape[1], dim_out=10000, device=device)
         torch.manual_seed(42)
         perm = torch.randperm(len(f))
         pool, pl = f[perm[:args.pool_size]], l[perm[:args.pool_size]]
