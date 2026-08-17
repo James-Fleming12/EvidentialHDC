@@ -261,6 +261,10 @@ def main():
                 continue
             T_or[:, c] = Xp[idx].sum(dim=0)
             mu_or[c] = Xp[idx].mean(dim=0)
+        # class-0 mass (present in the pool labels, ignored in mIoU but part of
+        # the oracle T via the one-hot over all classes)
+        m0 = pl == 0
+        T_or[:, 0] = Xp[m0].sum(dim=0) if int(m0.sum().item()) > 0 else T_or[:, 0]
         mu_clean = {c: Xc[cls_idx_c[c]].mean(dim=0) for c in classes
                     if len(cls_idx_c[c]) > 0}
 
@@ -356,26 +360,34 @@ def main():
             return float(np.mean(coss)) if coss else None
 
         variants = {}
+        # class-0 column for the mean-synthesis variants (the oracle T includes
+        # the pool's class-0 mass via the one-hot over all classes)
+        t0 = Xp[pl == 0].sum(dim=0) if int((pl == 0).sum().item()) > 0 \
+            else torch.zeros(10000)
         # 7A clean-mean: T_c = N_c * mu_clean_c (code space)
         T_a = torch.zeros(10000, NUM_CLASSES)
+        T_a[:, 0] = t0
         for c in classes:
             if c in mu_clean:
                 T_a[:, c] = N_or[c] * mu_clean[c]
         variants['7A_clean_mean'] = T_a
         # 7B shift: T_c = N_c * (mu_clean_c + d_global) (carry-over)
         T_b = torch.zeros(10000, NUM_CLASSES)
+        T_b[:, 0] = t0
         for c in classes:
             if c in mu_clean:
                 T_b[:, c] = N_or[c] * (mu_clean[c] + d_global)
         variants['7B_shift_carry'] = T_b
         # 7C shrink: mu = mu_clean + alpha * d_global
         T_cv = torch.zeros(10000, NUM_CLASSES)
+        T_cv[:, 0] = t0
         for c in classes:
             if c in mu_clean:
                 T_cv[:, c] = N_or[c] * (mu_clean[c] + args.shrink_alpha * d_global)
         variants['7C_shrink'] = T_cv
         # 7B-oracle ceiling: true shift per class
         T_bo = torch.zeros(10000, NUM_CLASSES)
+        T_bo[:, 0] = t0
         for c in classes:
             if c in mu_clean and c in mu_or:
                 T_bo[:, c] = N_or[c] * mu_or[c]
