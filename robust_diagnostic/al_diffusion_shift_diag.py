@@ -452,11 +452,15 @@ def main():
                        f"{sh['shift_norm_mean']:.2f}")
         for k in shift_ks:
             e = sh[f'k{min(k, len(cs))}']
-            syn.append(f"  shift k={e['k']}: carry_over {e['carry_over']:.3f} / "
-                       f"per_class_only {e['per_class_only']:.3f} / oracle_shift "
-                       f"{sh['oracle_shift']:.3f} | unlabeled cos before "
-                       f"{e.get('unlabeled_cos_before', float('nan')):.3f} after "
-                       f"{e.get('unlabeled_cos_after', float('nan')):.3f}")
+            if 'unlabeled_cos_before' in e:
+                syn.append(f"  shift k={e['k']}: carry_over {e['carry_over']:.3f} / "
+                           f"per_class_only {e['per_class_only']:.3f} / oracle_shift "
+                           f"{sh['oracle_shift']:.3f} | unlabeled cos before "
+                           f"{e['unlabeled_cos_before']:.3f} after {e['unlabeled_cos_after']:.3f}")
+            else:
+                syn.append(f"  shift k={e['k']}: carry_over {e['carry_over']:.3f} / "
+                           f"per_class_only {e['per_class_only']:.3f} / oracle_shift "
+                           f"{sh['oracle_shift']:.3f} (all classes labeled)")
 
         results['conds'][cond] = r
         print(f"\n=== {cond} ({(toc(t_cond)):.0f}s) ===")
