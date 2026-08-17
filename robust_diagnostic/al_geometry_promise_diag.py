@@ -419,10 +419,16 @@ def main():
         simo = zn @ c_or.t()
         besto, bio = simo.max(dim=1)
         besto_lbl = torch.tensor([c for c in classes if len(cls_idx[c]) >= 50])[bio]
+        # F: confidence-conditioned packing uses RELATIVE confidence quantiles
+        # (the frozen probe's absolute max-softmax is < 0.3 everywhere on the
+        # corrupted pool -- Iteration-11 calibration finding -- so absolute
+        # gates are vacuous; relative top-q% gates test whether confidence can
+        # still RANK the geometry gate)
         for q in [0.3, 0.5, 0.7]:
+            keep_conf = pconf >= torch.quantile(pconf, 1 - q)
             pr['F_conf_cond'][str(q)] = {}
             for t in taus:
-                keep = (besto >= t) & (pconf >= q)
+                keep = (besto >= t) & keep_conf
                 pr['F_conf_cond'][str(q)][str(t)] = prec_cov(keep, besto_lbl, pl)
 
         # ---- synthesis ----
