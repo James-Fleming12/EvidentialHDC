@@ -243,9 +243,15 @@ def main():
 
         # ---- the NORMALIZED spectrum: S_hat = S/N, l_hat = l/N ----
         t_eig = tic()
-        S = (Xd.t() @ Xd).float() / N
+        S = (Xd.t() @ Xd).double() / N
         eig, U = torch.linalg.eigh(S)                 # ascending, O(1) now
-        sig = eig + args.lam / N                      # l_hat
+        eig = eig.float()
+        U = U.float()
+        lam_hat = args.lam / N
+        sig = eig + lam_hat
+        # floor: eigenvalues can be slightly negative from float32 eigh at tiny
+        # pool sizes; the clamp is the ridge floor (lam_hat)
+        sig = sig.clamp(min=lam_hat)
         t_eig = toc(t_eig)
         gain = 1.0 / sig
         sp = r['spectrum']
