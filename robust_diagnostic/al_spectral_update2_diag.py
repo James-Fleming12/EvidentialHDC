@@ -305,7 +305,7 @@ def main():
         def eval_pair_hats(make_gains):
             out = {}
             for k in mean_ks:
-                W = apply_filter(UtT_hats[k], make_gains())
+                W = apply_filter(UtT_hats[str(k)], make_gains())
                 out[k] = {'w_cos': cos_sim(W, W_oracle), 'miou': mw(W)}
             W_or_w = apply_filter(UtT_or, make_gains())
             out['oracle'] = {'w_cos': cos_sim(W_or_w, W_oracle),
