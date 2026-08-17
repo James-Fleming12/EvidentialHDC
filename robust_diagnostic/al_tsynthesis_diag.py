@@ -425,17 +425,17 @@ def main():
             def A(v):
                 return Xd.t() @ (Xd @ v)
             x = b.clone()
-            r = b - A(x)
-            p = r.clone()
-            rs_old = (r * r).sum(dim=0)
+            res = b - A(x)
+            p = res.clone()
+            rs_old = (res * res).sum(dim=0)
             for _ in range(args.cg_iters):
                 Ap = A(p)
                 alpha_k = rs_old / ((p * Ap).sum(dim=0) + 1e-30)
                 x = x + alpha_k.unsqueeze(0) * p
-                r = r - alpha_k.unsqueeze(0) * Ap
-                rs_new = (r * r).sum(dim=0)
+                res = res - alpha_k.unsqueeze(0) * Ap
+                rs_new = (res * res).sum(dim=0)
                 beta = rs_new / (rs_old + 1e-30)
-                p = r + beta.unsqueeze(0) * p
+                p = res + beta.unsqueeze(0) * p
                 rs_old = rs_new
             W = x.float()
             ts[vname] = {'t_cos': tcos(T_hat),
