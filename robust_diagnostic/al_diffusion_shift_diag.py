@@ -438,13 +438,14 @@ def main():
                 f"K{K}:{diff[f'K{K}_influence_floor_a{a}']['miou']:.3f}"
                 for K in budgets)
             syn.append(line)
-        syn.append(f"  anchor rules @K34 a0.5: influence_floor "
-                   f"{diff['K34_influence_floor_a0.5']['miou']:.3f} / influence "
-                   f"{diff['K34_influence_a0.5']['miou']:.3f} / confidence "
-                   f"{diff['K34_confidence_a0.5']['miou']:.3f} / random "
-                   f"{diff['K34_random_a0.5']['miou']:.3f}")
-        syn.append(f"  efficiency: diffuse {diff['K34_influence_floor_a0.5']['diffuse_time_s']:.3f}s "
-                   f"+ fit {t_fit:.3f}s = {diff['K34_influence_floor_a0.5']['total_time_s']:.3f}s (no clustering)")
+        mid = str(budgets[len(budgets) // 2])
+        syn.append(f"  anchor rules @K{mid} a0.5: influence_floor "
+                   f"{diff[f'K{mid}_influence_floor_a0.5']['miou']:.3f} / influence "
+                   f"{diff[f'K{mid}_influence_a0.5']['miou']:.3f} / confidence "
+                   f"{diff[f'K{mid}_confidence_a0.5']['miou']:.3f} / random "
+                   f"{diff[f'K{mid}_random_a0.5']['miou']:.3f}")
+        syn.append(f"  efficiency: diffuse {diff[f'K{mid}_influence_floor_a0.5']['diffuse_time_s']:.3f}s "
+                   f"+ fit {t_fit:.3f}s = {diff[f'K{mid}_influence_floor_a0.5']['total_time_s']:.3f}s (no clustering)")
         if 'shift_pairwise_cos' in sh:
             syn.append(f"  shift: pairwise-cos {sh['shift_pairwise_cos']['mean']:.3f} | "
                        f"global norm {sh['global_shift_norm']:.2f} vs mean per-class "
