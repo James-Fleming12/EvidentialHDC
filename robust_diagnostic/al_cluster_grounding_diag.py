@@ -229,7 +229,7 @@ def class_separation(feats, lbls, classes):
 def ridge_fit(Xd, Y, lam, iters, m, device):
     """Nystrom warm start + matrix-free CG (the established probe update)."""
     torch.manual_seed(11)
-    P = (torch.rand(Xd.shape[1], m) > 0.5).float() * 2 - 1
+    P = (torch.rand(Xd.shape[1], m, device=device) > 0.5).float() * 2 - 1
     XP = Xd @ P
     Yd = Y.float().to(device)
     Shat = XP.t() @ XP + lam * torch.eye(m, device=device)
