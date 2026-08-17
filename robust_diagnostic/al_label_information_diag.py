@@ -308,13 +308,13 @@ def main():
         c_mat = torch.stack(centroids)
         c_mat = c_mat / (c_mat.norm(dim=1, keepdim=True) + 1e-8)
         sims_b = pool_codes.float() @ c_mat.t()
-        best_b, bi = sims_b.max(dim=1)
+        b_sim, bi = sims_b.max(dim=1)
         top2b = torch.topk(sims_b, 2, dim=1).values
         b_margin = (top2b[:, 0] - top2b[:, 1]).clamp(min=0)
         b_lbl = cid[bi]
         b_curve = []
         for t in [0.98, 0.95, 0.9, 0.85, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3]:
-            m_keep = best_b >= t
+            m_keep = b_sim >= t
             nk = int(m_keep.sum().item())
             prec = float((b_lbl[m_keep] == pl[m_keep]).float().mean().item()) if nk > 0 else None
             b_curve.append({'tau': t, 'coverage': nk / len(pool),
@@ -400,7 +400,7 @@ def main():
                      key=lambda e: e['precision'], default=None)
         if best_b is not None:
             Y_b = torch.zeros(len(pool), NUM_CLASSES)
-            m_keep = best_b >= best_b['tau']
+            m_keep = b_sim >= best_b['tau']
             Y_b[m_keep] = onehot(b_lbl[m_keep], NUM_CLASSES)
             rd['B_best'] = mw(ridge_fit_soft(Xd, Y_b, args.lam, args.cg_iters,
                                              args.nystrom_m, device))
