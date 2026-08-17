@@ -144,6 +144,7 @@ def nystrom_influence(Xd, lam, m, device):
     return (MC.norm(dim=1) * (Xd.shape[1] ** 0.5)).cpu()
 
 def ridge_fit_soft(X, Y, lam, iters, m, device):
+    X = X.to(device)
     torch.manual_seed(SKETCH_SEED)
     m = min(m, X.shape[1])
     P = (torch.rand(X.shape[1], m, device=device) > 0.5).float() * 2 - 1
