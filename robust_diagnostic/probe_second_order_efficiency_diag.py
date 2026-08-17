@@ -164,10 +164,9 @@ def sparse_cov_ridge(codes, lbls, lam, device, keep_frac, num_classes=NUM_CLASSE
     t_acc = time.time() - t0
     t0 = time.time()
     # mask off-diagonal to the top-K by magnitude
-    S_mask = torch.zeros_like(S)
-    S_mask.fill_diagonal_(1.0)
+    S_mask = torch.eye(d, dtype=torch.bool, device=device)
     if keep_frac > 0:
-        off = S * (1 - S_mask)
+        off = S * ~S_mask
         k = max(1, int(off.numel() * keep_frac))
         flat = off.abs().flatten()
         thresh = torch.topk(flat, k).values[-1]
