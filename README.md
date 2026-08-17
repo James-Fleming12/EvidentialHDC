@@ -266,10 +266,12 @@ The two columns that matter:
 The cov-shift method's per-condition source harnesses are in
 `docs/cov_shift/cov_shift_iterations.md` (Iterations C1-C5, C11).
 
-**The HDC-native decoder: Nystrom+sign (the chosen update).** To recover the R4
-headroom without the full 10000x10000 solve (and without the block-diagonal
-approximation that breaks HDC holography), the update uses a **Nystrom random-sign
-sketch** of the ridge: P in {+1,-1}^{d x m} (m = 1000) mixes all 10000 HDC dims into
+**The HDC-native decoder and update.** To recover the R4 headroom without the full
+10000x10000 solve (and without the block-diagonal approximation that breaks HDC
+holography), the update is **matrix-free conjugate gradient** (solve (S + lI)W = T
+via Sv = X^T(Xv), never building S), and the decoder is cosine to the learned W.
+An earlier candidate was the **Nystrom random-sign sketch**: P in {+1,-1}^{d x m}
+(m = 1000) mixes all 10000 HDC dims into
 each sketch coordinate, so the holographic structure is preserved; the solve happens
 in m (m^3, trivial), and W = P A. The decoder then **quantizes W to +/-1**, so the
 decode is an integer dot product (d - 2*Hamming, popcount on packed bits) -- no
@@ -286,43 +288,47 @@ ep-10):
 Nystrom+sign recovers a large share of the R4 ceiling on every condition (fog 33.7%
 vs R4 41.7% and proto 26.0%; wet_ground 54.7% vs 67.1% and 42.4%), while staying in
 the full 10000-d HDC space (no block mask). The zero-shot is prototype-like, as
-expected.
+expected. Matrix-free CG supersedes it on accuracy (CG-20 reaches 62.0% wet_ground,
+beating Nystrom's 54.7% at comparable update cost) -- see the tradeoff table below.
 
-**Inference speed is essentially unchanged.** The Nystrom+sign decode (quantized
-+-1 W, integer popcount) runs at the prototype's decode rate -- the efficiency cost
-is in the UPDATE, not the deployed decode:
+**Inference speed is essentially unchanged.** The learned-prototype decode (cosine
+to W, or the quantized integer-popcount variant) runs at the prototype's decode
+rate -- the efficiency cost is in the UPDATE, not the deployed decode:
 
 | decoder (ep-10) | update pts/s | decode pts/s |
 | :--- | :--- | :--- |
 | R1 prototype (fit / decode) | ~1.1-3.9M | ~0.29-0.31M |
 | full probe R4 (LR fit) | ~1-2k | (matmul) |
-| **Nystrom+sign** | **~1.5-2.1M** | **~0.20-0.23M** |
+| **matrix-free CG-20 update + cosine decode** | **~0.64M** | **~0.20-0.29M** |
 
-The decode is within ~15% of the prototype's (0.20-0.23M vs 0.29-0.31M pts/s) -- the
-integer-popcount decode is effectively free. The update runs at ~1.5-2.1M pts/s,
-matching the prototype fit (1.1-3.9M), versus the full probe's 1-2k pts/s LR fit.
-Full per-condition tables and the accuracy<->efficiency sweep are in
-`docs/lin_probe_updates/tta_iterations.md` (Iterations 3-4).
+The decode (cosine to the learned W) is within ~15% of the prototype's, and the CG
+update (0.64M pts/s) is ~2-6x the prototype fit -- the cost of the second-order
+structure the rotation needs, vs the full probe's 1-2k pts/s LR fit. Full
+per-condition tables and the accuracy<->efficiency sweep are in
+`docs/lin_probe_updates/tta_iterations.md` (Iterations 3-6).
 
 **The accuracy <-> efficiency tradeoff (wet_ground ep-10, ceiling mIoU vs update
-speed).** The options considered for the linear-probe update, and why Nystrom+sign
-was chosen:
+speed).** The options considered for the second-order probe update, and the winner:
 
-| method | update pts/s | ceiling mIoU | holography | note |
+| method | update pts/s | ceiling mIoU | order | note |
 | :--- | :--- | :--- | :--- | :--- |
-| R1 prototype | 1.9M | 42.4% | -- | baseline; no probe gain |
-| full probe R4 (LR) | ~1-2k | 67.1% | full | the ceiling; update too slow |
-| CG-30 | 0.29M | 64.8% | full | near-ceiling but pays the dense S accumulate |
-| block_ridge sign | 0.22M | 53.2% | broken | block mask zeros cross-block correlations |
-| **Nystrom+sign (m=1000)** | **2.0M** | **54.7%** | full | **prototype-speed, holographic** |
+| R1 prototype | 1.9M | 42.4% | 1st | baseline; no probe gain |
+| diag LDA / perceptron | ~O(nd) | 39-30% | 1st | first-order forms FAIL (Iteration 6) |
+| coreset m=2000 + dual | ~2M | 31.3% | 2nd | below prototype; dead end |
+| sparse cov (1%) | ~O(nd) | 31.0% | 2nd | structure not in a few correlations |
+| full probe R4 (LR) | ~1-2k | 67.1% | 2nd | the ceiling; update too slow |
+| Nystrom+sign (m=1000) | 2.0M | 54.7% | 2nd | sketch; good balance |
+| **matrix-free CG-20** | **~0.64M** | **62.0%** | 2nd | **best cheap second-order** |
 
-The choice: Nystrom+sign keeps the full 10000-d space (random-sign mixing, no block
-mask), reaches most of the R4 ceiling (54.7% vs 67.1%), and runs the update at
-prototype speed (2.0M vs 1.9M pts/s) -- the only option that closes the efficiency
-gap without breaking holography. CG matches its accuracy but is 7x slower on the
-update; block_ridge is fast but its block-diagonal mask violates the distributed-
-representation principle. Iteration 4 in `docs/lin_probe_updates/tta_iterations.md`
-documents the full sweep (CG/delta/Nystrom across their parameters).
+The winner is **matrix-free CG-20**: it solves (S + lI)W = T via Sv = X^T(Xv)
+without ever building the 10000x10000 S (no d^2 storage, one pool pass per
+iteration), reaches 0.62 wet_ground / 0.38 fog -- the closest any cheap method gets
+to the full ridge ceiling (0.67 / 0.42) -- at ~0.64M pts/s. It beats Nystrom+sign
+(0.55) on accuracy at comparable update cost. The first-order forms (diagonal LDA,
+perceptron), the low-margin coreset, and sparse covariance all fail to recover the
+rotation: the gain genuinely needs the second-order cross-coordinate structure, and
+matrix-free CG is the efficient way to get it. Iterations 4-6 in
+`docs/lin_probe_updates/tta_iterations.md` document the full sweep.
 
 [To be filled: the form of the TTA (the update/don't-update gate, the support
 threshold, and where the label-free path is engaged).]

@@ -508,27 +508,64 @@ second-order statistics; NO first-order separator form (diagonal, mistake-based,
 shared transform) recovers the R4 gain.
 
 **Verdict.** The first-order route is closed. The method is fixed:
-**Nystrom-sketch update (m ~ 1000-2000, prototype-speed, ~0.55-0.61 ceiling) +
-cosine-to-learned-W_c decode (prototype-speed, full probe accuracy)**. The Nystrom
-sketch is the efficient approximation of the second-order statistics the gain
-requires; the learned-prototype cosine is the decoder that keeps the probe's
-accuracy. The remaining open question is the label-free version of the Nystrom
-update (Iteration 7).
+**matrix-free CG-20 update + cosine-to-learned-W_c decode**. The CG update is the
+efficient way to get the second-order statistics the gain requires without d^2
+storage; the learned-prototype cosine is the decoder that keeps the probe's
+accuracy. The remaining open question is the label-free version of the CG update
+(Iteration 8).
 
-## Next: Iteration 7 — the label-free probe-update test
+## Iteration 7: cheaper second-order updates (2026-08-16)
+
+With the first-order route closed (Iteration 6), `probe_second_order_efficiency_diag.py`
+tests Tier-1 ways to make the SECOND-ORDER problem cheaper: a hard-point coreset +
+dual ridge (the low-margin points where the oracle gain lives), matrix-free CG, and
+sparse covariance. All timings CUDA-synchronized. Results (ceiling mIoU, pool 50k):
+
+| method | wet_ground ep10 | fog ep10 | solve_s | notes |
+| :--- | :--- | :--- | :--- | :--- |
+| R1 prototype | 0.394 | 0.176 | 0.12 | baseline |
+| coreset m=500/1k/2k/5k + dual | 0.28/0.28/0.31/0.27 | 0.19/0.22/0.23/0.21 | 0.002-0.03 | all below proto; dead end |
+| sparse cov 0-5% offdiag | 0.29-0.31 | 0.11-0.15 | -- | ~diagonal-only; dead end |
+| **matrix-free CG-5/10/20** | **0.50/0.55/0.62** | **0.25/0.30/0.38** | **0.02/0.04/0.08** | **best cheap 2nd-order** |
+| full ridge | 0.671 | 0.417 | 3.5 | ceiling |
+
+(ep21 identical: CG-20 wet_ground 0.571, fog 0.32.)
+
+**Result: matrix-free CG is the winner.**
+- **CG converges monotonically toward the full ridge ceiling** (0.50 -> 0.55 -> 0.62
+  wet_ground across 5/10/20 iters), the closest any cheap method gets (full 0.671),
+  and it is TRULY matrix-free: Sv = X^T(Xv), never building the 10k x 10k S (no d^2
+  storage, one pool pass per iteration). CG-20 solves in 0.078s (~640k pts/s) vs the
+  full ridge's 3.5s.
+- **The hard-point coreset is a dead end** -- even low-margin-selected m=500-2000
+  points give 0.28-0.31, all BELOW the plain prototype (0.394). Selecting the
+  boundary points does not retain the rotation (m=5000 is worse than m=2000,
+  overfitting).
+- **Sparse covariance is a dead end** -- keeping top-K off-diagonal |S_jk| gives
+  0.29-0.31, barely above diagonal-only 0.294. The structure is not in a few
+  dominant pairwise correlations.
+
+**Verdict.** Matrix-free CG-20 is the best cheap second-order update: it approaches
+the full ridge ceiling (0.62 wet_ground / 0.38 fog) at ~0.64M pts/s without d^2
+storage, beating Nystrom (0.57/0.32) on accuracy at comparable cost. Combined with
+the learned-prototype cosine decode, this is the method. The Nystrom sketch remains
+a valid prototype-speed alternative when the update budget is tighter; CG is the
+accuracy-efficiency optimum.
+
+## Next: Iteration 8 — the label-free probe-update test
 
 Iteration 1 validated the ridge accumulate-and-solve update with TRUE labels (the
-oracle). Iteration 7 asks whether a LABEL-FREE version climbs toward the R4-oracle
+oracle). Iteration 8 asks whether a LABEL-FREE version climbs toward the R4-oracle
 ceiling the way naive prototype TTA reaches the R1 ceiling:
-- **naive probe-refit**: the Nystrom-sketch ridge with PSEUDO-labels (accumulate the
-  sketch S/T on the pool from the frozen probe's predictions, one small solve) -- the
-  label-free analog of the R4 oracle, at prototype-speed update cost.
+- **naive probe-refit**: the matrix-free CG update with PSEUDO-labels (Sv = X^T(Xv)
+  on the pool with the frozen probe's pseudo-labels, 20 CG iterations) -- the
+  label-free analog of the R4 oracle, at ~0.64M pts/s.
 - **pool-curve at label-free sizes**: does 1k-10k PSEUDO-labeled points close the
   gap as well as 1k-10k TRUE-labeled points? (Iteration 0's curve is the labeled
   budget; the label-free question is how much pseudo-labels degrade it.)
 - **bias-only control**: freeze W, update b from the pool class proportions -- kept
   as a control only (Iteration 0 already showed it is 0-4% of the gap).
 
-Verdict rule: if the label-free Nystrom refit recovers most of the R4-oracle ceiling
+Verdict rule: if the label-free CG refit recovers most of the R4-oracle ceiling
 on the healthy conditions and crosstalk without hurting fog, the linear-probe
-decoder with a gradient-free, prototype-speed update is the Pillar 2 mechanism.
+decoder with a gradient-free, efficient update is the Pillar 2 mechanism.
