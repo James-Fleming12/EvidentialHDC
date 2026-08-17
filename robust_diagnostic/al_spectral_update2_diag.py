@@ -325,7 +325,7 @@ def main():
 
         # 10-COMB: W_frozen + eta (W_beta - W_frozen)
         up['10_combo'] = {}
-        Wf = W_clean
+        Wf = W_clean.detach().cpu()
         for beta in combo_betas:
             W_beta = apply_filter(UtT_hats[str(mean_ks[-1])], sig_d.pow(-beta))
             up['10_combo'][str(beta)] = {}
@@ -334,7 +334,7 @@ def main():
                 # oracle-retention arm: residual toward the oracle W at beta=1
                 up['10_combo'][str(beta)][str(eta)] = {
                     'hat': {'w_cos': cos_sim(W, W_oracle), 'miou': mw(W)}}
-                W_or_r = Wf + eta * (W_oracle - Wf)
+                W_or_r = Wf + eta * (W_oracle.cpu() - Wf)
                 up['10_combo'][str(beta)][str(eta)]['oracle'] = {
                     'w_cos': cos_sim(W_or_r, W_oracle), 'miou': mw(W_or_r)}
 
