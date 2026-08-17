@@ -215,8 +215,10 @@ diagnostic, and the decision-rule finding are tracked in
 ## 3. Pillar 2: label-free test-time adaptation
 
 Test-time adaptation re-estimates the decoder from the corrupted stream with no
-labels. The story has two chapters: what the previous (prototype) method could do,
-and what the linear-probe decoder changes.
+labels. The story has three chapters: what the previous (prototype) method could
+do, what the linear-probe decoder changes, and why the label-free route is
+fundamentally closed in this space (Section 3.2) -- which is what pushes the
+recoverable headroom to the active-learning handoff (Pillar 3).
 
 ### 3.0 What the previous method saw
 
@@ -275,28 +277,81 @@ a good warm start; the Nystrom sketch is. The full sweep and the failed alternat
 runs at the prototype's decode rate (~0.20-0.29M pts/s vs 0.29-0.31M). The
 efficiency cost of the probe is in the UPDATE, not the deployed decode.
 
-### 3.2 Label-free TTA is bounded at the frozen level
+### 3.2 Why unsupervised TTA is so hard in this space
+
+The Iteration 9-12 closure is not a failure of specific update rules; it is forced
+by measurable properties of the binarized code space and the frozen probe. Each
+property below is measured, and each kills a family of label-free methods:
+
+1. **The frozen probe's errors are systematic, not noise.** The wrong
+   pseudo-labels contribute ~equal magnitude to the update (||W_wrong||/||W_correct||
+   ~= 0.8-1.1) and ANTI-align with the oracle rotation (cos(W_wrong, W_oracle) < 0
+   on every condition). Any supervised refit -- gated, weighted, soft, or
+   two-stage -- inherits the frozen probe's own mistakes. Confirmation bias is
+   structural here, not a gate deficiency (Iterations 9-11).
+2. **The rotation is in the decision rule, not the geometry.** The top eigenspaces
+   of S_clean and S_target coincide (spectral overlap 0.995-1.000) and the spectra
+   barely change, yet cos(W_zs, W_oracle) is small (0.05-0.19 fog, 0.42-0.59
+   crosstalk). The corruption does not rotate the pool's second-order statistics;
+   the boundary change lives in how the same geometry is labeled. This is why
+   Procrustes, CORAL, and whitening -- which realign S -- have nothing to align
+   (Iteration 12).
+3. **Confidence is anti-correlated with what the update needs.** The points with
+   the highest influence on the oracle rotation are the LOW-confidence ones
+   (Spearman -0.40 to -0.64); wrong points carry ~2x the influence of correct
+   ones; and the max softmax is < 0.5 for every corrupted-pool point, so no
+   absolute confidence threshold even exists. Confidence-gated supervision
+   structurally selects the least useful points (Iteration 11).
+4. **Per-class reliability is wildly uneven.** Pseudo-label precision spans
+   0.08-0.83 across classes (0.18-0.97 at the top confidence quantile); no global
+   threshold is right at the class level, and class-conditional gates fail too
+   because of properties 1 and 5 (Iteration 11).
+5. **Purity cannot buy coverage.** Even a perfect-purity gate (correct-only
+   labels, oracle-gate precision 1.0) reaches only 0.29-0.53 vs the oracle's
+   0.38-0.61: the correct points are a biased, low-coverage subset of the pool.
+   The rotation needs labels spread over the whole geometry; clean-but-sparse
+   supervision is structurally insufficient (Iteration 11).
+6. **The second-order solve amplifies the contaminated half.** W = (S + lI)^-1
+   X^T Y applies the inverse geometry to the label statistics; with S fixed and
+   correct, the wrong-label contribution is amplified by the same inverse that
+   would recover the rotation. S=all, T=gated never beats S=all, T=all at scale
+   because the geometry faithfully represents the pool -- and the pool's
+   pseudo-labels are what is wrong (Iteration 11).
+7. **The binarized code fixes the norm, making every shift angular.**
+   Sign-binarization removes scale; the covariance's dominant directions are
+   shared between clean and corrupted (property 2), so corruption expresses as a
+   change in the class-conditional means and angles -- exactly the part of the
+   statistics a covariance-only method ignores (Iterations 10, 12).
+
+The only supervision that resolves all seven properties is a true label on a
+covering point (Pillar 3): it fixes property 1 (no pseudo-label), 3-4 (query by
+influence, not confidence), 5 (labels spread per cluster), and 6-7 (the labeled
+ridge is the oracle construction itself).
+
+### 3.3 Label-free TTA is bounded at the frozen level
 
 The linear probe's LABELED ceiling is high (43.3% fog, 68.3% wet_ground), but its
 label-free ceiling is the FROZEN decoder: Iterations 9-10 showed that neither
 gating nor weighting pseudo-labels lets the probe update beat the frozen decode,
-because the 33-55% wrong pseudo-labels contaminate any supervised refit. So under
+because the 33-55% wrong pseudo-labels contaminate any supervised refit, and
+Iterations 11-12 showed the same closure for the S/T decomposition and for the
+pure-geometry routes (Section 3.2). So under
 the linear probe, **label-free TTA does not reach the (higher) probe ceiling on any
 condition** -- it is bounded at what the frozen decoder already achieves. This is a
 different statement from the prototype story (where label-free TTA reached the
 prototype's lower ceiling on the healthy conditions).
 
 Zero-shot (frozen decoder), the current label-free TTA, and the labeled ceiling for
-the current setup (cov-shift ep-10). TTA is a PLACEHOLDER for now -- the label-free
-update that matches the frozen decoder (the Iteration 9-10 finding) is what the
-next improvements will target:
+the current setup (cov-shift ep-10). TTA is the FROZEN DECODER -- the Iteration
+9-12 finding is that no label-free update beats it -- so the label-free column
+equals zero-shot, and the recoverable headroom is what the AL handoff closes:
 
 | condition | zero-shot (frozen) | label-free TTA | label ceiling (probe) | AL-closeable gap |
 | :--- | :--- | :--- | :--- | :--- |
-| fog | 20.1% | TBD | **43.3%** | +23.2 |
-| crosstalk | 39.5% | TBD | **59.4%** | +19.9 |
-| snow | 37.7% | TBD | **51.0%** | +13.3 |
-| wet_ground | 35.8% | TBD | **68.3%** | +32.5 |
+| fog | 20.1% | = zero-shot | **43.3%** | +23.2 |
+| crosstalk | 39.5% | = zero-shot | **59.4%** | +19.9 |
+| snow | 37.7% | = zero-shot | **51.0%** | +13.3 |
+| wet_ground | 35.8% | = zero-shot | **68.3%** | +32.5 |
 
 The gap (label ceiling - frozen) is the recoverable headroom that only true labels
 close, which is the active-learning handoff (Pillar 3): a small true-label budget
@@ -307,10 +362,10 @@ where the label budget buys the most.
 
 The cov-shift method's per-condition source harnesses are in
 `docs/cov_shift/cov_shift_iterations.md` (Iterations C1-C5, C11); the label-free
-probe-update closure and the efficiency sweep are in
-`docs/lin_probe_updates/tta_iterations.md` (Iterations 3-10).
+probe-update closure, the S/T decomposition, and the geometric closure are in
+`docs/lin_probe_updates/tta_iterations.md` (Iterations 3-12).
 
-### 3.3 The detection signal that triggers the handoff
+### 3.4 The detection signal that triggers the handoff
 
 The detection signal that ranks correct from wrong points (density / norm / fusion)
 decides when the label-free path is insufficient: if the label-free update's
@@ -384,7 +439,7 @@ budget recovers most of the oracle gap.
 
 ### 4.3 When it activates
 
-Active learning is the fill-in, engaged by a detection mechanism (Section 3.3):
+Active learning is the fill-in, engaged by a detection mechanism (Section 3.4):
 run the extractor, attempt the label-free TTA path, and activate active learning on
 exactly the conditions/clusters where the label-free gap-closed is below a
 threshold (or where the TTA-to-supervised gap is not >90% closed). The measurements
@@ -409,7 +464,7 @@ residual gap, because it is the only one that supplies the missing class labels.
 | **Pretraining objective (Pillar 1)** | Decoupled supervised contrastive + variational information bottleneck + cross-entropy, with physics-based augmentations only |
 | **HDC encoding** | Seeded random bipolar projection 128D to 10,000D, then sign binarization (information-preserving: 49.4% to 49.0% to 47.8%) |
 | **Prototypes** | Per-class means of the binarized clean features (frozen) |
-| **Adaptation (Pillar 2)** | Label-free gated prototype updates, used where the label-free path is sufficient (the healthy conditions); engaged unless the detection signal (Section 3.3) says active learning is needed | 
+| **Adaptation (Pillar 2)** | Label-free gated prototype updates, used where the label-free path is sufficient (the healthy conditions); engaged unless the detection signal (Section 3.4) says active learning is needed | 
 | **Active learning (Pillar 3)** | Backprop-free fill-in: query one point per dense per-class cluster under a strict label-or-don't gate, re-estimate prototypes from the labeled cluster representatives (Section 4) |
 
 ### 5.2 Previous performance: the original model per condition
@@ -554,7 +609,7 @@ budget is preserved for exactly the conditions that need it.
    is stable.
  3. Label-free TTA (Pillar 2, Section 3) is the method: the label-free update
     reaches the ceiling on the healthy conditions and crosstalk, with the
-    detection signal (Section 3.3) deciding where it is sufficient. The TTA
+    detection signal (Section 3.4) deciding where it is sufficient. The TTA
     machinery is the efficiency lever, not the whole answer.
  4. Backprop-free active learning (Pillar 3, Section 4) is the fill-in for the
    conditions the detection signal routes to it: rank the dense per-class clusters,

@@ -804,14 +804,85 @@ headroom requires TRUE labels on covering points. This is the active-learning
 handoff (Pillar 3) -- with a sharpened query rule: the influence analysis says
 query the LOW-confidence / disagreement points, not the confident ones.
 
-## Next: Iteration 12: the coverage-aware active-learning query
+## Iteration 12: geometric, S-only label-free TTA (2026-08-17)
 
-The S/T decomposition turned the Pillar-3 handoff from a hypothesis into a
-measured requirement: the recoverable headroom (+0.02 to +0.12 over the frozen
-decode) needs TRUE labels on the low-confidence, high-influence points. Iteration
-12 designs the query from the Iteration-11 measurements:
+Iteration 11 showed the pseudo-label half T is poisoned and the gap is
+C/COVERAGE. The remaining label-free route: abandon T entirely and use ONLY the
+uncorrupted geometry S = X^T X to re-rotate the frozen W_zs toward the oracle
+(`probe_geometric_tta_diag.py`, ep10 + ep21, all 4 conditions, 50k pool / 100k
+val, ~20s per condition). Three methods, all in the established matrix-free
+machinery (randomized-SVD eigenspaces of the 10000 x 10000 covariances via the
+shared Nystrom sketch; never building S; never touching a label):
+- **A. Subspace alignment / Procrustes** (Fernando et al.): rotate W_zs by the
+  top-k eigenspace correspondence U_c -> U_t. Two families per k in {8, 32, 128,
+  1000}: `proj` (textbook, truncates W_zs to span(U_c)) and `res`
+  (residual-preserving: rotate the k-dim component, keep the complement).
+- **B. CORAL** (Sun et al.): W_new = S_t^-1/2 S_c^1/2 W_zs on the top-k
+  eigenspace (whiten target, recolor with clean), rank in {128, 256, 1000},
+  plus a whitening-only control.
+- **C. Label diffusion** (Zhou et al.): the only method touching labels.
+  Hamming-similarity point graph (A = (X X^T/d + 11^T)/2 in [0,1]); anchors =
+  top-1%/5% by frozen-probe confidence; Y_diff = (I - a G)^-1 Y_sparse via
+  matrix-free CG; then the FULL-space ridge (S keeps all points). a in
+  {0.1, 0.5, 0.9}; oracle-anchored variant (true labels of the correct points)
+  as the diagnostic bound.
+
+The decisive diagnostic: **the spectral overlap** (singular values of U_c^T U_t,
+top-8) is 0.995-1.000 on EVERY condition and checkpoint. The top eigenspaces of
+S_clean and S_target essentially coincide -- the corruption does NOT rotate the
+dominant covariance directions.
+
+Results (ep10; frozen / oracle per condition):
+
+| condition | frozen | oracle | best procrustes | CORAL rank1000 | pseudo-anch diffusion | oracle-anch diff (a=0.5) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 0.259 | 0.377 | 0.246 (k8 t2c res) | 0.254 | 0.077-0.099 | **0.304** (cos 0.586) |
+| crosstalk | 0.524 | 0.554 | 0.245-0.266 (k8 res) | 0.509 | 0.118-0.210 | **0.525** (cos 0.826) |
+| snow | 0.457 | 0.493 | 0.428-0.448 (k8 res) | 0.448 | 0.087-0.154 | **0.459** (cos 0.755) |
+| wet_ground | 0.427 | 0.614 | 0.241-0.293 (k8 res) | 0.399 | 0.058-0.177 | **0.516** (cos 0.738) |
+
+ep21 identical pattern (fog frozen 0.231 / oracle 0.332; crosstalk 0.504/0.534;
+snow 0.442/0.473; wet_ground 0.427/0.581).
+
+**Result: the geometric route is CLOSED, and now with the mechanism known.**
+
+1. **There is no subspace rotation to align.** The overlap ~1 means S_target's
+   top eigenspace IS S_clean's; the rotation that separates W_zs from W_oracle
+   lives in the DECODER (the decision rule), not in the pool's second-order
+   statistics. Procrustes res variants sit at frozen (their cos to oracle stays
+   at cos(W_zs, oracle): the rotation R is ~identity), and the proj variants
+   truncate W_zs and fall far below (0.09-0.36).
+2. **CORAL's eigenvalue reweighting hurts or does nothing** (rank1000: fog 0.254
+   vs frozen 0.259, crosstalk 0.509 vs 0.524, snow 0.448 vs 0.457, wet_ground
+   0.399 vs 0.427). The eigenvalue spectra barely change (top eig ratio fog
+   ~4.6, crosstalk ~1), so whitening/recoloring cannot express the needed
+   boundary change. Whitening-only is worse (0.12-0.26).
+3. **Pseudo-anchored diffusion is far worse** (0.06-0.21): the poisoned anchors
+   diffuse into everything; coverage preservation does not fix poisoned labels.
+4. **The one thing that moves the probe toward the oracle is diffusing TRUE
+   labels** (oracle-anchored, a=0.5): fog 0.304 (cos 0.586), wet_ground 0.516
+   (cos 0.738), crosstalk 0.525 (cos 0.826). This is a labeled method -- and its
+   lesson is exactly the Iteration-11 conclusion restated: the geometry can carry
+   a sparse set of TRUE labels well, but it cannot manufacture the supervision.
+   (a=0.9 over-diffuses: 0.05-0.13.)
+
+**The label-free route is exhausted.** T is poisoned (Iterations 9-11), S carries
+no rotation to recover (Iteration 12). The probe's label-free ceiling is the
+frozen decode; the recoverable headroom requires true labels. This closes the
+Pillar-2 search: the mechanism is the active-learning handoff (Pillar 3), and the
+oracle-anchored diffusion result (geometry carries sparse true labels) is direct
+evidence that the one-label-per-cluster AL scheme will work.
+
+## Next: Iteration 13: the coverage-aware active-learning query
+
+The S/T decomposition (Iteration 11) and the geometric closure (Iteration 12)
+turned the Pillar-3 handoff from a hypothesis into a measured requirement: the
+recoverable headroom (+0.02 to +0.12 over the frozen decode) needs TRUE labels on
+the low-confidence, high-influence points, and the oracle-anchored diffusion
+result shows the geometry carries a sparse labeled set well. Iteration 13 designs
+the query from these measurements:
 - **query rule**: rank pool points by influence I_i (Nystrom-subspace) or
-  disagreement magnitude, NOT by confidence; the influence analysis shows these
+  disagreement magnitude, NOT by confidence; the influence analysis says these
   are the labels the rotation needs.
 - **one label per cluster**: the dense per-class cluster structure (Pillar 3, 4.1)
   with clusters formed on the 128-d features; the per-class reliability matrix
