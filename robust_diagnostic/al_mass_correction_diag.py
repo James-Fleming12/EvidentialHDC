@@ -394,7 +394,7 @@ def main():
             alpha_g[c] = (sr ** best_rho) * (qr ** (1 - best_rho))
         T_8g = torch.zeros(10000, NUM_CLASSES)
         for c in classes:
-            K = max(1, int(round(alpha_g[c] * N_soft[c].item())))
+            K = max(1, int(round(alpha_g[c].item() * N_soft[c].item())))
             K = min(K, len(pool))
             idx_top = torch.argsort(Q_frozen[:, c], descending=True)[:K]
             T_8g[:, c] = Xp[idx_top].t() @ Q_frozen[idx_top, c]
