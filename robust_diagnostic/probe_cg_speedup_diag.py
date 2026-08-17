@@ -117,6 +117,7 @@ def toc(t0):
 def cg_solve(X, T, lam, device, iters=20, x0=None, subsample=None, dtype=torch.float32):
     """Matrix-free CG: (S + lI) W = T with Sv = X^T(Xv). Optional warm-start x0,
     optional per-iteration fresh subsample (stochastic CG), optional BF16 state."""
+    X = X.to(device, dtype)
     d = X.shape[1]
     C = T.shape[1]
     x = torch.zeros(d, C, device=device, dtype=dtype) if x0 is None else x0.to(device, dtype)
@@ -149,6 +150,7 @@ def residual_cg(X, T, lam, device, x0, max_iters=50, tol=1e-3):
     """Solve A dW = R = T - A x0 (the correction to the warm start), early-stop on
     ||r||/||r0|| < tol. Returns the corrected W and the iterations used."""
     d = X.shape[1]
+    X = X.to(device)
     A = lambda v: X.T @ (X @ v)
     x = x0.clone().to(device)
     b = T.to(device)
@@ -183,14 +185,6 @@ def nystrom_w0(codes, lbls, lam, device, m=1000, num_classes=NUM_CLASSES):
     That = XP.T @ Y
     A = torch.linalg.solve(Shat + lam * torch.eye(m, device=device), That)
     return (P.to(device) @ A).float()
-
-
-def nystrom_precond_cg(X, T, lam, device, P, iters=8):
-    raise NotImplementedError(
-        "Preconditioned CG needs a verified Woodbury M^-1; the warm-start proxy "
-        "(Nys W0 then plain CG) is the recommended first test (feedback: 'test this "
-        "before implementing a sophisticated preconditioner'). The warm-start is "
-        "reported under 'nys_warm'.")
 
 
 def main():
