@@ -466,7 +466,7 @@ def main():
         syn.append(f"grounding budget-coverage: " + " ".join(
             f"K{k}:{gr[k]['coverage_total']:.3f}" for k in gr))
         syn.append(f"dist-gated coverage (K=68): " + " ".join(
-            f"q{q}:{gr['K68']['dist_gated'][q]['coverage']:.3f}" for q in dist_qs))
+            f"q{q}:{gr['K68']['dist_gated'][str(q)]['coverage']:.3f}" for q in dist_qs))
         syn.append(f"radius: q90 {gr['K68'].get('radius_q90', float('nan')):.2f} "
                    f"(128-d units), median {gr['K68'].get('radius_median', float('nan')):.2f}")
         syn.append(f"shift: pairwise-cos mean {red.get('shift_pairwise_cos', {}).get('mean')} | "
