@@ -276,18 +276,88 @@ next iteration, in order of expected value:
   propagation), and accept the smaller T -- the coverage loss vs the
   contamination gain must be measured.
 
-## Next: Iteration 2: class-conditional clusters and tight-radius grounding
+## Iteration 2: graph diffusion with queried anchors + the shift structure (2026-08-17)
 
-Iteration 1 showed the query rule works (influence > confidence everywhere) but
-the grounding mechanism is poisoned by ~65%-pure K-means clusters. Iteration 2
-tests the three fixes:
-- class-conditional clustering (within pseudo-class clusters, K_c per class from
-  the Iteration-0 mono-modality measurement);
-- tight-radius grounding (ground only the nearest fraction, q in {0.25, 0.5});
-- labels-direct-in-T (no propagation) as the contamination-free control.
+Iteration 1's cluster + hard-distance propagation failed because 65%-pure clusters
+propagate ~35% wrong labels. Two replacements tested
+(`al_diffusion_shift_diag.py`, ep10 + ep21, all 4 conditions):
 
-Verdict rule: if class-conditional clusters + tight radius lift the budget curve
-above frozen toward the oracle (closing part of the +13 to +32 AL-closeable gap),
-the Pillar-3 mechanism is confirmed; if even pure per-class clusters cannot beat
-frozen, the AL framework's leverage must be re-thought (the labeled points'
-direct contribution to T, not propagation).
+**A. Graph diffusion with QUERIED anchors** (no clustering, no kNN): pick K
+anchors (influence_floor: one per class by max influence, then fill by
+influence; plus pure influence / confidence / random controls), label them TRUE
+(simulated oracle), diffuse through the HDC Hamming point graph
+(Y_diff = (I - a G)^-1 Y_sparse, matrix-free CG, implicit all-pairs), then the
+ridge S=all, T=Y_diff. Budget K in {8, 17, 34, 68}, a in {0.5, 0.9}.
+
+| condition | frozen | oracle | diffusion best (any K, a) | Iteration-1 grounded_all |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | 0.258 | 0.375 | 0.050 (K17 a0.5) | 0.182 |
+| crosstalk | 0.524 | 0.553 | 0.054 (K8 a0.9) | 0.335 |
+| snow | 0.456 | 0.493 | 0.051 (K8 a0.9) | 0.289 |
+| wet_ground | 0.427 | 0.615 | 0.064 (K8 a0.9) | 0.311 |
+
+**Diffusion with 8-68 queried anchors does NOT work.** The mIoUs sit at
+0.03-0.06, far below frozen and below even the (failed) cluster grounding. The
+Iteration-12 oracle-anchored diffusion that beat frozen used ~50% of the pool as
+anchors; with a handful of anchors the diffusion has too little signal. The
+anchor rules barely differentiate and RANDOM is often best (fog random 0.059 vs
+influence_floor 0.042) -- the differences at these tiny mIoUs are noise. The
+efficiency claim held (diffuse 0.084s + fit 0.057s = 0.14s per loop, no
+clustering) but efficiency is moot when the mechanism does not recover the
+geometry. The anchor density, not the propagation rule, is the binding
+constraint -- and a queried budget of 8-68 anchors cannot supply it.
+
+**B. The shift structure is robust but weak** (prototype decode; frozen / oracle
+per condition):
+
+| condition | proto frozen | k=2 carry_over | k=4 carry_over | all-labeled | oracle_shift | probe frozen | probe oracle |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 0.237 | 0.234 | 0.247 | 0.251 | 0.250 | 0.258 | 0.375 |
+| crosstalk | 0.463 | 0.461 | 0.462 | 0.464 | 0.464 | 0.524 | 0.553 |
+| snow | 0.402 | 0.401 | 0.402 | 0.408 | 0.409 | 0.456 | 0.493 |
+| wet_ground | 0.390 | 0.401 | 0.404 | 0.422 | 0.421 | 0.427 | 0.615 |
+
+ep21 identical. The labeled classes are always [4, 7] then [11, 13] (the
+influence ranking). Pairwise shift cosine 0.16-0.30 (wet_ground highest, fog
+lowest).
+
+**carry_over ~= per_class_only ~= oracle_shift at every k: the global shift from
+2-4 labeled classes corrects ALL classes' prototypes to essentially the
+oracle-shift ceiling.** With k=2, fog carry 0.234 vs oracle 0.250; crosstalk
+0.461 vs 0.464. The label-skipping works -- the structure is robust. BUT the
+shift-corrected PROTOTYPE decode (0.23-0.46) still sits BELOW the frozen probe
+decode (0.26-0.52): correcting prototypes to their ceiling does not beat the
+learned probe. The unlabeled-cos numbers explain why: before 0.92-0.99 -> after
+0.84-0.99, i.e. the global shift barely moves the unlabeled prototypes (they
+were already near their corrupted means -- the corruption shift is small in the
+code space, and the pairwise alignment 0.16-0.30 is modest).
+
+**Net: two mechanisms closed, two properties established.**
+1. Diffusion needs dense anchors (50% of the pool), so a queried budget of
+   8-68 labels cannot drive it -- the anchor density is the constraint.
+2. The shift structure is robust (2-4 labels reach the ceiling) but its ceiling
+   is the prototype decoder, which the probe already beats -- it is a free
+   add-on for the prototype path, not a path past the frozen probe.
+3. The query rule (influence) and the class-floor selection remain the validated
+   pieces; what is still missing is a mechanism that turns ~tens of labels into
+   a T that beats frozen.
+
+## Next: Iteration 3: class-conditional clusters and labels-direct-in-T
+
+Iterations 1-2 closed the cluster-propagation and diffusion routes. The
+untested fixes from the Iteration-1 plan remain:
+- **class-conditional clustering**: cluster within each pseudo-class's points
+  (the probe's prediction as the class prior), so clusters are ~pure by
+  construction -- one label per class-subcluster propagates correctly, no
+  cross-class contamination.
+- **labels-direct-in-T**: use only the K labeled points directly in T (no
+  propagation), measuring how far pure sparse labels go before contamination
+  vs coverage trade-offs matter.
+- **hybrid**: class-conditional clusters for grounding + labels-direct-in-T for
+  the few uncertain classes.
+
+Verdict rule: if class-conditional clusters + labels-direct-in-T lift the budget
+curve above frozen toward the oracle, the Pillar-3 mechanism is confirmed; if
+not, the AL framework's leverage must be re-thought -- the fallback is that the
+oracle ceiling itself (S_all, T_oracle on all pool points) is what the paper can
+claim, with the budget story being how close a small labeled set gets to it.
