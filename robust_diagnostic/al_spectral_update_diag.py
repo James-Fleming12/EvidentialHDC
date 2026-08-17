@@ -312,21 +312,27 @@ def main():
             return out
 
         up = r['updates']
+        # clamp the ridge spectrum away from zero (eigenvalues can be slightly
+        # negative at the tiny-pool scale; the clamp is a ridge floor)
+        sig_clamped = sig_d.clamp(min=args.lam)
         # baseline ridge: g = 1/sig
-        up['ridge'] = eval_pair(lambda: 1.0 / sig_d)
-        # 9A fractional: g = sig^-beta
+        up['ridge'] = eval_pair(lambda: 1.0 / sig_clamped)
+        # 9A fractional: g = sig^-beta (eigenvalues clamped away from zero so
+        # the fractional power is finite -- the clamp is a ridge floor)
         up['9A_fractional'] = {}
+        sig_clamped = sig_d.clamp(min=args.lam)
         for beta in betas:
             up['9A_fractional'][str(beta)] = eval_pair(
-                lambda b=beta: sig_d.pow(-b))
+                lambda b=beta: sig_clamped.pow(-b))
         # 9B clipped: g = min(1/sig, gamma)
         up['9B_clipped'] = {}
         for gamma in gammas:
             up['9B_clipped'][str(gamma)] = eval_pair(
-                lambda g=gamma: torch.minimum(1.0 / sig_d, torch.full_like(sig_d, g)))
+                lambda g=gamma: torch.minimum(1.0 / sig_clamped,
+                                              torch.full_like(sig_clamped, g)))
         # 9C frozen residual: W = W_frozen + eta (W_hat - W_frozen)
         # W_hat = the ridge solution on T_hat (via the spectral filter)
-        W_hat = apply_filter(UtT_hat, 1.0 / sig_d)
+        W_hat = apply_filter(UtT_hat, 1.0 / sig_clamped)
         up['9C_residual'] = {}
         for eta in etas:
             W = W_clean + eta * (W_hat - W_clean)
@@ -356,7 +362,7 @@ def main():
         for p in drop_ps:
             n_keep = int(round((1 - p / 100.0) * len(sig)))
             gains = torch.zeros_like(sig_d)
-            gains[:n_keep] = (1.0 / sig_d)[:n_keep]
+            gains[:n_keep] = (1.0 / sig_clamped)[:n_keep]
             up['9E_unstable_removal'][str(p)] = eval_pair(lambda g=gains: g)
 
         # ---- synthesis ----
