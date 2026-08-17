@@ -371,17 +371,20 @@ def main():
         W_clean = fit_probe(clean_codes.float().to(device), onehot(la[ci], NUM_CLASSES),
                             lam=args.lam, iters=args.cg_iters, m=args.nystrom_m, device=device)
 
-        # prototype (R1) predictions on the pool, from the clean class means
-        protos = []
+        # prototype (R1) predictions on the pool, from the clean class means.
+        # NOTE: classes are kept alongside the means -- with a small clean sample
+        # some classes have no points, so index != class id.
+        proto_pairs = []
         for c in range(1, NUM_CLASSES):
             m = la[ci] == c
             if int(m.sum().item()) > 0:
-                protos.append((clean_codes[m].float().mean(dim=0)))
+                proto_pairs.append((c, clean_codes[m].float().mean(dim=0)))
         del clean_codes
-        proto_mat = torch.stack(protos)             # K x d
+        proto_ids = torch.tensor([c for c, _ in proto_pairs])
+        proto_mat = torch.stack([p for _, p in proto_pairs])
         proto_mat = proto_mat / (proto_mat.norm(dim=1, keepdim=True) + 1e-8)
         proto_scores = pool_codes.float() @ proto_mat.t()
-        proto_pred = proto_scores.argmax(dim=1) + 1  # classes stored from 1
+        proto_pred = proto_ids[proto_scores.argmax(dim=1)]
 
         Xd = pool_codes.float().to(device)          # kept on device: 50k x 10k
 
@@ -431,6 +434,20 @@ def main():
         def st_entry(W):
             return {'miou': mw(W), 'cos_oracle': cos_sim(W, W_oracle)}
 
+        def gated_entry(mask, iters=None):
+            """Fit S=all, T=gated by the mask. Masks with <100 points give a
+            degenerate all-zero W (miou 0.0, cos 0.0); mark them insufficient
+            instead of misreading the 0.0 as a real result."""
+            n = int(mask.sum().item())
+            if n < 100:
+                return {'miou': None, 'cos_oracle': None,
+                        'retain': float(mask.float().mean().item()), 'n': n,
+                        'insufficient': True}
+            W = fit_probe(Xd, Y_pseudo, w_t=mask, lam=args.lam,
+                          iters=iters or args.cg_iters, m=args.nystrom_m, device=device)
+            return {'miou': mw(W), 'cos_oracle': cos_sim(W, W_oracle),
+                    'retain': float(mask.float().mean().item()), 'n': n}
+
         st['s_all_t_all'] = st_entry(W_nogate)
         st['s_all_t_oracle'] = st_entry(W_oracle)
 
@@ -438,22 +455,16 @@ def main():
         for fr in gate_fracs:
             thr = torch.quantile(pconf, 1 - fr)
             mask = pconf >= thr
-            W = fit_probe(Xd, Y_pseudo, w_t=mask, lam=args.lam,
-                          iters=args.cg_iters, m=args.nystrom_m, device=device)
-            st[f's_all_t_conf_top{fr}'] = st_entry(W)
-            st[f's_all_t_conf_top{fr}']['retain'] = float(mask.float().mean().item())
-            st[f's_all_t_conf_top{fr}']['precision'] = float(
-                pseudo_correct[mask].float().mean().item())
+            e = gated_entry(mask)
+            e['precision'] = float(pseudo_correct[mask].float().mean().item())
+            st[f's_all_t_conf_top{fr}'] = e
         # S=all, T gated hard by margin quantile
         for fr in [0.3, 0.5]:
             thr = torch.quantile(pmargin, 1 - fr)
             mask = pmargin >= thr
-            W = fit_probe(Xd, Y_pseudo, w_t=mask, lam=args.lam,
-                          iters=args.cg_iters, m=args.nystrom_m, device=device)
-            st[f's_all_t_margin_top{fr}'] = st_entry(W)
-            st[f's_all_t_margin_top{fr}']['retain'] = float(mask.float().mean().item())
-            st[f's_all_t_margin_top{fr}']['precision'] = float(
-                pseudo_correct[mask].float().mean().item())
+            e = gated_entry(mask)
+            e['precision'] = float(pseudo_correct[mask].float().mean().item())
+            st[f's_all_t_margin_top{fr}'] = e
         # S=all, T weighted soft by confidence
         for wname, w in [('conf', pconf), ('conf2', pconf ** 2)]:
             W = fit_probe(Xd, Y_pseudo, w_t=w, lam=args.lam,
@@ -498,6 +509,9 @@ def main():
                            iters=args.decomp_iters, m=args.nystrom_m, device=device)
         W_wrong = fit_probe(Xd, Y_pseudo, w_t=(~pseudo_correct).float(), lam=args.lam,
                             iters=args.decomp_iters, m=args.nystrom_m, device=device)
+        # linearity reference: the no-gate fit at the SAME iteration count
+        W_all_hi = fit_probe(Xd, Y_pseudo, lam=args.lam, iters=args.decomp_iters,
+                             m=args.nystrom_m, device=device)
         W_sum = W_corr + W_wrong
         wd = r['w_decomp']
         wd['w_correct'] = {'norm': float(W_corr.norm().item()),
@@ -507,9 +521,9 @@ def main():
                          'cos_oracle': cos_sim(W_wrong, W_oracle),
                          'cos_correct': cos_sim(W_wrong, W_corr),
                          'miou': mw(W_wrong)}
-        wd['linearity'] = {'cos_sum_vs_pseudo': cos_sim(W_sum, W_nogate),
-                           'rel_err': float((W_sum - W_nogate).norm().item() /
-                                            (W_nogate.norm().item() + 1e-30))}
+        wd['linearity'] = {'cos_sum_vs_all_hi': cos_sim(W_sum, W_all_hi),
+                           'rel_err': float((W_sum - W_all_hi).norm().item() /
+                                            (W_all_hi.norm().item() + 1e-30))}
         wd['norm_ratio_wrong_correct'] = float(W_wrong.norm().item() /
                                                (W_corr.norm().item() + 1e-30))
         wd['pseudo_to_oracle_err'] = float((W_nogate - W_oracle).norm().item() /
@@ -561,12 +575,9 @@ def main():
         # top-influence gate (S=all, T = top-30% by I)
         thr = torch.quantile(I, 0.7)
         mask = I >= thr
-        W = fit_probe(Xd, Y_pseudo, w_t=mask, lam=args.lam, iters=args.cg_iters,
-                      m=args.nystrom_m, device=device)
-        inf['top_i_gate'] = {'miou': mw(W),
-                             'cos_oracle': cos_sim(W, W_oracle),
-                             'precision': float(pseudo_correct[mask].float().mean().item()),
-                             'retain': float(mask.float().mean().item())}
+        e = gated_entry(mask)
+        e['precision'] = float(pseudo_correct[mask].float().mean().item())
+        inf['top_i_gate'] = e
         inf['time_s'] = t_inf
 
         # ---- D. reliability / calibration / confusion ----
@@ -631,27 +642,22 @@ def main():
                           'mean_i': float(I[m].mean().item())}
         ag['populations'] = pops
         # agree-only gate and disagree-high-conf gate (S=all, T gated)
-        W = fit_probe(Xd, Y_pseudo, w_t=agree.float(), lam=args.lam,
-                      iters=args.cg_iters, m=args.nystrom_m, device=device)
-        ag['agree_only'] = {'miou': mw(W), 'cos_oracle': cos_sim(W, W_oracle),
-                            'retain': float(agree.float().mean().item())}
+        e = gated_entry(agree.float())
+        e['precision'] = float(pseudo_correct[agree].float().mean().item())
+        ag['agree_only'] = e
         m_dis = (~agree) & (pconf >= 0.9)
-        W = fit_probe(Xd, Y_pseudo, w_t=m_dis.float(), lam=args.lam,
-                      iters=args.cg_iters, m=args.nystrom_m, device=device)
-        ag['disagree_hi_conf'] = {'miou': mw(W), 'cos_oracle': cos_sim(W, W_oracle),
-                                  'retain': float(m_dis.float().mean().item())}
+        e = gated_entry(m_dis.float())
+        e['precision'] = float(pseudo_correct[m_dis].float().mean().item())
+        ag['disagree_hi_conf'] = e
         # region-conditional gate: within each prototype region, keep top-30% conf
         mask_region = torch.zeros(len(pool), dtype=torch.bool)
         for c in proto_pred.unique():
             m = proto_pred == c
             thr = torch.quantile(pconf[m], 0.7)
             mask_region |= m & (pconf >= thr)
-        W = fit_probe(Xd, Y_pseudo, w_t=mask_region, lam=args.lam, iters=args.cg_iters,
-                      m=args.nystrom_m, device=device)
-        ag['region_cond_top30'] = {'miou': mw(W), 'cos_oracle': cos_sim(W, W_oracle),
-                                   'retain': float(mask_region.float().mean().item()),
-                                   'precision': float(
-                                       pseudo_correct[mask_region].float().mean().item())}
+        e = gated_entry(mask_region)
+        e['precision'] = float(pseudo_correct[mask_region].float().mean().item())
+        ag['region_cond_top30'] = e
         # per-class-conditional gate: within each predicted class, keep top-30% conf
         mask_class = torch.zeros(len(pool), dtype=torch.bool)
         for c in range(1, NUM_CLASSES):
@@ -660,12 +666,9 @@ def main():
                 continue
             thr = torch.quantile(pconf[m], 0.7)
             mask_class |= m & (pconf >= thr)
-        W = fit_probe(Xd, Y_pseudo, w_t=mask_class, lam=args.lam, iters=args.cg_iters,
-                      m=args.nystrom_m, device=device)
-        ag['class_cond_top30'] = {'miou': mw(W), 'cos_oracle': cos_sim(W, W_oracle),
-                                  'retain': float(mask_class.float().mean().item()),
-                                  'precision': float(
-                                      pseudo_correct[mask_class].float().mean().item())}
+        e = gated_entry(mask_class)
+        e['precision'] = float(pseudo_correct[mask_class].float().mean().item())
+        ag['class_cond_top30'] = e
 
         # ---- F. coverage per gate ----
         trace_all = float((Xd * Xd).sum().item())
@@ -697,12 +700,9 @@ def main():
                     continue
                 thr = torch.quantile(pconf[m], 0.7)
                 mask |= m & (pconf >= thr)
-            W = fit_probe(Xd, Y_pseudo, w_t=mask, lam=args.lam, iters=args.cg_iters,
-                          m=args.nystrom_m, device=device)
-            ag[f'cluster_k{K}_top30'] = {'miou': mw(W), 'cos_oracle': cos_sim(W, W_oracle),
-                                         'retain': float(mask.float().mean().item()),
-                                         'precision': float(
-                                             pseudo_correct[mask].float().mean().item())}
+            e = gated_entry(mask)
+            e['precision'] = float(pseudo_correct[mask].float().mean().item())
+            ag[f'cluster_k{K}_top30'] = e
 
         # ---- H. oracle gate decomposition: precision -> mIoU per strategy ----
         corr = r['corruption']
@@ -739,7 +739,10 @@ def main():
             r['auroc'][name] = rank_auc(pseudo_correct, sig)
 
         # ---- per-condition doc-ready synthesis ----
-        st_best = max((v['miou'], k) for k, v in st.items() if k != 's_all_t_oracle')
+        def fmt(e):
+            return f"{e['miou']:.4f}" if e.get('miou') is not None else "insuff"
+        st_best = max((v['miou'], k) for k, v in st.items()
+                      if k != 's_all_t_oracle' and v.get('miou') is not None)
         syn = r['synthesis']
         syn.append(f"COND {cond} (pseudo acc {pseudo_correct.float().mean():.3f}, "
                    f"n {len(pool)})")
@@ -752,9 +755,14 @@ def main():
                   's_all_t_correct_only', 's_gated_t_gated', 's_gated_t_all']:
             if k in st:
                 e = st[k]
-                syn.append(f"  {k}: {e['miou']:.3f} (cos {e['cos_oracle']:.3f}, "
-                           f"retain {e.get('retain', 1.0):.3f}, "
-                           f"prec {e.get('precision', 'na')})")
+                miou = e.get('miou')
+                if miou is None:
+                    syn.append(f"  {k}: insufficient ({e.get('n', 0)} pts, "
+                               f"retain {e.get('retain', 0):.3f})")
+                else:
+                    syn.append(f"  {k}: {miou:.3f} (cos {e['cos_oracle']:.3f}, "
+                               f"retain {e.get('retain', 1.0):.3f}, "
+                               f"prec {e.get('precision', 'na')})")
         syn.append(f"w_decomp: {wd['diagnosis']}")
         syn.append(f"  ||W_wrong||/||W_correct|| {wd['norm_ratio_wrong_correct']:.3f} | "
                    f"cos(Wc,oracle) {wd['w_correct']['cos_oracle']:.3f} | "
@@ -762,7 +770,8 @@ def main():
                    f"linearity {wd['linearity']['cos_sum_vs_pseudo']:.4f}")
         syn.append(f"influence: corr_conf {inf.get('corr_conf')} / corr_margin {inf.get('corr_margin')} | "
                    f"mean_i correct {inf['mean_i_correct']:.3f} vs wrong {inf['mean_i_wrong']:.3f} | "
-                   f"top_i gate {inf['top_i_gate']['miou']:.3f} (prec {inf['top_i_gate']['precision']:.3f})")
+                   f"top_i gate {fmt(inf['top_i_gate'])} "
+                   f"(prec {inf['top_i_gate'].get('precision')})")
         pc_vals = [v['overall_prec'] for v in rel['per_class'].values()]
         pc_hi = [v['prec_q0.9'] for v in rel['per_class'].values() if 'prec_q0.9' in v]
         if pc_vals and pc_hi:
@@ -780,12 +789,12 @@ def main():
               f"frozen {r['refs']['frozen']:.4f} | oracle {r['refs']['oracle_s_all_t_oracle']:.4f} "
               f"| no_gate {r['refs']['no_gate_s_all_t_all']:.4f}")
         print(f"  S/T: " + " ".join(
-            f"{k.split('s_all_t_')[-1]}:{v['miou']:.4f}"
+            f"{k.split('s_all_t_')[-1]}:{fmt(v)}"
             for k, v in st.items() if k.startswith('s_all_t_')))
         print(f"  W decomp: {wd['diagnosis']}")
         print(f"  influence: corr_conf {inf.get('corr_conf')} | mean_i corr {inf['mean_i_correct']:.3f} "
-              f"vs wrong {inf['mean_i_wrong']:.3f} | top_i gate {inf['top_i_gate']['miou']:.4f}")
-        print(f"  agreement: " + " ".join(f"{k}:{v['miou']:.4f}" for k, v in ag.items()
+              f"vs wrong {inf['mean_i_wrong']:.3f} | top_i gate {fmt(inf['top_i_gate'])}")
+        print(f"  agreement: " + " ".join(f"{k}:{fmt(v)}" for k, v in ag.items()
                                           if k.endswith('top30') or k.endswith('only')
                                           or k == 'disagree_hi_conf'))
         print(f"  corruption: " + " ".join(
