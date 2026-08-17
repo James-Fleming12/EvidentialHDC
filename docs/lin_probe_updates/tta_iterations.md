@@ -710,20 +710,118 @@ handoff (Pillar 3), not a pseudo-label fix. The probe's label-free ceiling is th
 frozen decoder; the oracle rotation is the labeled bound that AL (one label per
 cluster) closes.
 
-## Next: Iteration 11: the label-free probe-update test
+## Iteration 11: the S/T decomposition diagnostic (2026-08-17)
 
-Iteration 1 validated the ridge accumulate-and-solve update with TRUE labels (the
-oracle). Iteration 11 asks whether a LABEL-FREE version climbs toward the R4-oracle
-ceiling the way naive prototype TTA reaches the R1 ceiling:
-- **naive probe-refit**: the Nystrom-warm-started matrix-free CG update with
-  PSEUDO-labels (Sv = X^T(Xv) on the pool with the frozen probe's pseudo-labels,
-  ~8 CG iterations), the label-free analog of the R4 oracle, at ~1.5M pts/s.
-- **pool-curve at label-free sizes**: does 1k-10k PSEUDO-labeled points close the
-  gap as well as 1k-10k TRUE-labeled points? (Iteration 0's curve is the labeled
-  budget; the label-free question is how much pseudo-labels degrade it.)
-- **bias-only control**: freeze W, update b from the pool class proportions, kept
-  as a control only (Iteration 0 already showed it is 0-4% of the gap).
+Iterations 9-10 gated the update as a whole, so both objects of the ridge --
+S = X^T D_s X (geometry of the pool) and T = X^T D_t Y (label assignment) -- were
+starved together. This diagnostic DECOUPLES them (independent D_s / D_t, Y can be
+one-hot or soft) and measures, per condition, what each half needs
+(`probe_pseudolabel_structure_diag.py`, ep10 + ep21, fog/crosstalk/snow/wet_ground,
+50k pool / 100k val, ~35s per condition). The update machinery is verified first:
+the soft-target weighted solve is exact vs (X^T D_s X + lI)^-1 X^T D_t Y (rel err
+~6e-6), and the linearity W_correct + W_wrong = W_all holds at matched CG iterations
+(cos ~0.999+). Diagnostics A-H cover the S/T matrix, the correct/wrong W
+decomposition, per-point influence and leverage, per-class reliability, prototype-
+vs-probe agreement, coverage, coverage-preserving gates, and oracle-gate precision
+curves.
 
-Verdict rule: if the label-free CG refit recovers most of the R4-oracle ceiling
-on the healthy conditions and crosstalk without hurting fog, the linear-probe
-decoder with a gradient-free, efficient update is the Pillar 2 mechanism.
+**A. The S/T decomposition (ep10; frozen / no_gate / oracle = refs):**
+
+| condition | frozen | no_gate (S_all,T_all) | best S_all,T_gated | S_all,T_correct_only | S_gated,T_all | S_gated,T_gated | oracle |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 0.258 | 0.257 | 0.256 (conf_top0.9) | 0.291 | 0.154 | 0.247 | 0.376 |
+| crosstalk | 0.519 | 0.515 | 0.513 (conf_top0.9) | 0.531 | 0.300 | 0.488 | 0.552 |
+| snow | 0.513 | 0.502 | 0.501 (conf_top0.9) | 0.522 | 0.251 | 0.484 | 0.553 |
+| wet_ground | 0.424 | 0.417 | 0.416 (conf_top0.9) | 0.493 | 0.249 | 0.401 | 0.614 |
+
+Every hard gate under S=all is WORSE than no_gate at every fraction (conf_top0.3:
+0.18-0.31, conf_top0.1: 0.10-0.23), despite the gated T being very pure (precision
+0.77-0.98). The gated T is a biased subset with no coverage (see F). S_gated,T_all
+is catastrophic (0.12-0.30): the covariance MUST contain all points. S_gated,T_gated
+reproduces the Iteration-9 failure. S_all,T_correct_only (the oracle-informed
+purity ceiling) is the best S-all gate everywhere (+0.03 to +0.08 over no_gate) but
+stays far below oracle (gap +0.02 to +0.12). Soft labels and conf-weights are flat
+at no_gate (0.23-0.51 across conditions); margin gates mirror conf; ep21 identical
+pattern.
+
+**B. The W decomposition.** With S fixed, W = W_correct + W_wrong exactly
+(linearity cos 0.991-0.999). ||W_wrong||/||W_correct|| = 0.78-1.13: the wrong
+pseudo-labels contribute ~equal magnitude. cos(W_wrong, W_oracle) is NEGATIVE
+(-0.13 to -0.25) on every condition: the wrong labels actively anti-align with the
+oracle rotation, they are not isotropic noise. cos(W_correct, W_oracle) = 0.51-0.82:
+correct points move toward the oracle but cannot reach it. Diagnosis: **C/COVERAGE**
+everywhere -- even a perfectly pure T cannot reproduce the oracle; the gap is the
+label COVERAGE of the geometry, not label noise.
+
+**C. Influence and leverage.** Per-point Nystrom-subspace influence
+I_i ~ ||(S+lI)^-1 x_i y_i^T|| and leverage G_i = x_i^T (S+lI)^-1 x_i (the same
+sketch as the warm start). corr(confidence, I) is strongly NEGATIVE (-0.40 to
+-0.64) on every condition/checkpoint; mean influence of WRONG points is ~2x the
+correct points; the AUROC of influence for separating correct from wrong is
+0.31-0.36 (confidence: 0.69-0.80). The top-influence gate is the worst gate in the
+whole diagnostic (0.10-0.23). **The points that drive the rotation are the
+low-confidence (frequently wrong) ones** -- a confidence gate structurally selects
+the least useful supervision.
+
+**D. Reliability and calibration.** On the corrupted pool the frozen probe's max
+softmax is < 0.5 for EVERY point (one calibration bin 0.0-0.5, all 50k points):
+absolute confidence thresholds are structurally empty on corrupted streams; only
+relative quantiles select anything. Per-class pseudo precision spread is huge
+(fog: overall 0.08-0.83, q0.9 0.18-0.97): a global confidence gate is wrong at the
+class level. The per-class top-30% gate still fails (0.16-0.35), consistent with A.
+
+**E. Prototype-vs-probe agreement.** On fog the DISAGREEMENT points are the more
+reliable ones (precision 0.629 disagree vs 0.507 agree); on crosstalk/wet_ground
+agreement is more reliable (0.826/0.724 vs 0.607/0.521). No point has confidence
+>= 0.9 on any corrupted pool (disagree_hi_conf empty everywhere, cf. D). The
+agree-only gate is below no_gate on fog (0.227 vs 0.257).
+
+**F. Coverage per gate.** conf_top10 preserves only 8-9% of the effective rank of
+S_all and deviates from S_all by frob_diff_ratio 0.71-0.91; class_cond_top30 keeps
+20-30% of the rank. Gating that purifies also destroys the covariance geometry --
+the Iteration-9 explanation, now quantified.
+
+**G. Coverage-preserving gates.** Per-cluster top-conf (k-means K = 10-500) and
+per-class / per-region top-conf all stay BELOW no_gate (0.16-0.44). The finer the
+clusters the better (K=500 > K=10, monotone) but never crosses no_gate: coverage
+preservation helps, it does not fix the label problem.
+
+**H. Oracle-gate decomposition.** Precision -> mIoU curves with wrong points
+ordered by random / conf / anti-conf / leverage. The curves are nearly flat:
+p=0.7 -> 0.9 gains +0.01-0.03, and p=1.0 (perfect gate) equals correct_only by
+construction. The gap from p=1.0 to oracle is the coverage gap: fog +0.085,
+crosstalk +0.021, snow +0.031, wet_ground +0.121 (ep10). The label ORDERING barely
+matters; the subset's coverage dominates.
+
+**Result: the pseudo-label route is closed, and now the mechanism is known.**
+(1) The wrong labels are not noise, they anti-align with the oracle rotation.
+(2) The points that matter for the rotation are anti-correlated with confidence --
+any confidence-based selection discards exactly the supervision the rotation needs.
+(3) Even a perfect-purity T cannot reproduce the oracle: the oracle needs labels on
+the low-confidence, boundary points. Label-free TTA therefore cannot do the
+rotation; the probe's label-free ceiling is the frozen decode, and the recoverable
+headroom requires TRUE labels on covering points. This is the active-learning
+handoff (Pillar 3) -- with a sharpened query rule: the influence analysis says
+query the LOW-confidence / disagreement points, not the confident ones.
+
+## Next: Iteration 12: the coverage-aware active-learning query
+
+The S/T decomposition turned the Pillar-3 handoff from a hypothesis into a
+measured requirement: the recoverable headroom (+0.02 to +0.12 over the frozen
+decode) needs TRUE labels on the low-confidence, high-influence points. Iteration
+12 designs the query from the Iteration-11 measurements:
+- **query rule**: rank pool points by influence I_i (Nystrom-subspace) or
+  disagreement magnitude, NOT by confidence; the influence analysis shows these
+  are the labels the rotation needs.
+- **one label per cluster**: the dense per-class cluster structure (Pillar 3, 4.1)
+  with clusters formed on the 128-d features; the per-class reliability matrix
+  (D) says which classes need the strictest gates.
+- **validate the close**: does a small TRUE-label budget on the queried points
+  reproduce the oracle (S_all,T_oracle) mIoU, closing the +0.02 to +0.12 gap the
+  oracle-gate curves quantified?
+- **efficiency**: the labeled ridge is the same Nystrom-warm-started CG-8, so the
+  AL budget fits in the established gradient-free update.
+
+Verdict rule: if ~1k-10k true labels on the high-influence points close most of
+the oracle gap while the same budget on high-confidence points does not, the
+influence-based query is the Pillar-3 mechanism.
