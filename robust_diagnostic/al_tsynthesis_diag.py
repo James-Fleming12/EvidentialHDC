@@ -419,12 +419,17 @@ def main():
         variants['7F_shift_Q'] = Xp.t() @ Q_shift
 
         for vname, T_hat in variants.items():
-            # fit W = (S + lI)^-1 T_hat directly (the sufficient statistic is
-            # T, not Y): CG on the columns of the 10000 x C system
+            # fit W = (S + lI)^-1 T_hat (the sufficient statistic is T, not Y):
+            # Nystrom warm start in the m-dim subspace, then CG on the columns.
+            torch.manual_seed(SKETCH_SEED)
+            P = (torch.rand(Xp.shape[1], args.nystrom_m, device=device) > 0.5).float() * 2 - 1
+            XP = Xd @ P
+            Shat = XP.t() @ XP + args.lam * torch.eye(args.nystrom_m, device=device)
+            That = P.t() @ T_hat.to(device)               # m x C  (P^T T)
+            x = P @ torch.linalg.solve(Shat, That)
             b = T_hat.to(device)
             def A(v):
                 return Xd.t() @ (Xd @ v)
-            x = b.clone()
             res = b - A(x)
             p = res.clone()
             rs_old = (res * res).sum(dim=0)
