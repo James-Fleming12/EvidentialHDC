@@ -189,17 +189,105 @@ first (influence-based ranking, per the TTA Iteration-11 findings), not on the
 tight majority classes. The distance gate (label if within ~1.9 units, else ask)
 and the confidence self-selection are both validated.
 
-## Next: Iteration 1: the one-label-per-cluster query simulation
+## Iteration 1: the query-rule comparison and grounding simulation (2026-08-17)
 
-If the packing holds (high corrupted-pool NN purity, high cluster purity at
-K = #classes), the next iteration simulates the actual AL loop:
-- query the K representatives (by influence / disagreement, per the Iteration-11
-  findings), label them TRUE (simulated oracle),
-- re-estimate the probe from the labeled representatives with the standard ridge
-  (S keeps the full pool),
-- measure the mIoU vs the oracle ceiling and vs the label budget curve --
-  closing the AL-closeable gap table above.
+The Iteration-0 design is tested end-to-end (oracle-simulated,
+`al_query_rule_diag.py`, ep10 + ep21, all 4 conditions): cluster the pool (K in
+{17, 68, 136}), query ONE point per cluster (the representative = centroid-nearest
+point), label it TRUE, ground the cluster by distance (points within the gate
+radius inherit the representative's label; beyond it they are not grounded). The
+probe update is the established ridge with S = ALL pool points and T = grounded
+points only. Four query rules (budget -> mIoU curves) and two grounding gates:
 
-Verdict rule: if ~K labels (K ~ #clusters, 17-100) close most of the +13 to +32
-AL-closeable gap, the Pillar-3 mechanism is confirmed and the paper's budget
-story is grounded.
+- **R1 influence**: rank clusters by J_c = sum of per-point influence I_i
+  (the exact magnitude of each point's W contribution, Iteration-11 signal).
+- **R2 confidence**: rank by representative confidence, ascending (uncertainty
+  sampling, the free baseline).
+- **R3/R4**: the same with the prototype-vs-probe disagreement gate (only
+  disagreeing clusters are eligible).
+- Grounding gate: agreement-gated (propagate only where the frozen probe predicts
+  the rep's class -- the default) vs distance-only control (the `*_nodistgate`
+  runs).
+
+**The budget -> mIoU table (ep10, agreement-gated; frozen / oracle per
+condition; K=68 shown, K=17/136 in the JSONs):**
+
+| condition | rule | b=17 | b=34 | b=68 (grounded_all) | frozen | oracle |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | influence | 0.055 | 0.116 | 0.182 | 0.259 | 0.377 |
+| fog | confidence | 0.048 | 0.066 | 0.182 | 0.259 | 0.377 |
+| crosstalk | influence | 0.215 | 0.275 | 0.335 | 0.524 | 0.554 |
+| crosstalk | confidence | 0.055 | 0.159 | 0.335 | 0.524 | 0.554 |
+| snow | influence | 0.150 | 0.217 | 0.289 | 0.457 | 0.493 |
+| snow | confidence | 0.059 | 0.113 | 0.289 | 0.457 | 0.493 |
+| wet_ground | influence | 0.151 | 0.263 | 0.311 | 0.427 | 0.614 |
+| wet_ground | confidence | 0.069 | 0.107 | 0.311 | 0.427 | 0.614 |
+
+ep21 is the identical pattern (fog frozen 0.231 / oracle 0.332; crosstalk
+0.504/0.534; snow 0.444/0.474; wet_ground 0.426/0.579). The distance-only
+grounding control is within +/-0.02 of the agreement-gated numbers everywhere
+(grounded_all fog 0.185 vs 0.182, wet_ground 0.320 vs 0.311): the agreement gate
+grounds fewer points (17k vs 30k of 50k) at the same mIoU -- it does not change
+the result.
+
+**Efficiency (per condition, K=68):** one 50k-pool ridge fit = 0.056s
+(~0.89M pts/s update); k-means = 0.32s; ~260 pool points grounded per label
+(K=68: 17737 grounded / 68 labels). The AL loop's total compute is the k-means
+plus one fit -- under half a second.
+
+**Result: the query-rule ranking is confirmed, but the grounding mechanism does
+NOT beat the frozen decoder -- and the reason is now measured.**
+
+1. **Influence > confidence at every budget** (fog b34: 0.116 vs 0.066;
+   wet_ground b34: 0.263 vs 0.107; crosstalk b17: 0.215 vs 0.055). The
+   influence-ranked query spends each label where it moves the probe most; the
+   free confidence baseline selects the tight, already-correct clusters. The
+   rule comparison works as designed.
+2. **The disagreement-gated rules are useless as queries**: only 3-27 of K
+   clusters have a disagreeing representative, so they saturate at ~4-27 labels
+   with mIoU stuck at 0.03-0.09. The disagreement gate is almost always closed
+   on these conditions; it is a HANDOFF signal, not a query rule.
+3. **grounded_all < frozen on EVERY condition** (fog 0.182 vs 0.259, crosstalk
+   0.335 vs 0.524, snow 0.289 vs 0.457, wet_ground 0.311 vs 0.427; ep21
+   identical). The distance grounding propagates labels through clusters that
+   are only ~65% class-pure (Iteration 0), so T receives ~35% WRONG propagated
+   labels. Per README Section 3.2 property 1, systematic label errors poison the
+   ridge below the frozen ceiling. The agreement gate does not fix this: it
+   gates on the frozen probe's prediction, which is itself only 55-79% accurate
+   on these pools, so it removes points without removing the error.
+4. **The class-balance observation**: even the influence rule's low budgets are
+   far below oracle because the grounded T is dominated by the few queried
+   classes; the oracle's T has all classes. The gap from grounded_all to oracle
+   (fog +0.19, wet_ground +0.30) is the cost of grounding ~35% of the pool
+   through impure clusters.
+
+**Net: the mechanism that works is NOT "propagate through mixed clusters".**
+Iteration 0 showed the per-class structure is mono-modal; the problem is that
+K-means at K ~ #classes MIXES classes (65% purity). The fix directions for the
+next iteration, in order of expected value:
+- (a) CLASS-CONDITIONAL clustering: cluster within each class's points (the
+  probe's pseudo-label as the class prior), so clusters are ~pure by
+  construction -- one label per class-subcluster, no distance propagation of
+  cross-class error.
+- (b) TIGHT-radius grounding: propagate only to the nearest fraction of the
+  cluster (Iteration 0's q0.5-gated coverage was 0.70-0.82) and leave the rest
+  unlabeled, instead of the q0.6 radius used here.
+- (c) Hybrid: label K representatives, use their labels DIRECTLY in T (no
+  propagation), and accept the smaller T -- the coverage loss vs the
+  contamination gain must be measured.
+
+## Next: Iteration 2: class-conditional clusters and tight-radius grounding
+
+Iteration 1 showed the query rule works (influence > confidence everywhere) but
+the grounding mechanism is poisoned by ~65%-pure K-means clusters. Iteration 2
+tests the three fixes:
+- class-conditional clustering (within pseudo-class clusters, K_c per class from
+  the Iteration-0 mono-modality measurement);
+- tight-radius grounding (ground only the nearest fraction, q in {0.25, 0.5});
+- labels-direct-in-T (no propagation) as the contamination-free control.
+
+Verdict rule: if class-conditional clusters + tight radius lift the budget curve
+above frozen toward the oracle (closing part of the +13 to +32 AL-closeable gap),
+the Pillar-3 mechanism is confirmed; if even pure per-class clusters cannot beat
+frozen, the AL framework's leverage must be re-thought (the labeled points'
+direct contribution to T, not propagation).
