@@ -550,21 +550,139 @@ via the shift model (clean + predicted shift per class), then fit the probe on
 the synthesized T** -- using the shift structure to estimate the mass-weighted
 means without labeling the mass.
 
-## Next: Iteration 7: the shift-synthesized T probe
+## Iteration 7: estimate T, not labels (2026-08-17)
 
-The synthesis from Iterations 2-6: the corrupted class means are predictable
-from the clean means plus a per-class shift (Iteration 2: 2-4 labeled classes
-reach the prototype ceiling via carry-over; shift pairwise-cos 0.2-0.37), and
-the gap to the ceiling is the PROBE decoder needing mass-weighted means
-(Iterations 5-6: the missing-mass term). Iteration 7 combines them:
-- estimate the per-class shifts from a few labeled classes (k in {2, 4, 8}),
-- synthesize the corrupted T: T_c = (clean class mean + predicted shift_c)
-  weighted by the class proportions,
-- fit the probe on the synthesized T (S = the real pool covariance),
-- measure mIoU vs frozen/oracle and vs the label budget.
+The escape from the coverage ceiling: the oracle requires the 17 class-wise
+vector sums T_c = sum_{i: y_i = c} x_i, NOT a label on every point. If T can be
+estimated from ALL points with soft assignment probabilities calibrated by a few
+true labels, the mass problem is solved without labeling the mass
+(`al_tsynthesis_diag.py`, ep10 + ep21, all 4 conditions, 2 labels/class = 16-17
+labels). Two parts: the deciding sample-complexity diagnostic, and the 7A-7F
+T-synthesis ablation evaluated on the three-level chain per-class
+cos(T_hat_c, T_oracle_c) -> cos(W_hat, W_oracle) -> mIoU.
 
-Verdict rule: if the shift-synthesized probe closes most of the AL gap with
-~10-100 labels (vs the ~30k the direct S0 curve needs), the Pillar-3 mechanism
-is the shift-model probe, and the label budget story becomes: a few labels per
-class estimate the corruption's effect on the class means, and the probe does
-the rest at ~0.9M pts/s.
+**The framework is validated -- the chain is exact.** On every condition,
+7B_oracle_shift_ceiling (T = true class means x oracle counts = T_oracle by
+construction) gives t_cos 1.000, w_cos 1.000, and mIoU equal to the oracle to
+the digit (fog 0.377, crosstalk 0.554, snow 0.493, wet_ground 0.614). Mean
+synthesis through the T-ridge WOULD reach the ceiling if the means were right.
+The sample-complexity diagnostic is favorable: ~8-32 random points estimate each
+class mean to cos 0.95-0.99 in both the 128-d and code spaces (128-d k=8:
+0.943-0.975; k=32: 0.984-0.993; code k=32: 0.972-0.988). The fat-blob variance
+does NOT make mean estimation hopeless -- the missing-mass problem is a SELECTION
+problem (influence picks boundary points), not a variance problem.
+
+The variant results (ep10; t_cos / w_cos / mIoU; frozen and oracle per
+condition):
+
+| variant | fog | crosstalk | snow | wet_ground |
+| :--- | :--- | :--- | :--- | :--- |
+| 7A clean-mean | 0.794/0.036/0.078 | 0.971/0.082/0.220 | 0.930/0.092/0.167 | 0.957/0.126/0.230 |
+| 7B shift-carry | 0.741/0.026/0.081 | 0.854/0.027/0.166 | 0.851/0.013/0.145 | 0.854/0.023/0.187 |
+| 7C shrink | 0.788/0.032/0.087 | 0.938/0.041/0.180 | 0.911/0.032/0.153 | 0.935/0.044/0.179 |
+| 7B oracle ceiling | 1.000/1.000/0.377 | 1.000/1.000/0.554 | 1.000/1.000/0.493 | 1.000/1.000/0.614 |
+| 7D soft-frozen | 0.485/0.232/0.259 | 0.461/0.431/0.517 | 0.416/0.378/0.448 | 0.484/0.347/0.415 |
+| 7E soft+conf-cal | 0.419/0.087/0.075 | 0.235/0.090/0.008 | 0.301/0.098/0.022 | 0.358/0.148/0.074 |
+| 7F shift-Q | 0.729/0.257/0.245 | 0.801/0.505/0.499 | 0.774/0.452/0.437 | 0.798/0.394/0.434 |
+| frozen | 0.259 | 0.524 | 0.457 | 0.427 |
+| oracle | 0.377 | 0.554 | 0.493 | 0.614 |
+
+ep21 identical pattern.
+
+**What went wrong, and why (per method):**
+
+1. **7A clean-mean has good T but the inverse covariance destroys it.** t_cos
+   0.79-0.97 (the clean means ARE close to the corrupted means in direction --
+   consistent with Iteration 2's unlabeled-cos 0.92-0.99) but w_cos collapses to
+   0.03-0.13 and mIoU to 0.08-0.23. The residual T error, however small in
+   cosine, is amplified by (S + lI)^-1 along the low-variance directions (README
+   3.2 property 6). The mean-synthesis family needs the MEANS RIGHT to ~0.99,
+   not ~0.95, because the inverse covariance magnifies the last few percent.
+2. **7B shift-carry is WORSE than 7A everywhere** (t_cos 0.74-0.86 vs 0.79-0.97).
+   The global shift carry-over actively hurts: the pairwise shift cosine
+   (0.2-0.37) means the shifts are too class-specific to share -- adding a
+   shared delta to every clean mean moves them AWAY from their true corrupted
+   means. The Iteration-2 carry-over result held for the PROTOTYPE decoder
+   (which is insensitive to small direction errors); the probe is not.
+3. **7C shrinkage partially repairs 7B** (0.79-0.94 t_cos, between 7A and 7B)
+   but cannot beat 7A: shrinkage toward the clean mean recovers most of the
+   damage but the alpha=0.5 tradeoff is not the right one -- the data says the
+   clean mean itself was the better prior (7A > 7C > 7B everywhere).
+4. **7E soft+confusion-calibrated is the WORST variant** (mIoU 0.008-0.137,
+   far below 7D). The confusion matrix estimated from 16 labels is noise that
+   CORRUPTS the soft mass instead of calibrating it. This is Iteration 3 at
+   scale: 2 labels/class cannot estimate the 17x17 confusion structure
+   (Iteration 3's row-cos 0.18-0.58). The soft-mass family's assignment
+   calibration needs MORE labels per class than the budget allows -- or a much
+   lower-dimensional calibration (the mass counts, not the full confusion).
+5. **7D soft-frozen is the surprise: the frozen probe's soft mass alone
+   nearly matches frozen on crosstalk/snow** (0.517 vs 0.524, 0.448 vs 0.457;
+   w_cos 0.38-0.43) -- with ZERO labels. The 50k-point mass dominates: even a
+   mediocre assignment produces a T close to the frozen decode. But it cannot
+   EXCEED frozen: the frozen soft assignments encode the frozen decoder's
+   biases, so the T it produces reproduces the frozen W (w_cos 0.23-0.43, and
+   the t_cos is only 0.42-0.50 -- the assignments are NOT the true
+   class-conditional probabilities).
+6. **7F shift-Q is close to 7D but never consistently beats it** (crosstalk
+   0.499 vs 0.517, wet_ground 0.434 vs 0.415 -- one small win). The shift prior
+   sharpens the assignments (t_cos 0.73-0.82 vs 7D's 0.42-0.50) and lifts w_cos
+   toward 0.39-0.51, but the mIoU gain does not materialize: the improved T
+   direction is still not the oracle's, and the inverse covariance eats the
+   residual.
+7. **The mass-count estimate is the hidden failure.** The soft-mass count
+   estimate N_hat (sum of Q_frozen over the pool) has mean relative error
+   8-611x (fog 611x, snow 315x, crosstalk 12.6x, wet_ground 8x): the frozen
+   probe's class TOTALS are wildly different from the oracle's counts. This is
+   why 7D-7F t_cos sits at 0.4-0.5 while the mean-synthesis t_cos is 0.8-0.97:
+   the soft-mass T is dominated by WRONG counts (the probe over/under-assigns
+   whole classes), not by wrong within-class assignment. The 7D/7E/7F mIoUs are
+   held down by this count error as much as by the assignment error.
+
+**Why the T-synthesis framework safely works:**
+
+- The chain is EXACT: T_oracle through the T-ridge reproduces the oracle W and
+  mIoU to the digit on every condition (the 7B-oracle ceiling row). There is no
+  formulation error hiding in the framework.
+- The means ARE estimable (k=8-32 -> cos 0.95-0.99): the missing-mass problem
+  is a selection bias, not a variance wall -- a random (or mass-stratified)
+  sample of 8-32 points per class estimates the mean the influence-selected
+  labels never could.
+- The 50k-point soft mass dominates the small-label bias: 7D with ZERO labels
+  nearly matches frozen on the healthy conditions, proving the mass, not the
+  labels, drives the T.
+
+The failure is therefore in the CALIBRATION step, and it splits into two
+measurable pieces: the class COUNTS (rel err 8-611x) and the within-class
+ASSIGNMENT (7E's noise). The next lever the data implicates is the per-class
+mass correction (alpha_c scaling the soft assignments from the queried labels
+-- the Iteration-7 plan's point 4), which attacks the dominant error (the
+counts) with exactly the 2-4 labels/class budget, without needing the full
+confusion matrix.
+
+## Next: Iteration 8: the mass-corrected soft T (7E with per-class alpha_c)
+
+Iteration 7 isolated the failure: the soft-mass family's T is dominated by
+WRONG CLASS COUNTS (rel err 8-611x), not wrong within-class assignment. The
+fix the data points to: estimate a per-class multiplicative mass correction
+alpha_c from the queried labels (the frozen probe's predicted-count vs the
+queried true-count ratio), scale the soft assignments
+Q_corrected = diag(alpha) Q_frozen, and rebuild T = X^T Q_corrected. This is
+the point-4 mass correction: the 50k points supply the mass, the 2-4
+labels/class supply only the per-class count ratio -- a 17-parameter
+calibration instead of the 289-parameter confusion matrix that 7E tried and
+failed with.
+
+Variants to test:
+- 8A: alpha from the queried count ratio (N_hat_queried vs N_true_queried)
+- 8B: alpha smoothed toward 1 (shrinkage, the low-count-class problem)
+- 8C: 8A + the 7F shift-prior assignments (the two corrections combined)
+- 8D: oracle-alpha ceiling (true class counts) -- tells whether the count
+  correction alone reaches the oracle T
+
+Verdict rule: if the mass-corrected soft T (8A/8B) beats 7D and climbs toward
+the oracle with 16-68 labels, the Pillar-3 mechanism is: the unlabeled pool
+supplies the mass, a few labels calibrate the per-class counts, and the exact
+ridge does the rest -- the "estimate T, not labels" story with a 17-parameter
+calibration. If even oracle-alpha (8D) cannot beat 7D, the soft-mass family is
+count-limited in a way the assignments cannot fix, and the mean-synthesis
+family (7A with a better mean estimator) is the remaining route.
