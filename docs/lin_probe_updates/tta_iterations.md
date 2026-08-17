@@ -628,10 +628,55 @@ accuracy in 8 iterations instead of 20, ~1-2x the prototype fit. Nystrom provide
 the cheap approximate second-order geometry; CG recovers the full-space
 cross-coordinate structure. This is the accuracy-efficiency optimum.
 
-## Next: Iteration 9: the label-free probe-update test
+## Iteration 9: pseudo-label gating under the probe update (2026-08-16)
+
+With the Nystrom-warm-start + CG-8 update in place, this re-tests whether standard
+pseudo-label gates let the LABEL-FREE probe update climb toward the oracle ceiling
+(the old geometric-gate closure was under the prototype-EMA decoder, so it needed a
+fresh look). `probe_pseudo_gate_diag.py`: pseudo-labels from the frozen clean probe,
+then gate the corrupted pool (conf/margin/norm/uncertainty + SELF-CALIBRATING
+quantile gates that keep the top-K% by each signal, no manual threshold) and refit
+the Nystrom+CG update on the gated pseudo-labeled points.
+
+Results (wet_ground ep10; frozen 0.424, oracle 0.614, no_gate 0.417):
+
+| gate | mIoU | note |
+| :--- | :--- | :--- |
+| no_gate (all pseudo-labels) | 0.417 | baseline label-free |
+| conf 0.05 / 0.10 / 0.15 | 0.417 / 0.411 / 0.388 | worse as it tightens |
+| selfcal conf_top 50 / 30 / 10% | 0.406 / 0.400 / 0.389 | all <= no_gate |
+| selfcal margin_top 50 / 30 / 10% | 0.405 / 0.399 / 0.391 | all <= no_gate |
+| selfcal norm_bot 50 / 30 / 10% | 0.407 / 0.395 / 0.365 | worse |
+| selfcal uncer_top 50 / 30 / 10% | 0.412 / 0.405 / 0.389 | all <= no_gate |
+
+(ep21 identical: no gate reaches oracle 0.583; fog same pattern.)
+
+**Result: pseudo-label gating is CLOSED under the probe too.** Every gate stays at
+or below `no_gate`; the update only gets WORSE as the gate tightens (conf 0.15 ->
+0.388, conf_top10% -> 0.389). Gating never climbs toward the oracle (0.614).
+
+**The key diagnostic: the AUROC is high but the mechanism is wrong.** The gate
+signals CAN separate correct from wrong pseudo-labels (conf/margin/uncer AUROC
+0.73-0.75, norm useless 0.39), and the wrong labels are low-confidence (0.100 vs
+0.120 for correct). But a precision-focused gate (keep only high-confidence)
+retains the CORRECT labels while dropping too many POINTS: the Nystrom+CG update
+needs the pool's covariance structure, and discarding 50-90% of it destroys the
+rotation. This is the fundamental tension: the gate that cleans the labels also
+starves the second-order update. A hard admit/veto threshold is the wrong tool for
+this update.
+
+**Implication for the next step.** The update needs ALL the points' covariance, but
+the wrong pseudo-labels poison it. The levers are:
+1. **Weighted update**: wrong points contribute LESS to the covariance instead of
+   being removed (soft weighting by confidence, not a hard gate).
+2. **Two-stage**: fit the probe on the frozen pseudo-labels first, then use the
+   UPDATED probe's confidence for a second-round gate (the first update may already
+   clean the pseudo-labels enough that a second gate works).
+
+## Next: Iteration 10: the label-free probe-update test
 
 Iteration 1 validated the ridge accumulate-and-solve update with TRUE labels (the
-oracle). Iteration 9 asks whether a LABEL-FREE version climbs toward the R4-oracle
+oracle). Iteration 10 asks whether a LABEL-FREE version climbs toward the R4-oracle
 ceiling the way naive prototype TTA reaches the R1 ceiling:
 - **naive probe-refit**: the Nystrom-warm-started matrix-free CG update with
   PSEUDO-labels (Sv = X^T(Xv) on the pool with the frozen probe's pseudo-labels,
