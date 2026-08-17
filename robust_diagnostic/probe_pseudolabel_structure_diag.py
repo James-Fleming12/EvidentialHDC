@@ -298,7 +298,7 @@ def coverage_stats(Xd, mask, device, trace_all=None):
         'trace_ratio': float(trace_g / trace_all) if trace_all else None,
         'frob_ratio': float(fg / fa),
         'frob_diff_ratio': float((diff_est ** 0.5) / fa),
-        'eff_rank_ratio': float((trace_g ** 2 / frob_g) / (trace_all ** 2 / frob_all)) if trace_all else None,
+        'eff_rank_ratio': float((trace_g ** 2 / fg) / (trace_all ** 2 / fa)) if trace_all else None,
         'n_gated': int(mask.sum().item()),
     }
 
