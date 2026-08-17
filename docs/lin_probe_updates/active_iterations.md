@@ -732,28 +732,98 @@ what the inverse covariance amplifies. The 8D WEAK verdict and the 3c whitened
 error together close the "estimate T, not labels" route: the T is estimable,
 but the probe update is too sensitive to the estimation residual.
 
-## Next: Iteration 9: a probe parameterization that is not ridge-sensitive
+## Iteration 9: sensitivity-bounded probe updates -- the 2x2 verdict (2026-08-17)
 
-The AL thread has now measured, in order: (1) the packing is real but
-propagation fails; (2) the missing-mass argument is real but the means are
-estimable; (3) the T-synthesis chain is exact; (4) the soft-mass assignments
-and counts are both wrong (8D WEAK); (5) even a good T (t_cos 0.76-0.86) is
-amplified into a bad W by the inverse covariance (3c whitened error 4-6x). The
-remaining lever is not better T estimation -- it is a DECODER UPDATE whose
-sensitivity to T error is bounded. Candidates, in order of cheapness:
-- fit the probe in the LOW-RANK subspace where the ridge-relevant directions
-  live (the whitened-error diagnostic says a few hundred directions dominate
-  the amplification; a projected fit may be far less sensitive);
-- a norm-bounded / regularized variant of the update (the amplification is the
-  small-eigenvalue directions -- a stronger regularization trades bias for
-  sensitivity);
-- a first-order decoder update (prototype-like, insensitive to small T errors)
-  that we know reaches the shift-corrected prototype ceiling from Iteration 2.
+Iteration 8's smoking gun: a good T (t_cos 0.76-0.86) maps to a bad W
+(w_cos ~0.05-0.15) because the inverse covariance amplifies the residual. This
+iteration fixes the SAME imperfect T_hat and changes only the DECODER
+PARAMETERIZATION (`al_spectral_update_diag.py`, ep10 + ep21, all 4 conditions):
+the full 10k x 10k spectrum of S = X^T X is materialized once per condition
+(a diagnostic cost), and five update families are evaluated under BOTH T_hat
+(robustness) and T_oracle (ceiling retention) -- the 2x2 verdict.
 
-Verdict rule: if a low-rank or norm-bounded probe update turns the t_cos 0.76
-T into w_cos ~0.7+ and mIoU above frozen, the Pillar-3 mechanism is "estimate
-T from a few labels + a sensitivity-bounded update". If even the oracle-T
-cannot be decoded well under the bounded update (i.e., the bound costs the
-ceiling), then the AL-closeable gap requires the exact-T oracle and the paper
-story is the honest budget-cost curve (Iteration 6) plus the measured reason
-why cheap T estimation cannot close it.
+T_hat = oracle-count x random-32 class means (the Iteration-8 best estimator,
+t_cos 0.76-0.86). All variants share this T_hat, so the causal question is
+isolated: the parameterization, not the T estimate.
+
+Results (ep10; hat w_cos / oracle w_cos; mIoU under T_hat):
+
+| update | fog | crosstalk | snow | wet_ground |
+| :--- | :--- | :--- | :--- | :--- |
+| ridge | 0.016 / 0.294 (m 0.074) | 0.004 / 0.275 (m 0.103) | 0.007 / 0.273 (m 0.089) | 0.008 / 0.297 (m 0.107) |
+| 9A beta=0.0 | 0.038 / 0.048 (m 0.160) | 0.043 / 0.047 (m 0.349) | 0.043 / 0.047 (m 0.298) | 0.041 / 0.050 (m 0.288) |
+| 9A beta=0.25 | 0.058 / 0.099 (m 0.173) | 0.055 / 0.091 (m 0.384) | 0.059 / 0.090 (m 0.331) | 0.050 / 0.105 (m 0.308) |
+| 9A beta=0.5 | 0.033 / 0.291 (m 0.210) | 0.023 / 0.268 (m 0.414) | 0.027 / 0.266 (m 0.357) | 0.021 / 0.301 (m 0.383) |
+| 9A beta=0.75 | 0.021 / 0.403 (m 0.164) | 0.009 / 0.379 (m 0.317) | 0.013 / 0.379 (m 0.282) | 0.010 / 0.404 (m 0.319) |
+| 9A beta=1.0 | 0.016 / 0.294 (m 0.074) | 0.004 / 0.275 (m 0.103) | 0.007 / 0.273 (m 0.089) | 0.008 / 0.297 (m 0.107) |
+| 9D normalized (best eta) | m 0.259 / or 0.920 | m 0.512 / or 0.161 | m 0.444 / or 0.439 | m 0.415 / or 0.440 |
+
+ep21 identical pattern.
+
+**Result: the fractional family shows the predicted robustness/ceiling tradeoff
+is real and monotone, but no variant reaches the 0.7+/0.9+ success bar -- and
+the spectral reconstruction needs a normalization fix before the numbers are
+trustworthy.**
+
+1. **9A fractional is the informative family.** The hat-w_cos peaks at
+   beta=0.25 (fog 0.058, crosstalk 0.055, snow 0.059, wet_ground 0.050 --
+   a 4-12x robustness gain over ridge) with mIoU 0.17-0.38 (vs ridge
+   0.07-0.11), while the ORACLE-retention peaks at beta=0.75 (0.38-0.43,
+   ABOVE the ridge's 0.27-0.30). The continuum behaves exactly as predicted:
+   partial inverse whitening reduces sensitivity AND the ceiling peak moves
+   off the full ridge. But hat-w_cos stays at ~0.05, far below the 0.7 bar:
+   the robustness gain is real but small.
+2. **9B clipped ridge is inert** (identical to ridge at every gamma): with the
+   unnormalized S the gains are all ~0.001, so the clip at 4-64 never binds.
+   This is the normalization artifact -- the clip is meaningless until S is
+   normalized.
+3. **9C/9D residual updates are the mIoU winners.** 9D normalized preserves
+   frozen at the curve's safe end (crosstalk m 0.512 ~ frozen 0.513; snow
+   0.444 ~ 0.443; wet_ground 0.415 ~ 0.414) and its oracle-retention arm
+   reaches 0.92 at eta=1.0 on fog -- the safety anchor works exactly as
+   designed (eta=0 reproduces frozen, and the direction-only correction moves
+   the classifier without trusting the ridge magnitude).
+4. **The 2x2 success bar is not met by any variant**: the best hat-w_cos is
+   ~0.06 (9A beta=0.25), not 0.7+. The sensitivity is reduced but not
+   defeated by these parameterizations.
+
+**Caveat -- the spectral reconstruction needs normalization.** The gains
+(1/(sigma+lambda)) are ~0.001 everywhere because S = X^T X over 50k points is
+unnormalized (bottom eigenvalues ~770, top ~1.8e8); the amplification is the
+RATIO across directions (2.4e5), not the raw gain, and the clip thresholds and
+gain quantiles are not interpretable until S is normalized (S/N or the
+correlation matrix). The variant RATIOS are still valid (same normalization),
+but the absolute spectrum numbers (gain q99, max) and the 9B clip are not.
+
+**Net: the direction works but the magnitude does not.** The fractional family
+demonstrates the mechanism (robustness up, ceiling peak moves off ridge),
+the residual family demonstrates the safety anchor (frozen preserved, oracle
+reachable), but neither converts the good T into a good W at the level the
+oracle needs. The normalization fix must land before the final verdict.
+
+## Next: Iteration 10: normalized spectrum + the adaptive selection
+
+Iteration 9 has two loose ends:
+1. **Normalize S before eigh** (S/N or the correlation matrix) so the gains
+   are O(1), the 9B clip thresholds bind, and the gain quantiles are
+   interpretable. The variant ratios are valid, but the absolute spectrum and
+   the clip family need the fix before the 2x2 verdicts are final.
+2. **The best signal is the combination no single family exploited**: 9A
+   beta=0.25-0.5 gives the robustness gain, 9D normalized gives the safety
+   anchor, and the oracle-retention peak at beta=0.75 suggests a
+   beta-continuum residual (W_frozen + eta * (W_beta - W_frozen)) could get
+   both. Test the combined update.
+3. **The adaptive selection the Iteration-9 feedback suggested**: the
+   unstable-subspace removal (9E) was also muted by normalization; retest
+   with normalized S, dropping the bottom p% of the NORMALIZED gain
+   distribution -- the directions where the amplification is genuinely
+   pathological.
+
+Verdict rule: if the normalized spectral families (especially 9A with the
+residual anchor, or the normalized 9E) reach hat-w_cos ~0.3+ with oracle
+retention ~0.9+ -- or if the mechanism is confirmed to be fundamentally
+limited -- the AL thread's conclusion is decided: either the
+sensitivity-bounded update is the Pillar-3 mechanism, or the AL-closeable gap
+is only reachable with the exact-T oracle and the paper's budget story is the
+honest S0 cost curve plus the measured reason why cheap T estimation cannot
+close it.
