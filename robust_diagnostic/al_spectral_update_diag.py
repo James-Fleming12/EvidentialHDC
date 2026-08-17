@@ -251,7 +251,8 @@ def main():
         sp = r['spectrum']
         sp['eig_top8'] = [float(v) for v in eig.flip(0)[:8]]
         sp['eig_bottom8'] = [float(v) for v in eig[:8]]
-        gq = torch.quantile(gain, torch.tensor([0.5, 0.9, 0.99, 0.999, 1.0]))
+        gq = torch.quantile(gain, torch.tensor([0.5, 0.9, 0.99, 0.999, 1.0],
+                                               device=device))
         sp['gain_quantiles'] = {'q50': float(gq[0].item()), 'q90': float(gq[1].item()),
                                 'q99': float(gq[2].item()), 'q999': float(gq[3].item()),
                                 'max': float(gq[4].item())}
