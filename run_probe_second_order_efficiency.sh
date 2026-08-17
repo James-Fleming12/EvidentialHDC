@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Cheaper second-order updates: hard-point coreset + dual ridge, matrix-free CG,
+# Cheaper second-order updates: hard-point coreset + dual ridge, MATRIX-FREE CG,
 # sparse covariance. Iteration 6 showed the probe gain is cross-coordinate, so the
 # question is making the SECOND-ORDER problem cheaper. Eval-only.
+#
+# CG is now truly matrix-free (Sv = X^T(Xv), no 10k x 10k S) and all timings are
+# CUDA-synchronized (real GPU wall time).
 #
 # Usage:
 #   bash run_probe_second_order_efficiency.sh 3                # ep10+ep21, wet_ground,fog

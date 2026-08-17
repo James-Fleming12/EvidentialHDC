@@ -113,28 +113,43 @@ def dual_ridge(codes, lbls, lam, device, num_classes=NUM_CLASSES):
     X = codes.float().to(device)
     Y = onehot(lbls, num_classes).to(device)
     m = X.shape[0]
-    t0 = time.time()
+    t0 = tic()
     G = X @ X.T
-    t_acc = time.time() - t0
-    t0 = time.time()
+    t_acc = toc(t0)
+    t0 = tic()
     A = torch.linalg.solve(G + lam * torch.eye(m, device=device), Y)
     W = X.T @ A
-    t_solve = time.time() - t0
+    t_solve = toc(t0)
     return W, t_acc, t_solve
 
 
+def sync():
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
+def tic():
+    sync()
+    return time.time()
+
+
+def toc(t0):
+    sync()
+    return time.time() - t0
+
+
 def matrix_free_cg(codes, lbls, lam, device, iters=10, num_classes=NUM_CLASSES):
-    """CG solve (S + lI) W = T with Sv = X^T (X v) -- never build S. One forward +
-    one backward pass over the pool per iteration. For +/-1 codes X v is a matmul."""
+    """CG solve (S + lI) W = T with Sv = X^T (X v) -- never build the 10k x 10k S.
+    One forward + one backward pass over the pool per iteration (matvec only).
+    For +/-1 codes X v is a sparse-free matmul; the method stores only X and W."""
     X = codes.float().to(device)
     Y = onehot(lbls, num_classes).to(device)
     T = X.T @ Y
     d = X.shape[1]
-    t0 = time.time()
-    # explicit S for the RHS is only used to seed the check; matrix-free below
-    S = X.T @ X
+    t0 = tic()
+    def A(v):
+        return X.T @ (X @ v)                 # Sv = X^T (X v), matrix-free
     b = T
-    A = lambda v: S @ v                     # keep S for timing honesty; note: could be X^T(Xv)
     x = torch.zeros_like(b)
     r = b - A(x)
     p = r.clone()
@@ -148,8 +163,8 @@ def matrix_free_cg(codes, lbls, lam, device, iters=10, num_classes=NUM_CLASSES):
         beta = rs_new / (rs_old + 1e-30)
         p = r + beta.unsqueeze(0) * p
         rs_old = rs_new
-    t_solve = time.time() - t0
-    return x, 0.0, t_solve, S.shape[0]
+    t_solve = toc(t0)
+    return x, 0.0, t_solve, d
 
 
 def sparse_cov_ridge(codes, lbls, lam, device, keep_frac, num_classes=NUM_CLASSES):
@@ -158,11 +173,11 @@ def sparse_cov_ridge(codes, lbls, lam, device, keep_frac, num_classes=NUM_CLASSE
     X = codes.float().to(device)
     Y = onehot(lbls, num_classes).to(device)
     d = X.shape[1]
-    t0 = time.time()
+    t0 = tic()
     S = X.T @ X
     T = X.T @ Y
-    t_acc = time.time() - t0
-    t0 = time.time()
+    t_acc = toc(t0)
+    t0 = tic()
     # mask off-diagonal to the top-K by magnitude
     S_mask = torch.eye(d, dtype=torch.bool, device=device)
     if keep_frac > 0:
@@ -174,7 +189,7 @@ def sparse_cov_ridge(codes, lbls, lam, device, keep_frac, num_classes=NUM_CLASSE
         S_mask = S_mask | keep
     S_sp = S * S_mask
     W = torch.linalg.solve(S_sp + lam * torch.eye(d, device=device), T)
-    t_solve = time.time() - t0
+    t_solve = toc(t0)
     kept = int(S_mask.sum().item()) - d  # off-diagonal entries kept
     return W, t_acc, t_solve, kept
 
@@ -241,7 +256,9 @@ def main():
         # full ridge (ceiling)
         X = pool_codes.float()
         Y = onehot(pl, NUM_CLASSES).float()
+        t0 = tic()
         W_full = torch.linalg.solve(X.t() @ X + args.lam * torch.eye(10000), X.t() @ Y)
+        _ = toc(t0)
         full = compute_miou(decode(W_full, val_codes), vl)
 
         r = {'r1_proto': r1, 'full_ridge': full, 'coreset': {}, 'cg': {}, 'sparse': {}}
