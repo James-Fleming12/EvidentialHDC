@@ -767,7 +767,7 @@ def main():
         syn.append(f"  ||W_wrong||/||W_correct|| {wd['norm_ratio_wrong_correct']:.3f} | "
                    f"cos(Wc,oracle) {wd['w_correct']['cos_oracle']:.3f} | "
                    f"cos(Ww,oracle) {wd['w_wrong']['cos_oracle']:.3f} | "
-                   f"linearity {wd['linearity']['cos_sum_vs_pseudo']:.4f}")
+                   f"linearity {wd['linearity']['cos_sum_vs_all_hi']:.4f}")
         syn.append(f"influence: corr_conf {inf.get('corr_conf')} / corr_margin {inf.get('corr_margin')} | "
                    f"mean_i correct {inf['mean_i_correct']:.3f} vs wrong {inf['mean_i_wrong']:.3f} | "
                    f"top_i gate {fmt(inf['top_i_gate'])} "
