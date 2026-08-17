@@ -103,6 +103,7 @@ def toc(t0):
 def ridge_fit_soft(X, Y, lam, iters, m, device):
     """Ridge in the GIVEN code space (dim = X.shape[1]). S and T both at that
     dim. For the real-valued 128-d arm, X is the raw features."""
+    X = X.to(device)
     torch.manual_seed(SKETCH_SEED)
     m = min(m, X.shape[1])
     P = (torch.rand(X.shape[1], m, device=device) > 0.5).float() * 2 - 1
