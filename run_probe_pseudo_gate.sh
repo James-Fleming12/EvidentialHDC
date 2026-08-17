@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Pseudo-label gating for the Nystrom+CG probe update: re-test the standard gates
-# (conf/margin/norm/uncertainty/prior) under the NEW learned-probe decoder, plus
-# diagnostics for where methods go wrong (gate AUROC for correct-vs-wrong pseudo-
-# labels, per-class pseudo accuracy, retain-vs-precision, wrong-label profile).
+# (conf/margin/norm/uncertainty) under the NEW learned-probe decoder, plus
+# SELF-CALIBRATING gates (keep the top-K% by each signal, K a quantile of the pool's
+# own distribution -- no manual threshold, adaptive per condition). Diagnostics:
+# gate AUROC for correct-vs-wrong pseudo-labels, per-class pseudo accuracy,
+# retain-vs-precision, wrong-label profile.
 #
 # Usage:
 #   bash run_probe_pseudo_gate.sh 3                # ep10+ep21, wet_ground,fog
@@ -44,8 +46,9 @@ if [ "$FAIL" = false ]; then
   echo "Check logs/probe_pseudo_gate_{covshift_ep10,covshift_ep21}.log:"
   echo "  Pipelines: does any gate (conf/margin/norm/uncer) climb from no_gate toward"
   echo "  the oracle ceiling under the Nystrom+CG probe update?"
-  echo "  DIAG: auroc (can the signal separate correct from wrong pseudo-labels?),"
-  echo "  per_class_pseudo_acc, retain_vs_precision, wrong_profile."
+  echo "  SELFCAL: top-K% by each signal (no manual threshold, adaptive) -- if one"
+  echo "  reaches near-oracle, the method needs no heavy hyperparameter tuning."
+  echo "  DIAG: auroc, per_class_pseudo_acc, retain_vs_precision, wrong_profile."
 else
   echo "=== PSEUDO-GATE FAILED ==="
   exit 1

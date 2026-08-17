@@ -191,9 +191,13 @@ def main():
     parser.add_argument("--max_clean", type=int, default=200000,
                         help="cap on the clean points used for the frozen probe fit "
                              "(binarizing the full 8M-point clean pool is 320GB)")
-    parser.add_argument("--conf_sweep", type=str, default="0.5,0.7,0.9")
-    parser.add_argument("--margin_sweep", type=str, default="2,5,10")
+    parser.add_argument("--conf_sweep", type=str, default="0.05,0.1,0.15,0.2")
+    parser.add_argument("--margin_sweep", type=str, default="0.5,1.0,2.0")
     parser.add_argument("--norm_sweep", type=str, default="60,80,95")
+    parser.add_argument("--selfcal_fracs", type=str, default="0.5,0.3,0.1",
+                        help="self-calibrating gates: keep the top-K% of pool points by "
+                             "each signal (K from the pool's own distribution, no manual "
+                             "threshold -- the no-heavy-tuning requirement)")
     parser.add_argument("--conds", type=str, default="wet_ground,fog")
     parser.add_argument("--path_b", type=str, default=DGLSSPP_PATH)
     parser.add_argument("--method_b", type=str, default=DGLSSPP_METHOD)
@@ -209,6 +213,7 @@ def main():
     conf_sweep = [float(x) for x in args.conf_sweep.split(',')]
     margin_sweep = [float(x) for x in args.margin_sweep.split(',')]
     norm_sweep = [float(x) for x in args.norm_sweep.split(',')]
+    selfcal_fracs = [float(x) for x in args.selfcal_fracs.split(',')]
 
     trainer = GenTrainer(ARCH, DATA, args.kitti_dir, args.path_b, path=args.path_b,
                          method=args.method_b)
@@ -253,7 +258,7 @@ def main():
         pseudo_correct = (ppred == pl)
 
         r = {'frozen': None, 'oracle': None, 'no_gate': None,
-             'conf': {}, 'margin': {}, 'norm': {}, 'uncer': {},
+             'conf': {}, 'margin': {}, 'norm': {}, 'uncer': {}, 'selfcal': {},
              'diag': {}}
 
         # references
@@ -278,6 +283,23 @@ def main():
             w = fuse_uncertainties(u_epi, z_geom, method='soft_dual_weight',
                                    cfg={"u_th": 0.5, "u_coef": 1.5, "z_th": 0.5, "z_coef": 1.0})
             r['uncer'][str(t)] = gated_fit(w >= t)
+
+        # SELF-CALIBRATING gates: keep the top-K% of pool points by each signal, where
+        # K is a QUANTILE of the pool's own distribution (no hand-tuned absolute
+        # threshold -- the no-heavy-tuning requirement). Works per condition.
+        for f in selfcal_fracs:
+            n_keep = int(len(pool) * f)
+            # top-K by confidence / margin, bottom-K by norm, top-K by uncer-decay
+            r['selfcal'][f'conf_top{f}'] = gated_fit(
+                pconf >= torch.quantile(pconf, 1 - f))
+            r['selfcal'][f'margin_top{f}'] = gated_fit(
+                pmargin >= torch.quantile(pmargin, 1 - f))
+            r['selfcal'][f'norm_bot{f}'] = gated_fit(
+                pnorm <= torch.quantile(pnorm, f))
+            w = fuse_uncertainties(u_epi, z_geom, method='soft_dual_weight',
+                                   cfg={"u_th": 0.5, "u_coef": 1.5, "z_th": 0.5, "z_coef": 1.0})
+            r['selfcal'][f'uncer_top{f}'] = gated_fit(
+                w >= torch.quantile(w, 1 - f))
 
         # ---- diagnostics ----
         diag = r['diag']
@@ -322,6 +344,8 @@ def main():
         print(f"  margin: " + " ".join(f"{t}:{v:.4f}" if v else f"{t}:skip" for t, v in r['margin'].items()))
         print(f"  norm: " + " ".join(f"{t}:{v:.4f}" if v else f"{t}:skip" for t, v in r['norm'].items()))
         print(f"  uncer: " + " ".join(f"{t}:{v:.4f}" if v else f"{t}:skip" for t, v in r['uncer'].items()))
+        print(f"  SELFCAL (top-K%, no manual threshold): " + " ".join(
+            f"{k}:{v:.4f}" if v else f"{k}:skip" for k, v in r['selfcal'].items()))
         print(f"  DIAG gate AUROC: " + " ".join(f"{k}:{v:.3f}" if v else f"{k}:na" for k, v in diag['auroc'].items()))
         print(f"  DIAG pseudo-label acc: correct {pseudo_correct.float().mean():.3f} | "
               f"wrong conf {diag['wrong_profile']['conf']['wrong']:.3f} vs correct {diag['wrong_profile']['conf']['correct']:.3f}")
@@ -334,6 +358,9 @@ def main():
     print("Pipelines: does gating the pseudo-labeled pool (conf/margin/norm/uncertainty)")
     print("let the Nystrom+CG update climb from no_gate toward the oracle ceiling?")
     print("  - If a gate reaches near-oracle: a simple pseudo-label filter works.")
+    print("  - SELFCAL rows are the no-tuning version: keep the top-K% by each signal, K")
+    print("    a quantile of the pool's own distribution (works per condition, no manual")
+    print("    threshold). If a selfcal gate reaches near-oracle, the method is adaptive.")
     print("  - If ALL gates stay near no_gate: the wrong pseudo-labels poison the update")
     print("    and no basic gate separates them (the old closure, re-tested on the probe).")
     print("DIAGNOSTICS (where it goes wrong / what the features need to filter):")
