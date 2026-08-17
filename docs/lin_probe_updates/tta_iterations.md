@@ -471,23 +471,64 @@ the UPDATE cost is unchanged: the choice remains Nystrom (prototype-speed update
 gauge/rank-k cheap-update route is a dead end at k=32-64 (it cannot express the
 rotation). The method: Nystrom update + cosine to the learned W_c decode.
 
-## Next: Iteration 6 — the label-free probe-update test
+## Iteration 6: the first-order separator ablation (2026-08-16)
+
+Iteration 5 showed the low-rank correction and tiny gauge do not capture the
+rotation. The remaining question: can a DIFFERENT linear separator -- one whose
+sufficient statistics are first-order (class sums, no covariance) -- express the
+probe's gain? `probe_separator_ablation_diag.py` tests eight forms. Results (ceiling
+mIoU, pool 50k):
+
+| separator | stats | wet_ground ep10 | fog ep10 | update_s |
+| :--- | :--- | :--- | :--- | :--- |
+| R1 prototype | 1st (class sums) | 0.394 | 0.176 | 0.12 |
+| **diag_lda** (W_cj = mu/(1-mu^2)) | 1st | **0.018** | **0.018** | 0.12 |
+| shared_diag (W_c = q .* mu) | 1st | 0.398 | 0.177 | ~0 |
+| perceptron (init mu, +/-h on mistakes) | 1st | 0.300 | 0.152 | 1.71 |
+| passive_agg (margin step) | 1st | 0.042 | 0.009 | 1.90 |
+| Nystrom (m=1000) | 2nd (sketch) | 0.572 | 0.325 | 0.65 |
+| **full_ridge** (X^T X) | 2nd | **0.670** | **0.417** | 3.49 |
+
+(ep21 identical pattern: diag_lda 0.036/0.013, perceptron 0.27/0.15, nystrom
+0.53/0.26, full 0.65/0.37.)
+
+**Result: both first-order questions are answered NO.**
+- **A. Diagonal LDA COLLAPSES** (0.018 wet_ground, below the 0.394 prototype). The
+  coordinate reweighting mu/(1-mu^2) destroys the classifier rather than helping.
+  The probe's gain is NOT coordinate-wise reweighting.
+- **B. Perceptron / Passive-Aggressive HURT** (0.30 / 0.04, both below the 0.394
+  prototype). First-order mistake statistics cannot produce the rotation either.
+- **shared_diag is flat** (0.398 ~= prototype 0.394): a domain-wide diagonal
+  transform adds nothing.
+
+**The rotation is genuinely cross-coordinate (second-order).** Only the sketch and
+full covariance reach well above the prototype (nystrom 0.572, full 0.670). This
+settles the fundamental question: linear separability in this HDC code requires
+second-order statistics; NO first-order separator form (diagonal, mistake-based,
+shared transform) recovers the R4 gain.
+
+**Verdict.** The first-order route is closed. The method is fixed:
+**Nystrom-sketch update (m ~ 1000-2000, prototype-speed, ~0.55-0.61 ceiling) +
+cosine-to-learned-W_c decode (prototype-speed, full probe accuracy)**. The Nystrom
+sketch is the efficient approximation of the second-order statistics the gain
+requires; the learned-prototype cosine is the decoder that keeps the probe's
+accuracy. The remaining open question is the label-free version of the Nystrom
+update (Iteration 7).
+
+## Next: Iteration 7 — the label-free probe-update test
 
 Iteration 1 validated the ridge accumulate-and-solve update with TRUE labels (the
-oracle). Iteration 6 asks whether a LABEL-FREE version climbs toward the R4-oracle
+oracle). Iteration 7 asks whether a LABEL-FREE version climbs toward the R4-oracle
 ceiling the way naive prototype TTA reaches the R1 ceiling:
-- **naive probe-refit**: the ridge accumulate-and-solve with PSEUDO-labels
-  (accumulate S/T on the pool from the frozen probe's predictions, one solve) — the
-  label-free analog of the R4 oracle.
+- **naive probe-refit**: the Nystrom-sketch ridge with PSEUDO-labels (accumulate the
+  sketch S/T on the pool from the frozen probe's predictions, one small solve) -- the
+  label-free analog of the R4 oracle, at prototype-speed update cost.
 - **pool-curve at label-free sizes**: does 1k-10k PSEUDO-labeled points close the
   gap as well as 1k-10k TRUE-labeled points? (Iteration 0's curve is the labeled
   budget; the label-free question is how much pseudo-labels degrade it.)
-- **bias-only control**: freeze W, update b from the pool class proportions — kept
+- **bias-only control**: freeze W, update b from the pool class proportions -- kept
   as a control only (Iteration 0 already showed it is 0-4% of the gap).
-- **HDC-native efficiency at 10000-d**: the integer +/-1 dual (Hamming/popcount on
-  packed bits) and RLS, with lam scaled to the pool — the preferred efficiency
-  direction per the Iteration 2 design note (avoid the reduced-dimension trick).
 
-Verdict rule: if the label-free ridge refit recovers most of the R4-oracle ceiling
+Verdict rule: if the label-free Nystrom refit recovers most of the R4-oracle ceiling
 on the healthy conditions and crosstalk without hurting fog, the linear-probe
-decoder with a gradient-free refit is the Pillar 2 update mechanism.
+decoder with a gradient-free, prototype-speed update is the Pillar 2 mechanism.
