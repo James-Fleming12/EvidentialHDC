@@ -365,8 +365,11 @@ def main():
             simc = zn @ c_mat.t()
             bestc, bic = simc.max(dim=1)
             cent_lbl = cid[bic]
-            top2c = torch.topk(simc, 2, dim=1).values
-            cent_margin = (top2c[:, 0] - top2c[:, 1]).clamp(min=0)
+            if simc.shape[1] >= 2:
+                top2c = torch.topk(simc, 2, dim=1).values
+                cent_margin = (top2c[:, 0] - top2c[:, 1]).clamp(min=0)
+            else:
+                cent_margin = torch.zeros(len(pool))
             cent_pass = bestc >= args.agree_gate
 
             # agreement: superpixel label == centroid decode AND cosine gate
