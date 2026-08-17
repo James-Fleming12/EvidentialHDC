@@ -249,6 +249,17 @@ def main():
                          method=args.method_b)
     model = trainer.model
 
+    # clean features + frozen probe ONCE (shared across conditions; used only by
+    # the F confidence-conditioning section)
+    cf, cl, _ = extract_full(model, build_parser(args.kitti_dir, DATA, ARCH),
+                             device, args.frames)
+    proj_clean = get_hdc_projection(dim_in=cf.shape[1], dim_out=10000, device=device)
+    mc = min(args.max_clean, len(cf))
+    cc = hdc_codes(cf[:mc], proj_clean, device)
+    W_clean = ridge_fit_soft(cc.float().to(device), onehot(cl[:mc], NUM_CLASSES),
+                             args.lam, args.cg_iters, args.nystrom_m, device)
+    del cc, cf, cl
+
     results = {'label': args.label, 'conds': {}}
 
     for cond in conds:
@@ -373,31 +384,28 @@ def main():
         # ---- D: spatial promise ----
         r['spatial'] = spatial_promise(grids, classes)
 
-        # ---- E: per-class 128-d NN purity ----
+        # ---- E: per-class 128-d NN purity (against the FULL pool, chunked) ----
         pc = {}
         for c in classes:
             idx = cls_idx[c]
-            if len(idx) < 50:
+            n_c = len(idx)
+            if n_c < 50:
                 continue
-            sub = zn[idx]
-            sim_c = sub @ sub.t()
-            sim_c.fill_diagonal_(-1e9)
-            nn = sim_c.argmax(dim=1)
-            pc[str(c)] = {'nn1_purity': float(
-                (pl[idx[nn]] == c).float().mean().item()),
-                'n': len(idx)}
+            sub = zn[idx].to(device)
+            nn_same = 0
+            for s in range(0, n_c, 4096):
+                e = min(s + 4096, n_c)
+                sim_c = sub[s:e] @ zn.to(device).t()       # (m, n) full pool
+                sim_c[torch.arange(e - s), idx[s:e]] = -1e9  # exclude self
+                nn = sim_c.argmax(dim=1)
+                nn_same += int((pl[nn.cpu()] == c).sum().item())
+            pc[str(c)] = {'nn1_purity': nn_same / n_c, 'n': n_c}
         r['per_class'] = pc
         nn1_all = [v['nn1_purity'] for v in pc.values()]
         r['per_class']['_mean'] = float(np.mean(nn1_all)) if nn1_all else None
 
         # ---- F: confidence-conditioned packing (frozen probe on the pool) ----
-        mc = min(args.max_clean, len(f))
-        clean_feats, clean_lbls = f[:mc], l[:mc]
-        clean_codes = hdc_codes(clean_feats, proj, device)
-        W_clean = ridge_fit_soft(clean_codes.float().to(device),
-                                 onehot(clean_lbls, NUM_CLASSES), args.lam,
-                                 args.cg_iters, args.nystrom_m, device)
-        del clean_codes
+        # the frozen probe comes from the CLEAN features (extracted once in main)
         pool_codes = hdc_codes(pool, proj, device)
         smf = torch.softmax(scores(W_clean, pool_codes), dim=1)
         pconf = smf.max(dim=1).values
