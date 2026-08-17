@@ -6,8 +6,8 @@
 
 The ultimate goal is **label-free adaptation for prototype updates**: at
 deployment, the decoder should update its prototypes from the corrupted stream
-without any labels. The current method is **cov-shift DGLSS++** — a feature
-extractor that fixes the corruption collapse at the source — paired with a
+without any labels. The current method is **cov-shift DGLSS++**, a feature
+extractor that fixes the corruption collapse at the source, paired with a
 **linear-probe decoder on the HDC code** that recovers the structure the
 distance-to-prototype rule throws away (Section 2). The label-free path then
 covers the healthy conditions and crosstalk, and the remaining conditions fall
@@ -123,7 +123,7 @@ DGLSS++ core has three pieces, each doing a distinct job:
 **The cov-shift normalization** (the piece that closes the collapsed conditions)
 resolves the anchoring trade-off without anchoring at all: instead of pulling
 corrupted features toward clean (which raised crosstalk TTA but erased fog's
-recoverable ceiling), it fixes the covariate-shift statistics directly — per-scan
+recoverable ceiling), it fixes the covariate-shift statistics directly via per-scan
 input normalization restricted to the statistics-shifted channels (range/remission)
 plus internal InstanceNorm. It is the first extractor to raise BOTH the labeled
 ceiling and the label-free TTA on BOTH fog and crosstalk.
@@ -146,7 +146,7 @@ DGLSS++ reference):
 The cov-shift model has the best fog and crosstalk zero-shot of any extractor (fog
 20.1% / 18.5% vs DGLSS++ 6.8%; crosstalk 39.5% / 41.9% vs 11.5%) and the best
 8-condition mean (37.3% / 37.5% vs 36.9%), at the cost of the healthy conditions
-sitting 2-15 points below DGLSS++ (wet_ground 35.8% / 33.3% vs 48.3%) — the
+sitting 2-15 points below DGLSS++ (wet_ground 35.8% / 33.3% vs 48.3%): the
 normalization trades some healthy-condition headroom for the large fog/crosstalk
 gains. ep-10 is the better fog checkpoint (20.1% vs 18.5%), ep-21 the better
 crosstalk (41.9% vs 39.5%). Clean HDC mIoU: DGLSS++ 53.0%, cov-shift 47.2%.
@@ -198,9 +198,9 @@ label-free version is the frozen clean-fit probe (R4-zs), which at 0.43-0.50 hea
 already beats the R1 oracle (0.40-0.43) at zero-shot. The direction: keep the
 cov-shift extractor and make the decoder a learned boundary on the code.
 
-**Efficiency.** The probe's training (fit/refit) is the cost — ~40-50x slower than
+**Efficiency.** The probe's training (fit/refit) is the cost: ~40-50x slower than
 building prototypes (77-97s vs 2s per fit; a per-condition pool refit is 112-176s vs
-0.02-0.04s) — but inference is essentially equal (0.22-0.23s vs 0.18s per 100k
+0.02-0.04s), but inference is essentially equal (0.22-0.23s vs 0.18s per 100k
 points). Improving the probe's training efficiency (e.g. the closed-form
 accumulate-and-solve update in
 [`docs/lin_probe_updates/tta_iterations.md`](docs/lin_probe_updates/tta_iterations.md))
@@ -220,7 +220,7 @@ mIoU, and on the healthy conditions it reaches the ceiling. The current story is
 about the **cov-shift extractor** (Section 2): where the frozen decoder already
 holds, and where the decode rule leaves room.
 
-For the cov-shift extractor, the label-free prototype update is essentially free —
+For the cov-shift extractor, the label-free prototype update is essentially free:
 the naive re-estimation reaches the ceiling on every condition:
 
 - **On the healthy conditions the label-free path is sufficient.** Snow,
@@ -254,7 +254,7 @@ on the corrupted pool (extractor-diff harness):
 
 The two columns that matter:
 - **The linear-probe ceiling is far above the prototype ceiling on every condition**
-  (fog 43.3% vs 26.1%; wet_ground 68.3% vs 42.5%) — the recoverable structure is
+  (fog 43.3% vs 26.1%; wet_ground 68.3% vs 42.5%). The recoverable structure is
   there all along; the centroid rule cannot express it. This is the assignment-wall
   signature (prototype ceiling ~ zero-shot) reopened as decoder headroom, and it is
   why the decoder, not the features, is the binding constraint (Section 2).
@@ -268,14 +268,16 @@ The cov-shift method's per-condition source harnesses are in
 
 **The HDC-native decoder and update.** To recover the R4 headroom without the full
 10000x10000 solve (and without the block-diagonal approximation that breaks HDC
-holography), the update is **matrix-free conjugate gradient** (solve (S + lI)W = T
-via Sv = X^T(Xv), never building S), and the decoder is cosine to the learned W.
-An earlier candidate was the **Nystrom random-sign sketch**: P in {+1,-1}^{d x m}
-(m = 1000) mixes all 10000 HDC dims into
+holography), the update is **Nystrom-warm-started matrix-free conjugate gradient**:
+the Nystrom sketch (P in {+1,-1}^{d x m}, m = 1000) provides a cheap approximate
+second-order geometry, then a few CG iterations (Sv = X^T(Xv), never building S)
+finish the solution in the full 10000-d space. The decoder is cosine to the learned W.
+An earlier candidate was the **Nystrom random-sign sketch** alone: P mixes all 10000
+HDC dims into
 each sketch coordinate, so the holographic structure is preserved; the solve happens
 in m (m^3, trivial), and W = P A. The decoder then **quantizes W to +/-1**, so the
-decode is an integer dot product (d - 2*Hamming, popcount on packed bits) -- no
-floats. Ceiling (labeled oracle) and zero-shot mIoU, vs the baselines (cov-shift
+decode is an integer dot product (d - 2*Hamming, popcount on packed bits), so no
+floats are needed. Ceiling (labeled oracle) and zero-shot mIoU, vs the baselines (cov-shift
 ep-10):
 
 | condition | R1 proto ceil | full R4 ceil | **Nystrom+sign ceil** | Nystrom+sign zs |
@@ -289,45 +291,49 @@ Nystrom+sign recovers a large share of the R4 ceiling on every condition (fog 33
 vs R4 41.7% and proto 26.0%; wet_ground 54.7% vs 67.1% and 42.4%), while staying in
 the full 10000-d HDC space (no block mask). The zero-shot is prototype-like, as
 expected. Matrix-free CG supersedes it on accuracy (CG-20 reaches 62.0% wet_ground,
-beating Nystrom's 54.7% at comparable update cost) -- see the tradeoff table below.
+beating Nystrom's 54.7% at comparable update cost); see the tradeoff table below.
 
 **Inference speed is essentially unchanged.** The learned-prototype decode (cosine
 to W, or the quantized integer-popcount variant) runs at the prototype's decode
-rate -- the efficiency cost is in the UPDATE, not the deployed decode:
+rate; the efficiency cost is in the UPDATE, not the deployed decode:
 
 | decoder (ep-10) | update pts/s | decode pts/s |
 | :--- | :--- | :--- |
 | R1 prototype (fit / decode) | ~1.1-3.9M | ~0.29-0.31M |
 | full probe R4 (LR fit) | ~1-2k | (matmul) |
-| **matrix-free CG-20 update + cosine decode** | **~0.64M** | **~0.20-0.29M** |
+| **Nystrom warm-start + CG-8 + cosine decode** | **~1.5M** | **~0.20-0.29M** |
 
-The decode (cosine to the learned W) is within ~15% of the prototype's, and the CG
-update (0.64M pts/s) is ~2-6x the prototype fit -- the cost of the second-order
-structure the rotation needs, vs the full probe's 1-2k pts/s LR fit. Full
-per-condition tables and the accuracy<->efficiency sweep are in
-`docs/lin_probe_updates/tta_iterations.md` (Iterations 3-6).
+The decode (cosine to the learned W) is within ~15% of the prototype's, and the
+Nystrom-warm-started CG update (~1.5M pts/s) is ~1-2x the prototype fit. This is
+the cost of the second-order structure the rotation needs, versus the full probe's
+1-2k pts/s LR fit. Full per-condition tables and the accuracy<->efficiency sweep
+are in
+`docs/lin_probe_updates/tta_iterations.md` (Iterations 3-7).
 
 **The accuracy <-> efficiency tradeoff (wet_ground ep-10, ceiling mIoU vs update
-speed).** The options considered for the second-order probe update, and the winner:
+speed).** The options considered for the second-order probe update, and the winner
+(failed forms such as first-order separators, low-margin coresets, and sparse
+covariance are documented in the iterations doc):
 
-| method | update pts/s | ceiling mIoU | order | note |
-| :--- | :--- | :--- | :--- | :--- |
-| R1 prototype | 1.9M | 42.4% | 1st | baseline; no probe gain |
-| diag LDA / perceptron | ~O(nd) | 39-30% | 1st | first-order forms FAIL (Iteration 6) |
-| coreset m=2000 + dual | ~2M | 31.3% | 2nd | below prototype; dead end |
-| sparse cov (1%) | ~O(nd) | 31.0% | 2nd | structure not in a few correlations |
-| full probe R4 (LR) | ~1-2k | 67.1% | 2nd | the ceiling; update too slow |
-| Nystrom+sign (m=1000) | 2.0M | 54.7% | 2nd | sketch; good balance |
-| **matrix-free CG-20** | **~0.64M** | **62.0%** | 2nd | **best cheap second-order** |
+| method | update pts/s | ceiling mIoU | note |
+| :--- | :--- | :--- | :--- |
+| R1 prototype | 1.9M | 42.4% | baseline; no probe gain |
+| full probe R4 (LR) | ~1-2k | 67.1% | the ceiling; update too slow |
+| Nystrom+sign (m=1000) | 2.0M | 54.7% | sketch; good balance |
+| matrix-free CG-20 | ~0.64M | 62.0% | accurate but 20 iters |
+| **Nystrom warm-start + CG-8** | **~1.5M** | **61.6%** | **best accuracy/efficiency** |
 
-The winner is **matrix-free CG-20**: it solves (S + lI)W = T via Sv = X^T(Xv)
-without ever building the 10000x10000 S (no d^2 storage, one pool pass per
-iteration), reaches 0.62 wet_ground / 0.38 fog -- the closest any cheap method gets
-to the full ridge ceiling (0.67 / 0.42) -- at ~0.64M pts/s. It beats Nystrom+sign
-(0.55) on accuracy at comparable update cost. The first-order forms (diagonal LDA,
-perceptron), the low-margin coreset, and sparse covariance all fail to recover the
-rotation: the gain genuinely needs the second-order cross-coordinate structure, and
-matrix-free CG is the efficient way to get it. Iterations 4-6 in
+The winner is **Nystrom warm-start + matrix-free CG**: the Nystrom sketch (m=1000)
+provides a cheap approximate second-order geometry, then CG-8 finishes in the full
+space via Sv = X^T(Xv), never building the 10000x10000 S. CG-8 from the Nystrom start
+reaches 0.62 wet_ground / 0.38 fog (ep10), essentially the plain CG-20 accuracy, in
+~8 iterations instead of 20 (0.034s, ~1.5M pts/s). The warm start is the key: CG-5
+from Nystrom (0.60) already matches CG-20 from scratch (0.62), and CG-10 from the
+start (0.63) beats it. The prototype is NOT a good warm start (residual CG fails),
+but the Nystrom sketch is. The first-order forms (diagonal LDA, perceptron), the
+low-margin coreset, and sparse covariance all fail to recover the rotation: the gain
+genuinely needs the second-order cross-coordinate structure, and Nystrom-warm-started
+matrix-free CG is the efficient way to get it. Iterations 4-7 in
 `docs/lin_probe_updates/tta_iterations.md` document the full sweep.
 
 [To be filled: the form of the TTA (the update/don't-update gate, the support
@@ -349,7 +355,7 @@ the **decode rule**, not the features. A learned decoder on the same code reopen
 large ceiling gap (R4 gap +19.8 on fog, +27.0 on wet_ground vs R1's ~0-2). So the
 label-free limit has two distinct causes:
 
-- **For the healthy conditions, the wall is gone** — the cov-shift extractor's frozen
+- **For the healthy conditions, the wall is gone**: the cov-shift extractor's frozen
   decoder holds, and the label-free update reaches the ceiling.
 - **For fog/crosstalk, the wall is the centroid rule.** The features retain the
   recoverable structure (the R4 ceiling is high); the nearest-centroid update cannot

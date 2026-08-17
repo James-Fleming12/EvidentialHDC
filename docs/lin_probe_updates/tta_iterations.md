@@ -60,12 +60,12 @@ The measured effect (C10, ep-10 cov-shift):
 
 Why R4 does so much better than R1 on the ceiling: the oracle re-estimates the
 decoder from the corrupted pool. For prototypes, re-estimation just moves the class
-means — it cannot re-weight the coordinates or change the boundary shape. For the
+means; it cannot re-weight the coordinates or change the boundary shape. For the
 probe, re-estimation re-fits the full linear decision boundary on the corrupted
 points, so it recovers structure the centroid rule cannot express even with perfect
 labels.
 
-The zero-shot (frozen clean-fit) comparison is smaller and mixed — R4-zs beats R1-zs
+The zero-shot (frozen clean-fit) comparison is smaller and mixed: R4-zs beats R1-zs
 on healthy + crosstalk but is slightly worse on fog (-0.004). The big R4 gain is on
 the oracle (pool-refit), which is the ceiling the label-free update chases.
 
@@ -75,7 +75,7 @@ The decoder is a **linear probe on the HDC code**, and its update is a
 **gradient-free accumulate-and-solve**. Both are chosen so that the method keeps the
 backprop-free, statistics-accumulation character of the HDC prototype pipeline.
 
-### The linear probe (decode)
+### The Linear Probe (decode)
 
 Let $z(x) \in \mathbb{R}^D$ be the encoder's 128-d feature for a point, and
 $R \in \{-1,+1\}^{D \times d}$ the fixed random projection ($d = 10000$, seeded 42).
@@ -96,14 +96,14 @@ $$
 This generalizes the prototype rule. Distance-to-prototype is the special case where
 $W_c$ is the (normalized) class-mean code
 $\mu_c = \mathrm{mean}_{x \in \mathrm{class}\, c}\, h(x)$ and the score is the cosine
-$\mu_c \cdot h / \big(\lVert \mu_c \rVert \, \lVert h \rVert \big)$ — every code
-coordinate weighted equally. The probe instead learns a per-coordinate weight per
+$\mu_c \cdot h / \big(\lVert \mu_c \rVert \, \lVert h \rVert \big)$ (every code
+coordinate weighted equally). The probe instead learns a per-coordinate weight per
 class, so it can express boundaries (rotations, coordinate re-weightings) that the
 centroid rule cannot. Iteration 0 showed the zero-shot $\to$ labeled gap is exactly
 such a rotation: $\cos(W_{\mathrm{zs}}, W_{\mathrm{oracle}})$ is 0.03-0.12, and a
 bias-only move (freeze $W$, re-center $b$) captures 0-4% of the gap.
 
-### The update rule (fit)
+### The Update Rule (fit)
 
 The probe is fit by **ridge regression** (regularized least squares). Stacking the
 pool's codes as rows $X \in \mathbb{R}^{n \times d}$ and one-hot labels
@@ -114,7 +114,7 @@ W = \arg\min_{W} \lVert X W - Y \rVert_F^2 + \lambda \lVert W \rVert_F^2
   = \left( X^{\top} X + \lambda I \right)^{-1} X^{\top} Y.
 $$
 
-This is the exact closed form — no gradient iterations. What makes it an *update*
+This is the exact closed form, with no gradient iterations. What makes it an *update*
 (not a batch fit) is that the sufficient statistics are pure accumulations over the
 stream, exactly like prototype means:
 
@@ -125,10 +125,10 @@ T = X^{\top} Y = \sum_i h(x_i)\, e_{y_i}^{\top} \quad (d \times C,\ \text{accumu
 $$
 
 so $W = (S + \lambda I)^{-1} T$. Each incoming point updates $S$ and $T$ by one outer
-product each — backprop-free, additions + matmuls only. The solve is the only
+product each (backprop-free, additions + matmuls only). The solve is the only
 non-trivial step and is done once per update, not per point.
 
-Memory: $S$ is $d \times d = 10000 \times 10000 = 400$MB float32 (or ~100MB stored
+Memory: $S$ is $d \times d = 10000 \times 10000 = 400$ MB float32 (or ~100MB stored
 as int32 counts, since the codes are $\pm 1$ and each entry of $S$ is a difference of
 counts). $T$ is $d \times C$, negligible. This is the price of a second-order
 statistic vs the prototype's first-order sums.
@@ -137,6 +137,51 @@ A Fisher linear discriminant (FLDA, $w = S_w^{-1}(\mu_1 - \mu_2)$ from class
 scatter) is the alternative second-order rule; it was tested in Iteration 1 and
 rejected (slow and degenerate on the sign code). The ridge accumulate-and-solve is
 the chosen rule.
+
+#### The final update: Nystrom warm start + matrix-free CG (Iterations 7-8)
+
+The exact solve $(S + \lambda I)^{-1} T$ is too expensive at $d = 10000$ (the
+$d \times d$ inverse and the dense $S$ storage). The final method avoids both with a
+Nystrom warm start plus a few matrix-free conjugate-gradient iterations.
+
+**Step 1: Nystrom warm start.** Pick a random sign sketch
+$P \in \{-1,+1\}^{d \times m}$ with $m \ll d$ ($m = 1000$), each of whose $m$
+coordinates mixes all $d$ HDC dims (holography preserved, no block mask). The sketch
+collapses the second-order problem to an $m \times m$ solve:
+
+$$
+W_{\mathrm{Nys}} = P \left( P^{\top} X^{\top} X P + \lambda I_m \right)^{-1} P^{\top} X^{\top} Y.
+$$
+
+The inner solve is $m \times m$ ($m^3$, trivial), so this runs at prototype-scale
+speed and lands near the full ridge solution (wet_ground ~0.57 vs full 0.67).
+
+**Step 2: matrix-free CG to finish.** The residual $R = T - (S + \lambda I) W_{\mathrm{Nys}}$
+is corrected by conjugate gradient in the full $d$-dimensional space, with the
+matrix-free operation
+
+$$
+S v = X^{\top} (X v),
+$$
+
+which never builds the $d \times d$ matrix $S$: one forward and one backward pass
+over the pool per iteration, no $d^2$ storage. Starting from
+$W_0 = W_{\mathrm{Nys}}$ and solving $A\,\Delta W = R$ (where $A = S + \lambda I$),
+only a few iterations are needed:
+
+$$
+W = W_{\mathrm{Nys}} + \Delta W, \qquad
+\Delta W \approx A^{-1}\left( T - A\, W_{\mathrm{Nys}} \right).
+$$
+
+CG-8 from the Nystrom start reaches 0.62 wet_ground / 0.38 fog (ep10),
+essentially the plain CG-20 accuracy (0.62 / 0.38) in 8 iterations instead of 20:
+$0.034$s, ~1.5M pts/s, ~1-2x the prototype fit. The warm start is the key: CG-5
+from Nystrom already matches CG-20 from scratch, and CG-10 from the start beats it.
+The prototype is NOT a good warm start (the residual-CG correction from $\mu$ fails,
+Iteration 8); the Nystrom sketch is. The decoder is cosine to the learned $W$
+(Iteration 5), and the first-order / coreset / sparse-covariance alternatives all
+fail (Iterations 6-7).
 
 ### Design constraint (from the README)
 
@@ -170,14 +215,14 @@ zero-shot -> labeled gap is. Results (cov-shift ep10/ep21, 4 conditions):
 The verdict has three parts, and it rules out the cheapest option:
 
 1. **The gap is a ROTATION, not a translation.** $\cos(W_{\mathrm{zs}}, W_{\mathrm{oracle}})$ is 0.03-0.12
-   everywhere — the clean-fit probe's decision boundary and the pool-refit
+   everywhere: the clean-fit probe's decision boundary and the pool-refit
    boundary point in almost completely different directions. A bias/intercept-only
    update (freeze W, re-center b) closes **0-4% of the gap** (bias-only share
    ~0-3%). **Bias-only is dead as a TTA mechanism.** The weights must move.
 2. **The oracle-fixed points are LOW-margin.** Frozen-probe margin: zs-correct
    ~12-16, zs-wrong ~7-9, oracle-fixed ~6-8. The points the labeled decoder fixes
-   are exactly the confident-but-wrong boundary points — low margin but on the wrong
-   side. So a margin gate CAN identify the points TTA needs to fix (the signal is
+   are exactly the confident-but-wrong boundary points (low margin but on the wrong
+   side). So a margin gate CAN identify the points TTA needs to fix (the signal is
    there), but it cannot fix them: they need the boundary to move (weights), not a
    veto. This is the probe-space analog of the assignment wall, sharpened: the
    wall is a boundary-rotation problem, not a detection problem.
@@ -185,18 +230,18 @@ The verdict has three parts, and it rules out the cheapest option:
    $\sqrt{10000} = 100$ (all entries are $\pm 1$), so zs-correct / zs-wrong /
    oracle-fixed
    all report 100.0. Outlier analysis must use the CONTINUOUS 128-d norm, not the
-   binarized code — the diagnostic's norm axis is not meaningful as-is. This does
+   binarized code; the diagnostic's norm axis is not meaningful as-is. This does
    not affect the other axes.
 
 Per-class: the oracle gain is concentrated in a few classes per condition (fog: 0
 +0.53, 7 +0.24, 11 +0.22, 14 +0.17; wet_ground: 14 +0.38, 2 +0.25, 7 +0.20, 15
-+0.20) — those are the TTA/AL target classes. (Class 0 is the ignore class; the
++0.20); those are the TTA/AL target classes. (Class 0 is the ignore class; the
 others are real targets.)
 
 Pool curve (the AL budget): a SMALL labeled pool closes most of the gap. 1k points
 already capture 40-77% of the oracle gain (wet_ground 1k 0.532 vs 100k 0.691; fog
 1k 0.309 vs 100k 0.433), and 10k points are near-saturated. The active-learning
-budget to close the probe gap is small — consistent with Pillar 3's "one label per
+budget to close the probe gap is small, consistent with Pillar 3's "one label per
 cluster" structure.
 
 **Implication for the update design.** The gap needs a WEIGHT update (rotation), so
@@ -226,11 +271,11 @@ closed form). Rules compared per condition (pool 50k, val 100k, lambda = 1e-3):
 | ep21 | crosstalk | 0.578 | 0.567 | 0.567 | 0.600 |
 
 **Result: ridge accumulate-and-solve is the validated update rule.**
-- **Equivalence: exact.** $\max |W_{\mathrm{accum}} - W_{\mathrm{batch}}| = 0.000000$ on every condition —
+- **Equivalence: exact.** $\max |W_{\mathrm{accum}} - W_{\mathrm{batch}}| = 0.000000$ on every condition:
   the accumulated-form update is numerically identical to the batch closed form, so
   the update is a pure accumulate-and-solve (backprop-free, additions + one solve).
 - **Efficiency: prototype-cheap.** The update is 0.1s accumulate + 0.2s solve = ~0.3s
-  per condition, vs 77-176s for the iterative LR fit (Iteration 1 bench) — ~250-500x
+  per condition, vs 77-176s for the iterative LR fit (Iteration 1 bench), ~250-500x
   faster, comparable to prototype re-estimation (0.02-0.04s). Peak RSS ~20-27GB
   (dominated by the 10000x10000 S and the val code).
 - **Correctness: reaches the oracle on 3 of 4 conditions.** Ridge is within 0.001-0.014
@@ -239,7 +284,7 @@ closed form). Rules compared per condition (pool 50k, val 100k, lambda = 1e-3):
   loses a little on the condition where the rotation is largest (Iteration 0's fog
   had the lowest $\cos(W_{\mathrm{zs}}, W_{\mathrm{oracle}}) = 0.028$).
 
-**FLDA is rejected.** It is slow (95-109s) AND its fit is degenerate — sklearn's
+**FLDA is rejected.** It is slow (95-109s) AND its fit is degenerate: sklearn's
 shrinkage covariance hit "Only one sample available" warnings (a class with ~1 pool
 sample), yet it still scored above both references (crosstalk 0.628 vs LR 0.594).
 A result that is simultaneously warning-flagged and better-than-reference is
@@ -261,7 +306,7 @@ compute the SAME update, HDC-native first, with two sections:
   in the sample dim n), and RLS streaming.
 - **Section B** is the dimension check: does the probe's linear-separability gain
   survive a smaller code dim d' or a second random projection to k? (If yes, the
-  LARGE projection size never helped — the gain is the binarized geometry.)
+  LARGE projection size never helped: the gain is the binarized geometry.)
 
 Results (pool 10k, val 100k; mIoU + fit throughput pts/s):
 
@@ -274,7 +319,7 @@ Results (pool 10k, val 100k; mIoU + fit throughput pts/s):
 
 (ep21 is the same pattern: code-2000 peaks at 0.550 wet_ground / 0.281 fog.)
 
-**Result: the projection size never helped — the probe peaks at d'=2000, not 10000.**
+**Result: the projection size never helped; the probe peaks at d'=2000, not 10000.**
 - The probe mIoU at code-2000 (wet_ground 0.587, fog 0.334) is the HIGHEST of any
   representation tested, ABOVE code-5000 (0.572 / 0.313) and far above the 10000-d
   reference the earlier runs used. The 10000-d projection's large dimension is not
@@ -284,13 +329,13 @@ Results (pool 10k, val 100k; mIoU + fit throughput pts/s):
   ALSO beating the prototype's mIoU. The 7-8x overhead is gone at ~1000-2000-d.
 
 **Two caveats (diagnostic artifacts, not results):**
-- **Section A diag-ridge (0.295) does NOT equal proto (0.425)** — the "diagonal
+- **Section A diag-ridge (0.295) does NOT equal proto (0.425)**: the "diagonal
   ridge == prototype" identity holds for the FIT (W proportional to the class-mean
   code), but the DECODE here used the un-normalized W row; the prototype decode
   cosine-normalizes. With per-class row normalization the numbers would match. The
   identity is mathematically true; the diagnostic's decode just needs the same
   normalization.
-- **dual/Woodbury at n=10000 collapses (0.05)** — the same lam-too-small
+- **dual/Woodbury at n=10000 collapses (0.05)**: the same lam-too-small
   conditioning artifact from the earlier efficiency table (dual is only stable at
   small n). Not a real method failure.
 
@@ -301,7 +346,7 @@ preferred direction (it uses the binarization rather than shrinking the projecti
 Section B's finding ("the projection size never helped") is a paper statement, but
 the method should stay at 10000-d unless the HDC-native route is exhausted. The
 HDC-native levers to pursue at full dimension: the integer +/-1 dual form (G = X X^T
-computed via Hamming/popcount on packed bits — the exactness of the binarization)
+computed via Hamming/popcount on packed bits, the exactness of the binarization)
 and RLS streaming. The next step is to measure THOSE at 10000-d with a correct lam,
 rather than adopting the reduced-dimension code.
 
@@ -331,7 +376,8 @@ speed, and quantizing W to +/-1 is nearly free.**
   (wet_ground 0.531 vs R4 0.670 and proto 0.424; fog 0.360 vs R4 0.416 and proto
   0.260). It is far above the prototype and within ~0.06-0.14 of the full probe.
 - Quantization (sign vs float W) costs little on the ceiling (wet_ground 0.531 vs
-  0.553; fog 0.360 vs 0.296 — sign is actually BETTER on fog, a mild regularizer).
+  0.553; fog 0.360 vs 0.296, where sign is actually BETTER on fog, a mild
+  regularizer).
 - The zero-shot is prototype-like (block-sign zs ~= proto zs), as expected: the
   frozen clean-fit probe and frozen prototypes start from the same clean structure.
 
@@ -343,11 +389,11 @@ Efficiency (the README table):
 | full probe R4 (LR fit / matmul) | ~1-2k | (matmul) |
 | **block_ridge sign** | **~0.14-0.24M** | **~0.17-0.28M** |
 
-- **Update**: block_ridge runs ~0.14-0.24M pts/s — ~100x faster than the full-probe
+- **Update**: block_ridge runs ~0.14-0.24M pts/s, ~100x faster than the full-probe
   LR fit (1-2k pts/s), within ~3-10x of the prototype fit (0.5-2.8M). The
   block-diagonal structure (B=20) is what removes the d^3 solve.
 - **Decode**: block-sign decode is ~0.17-0.28M pts/s, essentially equal to the
-  prototype decode (0.27-0.29M) — the quantized +-1 W makes the decode an integer
+  prototype decode (0.27-0.29M); the quantized +-1 W makes the decode an integer
   dot product, no floats, at prototype speed.
 
 **Verdict.** block_ridge sign is the candidate for the README: it keeps the full
@@ -370,7 +416,7 @@ prototype-comparable speed:
   addition: O(C*d) per point, no matrix solve, no 400MB S.
 - **Nystrom** (randomized sketch): P in {+1,-1}^{d x m}, accumulate the sketched
   S_hat = P^T X^T X P (m x m), solve in m, W = P A. Each m-dim mixes all d=10000
-  HDC dims -- holography preserved, only the solve dimension shrinks.
+  HDC dims (holography preserved, only the solve dimension shrinks).
 
 All timings are CUDA-synchronized (real GPU wall time). Pool 50k, val 100k.
 
@@ -394,20 +440,20 @@ All timings are CUDA-synchronized (real GPU wall time). Pool 50k, val 100k.
 0.354 at 0.94M; delta 10ep 0.332 at 2.5k. ep21 follows the same pattern.)
 
 **Result: the efficiency question is settled.**
-- **CG is NOT faster than the prototype -- it is 6-10x SLOWER on the update.**
+- **CG is NOT faster than the prototype; it is 6-10x SLOWER on the update.**
   Its real wall time is 0.16-0.17s (vs proto 0.013-0.045s), because it still must
   accumulate the full dense S = X^T X (~10 TFLOP for 50k x 10000). The earlier
   run's 17-70M pts/s was an async timing artifact. CG's value is ACCURACY (cg-30
-  reaches 0.648, the R4 ceiling) and avoiding the d^3 inverse -- but it does not
+  reaches 0.648, the R4 ceiling) and avoiding the d^3 inverse, but it does not
   close the efficiency gap vs the prototype update.
 - **Nystrom is the efficiency winner.** It never builds the d x d S (only the m x m
-  sketch), so it runs at 0.94-13M pts/s -- comparable to or FASTER than the
+  sketch), so it runs at 0.94-13M pts/s, comparable to or FASTER than the
   prototype fit (fog m=100: 13M pts/s), while accuracy rises with m (m=2000: 0.607
   wet_ground, 0.354 fog, near the R4 ceiling). Random-sign sketching preserves
-  holography (every m-dim mixes all 10000 dims) -- no block mask. **This is the
+  holography (every m-dim mixes all 10000 dims), with no block mask. **This is the
   HDC-aligned method that closes the efficiency gap.**
 - **The delta rule is validated but slow.** With alpha = 1/d = 1e-4 it converges
-  (wet_ground 0.574, fog 0.327) -- the "no S matrix" idea is sound -- but the
+  (wet_ground 0.574, fog 0.327); the "no S matrix" idea is sound, but the
   sequential per-point Python loop runs at ~5k pts/s (hundreds x slower than proto).
   Its sign-decode also degrades (0.25-0.38). It would need vectorization to be
   competitive, and even then the accuracy is below Nystrom/CG.
@@ -428,7 +474,7 @@ diagnostics: `probe_prototype_alignment_diag.py` (does cosine to the learned W_c
 reproduce the probe?) and `probe_gauge_diag.py` (can a tiny k-dim gauge gate the
 expensive update?).
 
-**Alignment (decode-side): the learned prototype matches the probe -- but this is a
+**Alignment (decode-side): the learned prototype matches the probe, but this is a
 DECODE result, not an update one.**
 
 | def (ep10 wet_ground) | agree w/probe | ceiling mIoU | decode pts/s |
@@ -442,7 +488,7 @@ DECODE result, not an update one.**
 
 Cosine to the learned prototype `W_c` reproduces the probe's decisions (0.93-0.95
 agreement) and its ceiling (0.635 vs 0.670 wet_ground), at prototype decode speed.
-This is the "proximity aligned with the linear probe" redefinition -- the decoder
+This is the "proximity aligned with the linear probe" redefinition: the decoder
 becomes a prototype-style cosine to W_c. **But the UPDATE is unchanged**: W_c still
 comes from the full ridge solve (S = X^T X, d x d). The reframing buys decode speed
 and removes the sign-quantization hit, NOT the update solve. The W_cos_sign
@@ -456,7 +502,7 @@ the tiny gauge does not reliably predict the full gain.**
 | wet_ground | 0.419 | 0.671 | 0.421 | 0.421 | +0.008 |
 | fog | 0.222 | 0.369 | 0.223 | 0.223 | -0.023 |
 
-- **The rank-k correction (W = mu + VA, a k x k solve only -- the cheap update)
+- **The rank-k correction (W = mu + VA, a k x k solve only, the cheap update)
   recovers essentially nothing** (0.421 wet_ground vs proto 0.419, vs full 0.671).
   A k=32/64 random direction set cannot express the boundary rotation the full
   covariance encodes. The cheap-update lever does not reach the probe.
@@ -465,7 +511,7 @@ the tiny gauge does not reliably predict the full gain.**
   see the separability signal (Iteration 2 showed it emerges around code-1000+).
 
 **Verdict.** The learned-prototype cosine is a decode-side win (prototype-speed
-decode, full probe accuracy, no quantization hit) -- adopt it as the DECODER. But
+decode, full probe accuracy, no quantization hit); adopt it as the DECODER. But
 the UPDATE cost is unchanged: the choice remains Nystrom (prototype-speed update,
 ~0.55-0.61 ceiling) vs full accumulate-and-solve (0.67 ceiling, ~3-10x). The
 gauge/rank-k cheap-update route is a dead end at k=32-64 (it cannot express the
@@ -474,8 +520,8 @@ rotation). The method: Nystrom update + cosine to the learned W_c decode.
 ## Iteration 6: the first-order separator ablation (2026-08-16)
 
 Iteration 5 showed the low-rank correction and tiny gauge do not capture the
-rotation. The remaining question: can a DIFFERENT linear separator -- one whose
-sufficient statistics are first-order (class sums, no covariance) -- express the
+rotation. The remaining question: can a DIFFERENT linear separator, one whose
+sufficient statistics are first-order (class sums, no covariance), express the
 probe's gain? `probe_separator_ablation_diag.py` tests eight forms. Results (ceiling
 mIoU, pool 50k):
 
@@ -537,33 +583,63 @@ sparse covariance. All timings CUDA-synchronized. Results (ceiling mIoU, pool 50
   and it is TRULY matrix-free: Sv = X^T(Xv), never building the 10k x 10k S (no d^2
   storage, one pool pass per iteration). CG-20 solves in 0.078s (~640k pts/s) vs the
   full ridge's 3.5s.
-- **The hard-point coreset is a dead end** -- even low-margin-selected m=500-2000
+- **The hard-point coreset is a dead end**: even low-margin-selected m=500-2000
   points give 0.28-0.31, all BELOW the plain prototype (0.394). Selecting the
   boundary points does not retain the rotation (m=5000 is worse than m=2000,
   overfitting).
-- **Sparse covariance is a dead end** -- keeping top-K off-diagonal |S_jk| gives
+- **Sparse covariance is a dead end**: keeping top-K off-diagonal |S_jk| gives
   0.29-0.31, barely above diagonal-only 0.294. The structure is not in a few
   dominant pairwise correlations.
 
 **Verdict.** Matrix-free CG-20 is the best cheap second-order update: it approaches
 the full ridge ceiling (0.62 wet_ground / 0.38 fog) at ~0.64M pts/s without d^2
 storage, beating Nystrom (0.57/0.32) on accuracy at comparable cost. Combined with
-the learned-prototype cosine decode, this is the method. The Nystrom sketch remains
-a valid prototype-speed alternative when the update budget is tighter; CG is the
-accuracy-efficiency optimum.
+the learned-prototype cosine decode, this is the method.
 
-## Next: Iteration 8 — the label-free probe-update test
+## Iteration 8: the Nystrom warm-start CG speedup (2026-08-16)
+
+Iteration 7's CG-20 was accurate but paid 20 iterations. This tests making each
+update cheaper via warm starts, residual CG, BF16, and subsampling
+(`probe_cg_speedup_diag.py`). Results (wet_ground ep10; full ridge 0.670):
+
+| method | mIoU | solve_s | notes |
+| :--- | :--- | :--- | :--- |
+| CG-20 from scratch | 0.617 | 0.078 | the Iteration-7 reference |
+| **Nys-warm CG-5** | **0.598** | 0.023 | ~CG-20 accuracy in 5 iters |
+| **Nys-warm CG-8** | **0.616** | 0.034 | ~CG-20 accuracy, 8 iters |
+| **Nys-warm CG-10** | **0.625** | 0.041 | beats CG-20 from scratch |
+| BF16-20 | 0.581 | 0.078 | small drop (0.617->0.581) |
+| subsample 5k/12.5k/25k | 0.58 | ~ | small flat drop |
+| residual early-stop (from mu) | 0.375 | 40 iters | FAILS; prototype is not a good start |
+
+(ep21 identical: Nys-warm CG-5 wet_ground 0.561 vs plain CG-20 0.571; fog 0.31 vs
+0.32.)
+
+**Result: the Nystrom warm start is the speedup.** CG-5 from the Nystrom start
+(0.598) already matches CG-20 from scratch (0.617), and CG-10 from the start
+(0.625) beats it: the Nystrom sketch gets near the solution, CG fixes the residual
+in a quarter the iterations. The prototype is NOT a good warm start (residual CG
+from mu fails, 0.375 below the prototype itself); the Nystrom sketch is. BF16 and
+subsampling give small accuracy drops (0.58) but are not free.
+
+**Verdict.** The method is **Nystrom warm start (m=1000) + matrix-free CG-8**:
+0.62 wet_ground / 0.38 fog at ~1.5M pts/s (0.034s), essentially the plain CG-20
+accuracy in 8 iterations instead of 20, ~1-2x the prototype fit. Nystrom provides
+the cheap approximate second-order geometry; CG recovers the full-space
+cross-coordinate structure. This is the accuracy-efficiency optimum.
+
+## Next: Iteration 9: the label-free probe-update test
 
 Iteration 1 validated the ridge accumulate-and-solve update with TRUE labels (the
-oracle). Iteration 8 asks whether a LABEL-FREE version climbs toward the R4-oracle
+oracle). Iteration 9 asks whether a LABEL-FREE version climbs toward the R4-oracle
 ceiling the way naive prototype TTA reaches the R1 ceiling:
-- **naive probe-refit**: the matrix-free CG update with PSEUDO-labels (Sv = X^T(Xv)
-  on the pool with the frozen probe's pseudo-labels, 20 CG iterations) -- the
-  label-free analog of the R4 oracle, at ~0.64M pts/s.
+- **naive probe-refit**: the Nystrom-warm-started matrix-free CG update with
+  PSEUDO-labels (Sv = X^T(Xv) on the pool with the frozen probe's pseudo-labels,
+  ~8 CG iterations), the label-free analog of the R4 oracle, at ~1.5M pts/s.
 - **pool-curve at label-free sizes**: does 1k-10k PSEUDO-labeled points close the
   gap as well as 1k-10k TRUE-labeled points? (Iteration 0's curve is the labeled
   budget; the label-free question is how much pseudo-labels degrade it.)
-- **bias-only control**: freeze W, update b from the pool class proportions -- kept
+- **bias-only control**: freeze W, update b from the pool class proportions, kept
   as a control only (Iteration 0 already showed it is 0-4% of the gap).
 
 Verdict rule: if the label-free CG refit recovers most of the R4-oracle ceiling
