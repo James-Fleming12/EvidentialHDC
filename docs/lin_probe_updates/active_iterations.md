@@ -659,30 +659,101 @@ mass correction (alpha_c scaling the soft assignments from the queried labels
 counts) with exactly the 2-4 labels/class budget, without needing the full
 confusion matrix.
 
-## Next: Iteration 8: the mass-corrected soft T (7E with per-class alpha_c)
+## Iteration 8: the mass-calibration and mean-estimation routes (2026-08-17)
 
-Iteration 7 isolated the failure: the soft-mass family's T is dominated by
-WRONG CLASS COUNTS (rel err 8-611x), not wrong within-class assignment. The
-fix the data points to: estimate a per-class multiplicative mass correction
-alpha_c from the queried labels (the frozen probe's predicted-count vs the
-queried true-count ratio), scale the soft assignments
-Q_corrected = diag(alpha) Q_frozen, and rebuild T = X^T Q_corrected. This is
-the point-4 mass correction: the 50k points supply the mass, the 2-4
-labels/class supply only the per-class count ratio -- a 17-parameter
-calibration instead of the 289-parameter confusion matrix that 7E tried and
-failed with.
+Iteration 7 split the failure into two measurable pieces: wrong class COUNTS
+(rel err 8-611x) and wrong within-class ASSIGNMENT. This iteration tests the
+deciding experiment first, then the two routes (`al_mass_correction_diag.py`,
+ep10 + ep21, all 4 conditions, 16-17 labels):
 
-Variants to test:
-- 8A: alpha from the queried count ratio (N_hat_queried vs N_true_queried)
-- 8B: alpha smoothed toward 1 (shrinkage, the low-count-class problem)
-- 8C: 8A + the 7F shift-prior assignments (the two corrections combined)
-- 8D: oracle-alpha ceiling (true class counts) -- tells whether the count
-  correction alone reaches the oracle T
+**SECTION 1 -- 8D oracle-count ceiling (the deciding experiment):** correct
+ONLY the class masses with the oracle counts, T = X^T diag(N_oracle/N_soft) Q.
+If 8D ~ oracle, the problem is almost entirely mass calibration; if ~7D, the
+soft assignment itself is wrong.
 
-Verdict rule: if the mass-corrected soft T (8A/8B) beats 7D and climbs toward
-the oracle with 16-68 labels, the Pillar-3 mechanism is: the unlabeled pool
-supplies the mass, a few labels calibrate the per-class counts, and the exact
-ridge does the rest -- the "estimate T, not labels" story with a 17-parameter
-calibration. If even oracle-alpha (8D) cannot beat 7D, the soft-mass family is
-count-limited in a way the assignments cannot fix, and the mean-synthesis
-family (7A with a better mean estimator) is the remaining route.
+**The verdict is WEAK on every condition:**
+
+| condition | frozen | oracle | 8D mIoU | 8D t_cos | 8D w_cos |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 0.259 | 0.377 | 0.083 | 0.485 | 0.283 |
+| crosstalk | 0.524 | 0.554 | 0.293 | 0.461 | 0.495 |
+| snow | 0.457 | 0.493 | 0.230 | 0.416 | 0.438 |
+| wet_ground | 0.427 | 0.614 | 0.127 | 0.484 | 0.409 |
+
+8D stays at t_cos 0.42-0.50 -- the corrected soft T is still far from the
+oracle T even with PERFECT counts. **The frozen probe's soft assignments
+themselves are wrong** (they encode the frozen decoder's biases, as 7D
+already showed); the count error was real (8-611x) but fixing it does not
+recover the oracle. The soft-Q route is abandoned per the verdict rule.
+
+**SECTION 2 -- the mass-correction family** (all below frozen, but with a
+clear internal ordering):
+
+| variant | fog | crosstalk | snow | wet_ground |
+| :--- | :--- | :--- | :--- | :--- |
+| 8A raw alpha | 0.129 | 0.267 | 0.191 | 0.103 |
+| 8E normalized | 0.131 | 0.268 | 0.191 | 0.104 |
+| 8F source prior (best rho) | 0.201 (r0.25) | 0.288 (r0.25) | 0.311 (r0.5) | 0.223 (r0.5) |
+| 8G top-K corrected | 0.191 | 0.485 | 0.387 | 0.351 |
+
+8G (top-K points by soft assignment with corrected counts) is the best of the
+family -- crosstalk 0.485 approaches frozen 0.524 -- because it replaces the
+diffuse wrong-mass assignments with the class-likeliest points. The source-
+count prior (8F) helps over raw alpha (the low-dim prior beats the 17-count
+noise), but neither crosses frozen.
+
+**SECTION 3 -- the mean-estimation route:**
+
+- **3a: random is still the best mean estimator** (k=32: random 0.985-0.993
+  vs conf_top 0.899-0.962, inf_inv 0.834-0.946, diversity 0.641-0.940). The
+  deterministic bulk-sampling strategies do NOT beat random -- confidence-top
+  selects the biased core, influence-inverted walks to the edges, and
+  diversity-greedy is condition-dependent. The 0.98-0.99 mean direction is
+  already near the oracle mean; the last few percent are not where the failure
+  lives.
+- **3b: source-count + target-mean synthesis gives t_cos 0.76-0.86 but mIoU
+  0.10-0.15** (fog 0.110, crosstalk 0.139, snow 0.132, wet_ground 0.107). The
+  T direction is GOOD (0.76-0.86) -- and yet the probe does not recover.
+- **3c: the whitened error is the smoking gun.** The ridge-relevant error
+  ||(S+lI)^-1 (T_hat_c - T_oracle_c)|| / ||(S+lI)^-1 T_oracle_c|| is 3.6-11x
+  for every rho, minimized at rho 0.25-0.5 (fog ep10: r0.0 8.62 -> r0.25 6.77
+  -> r0.5 5.52 -> r1.0 6.77). Even the best mean estimate has a whitened error
+  of ~4-6x the oracle T's ridge norm. The inverse covariance AMPLIFIES the
+  residual T error by an order of magnitude.
+
+**The synthesis -- the ridge is intrinsically ill-conditioned for this
+problem.** A T with t_cos 0.76-0.86 (objectively good: 14-24% direction error)
+produces W with w_cos ~0.05-0.15 and mIoU well below frozen, because the
+last 15-25% of T error is amplified into 85-95% of W error by (S + lI)^-1
+along the low-variance directions. The oracle only works because its T is
+EXACT. No estimator built from a small budget -- soft-mass with corrected
+counts, source-count + random means, shrinkage -- can reduce the T error below
+what the inverse covariance amplifies. The 8D WEAK verdict and the 3c whitened
+error together close the "estimate T, not labels" route: the T is estimable,
+but the probe update is too sensitive to the estimation residual.
+
+## Next: Iteration 9: a probe parameterization that is not ridge-sensitive
+
+The AL thread has now measured, in order: (1) the packing is real but
+propagation fails; (2) the missing-mass argument is real but the means are
+estimable; (3) the T-synthesis chain is exact; (4) the soft-mass assignments
+and counts are both wrong (8D WEAK); (5) even a good T (t_cos 0.76-0.86) is
+amplified into a bad W by the inverse covariance (3c whitened error 4-6x). The
+remaining lever is not better T estimation -- it is a DECODER UPDATE whose
+sensitivity to T error is bounded. Candidates, in order of cheapness:
+- fit the probe in the LOW-RANK subspace where the ridge-relevant directions
+  live (the whitened-error diagnostic says a few hundred directions dominate
+  the amplification; a projected fit may be far less sensitive);
+- a norm-bounded / regularized variant of the update (the amplification is the
+  small-eigenvalue directions -- a stronger regularization trades bias for
+  sensitivity);
+- a first-order decoder update (prototype-like, insensitive to small T errors)
+  that we know reaches the shift-corrected prototype ceiling from Iteration 2.
+
+Verdict rule: if a low-rank or norm-bounded probe update turns the t_cos 0.76
+T into w_cos ~0.7+ and mIoU above frozen, the Pillar-3 mechanism is "estimate
+T from a few labels + a sensitivity-bounded update". If even the oracle-T
+cannot be decoded well under the bounded update (i.e., the bound costs the
+ceiling), then the AL-closeable gap requires the exact-T oracle and the paper
+story is the honest budget-cost curve (Iteration 6) plus the measured reason
+why cheap T estimation cannot close it.
