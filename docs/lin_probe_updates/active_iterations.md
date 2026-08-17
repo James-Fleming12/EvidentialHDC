@@ -472,28 +472,99 @@ label expansion mechanism converts a small budget into it.** The ladder's
 S0-curve (still climbing at 9k labels) points to the honest question: how many
 DIRECT labels (no expansion) are needed to cross frozen -- the cost of the gap.
 
-## Next: Iteration 6: the dimension test -- does a smaller code space make
-labels cheaper?
+## Iteration 6: the dimension test -- a smaller code space does NOT make labels
+cheaper (2026-08-17)
 
-The estimation argument: in the binarized code space, the per-class contribution
-to T is a sum of +-1 vectors, so the class-centroid estimate has noise ~ 1/sqrt
-(n_c) per coordinate while the signal is tiny after sign-binarization spreads the
-128-d signal over 10k dims -- relative estimation error scales as sqrt(d / n_c).
-To keep the T direction accurate, the labels per class must scale with d: ~10k in
-the 10k-d space (i.e. the whole pool, which is why only the oracle works), ~1k in
-the 1k-d space, ~128 in the 128-d space. The measured evidence fits: the 10k-d
-similarities saturate (~0.98), the 128-d promise curves reach 0.82-0.93 with 1-2
-anchors/class, and S0's perfect labels at 9k points ~= frozen in 10k-d. And the
-CEILING does not move with the encoding (the C8 finding: encoding changes lose
-equally), so the dim is a path-cheapening lever, not a ceiling lever.
+The hypothesis: in the binarized code space, the per-class contribution to T is
+a sum of +-1 vectors, so the class-centroid estimate has noise ~ 1/sqrt(n_c)
+per coordinate while the signal is tiny after sign-binarization spreads the
+128-d signal over d dims -- relative estimation error scales as sqrt(d / n_c),
+so labels per class should scale with d. If true, a smaller code dim would
+dramatically cheapen the S0/direct-label budget curve. The test
+(`al_dimension_budget_diag.py`, ep10 + ep21, all 4 conditions): the S0 budget
+curve {100, 300, 1k, 3k, 10k, 30k, 50k} across code dims {128 real-valued,
+512, 1k, 2k, 5k, 10k binarized}, with the frozen/oracle refs per dim.
 
-The test (reuses the ladder): run the S0/direct-label budget curve across code
-dims {128 real-valued features, 512, 1k, 2k, 5k, 10k binarized} and measure
-where each crosses frozen and approaches the oracle as a function of budget. If
-128-d or 1k-d reaches the oracle with 100-1000 labels where 10k-d needs 50k, the
-dimension is the bottleneck -- quantitatively.
+Key numbers (ep10; the budget at which the curve CROSSES the frozen probe):
 
-Verdict rule: if a smaller code dim reaches the oracle at a budget 10-100x below
-the 10k-d budget, the paper's AL story becomes "the code dim is a free parameter
-(encoding changes lose equally); we choose it so the label budget is tractable",
-and the Pillar-3 mechanism is the S0/direct-labeled ridge at the reduced dim.
+| condition | dim 128 | dim 1000 | dim 10000 | oracle 128 | oracle 1000 | oracle 10000 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 30000 | 30000 | 30000 | 0.279 | 0.314 | 0.375 |
+| crosstalk | 30000 | 30000 | 30000 | 0.506 | 0.529 | 0.553 |
+| snow | 10000 | 30000 | 30000 | 0.442 | 0.474 | 0.493 |
+| wet_ground | 10000 | 30000 | 30000 | 0.534 | 0.570 | 0.615 |
+
+ep21 identical (all conditions cross at 10000-30000 regardless of dim).
+
+**Result: the dimension hypothesis is FALSIFIED, and the data is decisive.**
+
+1. **Lowering dim does NOT make labels cheaper -- the curves are parallel
+   across all six dims.** Every dim, every condition: the S0 curve crosses
+   frozen at ~30k labels (60% of the pool). The estimation argument predicted
+   128-d should cross at ~2k labels (n_c ~ d); it needs 30k. The bottleneck is
+   NOT the code dimension -- it is the coverage required by the selection,
+   which is dim-independent. At equal budget, 128-d is only marginally better
+   (fog b3000: 0.160 vs 0.124 at 10k), never 10-100x.
+2. **Shrinking dim trades away ceiling for nothing.** The oracle-per-dim GROWS
+   with dim (fog 0.279 at 128-d -> 0.375 at 10k-d): the AL-closeable gap lives
+   in the high-d space, and at 128-d there is almost no gap to close. The C8
+   "encoding changes lose equally" claim holds for the FROZEN decode, but the
+   LABELED oracle clearly prefers the 10k-d space.
+3. **The S0 knee is the honest cost of the gap: ~40-60% of the pool must be
+   labeled, in every space tested.** The bottleneck is the selection/coverage
+   structure, not the estimator's dimensionality.
+
+**Why the space resists cheap labels (the mechanism, all measured):**
+
+- **The gap is the missing mass.** W_labeled = W_oracle - (S + lI)^-1
+  (sum over UNLABELED points of x_i y_i^T). Scaling W does not change the
+  decode, but DIRECTION does -- and the direction of a partial sum is only
+  right if the labeled subset's per-class sums are proportional to the full
+  per-class sums. The AL gap is exactly the missing-mass term.
+- **Influence selection picks the boundary, not the bulk.** Influence
+  anti-correlates with confidence (-0.40 to -0.64) and wrong points carry 2x
+  the influence: the ranked labels concentrate on outlier/boundary points, so
+  T's class columns point at the boundary direction, not the mean direction.
+  Reaching the mean direction requires the bulk of each class -- and the pool
+  is class-imbalanced ~40x, so the majority classes need thousands of labels.
+- **The boundary is pathologically sensitive: the means barely move but the
+  probe rotates ~90 degrees.** The corruption shift moves the class means only
+  ~5-10 degrees (unlabeled-cos 0.92-0.99), yet cos(W_frozen, W_oracle) is
+  0.05-0.19 on fog. The classes are fat blobs (intra-cos 0.62-0.70, points
+  45-50 deg from their mean) whose means are ~89 deg apart; a small mean shift
+  flips which side of the boundary the BULK falls on. The correct boundary is
+  a mass-weighted function of the means, and only the full-mass oracle T gets
+  it right.
+- **The update is stable; the sensitivity is in T, not the solve.** The ridge
+  is exact and well-conditioned; the inverse covariance amplifies T errors
+  along low-variance directions (README 3.2 property 6), but the dominant term
+  is the missing-mass bias itself.
+
+**Net for the paper**: the cheap-label path is not a smaller code space. The
+one untested combination the data points at: the corrupted means ARE
+predictable (clean mean + shift, shift partially shared across classes at
+pairwise-cos 0.2-0.37, estimated from 2-4 labeled classes per Iteration 2), and
+the expensive part is that the ceiling DECODER is the probe, not the prototype.
+The candidate cheap mechanism: **synthesize the corrupted T from a few labels
+via the shift model (clean + predicted shift per class), then fit the probe on
+the synthesized T** -- using the shift structure to estimate the mass-weighted
+means without labeling the mass.
+
+## Next: Iteration 7: the shift-synthesized T probe
+
+The synthesis from Iterations 2-6: the corrupted class means are predictable
+from the clean means plus a per-class shift (Iteration 2: 2-4 labeled classes
+reach the prototype ceiling via carry-over; shift pairwise-cos 0.2-0.37), and
+the gap to the ceiling is the PROBE decoder needing mass-weighted means
+(Iterations 5-6: the missing-mass term). Iteration 7 combines them:
+- estimate the per-class shifts from a few labeled classes (k in {2, 4, 8}),
+- synthesize the corrupted T: T_c = (clean class mean + predicted shift_c)
+  weighted by the class proportions,
+- fit the probe on the synthesized T (S = the real pool covariance),
+- measure mIoU vs frozen/oracle and vs the label budget.
+
+Verdict rule: if the shift-synthesized probe closes most of the AL gap with
+~10-100 labels (vs the ~30k the direct S0 curve needs), the Pillar-3 mechanism
+is the shift-model probe, and the label budget story becomes: a few labels per
+class estimate the corruption's effect on the class means, and the probe does
+the rest at ~0.9M pts/s.

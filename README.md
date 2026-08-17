@@ -450,6 +450,42 @@ label budget on exactly the clusters the label-free thread cannot name, and conv
 the surviving cluster structure into prototypes. It is the only path that closes the
 residual gap, because it is the only one that supplies the missing class labels.
 
+### 4.4 Why the label budget is not free (measured)
+
+The cluster packing is real (1-NN purity 0.51-0.77, intra vs inter cosine
+0.62-0.70 vs 0.004-0.055), but the update makes the label cost scale with the
+MASS, not the clusters. Three measured mechanisms:
+
+1. **The gap is the missing mass.** The probe update is a sum over labeled
+   points: W_labeled = W_oracle - (S + lI)^-1 (sum over UNLABELED points of
+   x_i y_i^T). Scaling W does not change the decode, but DIRECTION does -- and
+   a partial sum's direction is only right when the labeled subset's per-class
+   sums are proportional to the full per-class sums. The labeled ceiling is
+   only reached by labeling ~40-60% of the pool (measured across every code
+   dimension from 128-d to 10k-d and every expansion scheme tried).
+2. **Influence selection picks the boundary, not the bulk.** The query signal
+   that best ranks the points worth labeling (influence) anti-correlates with
+   confidence (-0.40 to -0.64) and the wrong points carry 2x the influence --
+   it concentrates labels on outlier/boundary points, whose direction is not
+   the class-mean direction. Reaching the mean direction requires the bulk of
+   each class, and the pool is class-imbalanced ~40x.
+3. **The boundary is pathologically sensitive while the means barely move.**
+   The corruption shifts the class means only ~5-10 degrees (unlabeled-cos
+   0.92-0.99), yet cos(W_frozen, W_oracle) is 0.05-0.19 on fog. The classes
+   are fat blobs (intra-cos 0.62-0.70) whose means are ~89 degrees apart, so a
+   small mean shift flips which side of the boundary the bulk falls on. Only
+   the full-mass oracle T gets the mass-weighted boundary right.
+
+So the label cost is not a property of a specific mechanism; it is a property
+of the ridge's missing-mass term, which is dimension-independent (the class-mean
+estimation SNR is set by the 128-d intrinsic geometry, not the code dimension).
+The open question is whether the shift structure can synthesize the missing
+mass: the corrupted class means ARE predictable from the clean means plus a
+per-class shift (partially shared across classes, pairwise-cos 0.2-0.37,
+estimated from 2-4 labeled classes), so the cheap path may be to estimate the
+shift from a few labels and fit the probe on the shift-corrected means rather
+than label the mass.
+
 ---
 
 ## 5. Previous and Current Results
