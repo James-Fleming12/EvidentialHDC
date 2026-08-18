@@ -612,8 +612,7 @@ class GenTrainer(Trainer):
         fractional update needing beta < 1) is exactly the amplification the
         inverse covariance applies to label-statistic errors. Flattening the
         spectrum at TRAIN time makes the TTA/AL probe update less sensitive."""
-        mask = z.sum(dim=1) != 0
-        zf = z.permute(0, 2, 3, 1).reshape(-1, z.shape[1])[mask]
+        zf = z.permute(0, 2, 3, 1).reshape(-1, z.shape[1])
         if len(zf) < 10:
             return torch.tensor(0.0, device=z.device)
         if len(zf) > max_pts:

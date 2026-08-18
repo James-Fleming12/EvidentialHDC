@@ -490,3 +490,127 @@ streams. Fixed by extracting both models in one SHARED pass
 (`extract_features_pair`), guaranteeing A and B are evaluated on identical points.
 This was a latent bug that could have hit any cross-extractor gate.
 
+### Iteration C12: AL-geometry training objectives — the micro sweep (2026-08-18)
+
+The AL thread (`docs/lin_probe_updates/active_iterations.md`, Iterations 0-10)
+measured the label-efficiency bottlenecks as TRAINABLE properties of the feature
+space, so this iteration trains toward them directly. The bottleneck properties,
+from the earlier iterations:
+
+- the **fat-blob geometry** (intra-class cosine 0.62-0.70) drives the class-mean
+  estimation sample complexity, the prototype-metric viability, and T-error
+  amplification (`active_iterations.md` Iterations 0, 4, 7);
+- the **ill-conditioned covariance** (gain q99 ~50-130, the 4-6x ridge-relevant
+  error, the fractional update needing beta < 1) is the inverse-covariance
+  amplification (`active_iterations.md` Iterations 8-10).
+
+Two new objectives were added to `modules/gen_trainers.py`, each attacking one of
+these at training time:
+
+- `ball_loss` — intra-class ball tightening: pull each point toward its class
+  center (cosine) on the corrupted view. Target: intra-cos UP, separation UP.
+- `spectrum_loss` — covariance conditioning: penalize the condition number of the
+  centered batch covariance (bounded in (0,1), subsampled to 4000 pts, ~28ms/step).
+  Target: kappa DOWN, participation rank UP.
+
+Micro runs (8 epochs, 10% data, the `run_al_geometry_train.sh` pattern) of the
+robust `corsupcon` base against five arms: `base`, `_ball`, `_spec`,
+`_ball_spec`, and `_nnpull` (the existing 1-NN-purity lever). Each arm was gated
+with `al_geometry_eval.py` (property diagnostics + the exact Iteration-10 10-COMB
+AL update at k=8 means/class, oracle counts, 64-72 labels total) and the
+`cond_structure_diag` gate.
+
+**AL update and ceilings** (mIoU; 10-COMB = W_frozen + eta(W_beta - W_frozen),
+beta 0.75, eta 0.1, oracle counts, 64-72 labels):
+
+| cond | arm | frozen | oracle | spec-ceil | 10-COMB | 10-COMB - frozen |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | base | 0.074 | 0.189 | 0.218 | 0.094 | +0.020 |
+| fog | ball | 0.093 | 0.187 | 0.202 | 0.096 | +0.003 |
+| fog | nnpull | 0.086 | 0.190 | 0.210 | 0.090 | +0.004 |
+| crosstalk | base | 0.135 | 0.345 | 0.371 | 0.164 | +0.029 |
+| crosstalk | ball | 0.110 | 0.342 | 0.346 | 0.128 | +0.018 |
+| crosstalk | nnpull | 0.121 | 0.347 | 0.359 | 0.148 | +0.027 |
+| snow | base | 0.410 | 0.427 | 0.439 | 0.337 | -0.073 |
+| snow | ball | 0.417 | 0.435 | 0.450 | 0.346 | -0.071 |
+| snow | nnpull | 0.388 | 0.409 | 0.424 | 0.318 | -0.070 |
+| wet_ground | base | 0.423 | 0.555 | 0.614 | 0.362 | -0.061 |
+| wet_ground | ball | 0.427 | 0.569 | 0.616 | 0.368 | -0.059 |
+| wet_ground | nnpull | 0.404 | 0.535 | 0.579 | 0.359 | -0.045 |
+
+**Property diagnostics** (pool, 128-d, normalized):
+
+| cond | arm | intra-cos | inter-cos | sep | 1-NN purity | kappa | part-rank |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | base | 0.648 | 0.651 | -0.003 | 0.543 | 1046k | 2 |
+| fog | ball | 0.655 | 0.448 | 0.206 | 0.536 | 907k | 2 |
+| fog | nnpull | 0.584 | 0.487 | 0.096 | 0.528 | 689k | 3 |
+| crosstalk | base | 0.608 | 0.284 | 0.324 | 0.658 | 1306k | 2 |
+| crosstalk | ball | 0.715 | 0.419 | 0.296 | 0.649 | 998k | 2 |
+| crosstalk | nnpull | 0.682 | 0.233 | 0.449 | 0.632 | 851k | 2 |
+| snow | base | 0.693 | 0.071 | 0.622 | 0.781 | 291k | 3 |
+| snow | ball | 0.715 | 0.095 | 0.620 | 0.781 | 328k | 3 |
+| snow | nnpull | 0.714 | 0.085 | 0.630 | 0.772 | 436k | 3 |
+| wet_ground | base | 0.694 | -0.010 | 0.704 | 0.821 | 875k | 2 |
+| wet_ground | ball | 0.704 | 0.014 | 0.690 | 0.827 | 336k | 3 |
+| wet_ground | nnpull | 0.720 | -0.001 | 0.721 | 0.817 | 557k | 3 |
+
+**cond_structure gate** (A = reference robust extractor, B = this extractor,
+mean over 8 populated classes; feat_cos / dir_ret / corr_tight / zs):
+
+| cond | arm | feat_cos A->B | dir_ret A->B | corr_tight A->B | zs A->B |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | base | 0.157->0.314 | 0.174->0.384 | 0.852->0.811 | 0.092->0.046 |
+| fog | ball | 0.157->0.318 | 0.174->0.379 | 0.852->0.809 | 0.092->0.084 |
+| fog | nnpull | 0.157->0.355 | 0.174->0.462 | 0.852->0.749 | 0.092->0.078 |
+| crosstalk | base | 0.193->0.412 | 0.217->0.524 | 0.875->0.761 | 0.142->0.123 |
+| crosstalk | ball | 0.193->0.286 | 0.217->0.335 | 0.875->0.841 | 0.142->0.093 |
+| crosstalk | nnpull | 0.193->0.416 | 0.217->0.499 | 0.875->0.808 | 0.142->0.116 |
+| snow | base | 0.818->0.817 | 0.977->0.975 | 0.836->0.837 | 0.475->0.388 |
+| snow | ball | 0.818->0.840 | 0.977->0.984 | 0.836->0.854 | 0.475->0.390 |
+| snow | nnpull | 0.818->0.834 | 0.977->0.980 | 0.836->0.851 | 0.475->0.371 |
+| wet_ground | base | 0.827->0.768 | 0.959->0.920 | 0.860->0.837 | 0.527->0.373 |
+| wet_ground | ball | 0.827->0.776 | 0.959->0.919 | 0.860->0.844 | 0.527->0.383 |
+| wet_ground | nnpull | 0.827->0.788 | 0.959->0.930 | 0.860->0.847 | 0.527->0.398 |
+
+**Result — the objective moved the property it targets, but the run is incomplete
+and the AL curve is fragile at micro scale.**
+- **`ball` worked as designed on the property it targets.** Intra-class cosine is
+  UP vs base on crosstalk/snow (0.608->0.715, 0.693->0.715) and wet_ground
+  (0.694->0.704); the fog separation goes from negative (-0.003) to +0.206 (the
+  inter-class cosine drops 0.651->0.448). The ball tightening directly shows up as
+  the geometry the AL means are drawn from.
+- **The spectrum lever was never measured.** `_spec` and `_ball_spec` crashed on
+  the first step (IndexError in `spectrum_loss`: the mask `z.sum(dim=1) != 0` is
+  3D `(B,H,W)` but the reshaped features are 2D, so the boolean index fails). The
+  bug is fixed (mask removed; the covariance is computed on all reshaped points,
+  verified 28ms/step and bounded on degenerate inputs), but those two arms need a
+  rerun to complete the 2x2. **No kappa conclusion is possible yet** -- note the
+  base kappa is ~1M across conditions (the raw-condition-number metric, not the
+  normalized gain used in the Iteration-8/10 analyses).
+- **At micro scale the 10-COMB AL update is NEGATIVE on snow and wet_ground for
+  EVERY arm including the base** (-0.045 to -0.073), and only marginally positive
+  on fog/crosstalk (+0.003 to +0.029). The oracle ceiling is small on snow
+  (+0.017) but large on wet_ground (+0.132); even with oracle counts the
+  fractional-residual update pushed the wrong way on wet_ground at micro scale.
+  This is a micro-scale fragility not present at full scale (Iteration 10 won
+  wet_ground +0.018), and it will need the medium run to resolve.
+- **Head-to-head at micro scale, `ball` is the least-bad AL arm**: best 10-COMB
+  on fog (0.096), snow (0.346), wet_ground (0.368); base keeps crosstalk
+  (0.164). `nnpull` gave no packing gain (1-NN purity flat or slightly down) and
+  did not help the AL curve.
+- **cond_structure:** no arm regresses the robust properties on snow (ball is the
+  most conservative: feat_cos 0.840, dir_ret 0.984). On crosstalk, `ball` is the
+  most conservative (dir_ret 0.335 vs base's 0.524) -- the ball tightening
+  suppressed the corrupted-view retention that the reference extractor recovered;
+  `nnpull` retains it (0.499). These are micro-scale magnitudes and the healthy-
+  condition priority means ball's crosstalk dir_ret drop needs the medium check.
+
+**Interpretation.** The training-objective direction is validated for `ball`: the
+measured bottleneck property (fat blobs) is the property the objective moves. The
+next step is (1) rerun `_spec` / `_ball_spec` with the fixed `spectrum_loss` to
+complete the spectrum half of the 2x2, and (2) promote the surviving arms to a
+medium run so the AL curve is measured at the scale where Iteration 10 won -- the
+micro-scale 10-COMB is not a trustworthy AL verdict (it goes negative even for
+the base).
+
