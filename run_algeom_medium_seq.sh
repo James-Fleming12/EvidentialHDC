@@ -30,6 +30,30 @@ if [ "$MODE" = "resume" ]; then
   TRAIN_FLAG="--resume"
 fi
 
+report_ckpt() {
+  local label="$1"
+  local ckpt_dir="robust_diagnostic/logs/med_algeom_$label/supcon_vib_dglsspp_corsupcon_$label"
+  echo ""
+  echo "=== [$label] checkpoint epochs ==="
+  uv run python - "$ckpt_dir" <<'PY'
+import sys, torch, os
+d = sys.argv[1]
+for name, f in [("final", "SENet"), ("best_val", "SENet_valid_best")]:
+    p = os.path.join(d, f)
+    if not os.path.exists(p):
+        print(f"  {name}: MISSING ({p})")
+        continue
+    try:
+        ck = torch.load(p, map_location="cpu")
+        info = ck.get("info", {})
+        print(f"  {name}: epoch {ck.get('epoch')} | train_iou {info.get('train_iou')} "
+              f"val_iou {info.get('valid_iou')} | best_train_iou {info.get('best_train_iou')} "
+              f"best_val_iou {info.get('best_val_iou')}")
+    except Exception as e:
+        print(f"  {name}: load error {e}")
+PY
+}
+
 run_train() {
   local method="$1"; local label="$2"
   echo ""
@@ -44,7 +68,9 @@ FAIL=false
 fail() { echo "ERROR: $1 failed" >&2; FAIL=true; }
 
 run_train "$BALL" "ball" || fail "train ball"
+report_ckpt "ball"
 run_train "$SPEC" "spec" || fail "train spec"
+report_ckpt "spec"
 echo "=== Both training runs finished ==="
 
 if [ "$SKIP_EVAL" = "1" ]; then
@@ -55,26 +81,61 @@ fi
 run_gate() {
   local method="$1"; local label="$2"
   local ckpt_dir="robust_diagnostic/logs/med_algeom_$label/$method"
+  local tag="${3:-final}"
+  local gate_path="$ckpt_dir"
+  if [ "$tag" = "valid_best" ]; then
+    # the eval scripts hardcode <path>/SENet, so expose the best-val checkpoint
+    # as a symlinked SENet in a sibling dir (full state dict incl. epoch/info).
+    local vdir="$ckpt_dir/valid_best"
+    mkdir -p "$vdir"
+    ln -sf "$ckpt_dir/SENet_valid_best" "$vdir/SENet"
+    gate_path="$vdir"
+  fi
+  local out_tag="${label}_${tag}"
   echo ""
-  echo "=== [$label] AL-geometry gate ==="
+  echo "=== [$label:$tag] AL-geometry gate ==="
   CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/al_geometry_eval.py \
-    --path_b "$ckpt_dir" --method_b "$method" --label_b "med_$label" \
+    --path_b "$gate_path" --method_b "$method" --label_b "$out_tag" \
     --conds fog,crosstalk,snow,wet_ground \
-    --out "robust_diagnostic/logs/algeom_gate_med_$label.json" \
-    2>&1 | tee "logs/algeom_gate_med_$label.log" || fail "algeom gate $label"
+    --out "robust_diagnostic/logs/algeom_gate_med_$out_tag.json" \
+    2>&1 | tee "logs/algeom_gate_med_$out_tag.log" || fail "algeom gate $label:$tag"
 
-  echo "=== [$label] cond_structure gate vs plain DGLSS++ ==="
+  echo "=== [$label:$tag] cond_structure gate vs plain DGLSS++ ==="
   CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/cond_structure_diag.py \
-    --path_b "$ckpt_dir" \
-    --method_b "$method" --label_b "med_$label" \
+    --path_b "$gate_path" \
+    --method_b "$method" --label_b "$out_tag" \
     --conds snow,wet_ground,fog,crosstalk \
-    --out "robust_diagnostic/logs/algeom_cond_gate_med_$label.json" \
-    2>&1 | tee "logs/algeom_cond_gate_med_$label.log" || fail "cond gate $label"
+    --out "robust_diagnostic/logs/algeom_cond_gate_med_$out_tag.json" \
+    2>&1 | tee "logs/algeom_cond_gate_med_$out_tag.log" || fail "cond gate $label:$tag"
 }
 
-run_gate "$BALL" "ball"
-run_gate "$SPEC" "spec"
+# Gate BOTH the final checkpoint (what the log reports) and the best-val
+# checkpoint (the one that would be selected by early stopping). If the best-val
+# epoch is late (== final-1) the model is still climbing and 1-2 more epochs are
+# warranted before any "it doesn't scale" claim.
+run_gate "$BALL" "ball" "final"
+run_gate "$BALL" "ball" "valid_best"
+run_gate "$SPEC" "spec" "final"
+run_gate "$SPEC" "spec" "valid_best"
 
+echo ""
+echo "=== CONVERGENCE CHECK (read the training logs) ==="
+echo "Per-epoch 'Epoch: [k]' lines are in logs/med_algeom_{ball,spec}_train.log."
+echo "The correct signal is WHICH epoch set best_val and the SLOPE of the last"
+echo "epochs' val IoU -- NOT whether the final and best-val gates agree."
+echo "  - valid_best epoch == final epoch, or the last 2-3 val IoUs are still"
+echo "    rising: model is still climbing -> continue (bash run_algeom_medium_seq.sh"
+echo "    $GPU $((EPOCHS+5)) resume)."
+echo "  - valid_best epoch well before the end AND the last 2-3 val IoUs flat:"
+echo "    plateaued WITHIN this run."
+echo ""
+echo "CRITICAL: the cosine scheduler runs on first_cycle=80 epochs (senet-2048p.yml),"
+echo "so at $EPOCHS epochs the LR is still ~max (barely past the 1-ep warmup). A"
+echo "plateau here is a HIGH-LR plateau, not an optimum. The AL-geometry numbers from"
+echo "this run are a SCALING check (do the ball/spec property gains survive 100%"
+echo "data?), NOT a final verdict. A negative 10-COMB at $EPOCHS epochs cannot"
+echo "support a 'ball/spec does not work' claim -- that requires the LR-annealed"
+echo "medium run (21 ep, run_covshift_medium.sh scale)."
 echo ""
 echo "=== MEDIUM AL-GEOMETRY CHECK ==="
 echo "Compare algeom_gate_med_{ball,spec}.json vs the micro C12 numbers AND vs the"
