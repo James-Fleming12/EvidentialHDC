@@ -611,19 +611,22 @@ class GenTrainer(Trainer):
         pool covariance (gain q99 ~50-130, the 4-6x ridge-relevant error, the
         fractional update needing beta < 1) is exactly the amplification the
         inverse covariance applies to label-statistic errors. Flattening the
-        spectrum at TRAIN time makes the TTA/AL probe update less sensitive."""
-        with torch.autocast(device_type='cuda', enabled=False):
-            zf = z.permute(0, 2, 3, 1).reshape(-1, z.shape[1]).float()
-            if len(zf) < 10:
-                return torch.tensor(0.0, device=z.device)
-            if len(zf) > max_pts:
-                idx = torch.randperm(len(zf), device=z.device)[:max_pts]
-                zf = zf[idx]
-            zc = zf - zf.mean(dim=0, keepdim=True)
-            cov = zc.t() @ zc / (len(zc) - 1 + 1e-8)
-            eig = torch.linalg.eigvalsh(cov).clamp(min=eps)
-            cond = eig[-1] / eig[0]
-            return cond / (1.0 + cond)   # bounded in (0, 1)
+        spectrum at TRAIN time makes the TTA/AL probe update less sensitive.
+        Computed in float64: AMP autocast promotes fp32 matmuls to fp16 (which
+        eigvalsh cannot run), but never touches fp64, so the covariance stays
+        full precision without disabling autocast."""
+        zf = z.permute(0, 2, 3, 1).reshape(-1, z.shape[1]).double()
+        zf = zf[zf.sum(dim=1) != 0]   # drop zero/padding rows (mask AFTER reshape)
+        if len(zf) < 10:
+            return torch.tensor(0.0, device=z.device)
+        if len(zf) > max_pts:
+            idx = torch.randperm(len(zf), device=z.device)[:max_pts]
+            zf = zf[idx]
+        zc = zf - zf.mean(dim=0, keepdim=True)
+        cov = zc.t() @ zc / (len(zc) - 1 + 1e-8)
+        eig = torch.linalg.eigvalsh(cov).clamp(min=eps)
+        cond = eig[-1] / eig[0]
+        return (cond / (1.0 + cond)).float()   # bounded in (0, 1)
 
     def dircons_loss(self, z8, z8_aug, proj_labels, max_pts=2000, momentum=0.99,
                      fragile_only=False):
