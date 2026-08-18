@@ -612,17 +612,18 @@ class GenTrainer(Trainer):
         fractional update needing beta < 1) is exactly the amplification the
         inverse covariance applies to label-statistic errors. Flattening the
         spectrum at TRAIN time makes the TTA/AL probe update less sensitive."""
-        zf = z.permute(0, 2, 3, 1).reshape(-1, z.shape[1]).float()
-        if len(zf) < 10:
-            return torch.tensor(0.0, device=z.device)
-        if len(zf) > max_pts:
-            idx = torch.randperm(len(zf), device=z.device)[:max_pts]
-            zf = zf[idx]
-        zc = zf - zf.mean(dim=0, keepdim=True)
-        cov = zc.t() @ zc / (len(zc) - 1 + 1e-8)
-        eig = torch.linalg.eigvalsh(cov).clamp(min=eps)
-        cond = eig[-1] / eig[0]
-        return cond / (1.0 + cond)   # bounded in (0, 1)
+        with torch.autocast(device_type='cuda', enabled=False):
+            zf = z.permute(0, 2, 3, 1).reshape(-1, z.shape[1]).float()
+            if len(zf) < 10:
+                return torch.tensor(0.0, device=z.device)
+            if len(zf) > max_pts:
+                idx = torch.randperm(len(zf), device=z.device)[:max_pts]
+                zf = zf[idx]
+            zc = zf - zf.mean(dim=0, keepdim=True)
+            cov = zc.t() @ zc / (len(zc) - 1 + 1e-8)
+            eig = torch.linalg.eigvalsh(cov).clamp(min=eps)
+            cond = eig[-1] / eig[0]
+            return cond / (1.0 + cond)   # bounded in (0, 1)
 
     def dircons_loss(self, z8, z8_aug, proj_labels, max_pts=2000, momentum=0.99,
                      fragile_only=False):
