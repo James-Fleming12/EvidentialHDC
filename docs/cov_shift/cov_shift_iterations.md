@@ -527,15 +527,23 @@ beta 0.75, eta 0.1, oracle counts, 64-72 labels):
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | fog | base | 0.074 | 0.189 | 0.218 | 0.094 | +0.020 |
 | fog | ball | 0.093 | 0.187 | 0.202 | 0.096 | +0.003 |
+| fog | spec | 0.093 | 0.174 | 0.196 | 0.096 | +0.003 |
+| fog | ball_spec | 0.087 | 0.183 | 0.205 | 0.093 | +0.006 |
 | fog | nnpull | 0.086 | 0.190 | 0.210 | 0.090 | +0.004 |
 | crosstalk | base | 0.135 | 0.345 | 0.371 | 0.164 | +0.029 |
 | crosstalk | ball | 0.110 | 0.342 | 0.346 | 0.128 | +0.018 |
+| crosstalk | spec | 0.123 | 0.343 | 0.350 | 0.146 | +0.023 |
+| crosstalk | ball_spec | 0.121 | 0.341 | 0.352 | 0.144 | +0.023 |
 | crosstalk | nnpull | 0.121 | 0.347 | 0.359 | 0.148 | +0.027 |
 | snow | base | 0.410 | 0.427 | 0.439 | 0.337 | -0.073 |
 | snow | ball | 0.417 | 0.435 | 0.450 | 0.346 | -0.071 |
+| snow | spec | 0.396 | 0.417 | 0.439 | 0.329 | -0.067 |
+| snow | ball_spec | 0.423 | 0.436 | 0.448 | 0.341 | -0.082 |
 | snow | nnpull | 0.388 | 0.409 | 0.424 | 0.318 | -0.070 |
 | wet_ground | base | 0.423 | 0.555 | 0.614 | 0.362 | -0.061 |
 | wet_ground | ball | 0.427 | 0.569 | 0.616 | 0.368 | -0.059 |
+| wet_ground | spec | 0.410 | 0.526 | 0.596 | 0.359 | -0.051 |
+| wet_ground | ball_spec | 0.421 | 0.557 | 0.598 | 0.364 | -0.057 |
 | wet_ground | nnpull | 0.404 | 0.535 | 0.579 | 0.359 | -0.045 |
 
 **Property diagnostics** (pool, 128-d, normalized):
@@ -544,15 +552,23 @@ beta 0.75, eta 0.1, oracle counts, 64-72 labels):
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | fog | base | 0.648 | 0.651 | -0.003 | 0.543 | 1046k | 2 |
 | fog | ball | 0.655 | 0.448 | 0.206 | 0.536 | 907k | 2 |
+| fog | spec | 0.607 | 0.462 | 0.144 | 0.512 | 650k | 3 |
+| fog | ball_spec | 0.658 | 0.587 | 0.072 | 0.531 | 632k | 2 |
 | fog | nnpull | 0.584 | 0.487 | 0.096 | 0.528 | 689k | 3 |
 | crosstalk | base | 0.608 | 0.284 | 0.324 | 0.658 | 1306k | 2 |
 | crosstalk | ball | 0.715 | 0.419 | 0.296 | 0.649 | 998k | 2 |
+| crosstalk | spec | 0.713 | 0.270 | 0.444 | 0.645 | 992k | 2 |
+| crosstalk | ball_spec | 0.696 | 0.344 | 0.352 | 0.641 | 717k | 2 |
 | crosstalk | nnpull | 0.682 | 0.233 | 0.449 | 0.632 | 851k | 2 |
 | snow | base | 0.693 | 0.071 | 0.622 | 0.781 | 291k | 3 |
 | snow | ball | 0.715 | 0.095 | 0.620 | 0.781 | 328k | 3 |
+| snow | spec | 0.694 | 0.078 | 0.615 | 0.775 | 325k | 3 |
+| snow | ball_spec | 0.717 | 0.085 | 0.632 | 0.785 | 355k | 3 |
 | snow | nnpull | 0.714 | 0.085 | 0.630 | 0.772 | 436k | 3 |
 | wet_ground | base | 0.694 | -0.010 | 0.704 | 0.821 | 875k | 2 |
 | wet_ground | ball | 0.704 | 0.014 | 0.690 | 0.827 | 336k | 3 |
+| wet_ground | spec | 0.726 | 0.008 | 0.718 | 0.818 | 479k | 3 |
+| wet_ground | ball_spec | 0.743 | 0.000 | 0.743 | 0.823 | 323k | 4 |
 | wet_ground | nnpull | 0.720 | -0.001 | 0.721 | 0.817 | 557k | 3 |
 
 **cond_structure gate** (A = reference robust extractor, B = this extractor,
@@ -562,55 +578,75 @@ mean over 8 populated classes; feat_cos / dir_ret / corr_tight / zs):
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | fog | base | 0.157->0.314 | 0.174->0.384 | 0.852->0.811 | 0.092->0.046 |
 | fog | ball | 0.157->0.318 | 0.174->0.379 | 0.852->0.809 | 0.092->0.084 |
+| fog | spec | 0.157->0.335 | 0.174->0.417 | 0.852->0.778 | 0.092->0.085 |
+| fog | ball_spec | 0.157->0.314 | 0.174->0.383 | 0.852->0.810 | 0.092->0.075 |
 | fog | nnpull | 0.157->0.355 | 0.174->0.462 | 0.852->0.749 | 0.092->0.078 |
 | crosstalk | base | 0.193->0.412 | 0.217->0.524 | 0.875->0.761 | 0.142->0.123 |
 | crosstalk | ball | 0.193->0.286 | 0.217->0.335 | 0.875->0.841 | 0.142->0.093 |
+| crosstalk | spec | 0.193->0.380 | 0.217->0.457 | 0.875->0.828 | 0.142->0.117 |
+| crosstalk | ball_spec | 0.193->0.358 | 0.217->0.424 | 0.875->0.826 | 0.142->0.097 |
 | crosstalk | nnpull | 0.193->0.416 | 0.217->0.499 | 0.875->0.808 | 0.142->0.116 |
 | snow | base | 0.818->0.817 | 0.977->0.975 | 0.836->0.837 | 0.475->0.388 |
 | snow | ball | 0.818->0.840 | 0.977->0.984 | 0.836->0.854 | 0.475->0.390 |
+| snow | spec | 0.818->0.819 | 0.977->0.976 | 0.836->0.839 | 0.475->0.371 |
+| snow | ball_spec | 0.818->0.842 | 0.977->0.985 | 0.836->0.854 | 0.475->0.407 |
 | snow | nnpull | 0.818->0.834 | 0.977->0.980 | 0.836->0.851 | 0.475->0.371 |
 | wet_ground | base | 0.827->0.768 | 0.959->0.920 | 0.860->0.837 | 0.527->0.373 |
 | wet_ground | ball | 0.827->0.776 | 0.959->0.919 | 0.860->0.844 | 0.527->0.383 |
+| wet_ground | spec | 0.827->0.765 | 0.959->0.903 | 0.860->0.851 | 0.527->0.374 |
+| wet_ground | ball_spec | 0.827->0.784 | 0.959->0.908 | 0.860->0.865 | 0.527->0.392 |
 | wet_ground | nnpull | 0.827->0.788 | 0.959->0.930 | 0.860->0.847 | 0.527->0.398 |
 
-**Result — the objective moved the property it targets, but the run is incomplete
-and the AL curve is fragile at micro scale.**
-- **`ball` worked as designed on the property it targets.** Intra-class cosine is
-  UP vs base on crosstalk/snow (0.608->0.715, 0.693->0.715) and wet_ground
-  (0.694->0.704); the fog separation goes from negative (-0.003) to +0.206 (the
-  inter-class cosine drops 0.651->0.448). The ball tightening directly shows up as
-  the geometry the AL means are drawn from.
-- **The spectrum lever was never measured.** `_spec` and `_ball_spec` crashed on
-  the first step (IndexError in `spectrum_loss`: the mask `z.sum(dim=1) != 0` is
-  3D `(B,H,W)` but the reshaped features are 2D, so the boolean index fails). The
-  bug is fixed (mask removed; the covariance is computed on all reshaped points,
-  verified 28ms/step and bounded on degenerate inputs), but those two arms need a
-  rerun to complete the 2x2. **No kappa conclusion is possible yet** -- note the
-  base kappa is ~1M across conditions (the raw-condition-number metric, not the
-  normalized gain used in the Iteration-8/10 analyses).
-- **At micro scale the 10-COMB AL update is NEGATIVE on snow and wet_ground for
-  EVERY arm including the base** (-0.045 to -0.073), and only marginally positive
-  on fog/crosstalk (+0.003 to +0.029). The oracle ceiling is small on snow
-  (+0.017) but large on wet_ground (+0.132); even with oracle counts the
-  fractional-residual update pushed the wrong way on wet_ground at micro scale.
-  This is a micro-scale fragility not present at full scale (Iteration 10 won
-  wet_ground +0.018), and it will need the medium run to resolve.
-- **Head-to-head at micro scale, `ball` is the least-bad AL arm**: best 10-COMB
-  on fog (0.096), snow (0.346), wet_ground (0.368); base keeps crosstalk
-  (0.164). `nnpull` gave no packing gain (1-NN purity flat or slightly down) and
-  did not help the AL curve.
-- **cond_structure:** no arm regresses the robust properties on snow (ball is the
-  most conservative: feat_cos 0.840, dir_ret 0.984). On crosstalk, `ball` is the
-  most conservative (dir_ret 0.335 vs base's 0.524) -- the ball tightening
-  suppressed the corrupted-view retention that the reference extractor recovered;
-  `nnpull` retains it (0.499). These are micro-scale magnitudes and the healthy-
-  condition priority means ball's crosstalk dir_ret drop needs the medium check.
+**Result — the objectives move the properties they target; the AL verdict still
+needs the medium run.**
+- **`ball` moved the blob geometry it targets.** Intra-class cosine is UP vs base
+  on crosstalk/snow (0.608->0.715, 0.693->0.715) and wet_ground (0.694->0.704);
+  the fog separation goes from negative (-0.003) to +0.206 (the inter-class
+  cosine drops 0.651->0.448). `ball_spec` carries the same tightening (intra-cos
+  the best of all arms on wet_ground at 0.743, and crosstalk sep 0.352 vs base
+  0.324).
+- **`spec` moved the spectrum it targets.** kappa is DOWN vs base on the three
+  ill-conditioned conditions: fog 1046k->650k, crosstalk 1306k->992k, wet_ground
+  875k->479k, with participation rank 2->3 on fog/wet_ground. `ball_spec`
+  combines both: kappa 632k (fog) / 717k (crosstalk) / 323k (wet_ground, prank
+  4, the flattest of any arm). The spectrum half of the 2x2 is now measured --
+  both spectrum-bearing arms flatten the conditioning.
+- **The property gains do not transfer to the AL curve at micro scale.** The
+  10-COMB update is NEGATIVE on snow and wet_ground for EVERY arm including the
+  base (-0.045 to -0.082), and only marginally positive on fog/crosstalk (+0.003
+  to +0.029). On the positive conditions the BASE is the best arm (fog +0.020,
+  crosstalk +0.029); on the healthy conditions the training-objective arms are
+  least-negative (spec: snow -0.067, wet_ground -0.051; nnpull: wet_ground
+  -0.045). The oracle ceiling is small on snow (+0.017) but large on wet_ground
+  (+0.132); even with oracle counts the fractional-residual update pushed the
+  wrong way on wet_ground at micro scale. This is a micro-scale fragility not
+  present at full scale (Iteration 10 won wet_ground +0.018), and it will need
+  the medium run to resolve.
+- **The training objectives neither help nor clearly hurt the AL curve at micro
+  scale**: the delta spread across arms is small (fog +0.003..+0.020, crosstalk
+  +0.018..+0.029, snow -0.082..-0.067, wet_ground -0.061..-0.045). `spec` is the
+  least-negative on snow; `nnpull` on wet_ground; `ball_spec` is worst on snow
+  despite having the best geometry. `nnpull` gave no packing gain (1-NN purity
+  flat or slightly down). The property gains only matter at the scale where the
+  AL update itself works.
+- **cond_structure:** no arm regresses the robust properties on snow; `spec`
+  holds them (feat_cos 0.819, dir_ret 0.976, corr_tight 0.839 -- effectively
+  unchanged from the reference). `ball_spec` is the most conservative on
+  snow/wet_ground (corr_tight 0.854/0.865, the highest of any arm) but drops
+  crosstalk dir_ret (0.424 vs base's 0.457). These are micro-scale magnitudes
+  and the healthy-condition priority means the crosstalk dir_ret drops need the
+  medium check.
 
-**Interpretation.** The training-objective direction is validated for `ball`: the
-measured bottleneck property (fat blobs) is the property the objective moves. The
-next step is (1) rerun `_spec` / `_ball_spec` with the fixed `spectrum_loss` to
-complete the spectrum half of the 2x2, and (2) promote the surviving arms to a
-medium run so the AL curve is measured at the scale where Iteration 10 won -- the
-micro-scale 10-COMB is not a trustworthy AL verdict (it goes negative even for
-the base).
+**Interpretation.** The 2x2 is complete and both training-objective directions
+are validated: `ball` tightens the blobs, `spec` flattens the spectrum, and
+`ball_spec` combines them. The property gains being visible at micro scale is
+exactly what the objectives were designed to do. The next step is a medium run
+of the surviving arms (`ball`, `spec`, `ball_spec`) so the AL curve is measured
+at the scale where Iteration 10 won -- the micro-scale 10-COMB is not a
+trustworthy AL verdict (it goes negative even for the base). Note: the three
+`spectrum_loss` failures on the way here were two real bugs (a mask computed on
+the wrong shape -> IndexError, and AMP autocast re-promoting the fp32 covariance
+matmul to fp16 -> eigvalsh Half error), fixed by computing the mask after
+reshape and the covariance in float64 (autocast-immune), not by disabling
+autocast.
 
