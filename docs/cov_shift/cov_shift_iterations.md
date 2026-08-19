@@ -1823,3 +1823,53 @@ budget curve is the one that turns positive. $B1$ at $k=8$ is already cheaper
 than the C15/C16 $k=8$ $T$-hat route and at $k=32$ it closes the gap on every
 condition. The remaining work is $U$ estimation without the oracle (C22 pool
 and $S^{-1}T$ both failed), not more prototype tuning.
+
+### Iteration C26: low bonuses, $U$ without oracle, tiny bank (2026-08-19)
+
+Per your three questions, still on cov-shift ep10, still no extractor change
+(`al_lowbonus_bank_diag.py`, eval-only, $k=32$ where $B1$ is positive):
+
+**Q1 Why snow ($+0.036$ gap, $B1$ $+0.015$ at $k=32$) and crosstalk ($+0.031$,
+$+0.018$) bonuses are low:** at $k=32$, $t_{cos}=0.651$ fog and $0.970$
+crosstalk but $w_{cos}\approx 0$ and $\Delta_{full}$ is flat-negative to
+$k=128$ ($-0.22$ fog, $-0.46$ crosstalk). More labels buy $t_{cos}$ ($0.623
+\rightarrow 0.663$ fog, $0.88 \rightarrow 0.926$ wet to $k=128$) but $W$
+does not follow. This is the same decoder-limited pattern as C23: the
+missing information is not mean quality or mass, it is the ridge
+amplification. The gap itself is also small on snow/crosstalk, so even the
+$+0.015$ on snow is $42\%$ of its $+0.036$ gap.
+
+**Q2 $U$ without oracle at $k=32$ ($r=8$, $B1$ $r=8$ $+0.015$ snow / $+0.129$
+wet as the reference):**
+
+| $U$ | fog $\Delta$ | align | snow $\Delta$ | wet $\Delta$ |
+| :--- | :--- | :--- | :--- | :--- |
+| $U_T = SVD(T_{hat})$ | $-0.008$ | $0.00$ | $-0.009$ | $+0.011$ |
+| $U_{Rreg}$ (ridge $\lambda*10$) | $-0.216$ | $0.05$ | $-0.423$ | $-0.374$ |
+| $U_{pool}=SVD(S)$ | $-0.009$ | $0.00$ | $-0.005$ | $+0.013$ |
+| $U_{shift}=SVD(M)$ | $-0.006$ | $0.01$ | $-0.003$ | $+0.030$ |
+
+All are $\approx 0$ (or negative) and align $0.00$ to $0.05$ with $U_R$. No
+unlabeled $U$ captures the residual subspace. The $T$-based $U_T$ and the
+regularized $W_{sub}$ $U_{Rreg}$ both fail exactly as C21 $U_{sub}$ did.
+
+**Q3 Tiny memory bank (labeled $56$ + $0$/$500$/$1000$/$5000$ random unlabelled,
+$1$-NN on raw 128-d, no stream):**
+
+| bank | fog acc | crosstalk | snow | wet_ground |
+| :--- | :--- | :--- | :--- | :--- |
+| $56$ (labels only) | $0.355$ | $0.672$ | $0.618$ | $0.544$ |
+| $556$ ($+500$) | **$0.662$** | $0.711$ | **$0.720$** | **$0.688$** |
+| $1056$ ($+1000$) | $0.684$ | $0.728$ | $0.724$ | $0.704$ |
+| $5056$ ($+5000$) | $0.738$ | $0.757$ | $0.753$ | $0.765$ |
+
+Adding just $500$ unlabelled points to the $56$ labels jumps fog $+0.307$
+($0.355 \rightarrow 0.662$) and wet $+0.144$ ($0.544 \rightarrow 0.688$);
+$5000$ adds only $+0.05$ more. The $k$NN bank at $556$ already beats the HDC
+linear frozen ($0.259$ fog, $0.427$ wet) by $0.40$ and $0.26$. The bank does
+not need to be large.
+
+**Takeaway:** the low bonuses are decoder-limited with small gaps, $U$ without
+oracle is not recoverable from any of the four unlabeled statistics at $k=32$,
+and a very low-size bank ($500$ unlabelled) is the only lever that moves the
+needle without touching the extractor.
