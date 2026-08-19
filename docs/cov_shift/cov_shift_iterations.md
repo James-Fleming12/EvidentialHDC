@@ -1029,4 +1029,64 @@ base (train `inputin_in_chan_ball` / `inputin_in_chan_spec`), so the geometry
 gains ride on the higher-ceiling extractor. The README's three candidate next
 steps are documented there (Section 6).
 
+### Iteration C18: the cov-shift AL test -- the recipe does NOT transfer (2026-08-19)
+
+The identical `al_rule_budget_diag` on the cov-shift `inputin_in_chan` ep10 +
+ep21 checkpoints (the Pillar-1 extractor with the HIGH fog/crosstalk ceilings).
+Cross-extractor comparison (C16 ball vs cov-shift ep10; TEST2 = best AL delta
+at the deployable recipe, k x rho x rule over the source-count grid):
+
+| cond | extractor | frozen | ceiling | closeable gap | best AL delta | whitened err |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | ball | 0.088 | 0.252 | +0.150 | **+0.054** (k2 r0.25 centroid) | 124.5 |
+| fog | cov-ep10 | 0.259 | 0.416 | +0.118 | **+0.003** (k8 r0.25 random) | 42.5 |
+| crosstalk | ball | 0.126 | 0.401 | +0.256 | **+0.075** (k2 r0.25 centroid) | 67.1 |
+| crosstalk | cov-ep10 | 0.466 | 0.526 | +0.028 | **-0.002** (k8 r0.75 random) | 15.1 |
+| snow | ball | 0.506 | 0.554 | +0.036 | **+0.004** (k2 r0.75 centroid) | 21.9 |
+| snow | cov-ep10 | 0.457 | 0.511 | +0.036 | **-0.001** (k8 r0.75 random) | 16.1 |
+| wet_ground | ball | 0.641 | 0.730 | +0.084 | **-0.007** (k8 r0.5 centroid) | 26.5 |
+| wet_ground | cov-ep10 | 0.427 | 0.670 | +0.187 | **-0.005** (k8 r0.75 centroid) | 15.0 |
+
+ep21 is the same pattern (fog +0.019 at best, crosstalk -0.001, snow -0.003,
+wet +0.001 -- all near-zero, none of the ball/spec magnitude).
+
+**Result: the cheap-AL recipe does NOT transfer to the cov-shift extractor.**
+On every condition the cov-shift AL delta is ~zero (-0.005 to +0.019), far
+below the ball/spec numbers (fog +0.054 vs +0.003, crosstalk +0.075 vs -0.002).
+The cov-shift feature space is NOT AL-friendly at the cheap budget -- the
+frozen probe is already too close to the probe ceiling on crosstalk (gap +0.028)
+and the mean-quality / whitened-error structure does not convert labels into
+updates there.
+
+**Why (the premise is now attributed across BOTH extractors):**
+- The mean-quality ordering holds everywhere (centroid/random > confidence >
+  influence, mean_cos 0.30-0.96), so the rule finding is extractor-independent
+  and robust.
+- The whitened error is LOWER on cov-shift (13-42x) than ball (22-125x), yet
+  the AL delta is WORSE: the ridge is less sensitive but the closeable gaps
+  are also smaller on cov-shift fog (0.118 vs 0.150) and crosstalk (0.028 vs
+  0.256). The cov-shift extractor's frozen decode already captures most of its
+  ceiling on crosstalk (0.466 vs 0.526) -- there is almost nothing for labels
+  to buy there.
+- On fog the cov-shift gap is +0.118 (comparable to ball) but the recipe
+  reaches only +0.003: the T_hat mass / amplification structure on the
+  cov-shift space is less label-responsive than the ball space (its T direction
+  t_cos 0.62 vs ball 0.53, but the w_cos 0.026 vs 0.017 is not better).
+
+**The synthesis -- the two extractors are complementary, not competing:**
+- **ball/spec (corsupcon)**: AL-friendly geometry (labels convert to updates
+  at 32 labels), healthy-condition ceilings equal-or-better than cov-shift, but
+  fog/crosstalk ceilings ~0.18 LOWER.
+- **cov-shift (inputin_in_chan)**: high fog/crosstalk ceilings, but the frozen
+  probe already sits near its own ceiling there, so cheap AL has nothing to add
+  -- the label budget is wasted on this space.
+
+**Net: the full story needs the hybrid.** Neither extractor alone has both
+properties. The next step (README Section 6.1, option 3) is to train the
+ball/spec AL-geometry objectives on the cov-shift base
+(`inputin_in_chan_ball` / `inputin_in_chan_spec`) -- the goal being one FE with
+the cov-shift high fog/crosstalk ceilings AND the ball/spec AL-friendly
+geometry. The C18 cross-extractor data is the justification: the two spaces'
+strengths are disjoint, and the hybrid is the only path to both.
+
 

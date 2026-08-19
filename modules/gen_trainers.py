@@ -172,6 +172,16 @@ CORRSC_VARIANTS = {
 # corrupted-manifold is the primary pull. (corrfree_corrsc is untouched: its standard
 # anchor applies to the INV slice for TTA, which is the intended division.)
 SUPCON_VARIANTS['supcon_vib_dglsspp_corsupcon_corrsc'] = {'weight': 0.02}
+# C18 hybrid (README 6.1 option 3): the AL-geometry objectives on the COV-SHIFT
+# base. The cov-shift extractor (inputin_in_chan) has the HIGH fog/crosstalk
+# ceilings but the frozen probe sits near its own ceiling (AL buys ~nothing);
+# the corsupcon ball/spec spaces are AL-friendly but have lower fog/crosstalk
+# ceilings. These variants add ONLY ball/spec (no SupCon -- the cov-shift recipe
+# is GMSIFC/LSCC, kept untouched) to see if one FE gets both properties.
+SUPCON_VARIANTS['supcon_vib_dglsspp_inputin_in_chan_ball'] = {'ball_w': 0.1}
+SUPCON_VARIANTS['supcon_vib_dglsspp_inputin_in_chan_spec'] = {'spec_w': 0.1}
+SUPCON_VARIANTS['supcon_vib_dglsspp_inputin_in_chan_ball_spec'] = {'ball_w': 0.05,
+                                                                    'spec_w': 0.05}
 HDC_VARIANTS = {
     'supcon_vib_dglsspp_corsupcon_hdc': 0.1,
 }
@@ -230,6 +240,13 @@ INPUT_NORM_VARIANTS = {
 }
 for _m in INPUT_NORM_VARIANTS:
     DGLSS_METHODS.add(_m)
+# C18 hybrid: the ball/spec AL-geometry variants of the cov-shift base must
+# inherit the cov-shift INPUT-NORM config (per-scan normalization on channels
+# 0/4 + internal InstanceNorm) -- otherwise the 'inputin_in_chan' name is
+# cosmetic and the architecture silently trains WITHOUT the cov-shift fix.
+for _v in ('ball', 'spec', 'ball_spec'):
+    INPUT_NORM_VARIANTS[f'supcon_vib_dglsspp_inputin_in_chan_{_v}'] = (
+        {'norm': 'in', 'norm_channels': (0, 4)})
 
 class GenTrainer(Trainer):
     def __init__(self, ARCH, DATA, datadir, logdir, path=None, method='baseline', cutoff_percent=1.0,
@@ -1081,6 +1098,21 @@ class GenTrainer(Trainer):
                             # corruption shift is retained (Iteration-19.8 diagnosis).
                             loss_total = loss_total + ANTI_ANCHOR_VARIANTS[self.method] * self.anti_anchor_loss(
                                 z8, z8_aug, proj_labels)
+                    if 'inputin_in_chan' in self.method:
+                        # C18 hybrid (README 6.1 option 3): the AL-geometry
+                        # objectives on the COV-SHIFT base. The cov-shift
+                        # extractor's recipe (GMSIFC/LSCC, no SupCon) is kept
+                        # untouched; only ball/spec are added, on the SAME
+                        # z8_aug view the corsupcon family uses. Goal: the
+                        # cov-shift high fog/crosstalk ceilings AND the
+                        # ball/spec AL-friendly geometry.
+                        cfg = SUPCON_VARIANTS.get(self.method, {})
+                        if 'ball_w' in cfg:
+                            loss_total = loss_total + cfg['ball_w'] * self.ball_loss(
+                                z8_aug, proj_labels)
+                        if 'spec_w' in cfg:
+                            loss_total = loss_total + cfg['spec_w'] * self.spectrum_loss(
+                                z8_aug)
                     if self.method == 'supcon_vib_dglsspp_vib':
                         loss_total = loss_total + 0.01 * self.vib_loss(z8, z8_aug)
                 elif self.method.startswith('supcon_vib'):
