@@ -8,49 +8,275 @@ here. The extractor-level comparison (vs DGLSS++ and Robust DGLSS++) is summariz
 in the README (Pillar 1); the per-iteration mechanics are in
 `docs/robust_iterations.md` (Iterations 19.10 - 19.14).
 
-## Background: the problem cov-shift solves
+## Mathematical Formulation of the Method
 
-The project's central finding (Iteration 19.8, robust-iterations doc) is that
-DGLSS++'s ceiling comes from NEVER being told to undo corruption: the recoverable
-classes are the SHIFTED ones (car fog dir_retention 0.27, og 0.27, veg 0.03, far from
-clean), and every training objective we tried (SupCon clean-anchor, GMSIFC/LSCC
-view-invariance, dircons, corrsc, hdc, antianchor) either erased that shift or was
-flat. The Robust DGLSS++ variant improved TTA but LOWERED the ceiling (clean-anchor
-erased the shift); plain DGLSS++ had the highest ceiling but the weakest TTA.
+### 1. Motivation and Problem Formulation
 
-**The cov-shift insight:** the fog/crosstalk failure is not a single geometry problem: it decomposes into two mechanisms:
-- **fog** : the recoverable structure is a *shifted direction* (geometry) that
-  normalization must not erase.
-- **crosstalk** : the corruption is a *statistics shift* in the range/remission
-  channels that normalization should fix.
+#### 1.1 Objective: Robust LiDAR Semantic Segmentation under Severe Domain Shift
+Let a LiDAR scan be represented in spherical range-view projection as a 5-channel tensor $X \in \mathbb{R}^{5 \times H \times W}$, where the channel dimension indexes:
+$$\mathcal{C} = \big\{ 0: \text{range } r, \; 1: x, \; 2: y, \; 3: z, \; 4: \text{remission } i \big\}$$
+Each pixel $(u, v) \in \{1, \dots, H\} \times \{1, \dots, W\}$ corresponds to a projected LiDAR beam return with semantic ground truth label $Y_{u,v} \in \{0, 1, \dots, K\}$, where $Y_{u,v} = 0$ denotes unobserved / empty space or ignored classes, and $\{1, \dots, K\}$ denotes the $K$ valid semantic categories (e.g., $K=17$ on SemanticKITTI). A binary validity mask $M \in \{0, 1\}^{H \times W}$ indicates valid LiDAR point returns:
+$$M_{u,v} = \mathbb{1}[X_{0, u, v} > 0]$$
 
-The cov-shift method addresses these as two separate mechanisms instead of one
-geometry to balance. It does NOT pull corrupted features toward clean (no anchoring);
-it fixes the covariate-shift statistics so the network receives well-scaled inputs.
+The model is parameterized as an encoder-decoder neural network $f_\theta: \mathbb{R}^{5 \times H \times W} \to \mathbb{R}^{D_{\text{feat}} \times H \times W}$ with a bottleneck dimensionality $D_{\text{feat}} = 128$, producing per-pixel bottleneck feature embeddings $z(u, v) = f_\theta(X)_{u, v} \in \mathbb{R}^{128}$. A lightweight linear semantic head $g_\phi: \mathbb{R}^{128} \to \mathbb{R}^{K+1}$ produces class logits $\hat{Y}_{u,v} = g_\phi(z(u,v))$.
 
-## The method
+#### 1.2 Downstream Hyperdimensional Computing (HDC) Inference
+In the downstream evidential / zero-shot test-time adaptation setting, classification is performed via random hyperdimensional projection and sign-binarization:
+1. **Random Projection:** A fixed, pseudo-random projection matrix $R \in \{-1, +1\}^{128 \times D_{\text{HDC}}}$ is sampled once with i.i.d. Rademacher entries $R_{i, j} \sim \mathcal{U}(\{-1, +1\})$, where $D_{\text{HDC}} = 10{,}000$.
+2. **Sign Binarization:** For any continuous bottleneck embedding $z \in \mathbb{R}^{128}$, its binary hyperdimensional representation $b \in \{-1, +1\}^{D_{\text{HDC}}}$ is computed as:
+   $$b = \operatorname{sign}(z R)$$
+3. **Class Prototypes:** Clean-data class prototype vectors $P_c \in \mathbb{R}^{D_{\text{HDC}}}$ are constructed by pooling the binarized codes of clean training points belonging to class $c \in \{1, \dots, K\}$:
+   $$P_c = \frac{\sum_{i \in \mathcal{S}_c} b_i}{\big\| \sum_{i \in \mathcal{S}_c} b_i \big\|_2}, \quad \text{where } \mathcal{S}_c = \{ i : Y_i = c \}$$
+4. **Cosine Decoding:** At inference time, a test point with code $b_{\text{test}}$ is assigned class prediction:
+   $$\hat{c} = \arg\max_{c \in \{1, \dots, K\}} \cos(b_{\text{test}}, P_c) = \arg\max_{c} \frac{\langle b_{\text{test}}, P_c \rangle}{\|b_{\text{test}}\|_2 \|P_c\|_2}$$
 
-Three changes to the DGLSS++ pipeline, all about *statistics* not *geometry*:
+#### 1.3 Desiderata for the Learned Feature Space
+To ensure that both zero-shot frozen decoding and test-time adaptation (TTA) succeed under corruptions (such as fog, crosstalk, snow, wet ground, etc.), the bottleneck representation $z = f_\theta(X)$ must satisfy four strict mathematical properties:
+1. **Intra-class Compactness and Inter-class Margin:** Embeddings of class $c$ must form dense clusters on the unit hypersphere $\mathbb{S}^{127}$, maximizing angular separation from other classes so that sign binarization $\operatorname{sign}(z R)$ produces maximally orthogonal Hamming codewords.
+2. **Preservation of Recoverable Geometric Displacement:** When physical corruptions (e.g., fog) introduce a coherent spatial shift $\Delta z_c$ to class $c$, the feature extractor must *not* forcefully crush or un-learn this shifted subspace. The shifted direction contains linearly separable structure that allows labeled oracle and adaptive decoders to recover the corrupted points.
+3. **Invariance to First-Order Sensor Energy Shifts:** For corruptions (e.g., crosstalk, sensor noise) that disrupt intensity and depth return statistics, the network must absorb statistical shifts in sensor channels $(r, i)$ so activations remain within standard operational bounds.
+4. **Batch-Independent Scale Invariance:** Intermediate network activations must not rely on clean running statistics that become invalid under out-of-distribution test conditions.
 
-1. **Per-scan input normalization restricted to the statistics-shifted channels.**
-   The parser normalizes the 5-channel input by FIXED clean-data `img_means` /
-   `img_stds`; under fog/crosstalk the network receives inputs scaled against clean
-   statistics. The cov-shift fix re-normalizes each scan's VALID points by its OWN
-   per-scan mean/std, but only on the **range + remission channels (0, 4)**: the
-   channels crosstalk's statistics shift lives in. The **xyz geometry channels
-   (1-3) are left in the parser's clean-stat normalization**, so fog's shifted
-   direction survives. (Full-channel normalization was tried and ERASES fog's
-   direction, Iteration 19.12.2, rejected.)
-2. **Internal InstanceNorm** replacing BatchNorm throughout the backbone. BN's
-   learned running-stats are computed on clean data, so under covariate shift the
-   internal normalization itself distorts features; InstanceNorm normalizes each scan
-   independently (with learnable affine scale/shift), removing the batch-coupling
-   that breaks under shift.
-3. **Applied inside the model forward** (`input_in` flag in `ResNet_34`), so it holds
-   at BOTH train and eval time: the diagnostics call `model()` directly.
+---
 
-The method name: `supcon_vib_dglsspp_inputin_in_chan` (per-scan **in**put
-normalization on **chan**nels 0/4 + internal InstanceNorm).
+### 2. Step 1: The Base DGLSS++ Formulation
+
+DGLSS++ (Kim et al., TPAMI 2026) models domain shift primarily as a combination of **sensor beam sparsity differences** and **scene-level distribution shifts**. It trains on a single dense source domain while enforcing two consistency objectives across dense and sparse views: Generalized Masked Sparsity-Invariant Feature Consistency (GMSIFC) and Localized Semantic Correlation Consistency (LSCC).
+
+#### 2.1 Sparse View Augmentation
+Given a clean source scan $X \in \mathbb{R}^{5 \times H \times W}$, a sparse augmented view $X^a = \mathcal{A}_{\text{drop}}(X)$ is generated by randomly dropping horizontal beam rows (dense-to-sparse simulation) with dropout probability $p \sim \mathcal{U}(0.3, 0.7)$. This partitions the spatial coordinate grid into:
+- **Paired valid positions:** $\Omega_p = \{(u, v) : M_{u, v} = 1 \land M^a_{u, v} = 1 \}$
+- **Unpaired source positions:** $\Omega_u^s = \{(u, v) : M_{u, v} = 1 \land M^a_{u, v} = 0 \}$
+- **Unpaired augmented positions:** $\Omega_u^a = \{(u, v) : M_{u, v} = 0 \land M^a_{u, v} = 1 \}$
+
+#### 2.2 Semantic Segmentation Objective
+Let $\hat{Y} = g_\phi(f_\theta(X))$ and $\hat{Y}^a = g_\phi(f_\theta(X^a))$ be the predicted class probability distributions for the clean and sparse views. The base supervision is the weighted multi-class cross-entropy loss over both views:
+$$\mathcal{L}_{\text{sem}} = \frac{1}{2} \left( \mathcal{L}_{\text{CE}}(\hat{Y}, Y) + \mathcal{L}_{\text{CE}}(\hat{Y}^a, Y) \right) = - \frac{1}{2} \sum_{(u,v) \in M} \left( \log \hat{Y}_{u, v, Y_{u,v}} + \log \hat{Y}^a_{u, v, Y_{u,v}} \right)$$
+
+#### 2.3 Generalized Masked Sparsity-Invariant Feature Consistency (GMSIFC)
+GMSIFC enforces point-wise feature consistency across varying beam densities.
+
+##### Mathematical Definition:
+1. **Semantic Purity Mask:** To prevent boundary blurring caused by mixing distinct semantic classes across sparse grids, a local $3 \times 3$ neighborhood purity mask $M_{\text{pure}}$ is computed:
+   $$M_{\text{pure}}(u, v) = \mathbb{1}\left[ \max_{(i, j) \in \mathcal{N}_3(u, v)} Y_{i, j} = \min_{(i, j) \in \mathcal{N}_3(u, v)} Y_{i, j} \right] \cdot \mathbb{1}[Y_{u, v} > 0]$$
+   where $\mathcal{N}_3(u, v) = \{ (i, j) : |i - u| \le 1, |j - v| \le 1 \}$.
+2. **Paired Point Matching:** For paired positions $(u, v) \in \Omega_p \cap M_{\text{pure}}$, an entrywise $L_1$ alignment loss is computed:
+   $$\mathcal{L}_{\text{paired}} = \frac{1}{|\Omega_p \cap M_{\text{pure}}|} \sum_{(u, v) \in \Omega_p \cap M_{\text{pure}}} \| z(u, v) - z^a(u, v) \|_1$$
+3. **Unpaired Feature Aggregation:** For an unpaired source point $(u, v) \in \Omega_u^s$, its representation is aligned against an affinity- and distance-weighted aggregation of paired augmented neighbors $(u', v') \in \Omega_p$. The cosine affinity kernel is thresholded by $\tau = 0.7$:
+   $$\operatorname{aff}\big(z(u, v), z(u', v')\big) = \frac{\langle z(u, v), z(u', v') \rangle}{\|z(u, v)\|_2 \|z(u', v')\|_2} \cdot \mathbb{1}\left[ \frac{\langle z(u, v), z(u', v') \rangle}{\|z(u, v)\|_2 \|z(u', v')\|_2} \ge \tau \right]$$
+   Weighting by spatial inverse distance $d\big((u, v), (u', v')\big) = \|(u, v) - (u', v')\|_2$:
+   $$w\big((u, v), (u', v')\big) = \frac{\operatorname{aff}\big(z(u, v), z(u', v')\big)}{d\big((u, v), (u', v')\big) + \epsilon}$$
+   The synthesized augmented feature $z_{\text{agg}}^a(u, v)$ is:
+   $$z_{\text{agg}}^a(u, v) = \frac{\sum_{(u', v') \in \Omega_p} w\big((u, v), (u', v')\big) z^a(u', v')}{\sum_{(u', v') \in \Omega_p} w\big((u, v), (u', v')\big)}$$
+4. **Symmetric GMSIFC Loss:** Symmetrically aggregating $z_{\text{agg}}^s$ for points in $\Omega_u^a$, the total GMSIFC loss is:
+   $$\mathcal{L}_{\text{GMSIFC}} = \mathcal{L}_{\text{paired}} + \frac{1}{|\Omega_u^s|} \sum_{u \in \Omega_u^s} \| z(u) - z_{\text{agg}}^a(u) \|_1 + \frac{1}{|\Omega_u^a|} \sum_{u \in \Omega_u^a} \| z_{\text{agg}}^s(u) - z^a(u) \|_1$$
+
+##### Mechanism & Goal:
+GMSIFC ensures that subsampling beams does not alter local bottleneck features. The affinity threshold $\tau$ prevents propagation across semantic boundaries, maintaining feature fidelity regardless of beam density.
+
+#### 2.4 Localized Semantic Correlation Consistency (LSCC)
+LSCC enforces that the topological inter-class correlation structure remains invariant across views within localized spatial regions.
+
+##### Mathematical Definition:
+1. **Spatial Cell Partitioning:** The range image of width $W$ is partitioned into non-overlapping vertical column cells $\mathcal{C}_k$ of width $W_{\text{cell}} = 256$.
+2. **Cell Prototype Pooling:** For each cell $\mathcal{C}_k$ and view $v \in \{\text{clean}, \text{aug}\}$, normalized class prototype vectors $\tilde{Z}_{k, c}^v \in \mathbb{S}^{127}$ are pooled across points with label $c$:
+   $$Z_{k, c}^v = \frac{\sum_{(u, v) \in \mathcal{C}_k} \mathbb{1}[Y_{u, v} = c \land M_{u, v}^v = 1] z^v(u, v)}{\sum_{(u, v) \in \mathcal{C}_k} \mathbb{1}[Y_{u, v} = c \land M_{u, v}^v = 1] + \epsilon}, \quad \tilde{Z}_{k, c}^v = \frac{Z_{k, c}^v}{\|Z_{k, c}^v\|_2}$$
+3. **Correlation Gram Matrices:** The class correlation matrix for cell $\mathcal{C}_k$ in view $v$ is given by $G_k^v = \tilde{Z}_k^v (\tilde{Z}_k^v)^T \in \mathbb{R}^{K \times K}$, where entry $(c_1, c_2)$ captures the cosine similarity between class prototypes $c_1$ and $c_2$.
+4. **All-Pairs Shared-Class Correlation Mismatch:** For any two cells $\mathcal{C}_k, \mathcal{C}_l$ with binary class presence indicators $p_k, p_l \in \{0, 1\}^K$, let $U_k = (p_k p_k^T) \odot G_k$ and $W_k = U_k^{\odot 2}$. The squared Frobenius difference over shared classes is:
+   $$\mathcal{L}_{\text{corr}} = \frac{1}{|\mathcal{P}|} \sum_{(k, l) \in \mathcal{P}} \frac{p_l^T W_k p_l + p_k^T W_l p_k - 2 \operatorname{Tr}(U_k U_l^T)}{(p_k^T p_l)^2}$$
+5. **Within-Scan InfoNCE Contrastive Regularizer:** To prevent prototype collapse within each scan $s$, an InfoNCE loss on normalized bottleneck features $\tilde{z}_i = z_i / \|z_i\|_2$ is added:
+   $$\mathcal{L}_{\text{contr}} = - \frac{1}{N_{\text{scans}}} \sum_{s=1}^{N_{\text{scans}}} \frac{1}{|I_s|} \sum_{i \in I_s} \log \frac{\sum_{p \in \mathcal{P}(i)} \exp(\tilde{z}_i \cdot \tilde{z}_p / \tau_{\text{NCE}})}{\sum_{a \in \mathcal{A}(i)} \exp(\tilde{z}_i \cdot \tilde{z}_a / \tau_{\text{NCE}})}$$
+   where $\mathcal{P}(i) = \{ p \in \mathcal{A}(i) : Y_p = Y_i, p \neq i \}$ and $\mathcal{A}(i)$ is a subsample of valid points in scan $s$.
+6. **Total LSCC Loss:** $\mathcal{L}_{\text{LSCC}} = \mathcal{L}_{\text{corr}} + \mathcal{L}_{\text{contr}}$.
+
+##### Total DGLSS++ Trainer Loss:
+$$\mathcal{L}_{\text{DGLSS++}} = \mathcal{L}_{\text{sem}} + \lambda_1 \mathcal{L}_{\text{GMSIFC}} + \lambda_2 \mathcal{L}_{\text{LSCC}} \quad (\text{with } \lambda_1 = 1.0, \, \lambda_2 = 1.0)$$
+
+---
+
+### 3. Step 2: The Addition of Supervised Contrastive Learning (SupCon)
+
+While GMSIFC and LSCC enforce point consistency and prototype correlations under sparsity, they do not directly optimize the metric hypersphere geometry of the 128D bottleneck across corrupted/augmented views.
+
+#### 3.1 Mathematical Definition of Cross-View SupCon
+Given bottleneck feature representations from the clean source view $z_i^c = f_\theta(X)_i$ and the augmented view $z_j^a = f_\theta(X^a)_j$, let their $L_2$-normalized representations on $\mathbb{S}^{127}$ be:
+$$\tilde{z}_i^c = \frac{z_i^c}{\|z_i^c\|_2}, \qquad \tilde{z}_j^a = \frac{z_j^a}{\|z_j^a\|_2}$$
+
+For a subsampled batch of valid labeled points $\mathcal{I} = \{1, \dots, N_{\text{pts}}\}$ with labels $Y_i$, the decoupled multi-positive cross-view Supervised Contrastive loss is:
+$$\mathcal{L}_{\text{SupCon}} = - \frac{1}{|\mathcal{I}|} \sum_{i \in \mathcal{I}} \log \left( \frac{\sum_{p \in \mathcal{P}(i)} \exp\left( \langle \tilde{z}_i^c, \tilde{z}_p^a \rangle / \tau \right)}{\sum_{j \in \mathcal{I}} \exp\left( \langle \tilde{z}_i^c, \tilde{z}_j^a \rangle / \tau \right)} \right)$$
+where $\mathcal{P}(i) = \{ p \in \mathcal{I} : Y_p = Y_i \}$ is the set of positive indices sharing the same semantic class as anchor $i$, and temperature $\tau = 0.1$.
+
+The augmented objective becomes:
+$$\mathcal{L}_{\text{Robust}} = \mathcal{L}_{\text{DGLSS++}} + \lambda_{\text{supcon}} \mathcal{L}_{\text{SupCon}} \quad (\text{with } \lambda_{\text{supcon}} = 0.1)$$
+
+#### 3.2 Theoretical Mechanism & How SupCon Acts
+Maximizing the numerator $\sum_{p \in \mathcal{P}(i)} \exp(\langle \tilde{z}_i^c, \tilde{z}_p^a \rangle / \tau)$ pulls every augmented feature $z_p^a$ directly toward the clean features $z_i^c$ of its class. Concurrently, the denominator pushes embeddings of distinct classes apart. This minimizes the intra-class angular variance:
+$$\sigma_c^2 = \mathbb{E}_{i \in \mathcal{S}_c} \big[ 1 - \langle \tilde{z}_i, \mu_c \rangle \big]$$
+producing tightly clustered balls around clean prototypes.
+
+#### 3.3 The Clean-Anchor Trap (Why SupCon Lowers the Labeled Ceiling)
+Despite tightening clusters, adding clean-anchored SupCon revealed a critical failure under physical corruptions (e.g., fog and crosstalk):
+1. **Physical Corruption Displacements:** Real-world corruptions induce coherent, class-specific physical transformations. Under fog, point cloud returns undergo range attenuation and backscatter, causing features to shift along a displacement direction $\Delta z_c = \mathbb{E}[z_{\text{fog}, c}] - \mathbb{E}[z_{\text{clean}, c}] \neq 0$.
+2. **Shift Erasure:** Because $\mathcal{L}_{\text{SupCon}}$ penalizes *any* discrepancy between $\tilde{z}_p^a$ and $\tilde{z}_i^c$, it forces the optimizer to un-learn the displacement $\Delta z_c$.
+3. **The Ceiling vs. TTA Divergence:**
+   - **Naive Zero-Shot TTA:** Improved slightly because corrupted points were forced closer to the *unadapted clean prototype* $P_c^{\text{clean}}$.
+   - **Labeled Oracle Ceiling:** Substantially decreased (e.g., fog oracle dropped from $17.6\%$ to $15.7\%$, crosstalk dropped from $22.2\%$ to $18.8\%$). In plain DGLSS++, the shifted direction $\Delta z_c$ remained linearly separable from other classes; SupCon's forced alignment destroyed this separable geometry.
+
+---
+
+### 4. Step 3: The Addition of Covariate Shift Normalization (Cov-Shift)
+
+The central discovery of this project is that the corruption problem is **not a geometry alignment problem to be solved with loss penalties**, but a **two-level statistical covariate shift**. 
+
+The corruption physics decomposes into two distinct mechanisms:
+- **Crosstalk / Intensity Noise:** A *first-order statistical distribution shift* in sensor measurement channels (range and remission).
+- **Fog / Spatial Distortion:** A *geometric coordinate displacement* in $(x, y, z)$ space where the recoverable structure is a shifted direction that must be preserved without distortion.
+
+To solve both without destroying recoverable geometry, Cov-Shift introduces two purely structural, training-and-inference normalizations without anchor losses:
+
+```
+Raw Input Scan X in R^{5 x H x W}
+   |
+   +--> Channels {0, 4} (Range, Remission): Per-Scan Valid-Point Standardized (absorbs Crosstalk)
+   +--> Channels {1, 2, 3} (X, Y, Z Geometry): Clean-Dataset Standardized (preserves Fog direction)
+   |
+[Channel-Restricted Per-Scan Input Normalization]
+   |
+   v
+ResNet-34 Backbone with Internal 2D InstanceNorm (removes clean running-statistic bias)
+   |
+   v
+Bottleneck Feature z in R^{128} (high oracle ceiling + zero-shot alignment)
+   |
+   v
+Sign Hyperdimensional Projection b = sign(z R) in {-1, +1}^{10000} --> Cosine Decode
+```
+
+#### 4.1 Level 1: Channel-Restricted Per-Scan Input Normalization (`inputin_chan`)
+
+##### Mathematical Definition:
+Let the input scan tensor be $X \in \mathbb{R}^{5 \times H \times W}$ with validity mask $M_{u,v} = \mathbb{1}[X_{0,u,v} > 0]$ and valid point count $N_v = \sum_{u,v} M_{u,v}$. We partition the channels $\mathcal{C} = \{0, 1, 2, 3, 4\}$ into:
+$$\mathcal{C}_{\text{stat}} = \{0, 4\} \quad (\text{range } r, \, \text{remission } i), \qquad \mathcal{C}_{\text{geom}} = \{1, 2, 3\} \quad (x, y, z)$$
+
+1. **For statistics-shifted channels $c \in \mathcal{C}_{\text{stat}}$:**
+   We compute the empirical mean and variance of scan $X$ strictly over its valid points:
+   $$\mu_{\text{scan}, c} = \frac{1}{N_v} \sum_{u=1}^H \sum_{v=1}^W X_{c, u, v} \cdot M_{u, v}$$
+   $$\sigma_{\text{scan}, c}^2 = \frac{1}{N_v} \sum_{u=1}^H \sum_{v=1}^W (X_{c, u, v} - \mu_{\text{scan}, c})^2 \cdot M_{u, v}$$
+   The channel is re-standardized per-scan:
+   $$\hat{X}_{c, u, v} = \left( \frac{X_{c, u, v} - \mu_{\text{scan}, c}}{\sqrt{\sigma_{\text{scan}, c}^2 + \epsilon}} \right) \cdot M_{u, v}$$
+2. **For spatial geometry channels $c \in \mathcal{C}_{\text{geom}}$:**
+   The channels are *left in their global clean dataset normalization*:
+   $$\hat{X}_{c, u, v} = X_{c, u, v} = \left( \frac{X_{c, u, v}^{\text{raw}} - \mu_{\text{clean}, c}}{\sigma_{\text{clean}, c}} \right) \cdot M_{u, v}$$
+3. **Execution Scope:** This operation is embedded directly inside the network's forward pass $\hat{X} = \text{InputNorm}(X)$, guaranteeing identical behavior during training, validation, and test-time evaluation.
+
+##### How it Achieves the Goal:
+- **For Crosstalk:** Multipath reflections and sensor crosstalk inject intense spurious energy into range and remission. Computing $(\mu_{\text{scan}}, \sigma_{\text{scan}})$ on channels $\{0, 4\}$ dynamically absorbs the anomalous offset and scale per frame, restoring standard input distributions.
+- **For Fog:** Fog shifts $(x, y, z)$ coordinates along physical line-of-sight vectors. Because channels $\{1, 2, 3\}$ are *not* centered per-scan, the absolute spatial coordinate frame and the coherent class displacement directions $\Delta z_c$ survive intact. (Ablation: normalizing all 5 channels erases fog's directional retention, collapsing class tightness from $0.89$ to $0.47$ and degrading oracle accuracy, Iteration 19.12.2).
+
+#### 4.2 Level 2: Internal Instance Normalization (Backbone InstanceNorm)
+
+##### Mathematical Definition:
+In standard convolutional backbones, 2D Batch Normalization computes mini-batch statistics during training and freezes running estimates $(\mu_{\text{run}}, \sigma_{\text{run}}^2)$ for inference:
+$$\text{BN}(h)_{b, c, u, v} = \gamma_c \left( \frac{h_{b, c, u, v} - \mu_{\text{run}, c}}{\sqrt{\sigma_{\text{run}, c}^2 + \epsilon}} \right) + \beta_c$$
+Under covariate shift, the true distribution of intermediate activation maps $h \in \mathbb{R}^{B \times C \times H' \times W'}$ deviates from $(\mu_{\text{run}}, \sigma_{\text{run}}^2)$, causing systematic feature distortion across all layers.
+
+Cov-Shift replaces all BatchNorm layers throughout the ResNet backbone with **2D Instance Normalization**:
+$$\mu_{b, c} = \frac{1}{H' W'} \sum_{u=1}^{H'} \sum_{v=1}^{W'} h_{b, c, u, v}$$
+$$\sigma_{b, c}^2 = \frac{1}{H' W'} \sum_{u=1}^{H'} \sum_{v=1}^{W'} (h_{b, c, u, v} - \mu_{b, c})^2$$
+$$\text{IN}(h)_{b, c, u, v} = \gamma_c \left( \frac{h_{b, c, u, v} - \mu_{b, c}}{\sqrt{\sigma_{b, c}^2 + \epsilon}} \right) + \beta_c$$
+where $\gamma_c, \beta_c \in \mathbb{R}$ are learnable per-channel affine parameters.
+
+##### How it Achieves the Goal:
+- **Decoupling from Training Statistics:** InstanceNorm computes statistics strictly within each individual scan $b$ and feature channel $c$, completely eliminating reliance on clean running population statistics.
+- **Internal Covariate Shift Invariance:** Feature activations at deep bottleneck layers remain standardized and well-conditioned regardless of corruptions.
+
+---
+
+### 5. Step 4: The Paradigm Shift from Prototype Distance Classification (R1) to Linear Classification (R4)
+
+The final architectural breakthrough addresses the **downstream classification decision rule**. While the cov-shift extractor succeeds in preserving continuous feature separability, decoding via nearest-prototype cosine distance (R1) was found to discard a substantial fraction of the recoverable signal under domain shifts.
+
+#### 5.1 The Geometric Bottleneck of Nearest-Prototype Classification (R1)
+The standard HDC nearest-centroid decision rule assigns a binarized test code $b = \operatorname{sign}(z R) \in \{-1, +1\}^{D_{\text{HDC}}}$ to class $\hat{y}$ via maximum cosine similarity to clean class prototype vectors $P_c$:
+$$\hat{y}_{\text{R1}} = \arg\max_{c \in \{1, \dots, K\}} \cos(b, P_c) = \arg\max_{c} \frac{\langle b, P_c \rangle}{\|b\|_2 \|P_c\|_2}$$
+
+##### Why Nearest-Prototype Decoding Fails Under Corruption:
+1. **Implicit Equi-Variance / Spherical Assumption:** Nearest-prototype classification is optimal if and only if the class-conditional distributions $p(b \mid Y=c)$ are isotropic Gaussian or von Mises-Fisher distributions on the sphere with **identical intra-class variance** $\sigma_1^2 = \dots = \sigma_K^2$.
+2. **Induced Anisotropic Dispersion:** In real LiDAR point clouds under physical corruptions (e.g., wet ground or crosstalk), corruptions produce severe **class-dependent variance disparity** (e.g., class correlation tightness drops to $0.67$ for other-ground but remains $0.85$ for car).
+3. **Rigid Midplane Boundary:** The decision boundary between class $i$ and class $j$ under cosine prototype matching is strictly orthogonal to the prototype difference vector $(P_i - P_j)$:
+   $$\mathcal{H}_{i,j}^{\text{R1}} = \left\{ b \in \mathbb{R}^{D_{\text{HDC}}} : \left\langle b, \frac{P_i}{\|P_i\|_2} - \frac{P_j}{\|P_j\|_2} \right\rangle = 0 \right\}$$
+   When class $i$ has high dispersion (a "fat blob") and class $j$ has tight dispersion, the fixed midplane boundary slices directly through the high-variance distribution of class $i$, causing massive systematic misclassification into class $j$.
+
+#### 5.2 Decision Rules Evaluated in the Diagnostic Framework
+Iteration C10 systematically evaluated four decision rules on identical frozen feature representations:
+
+1. **Rule 1 (R1 - Nearest-Centroid Baseline):**
+   $$\hat{y}_{\text{R1}} = \arg\max_{c} \frac{\langle b, P_c \rangle}{\|b\|_2 \|P_c\|_2}$$
+2. **Rule 2 (R2 - Class-Conditional Scaled Cosine):**
+   Scales each class prototype similarity by its empirical intra-class dispersion $s_c = \mathbb{E}_{i \in \mathcal{S}_c}[\langle b_i, P_c \rangle]$:
+   $$\hat{y}_{\text{R2}} = \arg\max_{c} \frac{\langle b, P_c \rangle}{(1 - s_c + \epsilon)}$$
+   *(Ablation: R2 $\le$ R1 across all conditions; simple scalar scale adjustments cannot re-orient the boundary hyperplanes).*
+3. **Rule 3 (R3 - Continuous 128D Linear Probe):**
+   Standard multi-class linear regression fit on the continuous 128-dimensional bottleneck features $z \in \mathbb{R}^{128}$:
+   $$\hat{y}_{\text{R3}} = \arg\max_{c} (z W_{128} + \beta_{128})_c$$
+   *(Ablation: Underperforms R4 because 128D space lacks the linear separability of 10,000D binarized codes).*
+4. **Rule 4 (R4 - Linear Classifier on HDC Binarized Codes):**
+   A multi-class linear model parameterized by weight matrix $W \in \mathbb{R}^{D_{\text{HDC}} \times K}$ and bias $\beta \in \mathbb{R}^K$:
+   $$\hat{y}_{\text{R4}} = \arg\max_{c \in \{1, \dots, K\}} (b W + \beta)_c$$
+
+#### 5.3 Mathematical Formulation of the R4 Linear Classifier
+Let $B \in \{-1, +1\}^{N \times D_{\text{HDC}}}$ denote the matrix of binarized codes for $N$ points, and let $Y_{\text{one-hot}} \in \{0, 1\}^{N \times K}$ denote their one-hot ground truth labels. The optimal weight matrix $W^* \in \mathbb{R}^{D_{\text{HDC}} \times K}$ is obtained by regularized least-squares empirical risk minimization (Ridge Regression):
+$$W^* = \arg\min_{W \in \mathbb{R}^{D_{\text{HDC}} \times K}} \frac{1}{N} \| B W - Y_{\text{one-hot}} \|_F^2 + \lambda \|W\|_F^2$$
+
+Setting the matrix gradient to zero yields the closed-form normal equation:
+$$W^* = \left( B^T B + N \lambda I \right)^{-1} B^T Y_{\text{one-hot}} = \left( S + \lambda_{\text{reg}} I \right)^{-1} T$$
+where:
+- $S = B^T B \in \mathbb{R}^{D_{\text{HDC}} \times D_{\text{HDC}}}$ is the uncentered second-moment sample covariance matrix of the binarized codes.
+- $T = B^T Y_{\text{one-hot}} \in \mathbb{R}^{D_{\text{HDC}} \times K}$ is the class-aggregated code matrix, whose $c$-th column $T_c = \sum_{i \in \mathcal{S}_c} b_i$ is proportional to the unnormalized prototype vector of class $c$.
+
+#### 5.4 Theoretical Mechanism: Why Linear Classification Resolves the Ceiling Bottleneck
+The relationship $W_c = (S + \lambda_{\text{reg}} I)^{-1} T_c$ reveals the precise mathematical distinction between R1 and R4:
+1. **Prototype Matching as Identity Covariance ($S = I$):**
+   If we approximate the covariance matrix as spherical ($S \propto I$), the linear classifier weights simplify to:
+   $$W_c \propto T_c \propto P_c$$
+   Nearest-prototype decoding is therefore mathematically equivalent to linear classification under the false assumption that all features are orthogonal and uncorrelated.
+2. **Covariance Whitening and Hyperplane Rotation:**
+   Pre-multiplying the prototype direction $T_c$ by the inverse covariance $(S + \lambda_{\text{reg}} I)^{-1}$ rotates the decision normal $w_c$ away from directions of high background variance and aligns it along the discriminative subspace:
+   $$w_c - w_j = (S + \lambda_{\text{reg}} I)^{-1} (T_c - T_j)$$
+   This automatically shifts the decision boundary closer to tight, dense classes and further away from diffuse classes, correcting for class-conditional dispersion disparity.
+3. **Exploiting Hyperdimensional Linear Separability:**
+   Projecting continuous embeddings $z \in \mathbb{R}^{128}$ to $D_{\text{HDC}} = 10{,}000$ dimensions via $b = \operatorname{sign}(z R)$ maps non-linear class manifolds into linearly separable configurations in high-dimensional Hamming space (Cover's Theorem). Fitting a learned linear hyperplane in this 10,000D space unlocks the full discriminative capacity of the representation.
+
+#### 5.5 Empirical Performance: R1 vs. R4 Oracle Ceiling
+In Iteration C10, evaluating the R4 linear classifier against the R1 nearest-prototype rule on frozen cov-shift features demonstrated a decisive **$1.24\times - 1.77\times$** mIoU gain across all conditions:
+
+| Condition | Epoch | R1 Baseline (Nearest-Prototype) | R4 Linear Classifier (HDC Code Probe) | Relative Gain (R4 / R1) | Absolute mIoU Gain |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Fog** | ep-10 | $26.1\%$ | **$43.3\%$** | **$1.66\times$** | $+17.2\%$ |
+| **Crosstalk** | ep-10 | $46.1\%$ | **$59.4\%$** | **$1.29\times$** | $+13.3\%$ |
+| **Wet Ground** | ep-10 | $42.5\%$ | **$68.3\%$** | **$1.61\times$** | $+25.8\%$ |
+| **Snow** | ep-10 | $40.8\%$ | **$51.0\%$** | **$1.25\times$** | $+10.2\%$ |
+| **Fog** | ep-21 | $21.9\%$ | **$38.7\%$** | **$1.77\times$** | $+16.8\%$ |
+| **Crosstalk** | ep-21 | $45.1\%$ | **$58.6\%$** | **$1.30\times$** | $+13.5\%$ |
+| **Wet Ground** | ep-21 | $40.5\%$ | **$66.8\%$** | **$1.65\times$** | $+26.3\%$ |
+| **Snow** | ep-21 | $39.5\%$ | **$49.1\%$** | **$1.24\times$** | $+9.6\%$ |
+
+#### 5.6 Computational Efficiency: Matrix-Free Conjugate Gradient Solve
+To avoid computing or storing the full $10{,}000 \times 10{,}000$ matrix $S = B^T B$, the ridge regression problem is solved using **matrix-free Conjugate Gradient (CG)** warm-started with a rank-$m$ Nyström approximation ($m=1{,}000$):
+- **Matrix-Free Operator:** The matrix-vector product $(B^T B + \lambda I) v = B^T (B v) + \lambda v$ is computed in $\mathcal{O}(N \cdot D_{\text{HDC}})$ operations without forming $S$.
+- **Update Throughput:** Refitting the linear classifier on $100{,}000$ points executes in $\approx 0.034$ seconds ($\approx 1.5\times 10^6$ points/sec).
+- **Inference Latency:** Once $W^*$ is computed, inference is a single matrix multiplication $b W^*$, which executes in real-time ($> 2.5\times 10^5$ points/sec), matching the speed of standard prototype cosine decoding.
+
+---
+
+### 6. Summary of the Complete Cov-Shift Architecture (`inputin_in_chan` + Linear Classifier)
+
+The full end-to-end robust pipeline integrates:
+1. **Input Normalization:** Channel-restricted per-scan normalization on channels $\{0, 4\}$ (range, remission), leaving $\{1, 2, 3\}$ ($x, y, z$) in global clean standardization.
+2. **Backbone Architecture:** ResNet-34 parameterized with internal 2D Instance Normalization across all layers.
+3. **Extractor Training Loss:** DGLSS++ structural representation consistency without destructive clean-anchoring losses:
+   $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{sem}}(\hat{X}, \hat{X}^a) + \lambda_1 \mathcal{L}_{\text{GMSIFC}}(\hat{X}, \hat{X}^a) + \lambda_2 \mathcal{L}_{\text{LSCC}}(\hat{X}, \hat{X}^a)$$
+4. **Decoder Decision Rule:** Lifting 128D features to 10,000D binarized codes $b = \operatorname{sign}(z R)$ and classifying via a regularized linear classifier $W = (B^T B + \lambda I)^{-1} B^T Y$, achieving superior zero-shot alignment and unlocking oracle ceilings of $43.3\%$ on fog, $59.4\%$ on crosstalk, and $68.3\%$ on wet ground.
 
 ## Measured performance
 
