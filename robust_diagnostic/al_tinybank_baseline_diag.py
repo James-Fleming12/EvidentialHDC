@@ -163,7 +163,7 @@ def main():
                     bank_idx=torch.cat([lab_idx, extra])
                 # use raw 128-d for kNN (no HDC, same as Q3)
                 bank_feats_raw=pool[bank_idx]; bank_labels=pl[bank_idx]
-                pred=knn_predict(val_feats=val, val_labels=vl, bank_feats=bank_feats_raw, bank_labels=bank_labels, k=1, device=device)
+                pred=knn_predict(val_feats=val, bank_feats=bank_feats_raw, bank_labels=bank_labels, k=1, device=device)
                 acc=compute_miou(pred, vl)
                 r['tiny'][f"bank_{len(bank_idx)}"]={'miou':acc,'delta':acc - r['refs']['frozen'],'n_bank':len(bank_idx)}
         # tiny + B: use tiny bank's pseudo-labels for the 500 unlabelled to fit a new probe
@@ -184,7 +184,7 @@ def main():
         # pseudo-label the 500 via 1-NN from labeled 56
         bank_feats_raw=pool[lab_idx]; bank_labels=pl[lab_idx]
         # predict for extra
-        extra_pred=knn_predict(val_feats=pool[extra], val_labels=pl[extra], bank_feats=bank_feats_raw, bank_labels=bank_labels, k=1, device=device)
+        extra_pred=knn_predict(val_feats=pool[extra], bank_feats=bank_feats_raw, bank_labels=bank_labels, k=1, device=device)
         # fit new probe on 56 true + 500 pseudo
         X_lab_pseudo=torch.cat([Xp[lab_idx], Xp[extra]], dim=0)
         Y_lab_pseudo=torch.cat([onehot(pl[lab_idx],NUM_CLASSES), onehot(extra_pred,NUM_CLASSES)], dim=0)
