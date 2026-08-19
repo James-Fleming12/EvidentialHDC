@@ -236,7 +236,7 @@ def main():
             curve[rr] = mw(Wr, Xv, vl)
         r['curve'] = {str(k): float(v) for k, v in curve.items()}
         # also full-rank (should reproduce oracle)
-        r['curve_full'] = mw(W0 + R, Xv, vl)
+        r['curve_full'] = mw(W0.detach().cpu() + R, Xv, vl)
 
         # feature-space shift check (128-d): per-class mean shift, SVD'd
         classes = sorted(set(pl.tolist()) & set(range(1, NUM_CLASSES)))
