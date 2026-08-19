@@ -202,7 +202,10 @@ def main():
                 Wo=W0.detach().cpu()+(Uo.cpu()@Co)
                 r['B1'].setdefault(str(k), {})[str(rr)]={'miou':mw(Wo,Xv,vl),'delta':mw(Wo,Xv,vl)-r['refs']['frozen']}
         results['conds'][cond]=r
-        del Xc,Xp,Xv,W0,Ws,R,U_full,S,U_S
+        try:
+            del Xc,Xp,Xv,W0,Ws,R,U_full,S,U_S
+        except NameError:
+            pass
         if torch.cuda.is_available(): torch.cuda.empty_cache()
         print(f"\n=== {cond} ({toc(t0):.0f}s) ===")
         print(f"  frozen {r['refs']['frozen']:.3f} / oracle {r['refs']['oracle']:.3f} gap {gap:+.3f}")
