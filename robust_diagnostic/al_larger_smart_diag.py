@@ -176,8 +176,8 @@ def main():
     conds=[c.strip() for c in args.conds.split(',') if c.strip()]
     trainer=GenTrainer(ARCH,DATA,args.kitti_dir,args.path_b,path=args.path_b,method=args.method_b)
     model=trainer.model
-    clean_parser_small=build_parser(args.kitti_dir,DATA,ARCH,frames=args.frames_small)
-    clean_parser_large=build_parser(args.kitti_dir,DATA,ARCH,frames=args.frames_large)
+    clean_parser_small=build_parser(args.kitti_dir,DATA,ARCH)
+    clean_parser_large=build_parser(args.kitti_dir,DATA,ARCH)
     # extract both clean sizes at start (for larger val later, reuse small clean 200k)
     fa_small,la_small=extract_features(model,clean_parser_small,device,args.frames_small)
     # for large, reuse small + extra frames if needed, but simpler: extract large separately if frames_large > frames_small
@@ -190,9 +190,11 @@ def main():
         t0=tic()
         cdir=os.path.join(args.kittic_dir,cond,'heavy')
         if not os.path.exists(cdir): cdir=os.path.join(args.kittic_dir,cond,'moderate')
-        # small and large pools
-        f_small,l_small=extract_features(model,build_parser(args.kittic_dir,DATA,ARCH,frames=args.frames_small),device,args.frames_small)
-        f_large,l_large=extract_features(model,build_parser(args.kittic_dir,DATA,ARCH,frames=args.frames_large),device,args.frames_large) if args.frames_large>args.frames_small else (f_small,l_small)
+        # small and large pools from the SAME condition cdir, different num_frames
+        cond_parser_small=build_parser(cdir,DATA,ARCH)
+        cond_parser_large=build_parser(cdir,DATA,ARCH)
+        f_small,l_small=extract_features(model,cond_parser_small,device,args.frames_small)
+        f_large,l_large=extract_features(model,cond_parser_large,device,args.frames_large) if args.frames_large>args.frames_small else (f_small,l_small)
         # small pool/val
         torch.manual_seed(42); perm_small=torch.randperm(len(f_small))
         pool_s,pl_s=f_small[perm_small[:args.pool_small]],l_small[perm_small[:args.pool_small]]
