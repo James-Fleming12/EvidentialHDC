@@ -2004,3 +2004,30 @@ classifier):**
    ridge, or per-class learning rate $\eta_c \propto 1/N_c$, and compare
    $W_{pseudo}$ $\Delta$ vs unweighted. This directly fixes the $mIoU$
    averaging that the current $T$ construction violates.
+
+### Iteration C30: stable-update sweep, did the decoder become stable? (2026-08-19)
+
+Still on cov-shift ep10, still $k=8$ ($56$ labels) and $r=8$ oracle $U$ (`al_stable_update_diag.py`, eval-only). Four families, all keep $W_0$ frozen and fit only $\Delta W$:
+
+**A $\eta$ sweep on $W(\eta)=W_0+\eta U_r C$ ($r=8$, $C$ fit at $\gamma=10^{-6}$):**
+
+| cond | gap | $\eta=0$ | $0.1$ | $0.5$ | $1.0$ | best $\eta$ |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | $+0.118$ | $0.000$ | $+0.009$ | $+0.032$ | **$+0.060$** | $1.0$ |
+| wet_ground | $+0.187$ | $0.000$ | $+0.014$ | $+0.087$ | **$+0.137$** | $1.0$ |
+| crosstalk | $+0.031$ | $0.000$ | $+0.004$ | **$+0.010$** | $+0.004$ | $0.5$ |
+| snow | $+0.036$ | $0.000$ | $+0.006$ | $+0.015$ | $+0.010$ | $0.75$ |
+
+$\eta=1.0$ is best on fog/wet where the gap is large, $\eta=0.5$ to $0.75$ on the small-gap conditions. Scaling $W$ does not hurt: the direction is correct, just the magnitude needs the full step.
+
+**A $\gamma$ sweep on the residual ridge $C(\gamma)=(U^T X^T X U + \gamma I)^{-1} U^T X^T (Y - XW_0)$:**
+
+Best $\gamma$ is $10^{-3}$ fog ($+0.060$) and $10^{-1}$ wet ($+0.139$), both $\approx 0$ ridge. Larger $\gamma$ does not help, the $8 \times 8$ system is already well-conditioned.
+
+**A rank sweep ($r=1,2,4,8,17$):** $r=4$ gives $+0.048$ fog and $+0.123$ wet, $r=8$ gives $+0.060$ and $+0.137$, $r=1$ is $-0.004$ fog. $r=8$ is needed, $r=17$ is not better.
+
+**B soft residual $Y-P_0$ vs one-hot $Y-XW_0$:** $T=1.0$ gives $+0.023$ fog vs one-hot $+0.060$, pairwise $e_y-e_{\hat y}$ gives $+0.029$ fog vs $+0.060$. Soft targets are *worse* than one-hot on this $HDC$ code, the opposite of the hypothesis. The $17$-way one-hot is the right target.
+
+**D uncertainty weighting:** $w_i \in \{1, H(p), 1-\max p, 1/(margin+\epsilon)\}$ all give $+0.060$ fog and $+0.136$ wet, indistinguishable from unweighted. Weighting does not fix the decoder.
+
+**Did we get an improvement and if not why?** Yes on the large-gap conditions: fog $+0.040 \rightarrow +0.060$ ($51\%$ of gap at $k=8$) and wet $+0.087 \rightarrow +0.137$ ($73\%$) with $\eta=1.0$, $r=8$, $\gamma \approx 0$. Crosstalk $+0.010$ and snow $+0.016$ stay small because their gaps are small ($+0.031$, $+0.036$), even the $+0.016$ on snow is $44\%$ of its gap. The remaining $27\%$ on wet and $49\%$ on fog is the $t_{cos}$ vs $w_{cos}$ decoder limit from C23, not the update magnitude.
