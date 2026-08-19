@@ -1089,4 +1089,116 @@ the cov-shift high fog/crosstalk ceilings AND the ball/spec AL-friendly
 geometry. The C18 cross-extractor data is the justification: the two spaces'
 strengths are disjoint, and the hybrid is the only path to both.
 
+### Iteration C19: the hybrid micro sweep -- the properties do NOT combine (2026-08-19)
 
+The C18 hybrid (`run_algeom_hybrid_micro.sh`): ball/spec losses on the
+COV-SHIFT base. The wiring keeps the cov-shift recipe (GMSIFC/LSCC + per-scan
+input normalization on channels 0/4 + internal InstanceNorm) untouched and adds
+ONLY `ball_loss` / `spectrum_loss` on `z8_aug`. Four arms at micro scale (8 ep /
+10%): the cov-shift base reference + `_ball` (ball_w 0.1), `_spec` (spec_w
+0.1), `_ball_spec` (0.05/0.05). All four trained normally (final-epoch IoU
+0.197-0.202, consistent with the base).
+
+**The cross-extractor comparison (ceiling = specceil; AL = best 10-COMB delta
+at 64-72 labels; hybrid arms at micro scale, cov-shift ep10 / ball-med from
+C18/C16):**
+
+| extractor | fog ceil | fog AL | cross ceil | cross AL | snow ceil | snow AL | wet ceil | wet AL |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| cov-shift ep10 (C18) | 0.416 | +0.003 | 0.526 | -0.002 | 0.511 | -0.001 | 0.670 | -0.005 |
+| ball/spec med (C16) | 0.252 | +0.054 | 0.401 | +0.075 | 0.554 | +0.004 | 0.730 | -0.007 |
+| hybrid base (micro) | 0.339 | -0.017 | 0.481 | -0.085 | 0.423 | -0.076 | 0.556 | -0.038 |
+| hybrid ball (micro) | 0.317 | -0.011 | 0.493 | -0.082 | 0.415 | -0.065 | 0.563 | -0.044 |
+| hybrid spec (micro) | 0.294 | -0.009 | 0.498 | -0.078 | 0.418 | -0.068 | 0.552 | -0.035 |
+| hybrid ball_spec (micro) | 0.346 | -0.017 | 0.422 | -0.070 | 0.416 | -0.071 | 0.574 | -0.034 |
+
+**Result: no hybrid arm combines the two properties at micro scale.**
+
+1. **The AL-friendly property did NOT transfer.** Every hybrid arm is NEGATIVE
+   on every condition (fog -0.009..-0.017, crosstalk -0.070..-0.085, snow
+   -0.065..-0.076, wet -0.034..-0.044). None of the ball/spec positive AL
+   (+0.05..+0.08 on fog/crosstalk) appears. The cov-shift base behavior
+   dominates: the frozen probe sits near its own ceiling, so labels buy almost
+   nothing, and the ball/spec losses on the cov-shift recipe did NOT make
+   labels convert to updates.
+2. **The ceilings did NOT hold either.** Hybrid fog ceiling 0.294-0.346 vs
+   cov-shift ep10 0.416 (all lower); crosstalk 0.422-0.493 vs 0.526 (all
+   lower). The `ball_spec` arm's fog ceiling (0.346) is the best hybrid but
+   still 0.07 below cov-shift. The ball/spec geometry perturbation did move
+   the spectrum (hybrid kappa 56-173k vs cov-shift medium 6-15M -- much
+   flatter) but that flattening produced NO AL gains on this recipe.
+3. **The cond_structure gate shows the cov-shift signature survived** in all
+   hybrid arms (fog feat_cos_B 0.57-0.62, dir_ret_B 0.81-0.86 -- the cov-shift
+   recovery; healthy zs_B 0.26-0.35 at micro scale, below the medium cov-shift
+   reference as expected at micro).
+
+**Interpretation -- the two properties are entangled with the training recipe,
+not additive.** Adding the AL-geometry losses to the cov-shift recipe neither
+(a) preserves the cov-shift ceiling at the cov-shift level, nor (b) imparts the
+AL-friendly behavior of the corsupcon ball/spec runs. The ball/spec AL gains
+came from the losses interacting with the CORSUPCON recipe (its SupCon branch,
+corruption view, and different base geometry); bolting the losses onto the
+cov-shift GMSIFC/LSCC recipe does not reproduce the interaction. **The micro
+scale is the standard caveat** (C12/C13: micro ceilings are inherently below
+medium, and micro AL is not a trustworthy verdict -- it went negative even for
+the base in C12). The honest read is: NO positive signal at micro scale -- the
+hybrid did not obviously combine the properties, and the micro negatives on AL
+are consistent with the cov-shift AL-fragility already measured in C18.
+
+**What this does NOT close:** the possibility that the hybrid works at MEDIUM
+scale with tuned loss weights. C14 showed `spectrum_loss` at 0.1 was too weak
+to hold the flattened spectrum through LR annealing on the corsupcon recipe;
+the hybrid used the same 0.1 weights at micro scale. The next probe (if the
+hybrid direction is pursued) is the medium run of `inputin_in_chan_ball_spec`
+with stronger weights (ball_w/spec_w 0.2-0.5) -- the micro gate is the
+screening step, and it did not clear the bar. Per the README 6.1 options, the
+alternative is option 2 (improve the AL gates for the cov-shift extractor --
+the C18 recipe already reaches +0.019 on ep21 fog), which needs no further
+extractor training.
+
+### Iteration C20: the residual-compressibility reframe (2026-08-19)
+
+C19's negative is REFRAMED: it does not show the two ideas are incompatible --
+it shows they were combined at the WRONG LEVEL. The two mechanisms:
+
+- **cov-shift** is an end-to-end recipe making the existing probe good under
+  corruption: it consumes the residual, so the frozen probe sits near the
+  ceiling and labels have little left to buy (AL ~0).
+- **ball/spec** is a recipe for changing the geometry so sparse labels CAN
+  modify a probe: it leaves MORE residual but structures it for correction
+  (AL +0.05..+0.08).
+
+Combining them in ONE representation produced exactly the C19 failure: the
+ball/spec mechanism damaged the cov-shift geometry (lower ceiling) while the
+cov-shift mechanism consumed the residual (still little AL gain). The C19
+data also FALSIFIES "flat spectrum => AL-friendly": the hybrid kappa fell to
+56-173k (very flat) with NO AL gain -- conditioning is not the mechanism; the
+corsupcon training interaction is.
+
+**The reframe: cov-shift handles the bulk; AL handles a small residual that
+cov-shift deliberately leaves recoverable.** The candidate architecture is
+W = W_cov + residual, where the residual is estimated from labels -- NOT a
+full 17 x 10k probe, but a small correction. The key question (tested in C20,
+eval-only, no training): is the ORACLE residual R = W* - W0 low-rank?
+
+C20 (`al_residual_diag.py`, `bash run_al_residual.sh 3`) measures, per
+condition per extractor (cov-shift ep10/ep21 + ball/spec medium):
+- cos(W0, W*) and ||R||_F / ||W*||_F -- how much residual is there;
+- SVD of R: singular spectrum, effective rank, cumulative energy;
+- THE ORACLE RESIDUAL CURVE: mIoU(W0 + R_r) for r in {0,1,2,4,8,16,32,...},
+  where R_r = U_r U_r^T R is the top-r projection. This is the CEILING of any
+  low-rank residual AL method;
+- feature-space shift check: per-class mean shift (corrupted - clean) in 128-d,
+  SVD'd -- does the corruption live in a small feature subspace too?
+
+**Decision rule:**
+- If the curve climbs to near-oracle at r=4-8 (cum_energy ~0.9): AL should
+  estimate a low-rank correction W = W0 + U_r C (17 x r unknowns, not 17 x
+  10k) -- the C21 direction, and the direct answer to the Iterations-7/8
+  T-synthesis dimensionality failure.
+- If the curve needs r >= 17 (no compression): the residual is full-rank and
+  the two-subspace extractor (z = [z_cov, z_AL], with an orthogonality loss)
+  is the fallback (C23).
+- If cov-shift's residual is SMALL (||R||/||W*|| low) but ball/spec's is
+  larger: the C19 explanation is confirmed quantitatively -- cov-shift leaves
+  little for AL, ball/spec leaves a structured residual.
