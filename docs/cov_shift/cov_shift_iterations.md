@@ -1385,3 +1385,43 @@ $U_r$ in **W-space** where $W_{sub}$ is not.
 $W_{sub}$ before SVD, or $U_r$ from $S^{-1} T_hat$ instead of $T_hat$)
 or keep the T-space correction $T = T_0 + U_r^T C$ where $U_r$ is the
 feature-space shift (eff-rank 1.2 on wet_ground) already computed in C20.
+
+### Iteration C23: Tracks A/B/C on cov-shift + fallback budget (2026-08-19)
+
+Broadens the C19-C22 search while keeping cov-shift as the anchor, per the
+plan in your long message (your points 1-7, 17):
+
+**Track A (budget):**
+- **A1** Budget curve $k$ per class in $\{8,16,32,64,128\}$ on the current best
+  recipe (centroid $k$ means, source counts, control variate $\rho=0.5$,
+  fractional-residual $\beta=0.6$). Reports $\cos(T_{AL},T_{oracle})$,
+  $\cos(W_{AL},W_{oracle})$, $\Delta$mIoU per $k$. Distinguishes
+  information-limited (more labels help), estimator-limited (plateau), and
+  decoder-limited ($T$ improves but $W$ does not). **A2** Adaptive
+  $k_c \propto N_c^{\alpha} \sigma_c^{\beta}$ with $\alpha \in \{0,0.25,0.5,1\}$
+  at fixed total $B$ (your point 2): equal vs mass-proportional vs intermediate.
+
+**Track B (residual decoder, your point 3 in priority order):**
+- **B1** $W = W_{cov} + \Delta W$ with $\gamma||\Delta W||^2$; **B2** low-rank
+  $\Delta W = U V^T$, $r=4,8$ ($17r$ coefficients); **B4** source-derived basis
+  $U$ from $\mu_c^{source} - \mu_c^{target-like}$ or $\Delta z = z_{corr} -
+  z_{clean}$. **B1/B2 are expected to be strongest** (your point 3C).
+
+**Track C (extractor, only if A/B fail):**
+- **C1** $z=[z_{cov}, \epsilon z_{AL}]$ sweeping $\epsilon$;
+- **C2** orthogonal residual $||Z_A^T Z_B||_F^2$;
+- **C3** uncertainty-gated $w(x)=f(H(p_{cov}))$ ball/spec;
+- **C4** condition-specific $z_{condition}$.
+
+$W_{oracle}-W_{cov}$ rank (your point 14, C20) and frozen cov-shift + low-rank
+residual (your point 11, C21) remain the C20/C21 diagnostics.
+
+**Fallback you noted:** if all cheap-budget (k=8-16) tracks stay flat-negative,
+the $A1$ curve is extended to $k=128$ to find the knee (where $\Delta$mIoU
+turns positive) and to see *what* the added labels bought: per-$k$ $t_{cos}$,
+$w_{cos}$, per-class coverage and mean quality reveal whether the knee is
+mean quality vs mass vs rare-class filling, so the next step is a selection
+mechanism that gets that information at lower $k$ (your points 9-13). The
+comprehensive harness `al_tracks_abc_diag.py` (eval-only, $\approx$30min,
+`bash run_al_tracks_abc.sh 3`) does $A1$ to $k=128$ and $A2$/$B$ per $k$ in one
+run with that fallback built in.
