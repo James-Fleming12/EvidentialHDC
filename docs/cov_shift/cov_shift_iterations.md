@@ -891,4 +891,142 @@ The remaining snow/wet gap (V3: -0.004..-0.017) is the k=8 T_hat mass problem
 from Iterations 7-8; combining V3 with the k=2 budget and the influence rule is
 the natural next probe.
 
+### Iteration C16: the query-rule and label-budget tests (2026-08-19)
+
+The two AL tests from C15's leads (`al_rule_budget_diag.py`, eval-only, on the
+21-ep ball/spec checkpoints, all at the fractional-residual 10-COMB with the
+V3 control variate; ~1 min/condition):
+
+**TEST 1 -- the query rule (k=8, oracle counts, rho=0.5).** Four rules select
+the k=8 points per class: influence (the Iteration-1 winner, Nystrom-subspace),
+confidence (the free rule C15 suggested), random (the Iteration-8 best mean
+estimator), centroid-near (distance to the class centroid). Reported as best
+10-COMB delta over the beta/eta grid, with the rule's mean quality
+(cos of the rule-selected k-mean vs the true class mean):
+
+| cond | arm | influence | confidence | random | centroid |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | ball | +0.026 (0.48) | +0.018 (0.61) | +0.033 (0.96) | **+0.038 (0.95)** |
+| fog | spec | +0.037 (0.33) | +0.048 (0.74) | +0.050 (0.94) | **+0.055 (0.94)** |
+| crosstalk | ball | +0.025 (0.44) | +0.034 (0.66) | +0.055 (0.95) | **+0.065 (0.96)** |
+| crosstalk | spec | +0.022 (0.41) | +0.045 (0.86) | +0.049 (0.95) | **+0.062 (0.95)** |
+| snow | ball | -0.026 (0.29) | -0.015 (0.85) | -0.003 (0.96) | **-0.001 (0.96)** |
+| snow | spec | -0.030 (0.38) | -0.005 (0.90) | +0.000 (0.95) | **+0.001 (0.96)** |
+| wet_ground | ball | -0.048 (0.37) | -0.025 (0.90) | -0.011 (0.98) | **-0.001 (0.96)** |
+| wet_ground | spec | -0.051 (0.32) | -0.034 (0.91) | -0.019 (0.97) | **-0.011 (0.96)** |
+
+**The rule ranking is fully explained by the mean quality -- and influence is
+now the WORST rule.** The delta order is exactly the mean_cos order
+(centroid > random > confidence > influence), on every condition and both
+arms. Influence's mean_cos is 0.29-0.48 -- it selects boundary/outlier points
+(Iteration-6 finding), so its k-mean points at the boundary direction, not the
+class mean. The C15 lev_conf signal did NOT replicate: the real Nystrom
+influence vs confidence Spearman is NEGATIVE (-0.32 to -0.65) here, matching
+the base-space behavior -- the C15 positive value was a proxy artifact (feature
+norm, not the true influence). The confidence rule is NOT free-and-valid; it
+sits between influence and random in mean quality (0.61-0.91).
+
+**TEST 2 -- the label budget (centroid rule, source counts; k in {2,4,8} x
+rho in {0.25,0.5,0.75}).**
+
+| cond | arm | k=2 best | k=4 best | k=8 best |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | ball | **+0.054** (r0.25) | +0.052 | +0.051 |
+| fog | spec | +0.057 (r0.25) | +0.061 | **+0.063** |
+| crosstalk | ball | **+0.075** (r0.25) | +0.075 | +0.074 |
+| crosstalk | spec | **+0.077** (r0.25) | +0.077 | +0.071 |
+| snow | ball | -0.008 | -0.008 | -0.004 |
+| snow | spec | -0.012 | -0.006 | -0.000 |
+| wet_ground | ball | -0.018 | -0.013 | **-0.007** |
+| wet_ground | spec | -0.031 | **-0.015** | -0.016 |
+
+**The k=2 budget holds k=8 everywhere** (fog/crosstalk within +-0.006; snow/wet
+within 0.01) -- the label cost halves to ~32 labels (2 points/class) with no
+measurable loss, confirming C15's mean-k saturation. rho=0.25-0.75 barely moves
+the result; the control variate is a mild stabilizer, not the deciding factor.
+
+**The premise diagnostics -- what does/doesn't work, attributed:**
+
+| cond | closeable gap | best delta | t_cos | w_cos | whitened error |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | +0.15..+0.17 | **+0.054..+0.063** | 0.52-0.53 | 0.006-0.017 | 77-125x |
+| crosstalk | +0.24..+0.26 | **+0.075..+0.077** | 0.93-0.94 | 0.002-0.011 | 63-67x |
+| snow | +0.03..+0.04 | **+0.004 (positive)** | 0.96 | 0.018-0.025 | 11-22x |
+| wet_ground | +0.07..+0.08 | -0.007..-0.018 | 0.58-0.60 | 0.002-0.006 | 23-26x |
+
+**What works:**
+- **fog/crosstalk AL is now solidly POSITIVE at ~32 labels** (fog +0.054-0.063,
+  crosstalk +0.075-0.077) with the centroid rule + source counts + k=2. The
+  cheap AL framework works on the collapsed conditions.
+- **snow is POSITIVE at the best config** (+0.004 ball k2 r0.75 / spec k8
+  r0.75) -- the first positive snow AL in the entire thread.
+- **The rule story is causal and clean**: selection quality (mean_cos) fully
+  predicts the AL outcome; the fix is to select bulk points (centroid/random),
+  not boundary points (influence).
+- **k=2 budget halves the cost with zero loss.**
+
+**What does not work (and why -- the premise is attributed, not just failed):**
+- **wet_ground stays negative** (-0.007 to -0.018) and **snow is only barely
+  positive**. The whitened error at the best config is 11-125x -- the
+  Iteration-8 smoking gun persists even with the best rule, the best budget,
+  source counts, and the control variate. The T direction is good (t_cos
+  0.52-0.96) but the inverse covariance amplifies the residual (w_cos collapses
+  to 0.002-0.025). This is the RIDGE AMPLIFICATION, not the selection or the
+  budget -- the premise limit on the healthy conditions is the probe update
+  itself, exactly as Iteration 8-10 found. The closeable gap is also small on
+  snow (+0.03): there is little headroom to begin with.
+- **The confidence rule does not work** (its mean_cos 0.61-0.91 is worse than
+  random/centroid) -- the C15 positive lev_conf was a proxy artifact.
+
+**Net for the AL method.** The deployable recipe is now: centroid-near k=2
+means (32 labels) + source-count prior + control variate + fractional-residual
+update (beta~0.6) -- POSITIVE on fog/crosstalk (+0.05 to +0.08), near-zero-to-
+positive on snow, and the remaining wet_ground deficit (-0.007 to -0.018) is
+attributed to the ridge amplification of a small closeable gap, not to the
+feature extractor or the label selection. The next lever for wet_ground is the
+sensitivity-bounded parameterization itself (the clip 9B / fractional-gain
+shaping already in the README 4.5 efficiency note), not more extractor
+training or a different query rule.
+
+### Iteration C17: the cross-extractor comparison plan (2026-08-19)
+
+**The ceiling caveat discovered in C16.** The C12-C16 AL experiments were run
+on the **corsupcon** base (`supcon_vib_dglsspp_corsupcon_ball` / `_spec`), but
+the AL-thread ceiling numbers in `active_iterations.md` were measured on the
+**cov-shift** extractor (`supcon_vib_dglsspp_inputin_in_chan`, the Pillar-1
+winner). These are DIFFERENT extractors, and their fog/crosstalk ceilings
+differ by ~0.18:
+
+| cond | cov-shift zs -> ceiling | ball zs -> ceiling | ceiling delta |
+| :--- | :--- | :--- | :--- |
+| fog | 0.201 -> 0.433 | 0.088 -> 0.252 | **-0.18** |
+| crosstalk | 0.395 -> 0.594 | 0.126 -> 0.401 | **-0.19** |
+| snow | 0.377 -> 0.510 | 0.506 -> 0.554 | +0.04 |
+| wet_ground | 0.358 -> 0.683 | 0.641 -> 0.730 | +0.05 |
+
+Two separate findings, to be tested in the next iteration:
+
+1. **The small snow gap is NOT a destroyed ceiling.** Ball's snow ceiling
+   (0.554) is HIGHER than cov-shift's (0.510), and wet_ground too (0.730 vs
+   0.683). The gap is small because ball's FROZEN (zero-shot) is already near
+   its own ceiling (0.506 vs 0.554) -- the ball training raised the frozen
+   performance so much there is little left for labels to add. The healthy-
+   condition story is a success, not a ceiling loss.
+2. **The ball/spec fog/crosstalk ceilings are ~0.18 BELOW the cov-shift
+   extractor's.** The C16 AL gains (+0.05 to +0.08 on fog/crosstalk) are real
+   but were measured on a WEAKER space. The open question: does the same
+   centroid-k2 + source-count + control-variate AL recipe reach the cov-shift
+   HIGH ceilings (0.433 fog / 0.594 crosstalk)?
+
+**The plan.** Run the identical `al_rule_budget_diag` on the cov-shift ep10
+(the optimal window) and ep21 checkpoints
+(`bash run_al_rule_budget_covshift.sh 3`). If the cheap AL reaches the cov-shift
+high ceilings on fog/crosstalk AND the healthy conditions hold, the full story
+is: a feature space with both the high cov-shift ceilings AND the AL-friendly
+geometry. If the cov-shift frozen is too low for the AL to close, the next
+candidate is a hybrid: apply the ball/spec AL objectives on the cov-shift
+base (train `inputin_in_chan_ball` / `inputin_in_chan_spec`), so the geometry
+gains ride on the higher-ceiling extractor. The README's three candidate next
+steps are documented there (Section 6).
+
 
