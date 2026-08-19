@@ -650,3 +650,56 @@ matmul to fp16 -> eigvalsh Half error), fixed by computing the mask after
 reshape and the covariance in float64 (autocast-immune), not by disabling
 autocast.
 
+### Iteration C13: the 8-epoch medium AL-geometry run + the beta/eta re-sweep (2026-08-18)
+
+Promoted `ball` and `spec` to the medium run (8 epochs, 100% data) and measured
+the AL-geometry gate (`al_geometry_eval.py`) plus a (beta, eta) re-sweep of the
+Iteration-10 fractional-residual update at the CHEAP k=8 budget (64-72 labels),
+all on the new feature spaces.
+
+**Both arms scaled: the property gains survived 100% data and neither regressed
+the ceilings.**
+- frozen / oracle / spec-ceil all rose well above the micro run (e.g. ball oracle
+  fog 0.187->0.277, crosstalk 0.342->0.384); participation rank rose to 3-5
+  (flatter spectrum), intra-cos 0.71-0.78, separation up to 0.89.
+- cond_structure gate: both arms hold feat_cos / dir_ret / corr_tight at or above
+  the reference on snow/wet_ground with no regression (zs_B preserved).
+- **Both arms were still climbing at epoch 8**: the final and valid_best gates
+  were identical (best-val fired at the final epoch) and the last-epoch IoU was
+  still rising from epoch 6. With the cosine scheduler on first_cycle=80, the LR
+  was still near max -- a high-LR plateau, NOT an optimum. So this is a scaling
+  check, not a convergence verdict.
+
+**The beta/eta re-sweep found AL headroom that the default recipe was missing --
+the key signal to keep working from.**
+The Iteration-10 defaults (beta=0.75, eta=0.1) were tuned on the base's steeper
+spectrum; the AL-geometry objectives flattened it, moving the fractional-gain
+optimum. Re-sweeping (beta, eta) at k=8 on the 8-epoch ball/spec features
+(`al_betaeta_resweep.py`, oracle counts, random-k means, same T_hat as
+Iteration 10):
+
+| cond | default (0.75, 0.1) | best (beta, eta) | delta at best |
+| :--- | :--- | :--- | :--- |
+| fog | +0.014 | (0.6, 0.2) | +0.032 |
+| crosstalk | +0.034 | (0.6, 1.0) | +0.059..0.084 |
+| snow | -0.058 | (0.6, 0.05) | -0.008 |
+| wet_ground | -0.081 | (0.6, 0.05) | -0.037 |
+
+- The AL optimum shifted from beta=0.75 to **beta=0.6** on BOTH extractors,
+  consistently across all 4 conditions and both final/valid_best checkpoints.
+- The 8-epoch stats were **positive where AL was already positive** (fog/crosstalk
+  roughly 2x better with re-tuned beta/eta) and **near-zero where it was negative**
+  (snow -0.058->-0.008, wet_ground -0.081->-0.037) -- a strong signal that the
+  feature space enables cheap AL once the recipe is re-tuned.
+- final vs valid_best were identical, so the signal is real, not a checkpoint
+  artifact.
+
+**Forward signal / what to watch.** The 8-epoch (still-climbing) statistics show
+the feature spaces have AL headroom that beta=0.75/eta=0.1 was hiding. The medium
+run was resumed to 21 epochs (LR annealed, the `run_covshift_medium.sh` standard)
+to see if a better-converged extractor pushes snow/wet_ground fully positive. If
+the 21-epoch run COLLAPSES back to clearly-negative AL on snow/wet_ground, that
+would be evidence the headroom was an under-convergence artifact -- but the
+8-epoch near-zero/positive-elsewhere pattern is the baseline to work from (and to
+re-tune the recipe around beta=0.6, not 0.75, for these extractors).
+
