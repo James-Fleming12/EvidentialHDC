@@ -1330,3 +1330,58 @@ the pool covariance's top r directions already computed in C14/C20. The C21
 `oracle-basis` numbers are the ceiling for that approach (fog +0.059, wet
 +0.141 at k8 r8) and quantifiably beat the T_hat deployment fixes on the hard
 conditions.
+
+### Iteration C22 RESULTS: the unlabeled bases do not capture the residual (2026-08-19)
+
+Tested the C21 next lever: $W = W_0 + U_r C$ where $U_r$ is from **unlabeled**
+pool structure (no labels for $U_r$, labels only fit $C$), per r in $\{1,2,4,8\}$,
+per k in $\{2,4,8\}$ (`al_residual_unlabeled_diag.py`, eval-only):
+
+- **pool-cov:** $U_r$ = top-$r$ eigenvectors of $S = X_p^T X_p / N$;
+- **code-shift:** $U_r$ = top-$r$ left singular vectors of the per-class
+  code-mean shift $M$ ($17 \times 10000$, row $c = \mu_{pool,c} - \mu_{clean,c}$).
+
+| extractor | cond | gap | oracle-basis k8 r8 | pool-cov best | code-shift best | est-basis best |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| cov-shift ep10 | fog | +0.115 | **+0.059** | +0.003 | -0.001 | -0.212 |
+| cov-shift ep10 | wet_ground | +0.188 | **+0.141** | +0.033 | +0.019 | -0.386 |
+| ball | fog | +0.150 | **+0.127** | +0.053 | +0.056 | -0.069 |
+| ball | crosstalk | +0.255 | **+0.229** | +0.110 | +0.075 | -0.069 |
+| spec | fog | +0.172 | **+0.167** | +0.073 | +0.060 | -0.066 |
+
+Full: at k=8 the pool-cov best is r=1-2 (+0.003 fog, +0.033 wet) and
+degrades at r=8 (-0.011 wet); the oracle-basis stays flat-positive to r=8.
+Increasing $r$ **hurts** the unlabeled bases (extra directions add noise),
+while it **helps** the oracle basis.
+
+**What went wrong compared to the promise:** C20's promise was the *oracle*
+residual curve $W_0 + R_r$, $R_r = U_r U_r^T R$ with $U_r = SVD(R)$: eff-rank
+$4-5$, cum-energy r8 = $1.00$, $r=4$ already $85-90\%$ of the oracle gap. That
+used the **true** residual directions. C21/C22 isolate whether $U_r$ is
+estimable:
+
+- $U_{sub} = SVD(W_{sub} - W_0)$, $W_{sub}$ fit on $k$ labels: $W_{sub}$ is
+  catastrophically wrong (full-probe delta -0.21 to -0.61), so $U_{sub}$ is
+  random and `est-basis` collapses.
+- $U_{pool} = SVD(S)$ and $U_{shift} = SVD(M)$: the top pool-covariance
+  eigenvectors are the **high-variance** directions; the C20 whitened error
+  ($11-125\times$) shows the residual lives in the **low-variance** directions
+  that $S^{-1}$ amplifies. Pool-cov $U$ is therefore orthogonal to $R$ and
+  captures at most $40-50\%$ of its gain (ball fog 0.053 vs 0.127, wet
+  0.012 vs 0.043). Code-shift is similar. Neither is a proxy for the
+  residual subspace.
+
+**Premise vs design:** the low-rank residual *exists* (C20, oracle-basis) and
+$C$ *is* estimable when $U_r$ is known (C21 oracle-basis: $k=4$ gives
+fog +0.050, wet +0.122). The failure is **basis estimation**, not the
+premise that the residual is low-rank or that the gap is closeable. The
+previous promise that survives is the **T-space** route (C15 V3 control
+variate, C16 centroid k=2): there the means ARE estimable (mean_cos
+0.94-0.97) and the best AL on snow/wet was near-zero to positive (+0.001,
+-0.011). C21's `est-basis` and C22's unlabeled bases both try to estimate
+$U_r$ in **W-space** where $W_{sub}$ is not.
+
+**Next lever:** estimate $U_r$ from a **regularized** $W_{sub}$ (ridge on
+$W_{sub}$ before SVD, or $U_r$ from $S^{-1} T_hat$ instead of $T_hat$)
+or keep the T-space correction $T = T_0 + U_r^T C$ where $U_r$ is the
+feature-space shift (eff-rank 1.2 on wet_ground) already computed in C20.
