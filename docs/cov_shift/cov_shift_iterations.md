@@ -1873,3 +1873,46 @@ not need to be large.
 oracle is not recoverable from any of the four unlabeled statistics at $k=32$,
 and a very low-size bank ($500$ unlabelled) is the only lever that moves the
 needle without touching the extractor.
+
+### Iteration C27: small bank point prediction and what it buys for the linear head (2026-08-19)
+
+The same $k=8$ ($56$ labels) $+$ $500$ random unlabelled $1$-NN bank looks
+different under point accuracy vs $mIoU$:
+
+| bank | fog acc / $mIoU$ | snow acc / $mIoU$ | wet acc / $mIoU$ |
+| :--- | :--- | :--- | :--- |
+| $56$ | $0.355$ / $0.226$ ($-0.035$) | $0.618$ / $0.332$ ($-0.124$) | $0.544$ / $0.320$ ($-0.107$) |
+| $556$ ($+500$) | $0.662$ / $0.256$ ($-0.005$) | $0.720$ / $0.404$ ($-0.053$) | $0.688$ / $0.443$ ($+0.016$) |
+
+Point accuracy jumps $+0.30$ fog and $+0.14$ wet with $500$ points and already
+beats the HDC linear frozen ($0.259$ fog) by $0.40$, but $mIoU$ stays below
+frozen on fog/snow/crosstalk at $500$ and only turns positive on wet at
+$556$. The bank is good for predicting *each point* (which is the scale
+signal $W_{cov}$ needs: per-class mass and variance), but $mIoU$ averages
+over classes equally and the $500$ random points starve minority classes
+(fog $c7$ $143$ points in pool, $c2$ $1$ point). The scale estimate for the
+linear head is therefore still biased on rare classes.
+
+**What we learned:** the bank has the form to update the linear classifier
+toward the ceiling, but random $500$ does not give the function to do it at
+low $mIoU$ cost.
+
+**Next steps you asked to keep as baseline:**
+
+1. **Smarter selection for bank and query to not starve minority classes.**
+   Keep the $500$ budget but allocate it to cover rare classes: uniform
+   $500/17 \approx 29$ per class, or $k_c \propto N_c^{\alpha}$ with
+   $\alpha=0$ to $0.25$ (your point 2), or uncertainty $H(p_{cov})$ for
+   $w(x)$ (your point 7). All are eval-only on the $500$-bank harness: build
+   the bank with each allocation, measure $1$-NN $mIoU$ and the $W_{pseudo}$
+   delta ($56$ true $+$ $500$ $1$-NN pseudo from the bank). If uniform $500$
+   beats random $500$ on $mIoU$, the bank becomes a viable low-cost scale
+   estimator for $W$.
+2. **Larger dataset to raise gaps and vary points.** Current $50$k pool /
+   $100$k val from $100$ frames caps rare-class mass and caps the closeable
+   gap (snow $+0.036$). Test $200$ frames ($100$k pool / $200$k val) where
+   rare classes have $2\times$ points and the ceiling gaps are $0.05$ to $0.10$
+   larger: does the same $500$ bank now give $mIoU$ parity, and does $B1$ at
+   $k=32$ ($224$ labels) recover more of the gap with more varied $T$?
+
+Both keep the extractor frozen and keep the bank tiny ($500$ to $1000$).
