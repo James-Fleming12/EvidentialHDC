@@ -255,7 +255,7 @@ def main():
         best_eta=max(r['A_eta'], key=lambda x: r['A_eta'][x]['delta'])
         best_gamma=max(r['A_gamma'], key=lambda x: r['A_gamma'][x]['delta'])
         print(f"  A eta best {best_eta}:{r['A_eta'][best_eta]['delta']:+.3f} " + " ".join(f"e{e}:{r['A_eta'][e]['delta']:+.3f}" for e in ['0','0.1','0.5','1.0']))
-        print(f"  A gamma best {best_gamma}:{r['A_gamma'][best_gamma]['delta']:+.3f} rank best " + " ".join(f"r{r}:{r['A_rank'][r]['delta']:+.3f}" for r in ['1','4','8']))
+        print(f"  A gamma best {best_gamma}:{r['A_gamma'][best_gamma]['delta']:+.3f} rank best " + " ".join(f"r{rr}:{r['A_rank'][rr]['delta']:+.3f}" for rr in ['1','4','8']))
         print(f"  B soft T=1:{r['B_soft']['1.0']['delta']:+.3f} pair:{r['B_soft']['pairwise']['delta']:+.3f}")
         print(f"  D weight best " + " ".join(f"{k}:{v['delta']:+.3f}" for k,v in r['D_weight'].items()))
     os.makedirs(os.path.dirname(args.out),exist_ok=True)
