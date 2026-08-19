@@ -205,9 +205,9 @@ def main():
             SinvT = SinvT.float()
             U_sinv,_ ,_=torch.linalg.svd(SinvT.double(),full_matrices=False); U_sinv=U_sinv.float()
             for rr in [4,8]:
-                U=U_sinv[:,:rr]
-                C=lsq_residual(X_lab, Y_lab, W0, U, device)
-                W=W0.detach().cpu() + (U.cpu() @ C)
+                Ur=U_sinv[:,:rr]
+                C=lsq_residual(X_lab, Y_lab, W0, Ur, device)
+                W=W0.detach().cpu() + (Ur.cpu() @ C)
                 r['sinv'].setdefault(str(k), {})[str(rr)]={'miou':mw(W,Xv,vl),'delta':mw(W,Xv,vl)-r['refs']['frozen']}
         # ---- 3. B1 budget for current linear separator (oracle U, full rank) ----
         for k in [8,16,32,64,128]:
