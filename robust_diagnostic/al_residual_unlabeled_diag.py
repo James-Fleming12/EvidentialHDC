@@ -228,7 +228,7 @@ def main():
             # pool covariance basis
             pc={'n_labels':n_labels}
             for r in RS:
-                U=U_S[:,-r:]  # top r eigenvectors (largest eigvals are at the end after eigh asc)
+                U=U_S[:,-r:].detach().cpu()  # top r eigenvectors (largest eigvals are at the end after eigh asc)
                 C=lsq_residual(X_lab, Y_lab, W0, U, device)
                 W=W0.detach().cpu() + (U @ C)
                 pc[str(r)]={'miou':mw(W,Xv,vl),'delta':mw(W,Xv,vl)-r_cond['refs']['frozen']}
