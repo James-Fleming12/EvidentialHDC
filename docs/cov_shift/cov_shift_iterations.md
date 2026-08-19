@@ -1723,3 +1723,48 @@ $W = W_{cov} + U V^T$ with $r=4$). The next step that is actually worth
 training is **Track C1/C2** ($z=[z_{cov}, \epsilon z_{AL}]$ and the orthogonal
 $||Z_A^T Z_B||_F^2$ branch, your point 6) so $U$ is learned unlabeled and $C$
 is the only label-estimated quantity.
+
+### Iteration C24: B decoder + feature-space potential, extractor frozen (2026-08-19)
+
+Per your constraint that the feature extractor is a last resort, C24 keeps
+cov-shift frozen and asks two questions on cov-shift ep10
+(`al_b_feature_diag.py`, eval-only):
+
+**B decoder ($W = W_{cov} + \Delta W$, labels fit only $\Delta W$):**
+
+| cond | $k$ | $B1$ oracle $r=17$ | $B2$ pool $r=4$ | $B2$ pool $r=8$ | full-probe |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 8 | **+0.039** | -0.008 | -0.008 | -0.220 |
+| fog | 32 | **+0.062** | -0.009 | -0.008 | -0.223 |
+| wet_ground | 8 | **+0.086** | +0.010 | -0.000 | -0.369 |
+| wet_ground | 32 | **+0.128** | +0.016 | +0.013 | -0.368 |
+
+$B1$ (full-rank residual with oracle $U$) is positive even at $k=8$ on wet
+ground ($+0.086$), and $r=17$ holds to $k=32$ ($+0.128$). The pool-cov $U$
+($B2$) stays $\approx 0$ (the same unlabeled-basis failure as C22). So the
+decoder fix is $R$-space, not $S$-space: labels can estimate $\Delta W$ when
+$U$ is known, but $U$ from $S$ is not the residual subspace.
+
+**Feature-space potential (no labels beyond clean, does *some* classifier work
+on this space?):**
+
+| cond | HDC frozen/oracle (gap) | raw frozen/oracle (gap) | $k$NN raw 1 | $k$NN HDC 1 | proto raw / HDC |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 0.259/0.377 (+0.118) | 0.245/0.279 (+0.033) | 0.813 | 0.812 | 0.325/0.382 |
+| snow | 0.457/0.493 (+0.036) | 0.428/0.444 (+0.016) | 0.814 | 0.812 | 0.673/0.689 |
+| wet_ground | 0.427/0.614 (+0.187) | 0.398/0.534 (+0.136) | 0.850 | 0.848 | 0.619/0.623 |
+
+$k$NN ($\approx 0.81$ to $0.85$ on raw and HDC) is far above the HDC linear
+probe (frozen $0.25$ to $0.52$). The space *has form*: a non-linear
+neighbor rule already beats the linear probe by $0.30$ on fog ($0.81$ vs
+$0.25$) and $0.42$ on wet ($0.85$ vs $0.39$). Raw vs HDC $k$NN are
+indistinguishable ($0.813$ vs $0.812$ fog), so the HDC projection is *not* the
+bottleneck; the linear separator is. Prototype (nearest class mean) is
+intermediate (fog HDC proto $0.382$ vs linear $0.259$), but $k$NN dominates.
+
+**Net:** the cov-shift extractor has enough function for an unknown
+classifier change (your point 8-11): $k$NN already reaches $0.81$ to $0.85$
+frozen, and $W_{cov} + \Delta W$ with an oracle $U$ reaches $+0.08$ to
+$+0.12$ on wet at $k=8$ to $32$. The next lever is a **decoder change**
+(B1/B2 with a better $U$, e.g., $S^{-1}T$ or regularized $W_{sub}$) or the
+feature-space $k$NN/proto rule itself, not an extractor change.
