@@ -199,10 +199,10 @@ def main():
                 if len(idx)<max(50,k): continue
                 torch.manual_seed(2); T_hat[:,c]=len(idx)*Xp[idx[torch.randperm(len(idx))[:k]]].mean(0)
             T_hat=T_hat/N
-            # S^{-1}T_hat via spectral: Uc @ (1/sig * UtT_hat)
-            Uc=U.to(device); sig_d=sig.to(device)
-            UtT=Uc.t() @ T_hat.to(device)
-            SinvT=(Uc @ ((1.0/sig_d).unsqueeze(1) * UtT)).cpu().float()
+            # S^{-1}T_hat via spectral on CPU: S^{-1}T = U diag(1/sig) U^T T
+            U_cpu = U.cpu(); sig_cpu = sig.cpu()
+            SinvT = (U_cpu * (1.0/sig_cpu).unsqueeze(0)) @ (U_cpu.t() @ T_hat)
+            SinvT = SinvT.float()
             U_sinv,_ ,_=torch.linalg.svd(SinvT.double(),full_matrices=False); U_sinv=U_sinv.float()
             for rr in [4,8]:
                 U=U_sinv[:,:rr]
