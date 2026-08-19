@@ -1916,3 +1916,57 @@ low $mIoU$ cost.
    $k=32$ ($224$ labels) recover more of the gap with more varied $T$?
 
 Both keep the extractor frozen and keep the bank tiny ($500$ to $1000$).
+
+### Iteration C28: larger dataset and smarter 500 as gate, why point accuracy does not help the probe (2026-08-19)
+
+Still on cov-shift ep10, still no extractor change
+(`al_larger_smart_diag.py`, eval-only, $100$ frames $50$k/$100$k vs $200$ frames
+$100$k/$200$k, and the four $500$ allocations on the $56+500$ bank).
+
+**Larger dataset (more frames, more varied points, higher gaps?):**
+
+|  | fog gap | crosstalk | snow | wet | rare $c7$ freq small/large |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| small $50$k/$100$k | $+0.116$ | $+0.031$ | $+0.036$ | $+0.183$ | $143$ / $160$ |
+| large $100$k/$200$k | $+0.120$ | $+0.022$ | $+0.036$ | $+0.180$ | $160$ |
+
+Gaps are identical to $0.004$ and rare-class mass barely moves. The ceiling is
+not limited by $50$k pool size or $100$ frames of variety on this extractor;
+$100$ frames already saturate the per-class statistics.
+
+**Smarter $500$ allocation for the tiny bank ($56$ true $+$ $500$, $1$-NN
+$mIoU$ and $W_{pseudo}$ $\Delta$ vs frozen, $k=8$):**
+
+| allocation | fog bank | fog $W_{pseudo}$ | wet bank | wet $W_{pseudo}$ |
+| :--- | :--- | :--- | :--- | :--- |
+| random | $-0.004$ | $-0.214$ | $+0.014$ | $-0.373$ |
+| uniform $29$/class | $-0.008$ | $-0.208$ | $-0.024$ | $-0.378$ |
+| diverse | $-0.023$ | $-0.215$ | $-0.048$ | $-0.371$ |
+| uncertainty $H(p_{cov})$ | $-0.017$ | $-0.231$ | $-0.045$ | $-0.378$ |
+
+Random is the best of the four on every condition; uniform, diverse and
+uncertainty are neutral to worse on $mIoU$ and indistinguishable on
+$W_{pseudo}$ ($-0.21$ fog, $-0.37$ wet). Adding $500$ points to the bank does
+not make $1$-NN $mIoU$ beat frozen except on wet at $556$ ($+0.014$), and
+using those $500$ pseudo-labels to fit $W_{pseudo}$ on $56+500$ is
+catastrophically worse than $W_0$ ($-0.21$ to $-0.46$), even worse than the
+bank itself.
+
+**Why a good point predictor is a bad gate for the linear probe:** the $500$
+bank has point accuracy $0.66$ fog ($+0.30$ over $56$ alone) because it labels
+*each point* well, but $W_{pseudo}$ needs per-class *mass*
+$T = \sum_{c} N_c \mu_c$. The bank's $500$ random points starve the
+minority classes in $mIoU$ averaging, and their pseudo-label errors are
+*systematic* per class (the same $c7$/$c2$ that are rare), so $T_{hat}$
+inherits a class-conditional bias. The ridge $(S + \lambda I)^{-1}$ then
+amplifies that bias along low-variance directions (C23 $w_{cos} \approx 0$).
+The bank is therefore a good *per-point* teacher but a bad *per-class mass*
+gate for $W$. The $W_{pseudo}$ vs $500$ true oracle ($-0.211$ vs $-0.214$ fog)
+confirms it is not pseudo quality but the $T$ construction: $500$ true labels
+also give $-0.211$.
+
+**Takeaway:** larger pools do not raise the gap and smarter $500$ allocations
+do not fix the $mIoU$ cost. If the bank is to be the baseline, it must be used
+*as the classifier* ($1$-NN at $5056$ is $0.738$ fog, already beating $W_0$ by
+$+0.061$), not as a gate for $W_{pseudo}$. The $W$-space $U$ estimation without
+oracle remains the bottleneck, not the point predictor.
