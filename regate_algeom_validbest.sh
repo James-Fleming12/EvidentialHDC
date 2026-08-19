@@ -26,7 +26,13 @@ run_validbest() {
   fi
   local vdir="$ckpt_dir/valid_best"
   mkdir -p "$vdir"
+  rm -f "$vdir/SENet"          # remove any stale symlink/file from prior runs
   cp -f "$ckpt_dir/SENet_valid_best" "$vdir/SENet"
+  if [ ! -f "$vdir/SENet" ]; then
+    echo "=== [$label:valid_best] FAIL: could not place SENet copy ==="
+    FAIL=true
+    return 1
+  fi
   local out_tag="${label}_valid_best"
   echo ""
   echo "=== [$label:valid_best] AL-geometry gate ==="

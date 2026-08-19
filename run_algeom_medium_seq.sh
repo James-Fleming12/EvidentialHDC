@@ -94,6 +94,7 @@ run_gate() {
       return 0
     fi
     mkdir -p "$vdir"
+    rm -f "$vdir/SENet"        # remove any stale symlink/file from prior runs
     cp -f "$ckpt_dir/SENet_valid_best" "$vdir/SENet"
     gate_path="$vdir"
   fi
