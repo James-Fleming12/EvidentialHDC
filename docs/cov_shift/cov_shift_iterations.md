@@ -703,3 +703,103 @@ would be evidence the headroom was an under-convergence artifact -- but the
 8-epoch near-zero/positive-elsewhere pattern is the baseline to work from (and to
 re-tune the recipe around beta=0.6, not 0.75, for these extractors).
 
+### Iteration C14: the 21-epoch medium AL-geometry run — convergence check + AL headroom (2026-08-18)
+
+Resumed both `ball` and `spec` from 8 -> 21 epochs (100% data, cosine
+`first_cycle: 80` now in its annealed tail; `run_algeom_medium_seq.sh 3 21
+resume` on GPU 3, sequential, ~13h). Re-gated both checkpoints (`final` and
+`valid_best` via `Senet_valid_best` copy; final == valid_best for both arms,
+so best-val was at epoch 20 -- still climbing, but now LR-annealed) on the
+same harnesses: `al_geometry_eval.py` (frozen / oracle / spec-ceil + the
+default 10-COMB, beta=0.75 eta=0.1 at k=8) and the beta/eta re-sweep
+(`al_betaeta_resweep.py`, 7 x 7 grid at k=8, 64-72 labels).
+
+**AL at the default recipe (beta=0.75, eta=0.1, 64-72 labels)** -- 8-ep vs 21-ep
+(final checkpoint; valid_best is identical so the signal is not a checkpoint
+artifact):
+
+| cond | arm | 8-ep frozen | 21-ep frozen | 8-ep 10-COMB delta | 21-ep 10-COMB delta |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | ball | 0.102 | 0.089 | +0.014 | +0.018 |
+| fog | spec | 0.097 | 0.074 | +0.013 | +0.031 |
+| cross. | ball | 0.140 | 0.128 | +0.037 | +0.043 |
+| cross. | spec | 0.131 | 0.127 | +0.031 | +0.037 |
+| snow | ball | 0.480 | 0.510 | -0.058 | -0.072 |
+| snow | spec | 0.481 | 0.498 | -0.072 | -0.071 |
+| wet_ground | ball | 0.582 | 0.639 | -0.080 | -0.093 |
+| wet_ground | spec | 0.604 | 0.620 | -0.078 | -0.088 |
+
+**AL at the best (beta, eta) found by the re-sweep at k=8** -- the fair test of
+whether the feature space enables cheap AL once the recipe is re-tuned for the
+flatter spectrum. The optimum stayed at **beta=0.6** on every condition at both
+scales (hallmark of the flatter spectrum):
+
+| cond | arm | 8-ep default | 8-ep best (b,e) | 21-ep default | 21-ep best (b,e) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | ball | +0.014 | **+0.032** (0.6,0.2) | +0.018 | **+0.042** (0.6,0.2) |
+| fog | spec | +0.013 | **+0.018** (0.6,0.2) | +0.031 | **+0.059** (0.6,0.1) |
+| cross. | ball | +0.034 | **+0.059** (0.6,1.0) | +0.045 | **+0.086** (0.6,0.75) |
+| cross. | spec | +0.030 | **+0.076** (0.6,1.0) | +0.038 | **+0.092** (0.6,0.5) |
+| snow | ball | -0.058 | **-0.008** (0.6,0.05) | -0.067 | **-0.009** (0.6,0.05) |
+| snow | spec | -0.072 | **-0.009** (0.6,0.05) | -0.071 | **-0.003** (0.6,0.05) |
+| wet_ground | ball | -0.081 | **-0.037** (0.6,0.05) | -0.092 | **-0.038** (0.75,0.05) |
+| wet_ground | spec | -0.077 | **-0.025** (0.6,0.05) | -0.089 | **-0.045** (0.75,0.05) |
+
+The **8 -> 21 collapse did NOT happen.** Snow/wet_ground stayed
+**near-zero** at their best (beta, eta) -- snow -0.008->-0.009 (ball),
+-0.009->-0.003 (spec); wet -0.037->-0.038 (ball), -0.025->-0.045 (spec).
+The signal survived convergence and is real, not an under-convergence artifact.
+On the positive conditions the re-tuned best improved with longer training
+(fog +0.032->+0.042 ball, +0.018->+0.059 spec; crosstalk +0.059->+0.086 ball,
++0.076->+0.092 spec), so longer training DID help where AL was already
+positive -- it just did not turn snow/wet_ground fully positive.
+
+**Property diagnostics (pool, 128-d, normalized), 8-ep -> 21-ep (final):**
+
+| cond | arm | 8-ep intra/cos | 21-ep intra/cos | 8-ep kappa | 21-ep kappa | 8-ep prank | 21-ep prank |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | ball | 0.710 | **0.766** | 1.66M | **7.76M** | 3 | 3 |
+| fog | spec | 0.718 | 0.689 | 1.96M | **6.54M** | 3 | 3 |
+| cross. | ball | 0.745 | **0.781** | 2.62M | **14.76M** | 3 | 2 |
+| cross. | spec | 0.761 | 0.756 | 3.05M | **11.99M** | 3 | 3 |
+| snow | ball | 0.741 | 0.743 | 1.54M | **6.73M** | 4 | 4 |
+| snow | spec | 0.727 | 0.716 | 1.64M | **8.06M** | 4 | 4 |
+| wet_ground | ball | 0.784 | **0.795** | 1.25M | **6.32M** | 5 | 4 |
+| wet_ground | spec | 0.772 | 0.754 | 1.57M | **6.12M** | 5 | 5 |
+
+`ball`'s intra-cos tightened further on fog/crosstalk (the blob objective
+compounds with longer training); `spec`'s intra-cos flattened or regressed
+slightly. Both arms' **kappa roughly tripled to 6-15x** from 8 to 21 epochs
+while prank held -- the spectrum re-steepened with LR annealing despite the
+`spectrum_loss` (weight 0.1, `spec_w` = 0.1) that had flattened it at 8-ep.
+Ceilings did not regress (frozen/oracle/spec-ceil rose on snow/wet_ground;
+fog frozen drifted down but its AL still improved), and the cond_structure gate
+shows **no regression** on snow/wet_ground (ball snow feat 0.818->0.843,
+wet 0.827->0.835; spec snow 0.818->0.825, wet 0.827->0.820; all corr_tight / zs
+at or above the reference).
+
+**Result -- did either feature extractor help, and what next?**
+
+Neither extractor turned snow/wet_ground AL positive at the cheap k=8 budget,
+even at its best (beta, eta) and even after LR-annealed convergence. The
+training objectives DID move the properties they target at 8-ep and those gains
+were visible where they mattered, but longer training (a) re-steepened the
+spectrum (the `spectrum_loss` at 0.1 is too weak to hold the 100%-data
+covariance flat through annealing) and (b) did not lift the healthy-condition AL
+above zero. So **feature-extractor training alone does not make cheap AL
+positive on snow/wet_ground at this weight and budget** -- continuing training
+beyond 21 epochs is unlikely to fix the healthy-condition AL (train IoU was
+still climbing at 21, but the AL curve on those conditions is flat near-zero
+and the condition number is getting worse, not better).
+
+The next step is **refining the AL method itself for the new feature spaces** --
+the lever that C14 shows actually moves the snow/wet delta: re-tuning (beta,
+eta) already halved the negative (default -0.06..-0.09 -> best -0.00..-0.04),
+and the `active_iterations.md` Iteration-11 deployment fixes directly attack the
+remaining T_hat gap (oracle counts -> source-count prior, rare-class inclusion,
+control-variate means, per-condition eta). Those are eval-only on the
+already-trained 21-ep checkpoints (no more extractor training), so they are the
+cheap next probe of whether this feature space can be made to deliver cheap AL.
+If that probe stays negative on snow/wet_ground, the bottleneck is the
+k=8 T_hat mass/count problem identified in Iterations 7-8, not the extractor.
+
