@@ -129,13 +129,9 @@ def select_diverse(pool_feats, avail_idx, n_select, device='cuda'):
         if len(selected)>=n_select: break
     return torch.tensor(selected)
 
-def select_uncertainty(pool_feats, pool_labels, avail_idx, n_select, W0, proj, device='cuda'):
+def select_uncertainty(pool_feats, avail_idx, n_select, W0, proj, device='cuda'):
     # high entropy under W0 (HDC code space, need HDC codes for val pool)
-    # compute HDC codes for avail pool points and W0 logits
-    # chunked to avoid OOM
     avail_feats=pool_feats[avail_idx]
-    # need HDC codes for these avail points
-    # we have proj already, compute on the fly
     scores=[]
     for s in range(0,len(avail_idx),10000):
         e=min(s+10000,len(avail_idx))
@@ -250,7 +246,7 @@ def main():
             ('random', lambda avail, n: avail[torch.randperm(len(avail))[:n]]),
             ('uniform', None),  # special: need per-class uniform
             ('diverse', lambda avail, n: select_diverse(pool_s, avail, n, device)),
-            ('uncertainty', lambda avail, n: select_uncertainty(pool_s, pl_s, avail, n, W0_s, proj, device)),
+            ('uncertainty', lambda avail, n: select_uncertainty(pool_s, avail, n, W0_s, proj, device)),
         ]:
             if name=='uniform':
                 # 500/17 per class, cap by avail per class

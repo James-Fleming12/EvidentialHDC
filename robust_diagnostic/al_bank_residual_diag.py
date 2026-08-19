@@ -217,7 +217,7 @@ def main():
         else:
             banks['uniform']=banks['random']
         banks['diverse']=select_diverse(pool, avail, 500, device)
-        banks['uncertainty']=select_uncertainty(pool, pl, avail, 500, W0, proj, device)
+        banks['uncertainty']=select_uncertainty(pool, avail, 500, W0, proj, device)
         for bname, extra in banks.items():
             bank_idx=torch.cat([lab_idx, extra])
             # 1-NN bank mIoU (as before)
