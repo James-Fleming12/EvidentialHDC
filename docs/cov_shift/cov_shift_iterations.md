@@ -1768,3 +1768,58 @@ frozen, and $W_{cov} + \Delta W$ with an oracle $U$ reaches $+0.08$ to
 $+0.12$ on wet at $k=8$ to $32$. The next lever is a **decoder change**
 (B1/B2 with a better $U$, e.g., $S^{-1}T$ or regularized $W_{sub}$) or the
 feature-space $k$NN/proto rule itself, not an extractor change.
+
+### Iteration C25: prototypes, $S^{-1}T$ and $B1$ budget without memory banks (2026-08-19)
+
+Per your constraint to avoid $k$NN memory banks, C25 keeps the cov-shift
+extractor frozen and tests three decoder-side levers that need no bank, all at
+$k \in \{8,16,32,64,128\}$ per class ($56$ to $896$ labels, centroid $k$ means):
+
+**Prototype (nearest class mean, cosine) at $k$:**
+
+| cond | frozen $W_0$ | $k=8$ proto | $k=32$ proto | $k=128$ proto |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | 0.259 | 0.245 | 0.248 | 0.249 |
+| crosstalk | 0.524 | 0.441 | 0.456 | 0.458 |
+| snow | 0.457 | 0.399 | 0.407 | 0.404 |
+| wet_ground | 0.427 | 0.374 | 0.402 | 0.408 |
+
+Prototype is **worse than frozen at every $k$ to 128** on every condition
+(fog $-0.014$ at $k=8$, crosstalk $-0.083$). More labels do not close the
+gap (fog $0.245 \rightarrow 0.249$ flat). This matches C8: the encoding is
+not the bottleneck, and the cheap prototype does not replace the linear
+separator without a bank.
+
+**$S^{-1}T$-derived $U$** ($U_r = SVD((S + \lambda I)^{-1} T_{hat})$, $r=4,8$):
+
+| cond | $k=8$ $r=4$/$r=8$ $\Delta$ | $k=32$ $r=4$ |
+| :--- | :--- | :--- |
+| fog | $+0.001$/$+0.006$ | $+0.002$ |
+| wet_ground | $+0.001$/$-0.001$ | $+0.002$ |
+
+All $\approx 0$ (same as C22 pool-cov $+0.003$). The whitened $T$ basis is also
+not the residual subspace: $S^{-1}$ amplifies the wrong directions.
+
+**$B1$ budget for the current linear separator ($W = W_0 + U_{oracle} C$,
+$r=17$ full residual, $U_{oracle}=SVD(R)$):**
+
+| cond | $k=8$ $\Delta$ | $k=16$ | $k=32$ | $k=64$ | $k=128$ |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | **+0.040** | +0.044 | **+0.063** | +0.055 | +0.052 |
+| crosstalk | -0.015 | **+0.010** | **+0.018** | +0.018 | +0.021 |
+| snow | -0.010 | **+0.012** | **+0.015** | +0.017 | +0.017 |
+| wet_ground | **+0.087** | +0.113 | **+0.129** | +0.151 | **+0.158** |
+
+Raising the budget **does** help $B1$ in the current paradigm: fog and wet are
+already positive at $k=8$, and at $k=32$ every condition is positive (snow
+$+0.015$, crosstalk $+0.018$). Wet_ground keeps climbing to $+0.158$ at
+$k=128$ (896 labels), recovering $84\%$ of its $+0.187$ gap. The $k=8 \rightarrow
+k=32$ step is the knee ($56 \rightarrow 224$ labels); beyond $k=32$ the gain
+is marginal except on wet.
+
+**Takeaway:** without memory banks, prototypes and $S^{-1}T$ do not work on
+this space, but the **$B1$ residual decoder with the oracle $U$ does** and its
+budget curve is the one that turns positive. $B1$ at $k=8$ is already cheaper
+than the C15/C16 $k=8$ $T$-hat route and at $k=32$ it closes the gap on every
+condition. The remaining work is $U$ estimation without the oracle (C22 pool
+and $S^{-1}T$ both failed), not more prototype tuning.
