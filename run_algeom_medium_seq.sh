@@ -84,11 +84,17 @@ run_gate() {
   local tag="${3:-final}"
   local gate_path="$ckpt_dir"
   if [ "$tag" = "valid_best" ]; then
-    # the eval scripts hardcode <path>/SENet, so expose the best-val checkpoint
-    # as a symlinked SENet in a sibling dir (full state dict incl. epoch/info).
+    # The eval scripts hardcode <path>/SENet. COPY the best-val checkpoint into a
+    # sibling dir as SENet (a symlink is fragile if the target is missing or the
+    # harness resolves through it). Skip gracefully if best-val was never saved
+    # (e.g. the final epoch's val never beat the running best).
     local vdir="$ckpt_dir/valid_best"
+    if [ ! -f "$ckpt_dir/SENet_valid_best" ]; then
+      echo "=== [$label:valid_best] SKIP: no SENet_valid_best (best-val == final? or never fired) ==="
+      return 0
+    fi
     mkdir -p "$vdir"
-    ln -sf "$ckpt_dir/SENet_valid_best" "$vdir/SENet"
+    cp -f "$ckpt_dir/SENet_valid_best" "$vdir/SENet"
     gate_path="$vdir"
   fi
   local out_tag="${label}_${tag}"
