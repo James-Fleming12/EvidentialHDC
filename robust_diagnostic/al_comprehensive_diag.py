@@ -138,9 +138,12 @@ def main():
         val,vl=f[perm[-args.val_size:]],l[perm[-args.val_size:]]
         mc=min(args.max_clean,len(fa)); ci=torch.randperm(len(fa))[:mc]
         proj=get_hdc_projection(dim_in=fa.shape[1],dim_out=10000,device=device)
-        Xc=torch.sign(fa[ci].to(device)@proj).cpu().float()
-        Xp=torch.sign(pool.to(device)@proj).cpu().float()
-        Xv=torch.sign(val.to(device)@proj).cpu().float()
+        # CHUNKED HDC: unchunked X.to(device)@proj with 50-200k x 10k overflows
+        # GPU memory (200k*10k float = 8GB per matmul). The defined hdc_codes()
+        # chunks at 100k rows to keep peak < 4GB.
+        Xc=hdc_codes(fa[ci],proj,device,chunk=100000).float()
+        Xp=hdc_codes(pool,proj,device,chunk=100000).float()
+        Xv=hdc_codes(val,proj,device,chunk=100000).float()
         Xd=Xp.to(device); N=Xp.shape[0]
         W_clean=ridge_fit_soft(Xc,onehot(la[ci],NUM_CLASSES),args.lam,args.cg_iters,args.nystrom_m,device)
         W_oracle=ridge_fit_soft(Xp,onehot(pl,NUM_CLASSES),args.lam,args.cg_iters,args.nystrom_m,device)
@@ -183,18 +186,21 @@ def main():
         pr['intra_cos']=float(np.mean(intra)) if intra else None
         pr['inter_cos']=float(np.mean(inter)) if inter else None
         pr['separation']=pr['intra_cos']-pr['inter_cos'] if intra and inter else None
-        # 1-NN purity
+        # 1-NN purity — hoist zn_d to avoid re-uploading each class/chunk;
+        # chunked matmul keeps peak at ~820 MB (4096*50k) instead of 50k*50k.
         nn1=0; den=0
+        zn_d=zn.to(device)
         for c in classes:
             idx=cls_idx[c]
             if len(idx)<50: continue
             sub=zn[idx].to(device); den+=len(idx)
             for s in range(0,len(idx),4096):
                 e=min(s+4096,len(idx))
-                sim=sub[s:e]@zn.to(device).t()
-                sim[torch.arange(e-s),idx[s:e]]=-1e9
+                sim=sub[s:e]@zn_d.t()
+                sim[torch.arange(e-s,device=device),idx[s:e]]=-1e9
                 nn=sim.argmax(1)
                 nn1+=int((pl[nn.cpu()]==c).sum().item())
+        del zn_d
         pr['nn1_purity']=nn1/den if den else None
         # kappa / prank
         Sf=pool.float()-pool.float().mean(0); cov=(Sf.t()@Sf)/(len(pool)-1)
@@ -265,21 +271,10 @@ def main():
         # ---- Part 1: slight method variations (all at k=8) ----
         sl=r['slight']
         # helpers for T_hat variants
-        # clean class means (for control variate) and clean freqs
         clean_classes=sorted(set(la[ci].tolist()) & set(range(1,NUM_CLASSES)))
         clean_idx={c:(la[ci]==c).nonzero().squeeze(1) for c in clean_classes}
-        fa_c=fa[ci]
-        # need raw 128-d clean feats for clean means: reuse fa[ci] is 128-d before HDC
-        # clean means in CODE space for control variate: Xc per class
-        clean_code_means={}
-        for c in clean_classes:
-            idx=clean_idx[c]
-            if len(idx)==0: continue
-            clean_code_means[c]=Xc[idx].mean(0)
-        # clean freq prior
+        clean_code_means={c:Xc[idx].mean(0) for c in clean_classes if len((idx:=clean_idx[c]))>0}
         tot_clean=len(la[ci]); clean_freq={c:int((la[ci]==c).sum().item())/tot_clean for c in classes}
-        # pool freq (oracle counts normalized)
-        tot_pool=N; pool_freq={c:len(cls_idx[c])/tot_pool for c in classes}
         def make_T(counts, thresh, rho=None):
             # counts: dict c->count, thresh: min pool points to include class, rho: control-var weight
             Th=torch.zeros(10000,NUM_CLASSES)
@@ -334,6 +329,9 @@ def main():
         b4,s4=best_combo(make_T(source_counts, k, None))
         sl['V4_source_all']={'desc':'source counts + all-class (deployable)','best':b4,'at_06_005':s4}
         results['conds'][cond]=r
+        # free per-condition GPU tensors before next condition
+        del Xc, Xp, Xv, Xd, S, eigS, U, Uc, sig, sig_d, UtT_or, W_or_spec, W_clean, W_oracle
+        if torch.cuda.is_available(): torch.cuda.empty_cache()
         print(f"\n=== {cond} ({toc(t0):.0f}s) ===")
         print(f"  frozen {r['refs']['frozen']:.3f} / oracle {r['refs']['oracle']:.3f} / spec-ceil {r['refs']['oracle_spec']:.3f}")
         print(f"  props: intra {pr['intra_cos']:.3f} inter {pr['inter_cos']:.3f} sep {pr['separation']:.3f} | nn1 {pr['nn1_purity']:.3f} kappa {pr['kappa']:.0f} prank {pr['participation_rank']:.0f} | R1 {pr['prototype_miou']:.3f} vs lin {pr['linear_frozen_miou']:.3f}")
