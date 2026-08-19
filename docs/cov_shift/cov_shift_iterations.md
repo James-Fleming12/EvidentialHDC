@@ -240,7 +240,7 @@ binarized clean codes.
 
 **What the diagnostic measures (on frozen features, no training):**
 
-1. **A: the pre-sign margin fraction**: the fraction of `|z @ R| < eps` coordinates
+1. **A: the pre-sign margin fraction**: the fraction of $|z @ R| < eps$ coordinates
    (default eps=0.1). A coordinate near 0 is threshold-hugging: it flips sign on
    small feature noise. If the cov-shift HEALTHY features have a higher near-0
    fraction than DGLSS++ (B > A on snow/wet_ground), that is the quantitative
@@ -255,7 +255,7 @@ binarized clean codes.
    - `zscore` : `sign((z @ R - b) / s)` with per-coordinate clean mean and std.
      Z-scores the projection so every coordinate contributes equally before
      binarization: undoes the per-dimension scale change InstanceNorm introduced.
-   - `fourier`: the other standard HDC style: `[cos(z @ w), sin(z @ w)]` with random
+   - `fourier`: the other standard HDC style: $[cos(z @ w), sin(z @ w)]$ with random
      frequencies w (dim_in x 10000, continuous codes, dim 20000). No sign; a smooth
      periodic encoding. Tests whether retaining continuous phase information fixes
      what hard sign() loses.
@@ -277,7 +277,7 @@ Run: `bash run_binarization_diag.sh 3` (both ep10 + ep21, eval-only, ~1-1.5h).
 The C7 hypothesis was that the cov-shift healthy-ceiling loss is a BINARIZATION loss
 (features pushed toward the sign threshold). The C8 diagnostic (`binarization_diag.py`)
 tested this on frozen features with four encodings (current `sign`, per-coordinate
-`bias`, `zscore`, and the continuous Fourier `[cos, sin]` style) plus the pre-sign
+`bias`, `zscore`, and the continuous Fourier $[cos, sin]$ style) plus the pre-sign
 margin fraction.
 
 **Result: the hypothesis is REJECTED, and the finding reframes the problem.**
@@ -608,8 +608,7 @@ needs the medium run.**
   ill-conditioned conditions: fog 1046k->650k, crosstalk 1306k->992k, wet_ground
   875k->479k, with participation rank 2->3 on fog/wet_ground. `ball_spec`
   combines both: kappa 632k (fog) / 717k (crosstalk) / 323k (wet_ground, prank
-  4, the flattest of any arm). The spectrum half of the 2x2 is now measured --
-  both spectrum-bearing arms flatten the conditioning.
+  4, the flattest of any arm). The spectrum half of the 2x2 is now measured -   both spectrum-bearing arms flatten the conditioning.
 - **The property gains do not transfer to the AL curve at micro scale.** The
   10-COMB update is NEGATIVE on snow and wet_ground for EVERY arm including the
   base (-0.045 to -0.082), and only marginally positive on fog/crosstalk (+0.003
@@ -669,8 +668,7 @@ the ceilings.**
   was still near max: a high-LR plateau, NOT an optimum. So this is a scaling
   check, not a convergence verdict.
 
-**The beta/eta re-sweep found AL headroom that the default recipe was missing --
-the key signal to keep working from.**
+**The beta/eta re-sweep found AL headroom that the default recipe was missing - the key signal to keep working from.**
 The Iteration-10 defaults (beta=0.75, eta=0.1) were tuned on the base's steeper
 spectrum; the AL-geometry objectives flattened it, moving the fractional-gain
 optimum. Re-sweeping (beta, eta) at k=8 on the 8-epoch ball/spec features
@@ -791,8 +789,7 @@ beyond 21 epochs is unlikely to fix the healthy-condition AL (train IoU was
 still climbing at 21, but the AL curve on those conditions is flat near-zero
 and the condition number is getting worse, not better).
 
-The next step is **refining the AL method itself for the new feature spaces** --
-the lever that C14 shows actually moves the snow/wet delta: re-tuning (beta,
+The next step is **refining the AL method itself for the new feature spaces** - the lever that C14 shows actually moves the snow/wet delta: re-tuning (beta,
 eta) already halved the negative (default -0.06..-0.09 -> best -0.00..-0.04),
 and the `active_iterations.md` Iteration-11 deployment fixes directly attack the
 remaining T_hat gap (oracle counts -> source-count prior, rare-class inclusion,
@@ -1151,14 +1148,12 @@ the hybrid used the same 0.1 weights at micro scale. The next probe (if the
 hybrid direction is pursued) is the medium run of `inputin_in_chan_ball_spec`
 with stronger weights (ball_w/spec_w 0.2-0.5), the micro gate is the
 screening step, and it did not clear the bar. Per the README 6.1 options, the
-alternative is option 2 (improve the AL gates for the cov-shift extractor --
-the C18 recipe already reaches +0.019 on ep21 fog), which needs no further
+alternative is option 2 (improve the AL gates for the cov-shift extractor - the C18 recipe already reaches +0.019 on ep21 fog), which needs no further
 extractor training.
 
 ### Iteration C20: the residual-compressibility reframe (2026-08-19)
 
-C19's negative is REFRAMED: it does not show the two ideas are incompatible --
-it shows they were combined at the WRONG LEVEL. The two mechanisms:
+C19's negative is REFRAMED: it does not show the two ideas are incompatible - it shows they were combined at the WRONG LEVEL. The two mechanisms:
 
 - **cov-shift** is an end-to-end recipe making the existing probe good under
   corruption: it consumes the residual, so the frozen probe sits near the
@@ -1259,8 +1254,79 @@ ONE direction), r=8 -> 0.595. The condition where C18 AL was most negative
 because it estimated the full T_hat; the residual structure was there all
 along.
 
-**Verdict: C21 is validated:** estimate the 17 x r residual coefficients C
-from sparse labels (r ~ 4-8), keep W0 (cov-shift) frozen, and the ceiling is
-preserved by construction. This directly answers the Iterations-7/8
-T-synthesis dimensionality failure: the object to estimate is the LOW-RANK
-correction, not the full probe.
+**Verdict: C21 is validated only in its oracle form.** The next diagnostic,
+`al_residual_al_diag.py`, tests whether the low-rank correction is estimable
+from sparse labels (the deployable $C$).
+
+### Iteration C21 RESULTS: the oracle residual is estimable, the estimated basis is not (2026-08-19)
+
+C21 ran on all 4 extractors x 4 conditions (`al_residual_al_diag.py`): for
+budgets k in {2,4,8} pts/class (14-56 labels), two basis choices estimate
+$W = W0 + U_r C$ where $C$ is fit from labels on the residual $Y - X W0$:
+
+- **oracle-basis:** $U_r$ from the SVD of the true residual $R = W* - W0$
+  (the C20 ceiling - answers: if we knew the directions, how many labels
+  estimate $C$?);
+- **est-basis:** $U_r$ from the SVD of the label-estimated residual
+  $R_sub = W_sub - W0$ ($W_sub$ fit on the same labels - the deployable
+  version, answers: can labels discover the directions?);
+- **full-probe:** standard ridge on the labels (the Iterations-7/8 comparison).
+
+**The oracle-basis validates, the est-basis collapses - uniformly:**
+
+| extractor | cond | gap | oracle-basis best (r) | est-basis best (r) | full-probe best |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| cov-shift ep10 | fog | +0.115 | **+0.059** (k8 r8) | -0.194 | -0.194 |
+| cov-shift ep10 | wet_ground | +0.188 | **+0.141** (k8 r8) | -0.386 | -0.379 |
+| ball | crosstalk | +0.255 | **+0.229** (k8 r8) | -0.069 | -0.069 |
+| spec | fog | +0.172 | **+0.167** (k8 r8) | -0.034 | -0.033 |
+
+Full table: fog/crosstalk are representative; snow and wet_ground show the
+same split (oracle-basis k8 r4-r8: fog +0.046, wet +0.122 vs est-basis -0.21
+to -0.41). At every k, every r, every condition, **est-basis delta is
+-0.21 to -0.61** - indistinguishable from full-probe (-0.19 to -0.49) and
+catastrophically below oracle-basis (+0.05 to +0.14 on the same labels).
+
+**What went wrong compared to the promise:** C20's promise was the **oracle**
+residual curve: $W0 + R_r$ with $R_r$ from the true $R$ is low-rank and
+reaches the oracle at r=4-8 (C20 Results table). C20 never tested whether
+$U_r$ itself is estimable - it used the oracle $U$. C21 isolates that step:
+- $R_sub = W_sub - W0$ is built from the same `k` labels, but $W_sub$ (the
+  full-probe fit on `k` labels) is catastrophically wrong (full-probe delta
+  -0.21 to -0.61), so its left singular vectors $U_sub$ are random and the
+  `est-basis` fit $C = (U_sub^T X^T X U_sub)^-1 U_sub^T X^T (Y - X W0)$ inherits
+  that randomness.
+- C15/C16's promise was different: it used the **T_hat mass** route
+  ($T = N * mean$, source counts, control variate) and reported snow
+  +0.001 and wet_ground -0.011 at k=8. That route stays in the T space where
+  the means ARE estimable (mean_cos 0.94-0.97 for centroid/random, C16 TEST1);
+  C21's $R_sub$ basis estimation stays in the W space where $W_sub$ is not.
+
+**The comparison to the previous diagnostics that showed promise:**
+- **C15 V3 (control variate) and C16 centroid k=2** both operate on $T_hat$:
+  $T_c = N_c * mu_c$ with `mu_c` the k-point mean. Their mean quality is
+  0.94-0.97 and their best AL on snow/wet was **near-zero to positive**
+  (+0.001, -0.011) - the T estimation premise holds.
+- **C21's est-basis and full-probe both operate on $W_sub$**, which needs
+  $S_lab^-1 T_lab$ with $S_lab$ from `k` points. That inverts a 10k x 10k
+  structure from ~14-56 points and is the same $W_sub$ whose whitened error
+  was 11-125x in C16. The promise that survives is the **T-space** low-rank
+  correction $T = T0 + U_r^T C$ (or the C15/C16 mass route), not the W-space
+  $R_sub$ basis.
+
+**Attribution (the "does the premise still have potential" guardrail):**
+- Closeable gap `oracle - frozen` is intact on every extractor (fog +0.11-0.17,
+  wet_ground +0.07-0.19), so the premise is not dead.
+- $t_cos$ at the oracle-basis best is good where $U$ is known; $w_cos$ at the
+  est-basis best collapses to ~0.01, tracking $W_sub$.
+- The verdict is therefore **basis estimation**, not the extractor or the
+  residual rank: the low-rank residual exists (C20), and $C$ is estimable from
+  labels when $U$ is oracle (C21 oracle-basis), but $U$ is not estimable from
+  the same sparse labels via $W_sub$.
+
+**Next lever:** estimate $U_r$ from **unlabeled** structure instead of $W_sub$:
+the feature-space shift SVD (C20 `feat_shift`, eff-rank 1.2-4 on wet_ground) or
+the pool covariance's top r directions already computed in C14/C20. The C21
+`oracle-basis` numbers are the ceiling for that approach (fog +0.059, wet
++0.141 at k8 r8) and quantifiably beat the T_hat deployment fixes on the hard
+conditions.
