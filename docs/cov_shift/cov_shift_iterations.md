@@ -261,11 +261,19 @@ In Iteration C10, evaluating the R4 linear classifier against the R1 nearest-pro
 | **Wet Ground** | ep-21 | $40.5\%$ | **$66.8\%$** | **$1.65\times$** | $+26.3\%$ |
 | **Snow** | ep-21 | $39.5\%$ | **$49.1\%$** | **$1.24\times$** | $+9.6\%$ |
 
-#### 5.6 Computational Efficiency: Matrix-Free Conjugate Gradient Solve
-To avoid computing or storing the full $10{,}000 \times 10{,}000$ matrix $S = B^T B$, the ridge regression problem is solved using **matrix-free Conjugate Gradient (CG)** warm-started with a rank-$m$ Nyström approximation ($m=1{,}000$):
-- **Matrix-Free Operator:** The matrix-vector product $(B^T B + \lambda I) v = B^T (B v) + \lambda v$ is computed in $\mathcal{O}(N \cdot D_{\text{HDC}})$ operations without forming $S$.
-- **Update Throughput:** Refitting the linear classifier on $100{,}000$ points executes in $\approx 0.034$ seconds ($\approx 1.5\times 10^6$ points/sec).
-- **Inference Latency:** Once $W^*$ is computed, inference is a single matrix multiplication $b W^*$, which executes in real-time ($> 2.5\times 10^5$ points/sec), matching the speed of standard prototype cosine decoding.
+#### 5.6 Computational Efficiency: Fast Classifier Updates vs. Fast Inference
+Replacing prototype matching with a linear classifier introduces two distinct computational phases:
+
+1. **How We Keep Classifier Updates Fast (Training / TTA / Active Learning):**
+   Fitting or re-estimating $W = (B^T B + \lambda I)^{-1} B^T Y$ over $N = 100{,}000$ points in $D_{\text{HDC}} = 10{,}000$ dimensions would normally require $\mathcal{O}(D^3)$ FLOPs (multi-second dense matrix inversion of $S = B^T B$).
+   - **Matrix-Free CG:** Avoids constructing the $10{,}000 \times 10{,}000$ covariance matrix entirely by computing $(B^T B + \lambda I) v = B^T (B v) + \lambda v$ in $\mathcal{O}(N \cdot D_{\text{HDC}})$ operations.
+   - **Nyström Warm Start ($m=1{,}000$):** Seeds CG with a low-rank sketch, reducing CG iterations from $20+$ to just $5\text{–}8$.
+   - **Update Speed:** Refitting $W$ takes only **$\approx 0.034$ seconds** ($\approx 1.5\times 10^6$ points/sec update throughput).
+
+2. **How Classification (Inference) Remains Fast:**
+   Once $W^*$ is computed, inference for incoming LiDAR points does **not** run CG or matrix inversions. 
+   - **Classification / Decoding Cost:** For a test point with code $b \in \{-1, +1\}^{10{,}000}$, prediction is a single matrix-vector multiplication $b W^*$ followed by an $\arg\max$ over 17 classes ($\mathcal{O}(D_{\text{HDC}} \cdot K) = 1.7 \times 10^5$ operations).
+   - **Inference Speed:** Runs at **$> 2.5\times 10^5$ points/sec** in real-time, matching the runtime speed of standard prototype cosine decoding.
 
 ---
 
@@ -1651,3 +1659,67 @@ mechanism that gets that information at lower $k$ (your points 9-13). The
 comprehensive harness `al_tracks_abc_diag.py` (eval-only, $\approx$30min,
 `bash run_al_tracks_abc.sh 3`) does $A1$ to $k=128$ and $A2$/$B$ per $k$ in one
 run with that fallback built in.
+
+### Iteration C23 RESULTS: the fallback budget to k=128 is still decoder-limited (2026-08-19)
+
+C23 ran on cov-shift ep10 (`al_tracks_abc_diag.py`, eval-only). The fallback
+answers your note: if cheap tracks fail, push the budget to see where it
+*does* turn positive and *what* the extra labels bought.
+
+**A1 budget curve (delta_full) from k=8 to k=128 per class (56 to 896 labels):**
+
+| cond | gap | k=8 $t_{cos}$/$w_{cos}$/$\Delta$ | k=32 | k=128 |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | +0.118 | 0.623/-0.008/-0.220 | 0.651/-0.000/-0.223 | 0.663/0.012/-0.206 |
+| crosstalk | +0.031 | 0.940/0.004/-0.477 | 0.970/-0.009/-0.472 | 0.979/-0.000/-0.462 |
+| snow | +0.036 | 0.934/0.004/-0.427 | 0.967/0.001/-0.410 | 0.973/-0.022/-0.420 |
+| wet_ground | +0.187 | 0.880/-0.013/-0.370 | 0.926/-0.009/-0.368 | 0.936/0.010/-0.366 |
+
+$t_{cos}$ is already $0.88-0.94$ at k=8 and plateaus to $0.97-0.98$ by k=32;
+$w_{cos}$ stays $\approx 0$ at *every* k to 128; $\Delta$ stays flat-negative
+to -0.46. **There is no knee to 128.** More labels buy $t$-quality but $W$
+does not follow: this is the **decoder-limited** case you asked to track
+($T$ improves but $W$ does not), not information-limited. The per-class
+coverage at k=128 is 896 labels ($\approx 60\%$ of the pool) and the mean
+quality is already saturated, so the missing information is not mean quality
+or mass or rare-class count - it is the ridge amplification.
+
+**A2 adaptive allocation (B $\approx$ 136, k_c \propto N_c^{\alpha}$):**
+
+| $\alpha$ | fog $\Delta$ | crosstalk $\Delta$ | snow $\Delta$ | wet $\Delta$ |
+| :--- | :--- | :--- | :--- | :--- |
+| 0 (equal) | -0.230 | -0.472 | -0.428 | -0.396 |
+| 0.25 | -0.208 | -0.507 | -0.407 | -0.375 |
+| 0.5 | -0.216 | -0.468 | -0.417 | -0.381 |
+| 1.0 (mass) | -0.216 | -0.450 | -0.402 | -0.360 |
+
+Uniform vs mass-proportional vs intermediate are indistinguishable on the
+full-probe decoder: allocation does not fix the decoder.
+
+**B residual low-rank (k=8, r=4 vs r=8, oracle vs pool-cov $U$):**
+
+| cond | k | oracle $r=4$ | oracle $r=8$ | pool $r=4$ | pool $r=8$ |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| wet_ground | 8 | +0.048 | +0.060 | -0.009 | -0.009 |
+| wet_ground | 32 | +0.067 | +0.065 | -0.009 | -0.009 |
+
+(Representative; fog/crosstalk show the same pattern: oracle $+0.05-0.06$ at
+$r=4$, pool $\approx 0$.) The **A1 delta_res** (the $r=8$ oracle residual curve
+reported *within* A1) is consistently positive even where delta_full is
+negative: wet_ground k=8 delta_res **+0.137**, k=128 +0.165; fog +0.060;
+crosstalk +0.004. This is the **decoder fix**: $C$ in $W = W_0 + U_8 C$ (8 x 17
+unknowns) is estimable from labels when $U_8$ is the oracle $U$; the full
+$W$ is not.
+
+**What the fallback bought:** at k=128 the extra 840 labels bought $t_{cos}$
+$0.623 \rightarrow 0.663$ (fog), $0.88 \rightarrow 0.936$ (wet) and per-class
+coverage to $60\%$ of the pool, but $w_{cos}$ stayed $0$ and $\Delta$ stayed
+$-0.20$ to $-0.46$. The knee does not exist to $k=128$ for the full probe.
+The only positive $\Delta$ at any $k$ is via the **residual low-rank** route
+($\Delta_{res}$ +0.06 to +0.16), which holds even at k=8. So the selection
+mechanism that would compress $k=128$ to $k=8$ is not a better per-class $k$
+or an adaptive $k_c$, it is the low-rank residual decoder (your point 3C:
+$W = W_{cov} + U V^T$ with $r=4$). The next step that is actually worth
+training is **Track C1/C2** ($z=[z_{cov}, \epsilon z_{AL}]$ and the orthogonal
+$||Z_A^T Z_B||_F^2$ branch, your point 6) so $U$ is learned unlabeled and $C$
+is the only label-estimated quantity.
