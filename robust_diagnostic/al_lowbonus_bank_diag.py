@@ -264,8 +264,8 @@ def main():
                     torch.manual_seed(3)
                     extra=avail[torch.randperm(len(avail))[:min(add,len(avail))]]
                     bank_idx=torch.cat([lab_idx, extra])
-                bank_feats=Xp[bank_idx]; bank_labels=pl[bank_idx]
-                # 1-NN via bank
+                bank_feats=pool[bank_idx]; bank_labels=pl[bank_idx]
+                # 1-NN via bank (raw 128-d, chunked; use same space for val and bank)
                 acc=knn_acc(val, vl, bank_feats, bank_labels, k=1, device=device)
                 r['Q3'].setdefault(str(k), {})[f"bank_{len(bank_idx)}"]={'acc':acc,'n_bank':len(bank_idx)}
         results['conds'][cond]=r
