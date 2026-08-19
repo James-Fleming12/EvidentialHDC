@@ -280,7 +280,7 @@ def main():
         conf = logits.softmax(1).max(1).values.cpu()
         I = nystrom_influence(Xd, args.lam, args.nystrom_m, device)
         probs = logits.softmax(1).cpu()
-        resid = (onehot(pl, NUM_CLASSES).float() - probs).norm(1)
+        resid = (onehot(pl, NUM_CLASSES).float() - probs).norm(1, dim=1)
         prem['lev_conf_spearman'] = spearman(I.numpy(), conf.numpy())
         prem['resid_conf_spearman'] = spearman(resid.numpy(), conf.numpy())
         prem['conf_influence_spearman'] = spearman(conf.numpy(), I.numpy())
