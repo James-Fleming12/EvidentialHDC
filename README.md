@@ -217,7 +217,7 @@ diagnostic, and the decision-rule finding are tracked in
 Test-time adaptation re-estimates the decoder from the corrupted stream with no
 labels. The story has three chapters: what the previous (prototype) method could
 do, what the linear-probe decoder changes, and why the label-free route is
-fundamentally closed in this space (Section 3.2) -- which is what pushes the
+fundamentally closed in this space (Section 3.2), which is what pushes the
 recoverable headroom to the active-learning handoff (Pillar 3).
 
 ### 3.0 What the previous method saw
@@ -299,15 +299,15 @@ property below is measured, and each kills a family of label-free methods:
 1. **The frozen probe's errors are systematic, not noise.** The wrong
    pseudo-labels contribute ~equal magnitude to the update (||W_wrong||/||W_correct||
    ~= 0.8-1.1) and ANTI-align with the oracle rotation (cos(W_wrong, W_oracle) < 0
-   on every condition). Any supervised refit -- gated, weighted, soft, or
-   two-stage -- inherits the frozen probe's own mistakes. Confirmation bias is
+   on every condition). Any supervised refit, gated, weighted, soft, or
+   two-stage, inherits the frozen probe's own mistakes. Confirmation bias is
    structural here, not a gate deficiency (Iterations 9-11).
 2. **The rotation is in the decision rule, not the geometry.** The top eigenspaces
    of S_clean and S_target coincide (spectral overlap 0.995-1.000) and the spectra
    barely change, yet cos(W_zs, W_oracle) is small (0.05-0.19 fog, 0.42-0.59
    crosstalk). The corruption does not rotate the pool's second-order statistics;
    the boundary change lives in how the same geometry is labeled. This is why
-   Procrustes, CORAL, and whitening -- which realign S -- have nothing to align
+   Procrustes, CORAL, and whitening, which realign S, have nothing to align
    (Iteration 12).
 3. **Confidence is anti-correlated with what the update needs.** The points with
    the highest influence on the oracle rotation are the LOW-confidence ones
@@ -331,12 +331,12 @@ property below is measured, and each kills a family of label-free methods:
    applies the inverse geometry to the label statistics; with $S$ fixed and
    correct, the wrong-label contribution is amplified by the same inverse that
    would recover the rotation. S=all, T=gated never beats S=all, T=all at scale
-   because the geometry faithfully represents the pool -- and the pool's
+   because the geometry faithfully represents the pool, and the pool's
    pseudo-labels are what is wrong (Iteration 11).
 7. **The binarized code fixes the norm, making every shift angular.**
    Sign-binarization removes scale; the covariance's dominant directions are
    shared between clean and corrupted (property 2), so corruption expresses as a
-   change in the class-conditional means and angles -- exactly the part of the
+   change in the class-conditional means and angles, exactly the part of the
    statistics a covariance-only method ignores (Iterations 10, 12).
 
 The only supervision that resolves all seven properties is a true label on a
@@ -353,13 +353,13 @@ because the 33-55% wrong pseudo-labels contaminate any supervised refit, and
 Iterations 11-12 showed the same closure for the S/T decomposition and for the
 pure-geometry routes (Section 3.2). So under
 the linear probe, **label-free TTA does not reach the (higher) probe ceiling on any
-condition** -- it is bounded at what the frozen decoder already achieves. This is a
+condition: it is bounded at what the frozen decoder already achieves. This is a
 different statement from the prototype story (where label-free TTA reached the
 prototype's lower ceiling on the healthy conditions).
 
 Zero-shot (frozen decoder), the current label-free TTA, and the labeled ceiling for
-the current setup (cov-shift ep-10). TTA is the FROZEN DECODER -- the Iteration
-9-12 finding is that no label-free update beats it -- so the label-free column
+the current setup (cov-shift ep-10). TTA is the FROZEN DECODER: the Iteration
+9-12 finding is that no label-free update beats it, so the label-free column
 equals zero-shot, and the recoverable headroom is what the AL handoff closes:
 
 | condition | zero-shot (frozen) | label-free TTA | label ceiling (probe) | AL-closeable gap |
@@ -373,7 +373,7 @@ The gap (label ceiling - frozen) is the recoverable headroom that only true labe
 close, which is the active-learning handoff (Pillar 3): a small true-label budget
 (one label per dense cluster) re-estimates the probe from labeled points and
 converts the headroom into prototypes. Crosstalk's frozen ceiling (39.5%) is
-already high -- the extractor, not TTA, closed most of it; fog and wet_ground are
+already high, the extractor, not TTA, closed most of it; fog and wet_ground are
 where the label budget buys the most.
 
 The cov-shift method's per-condition source harnesses are in
@@ -479,7 +479,7 @@ MASS, not the clusters. Three measured mechanisms:
    W_{\mathrm{labeled}} = W_{\mathrm{oracle}} -
    (S + \lambda I)^{-1} \sum_{i \notin L} x_i y_i^{\top}.
    $$
-   Scaling $W$ does not change the decode, but DIRECTION does -- and
+   Scaling $W$ does not change the decode, but DIRECTION does, and
    a partial sum's direction is only right when the labeled subset's per-class
    sums are proportional to the full per-class sums. The labeled ceiling is
    only reached by labeling ~40-60% of the pool (measured across every code
@@ -536,13 +536,13 @@ with $\beta \approx 0.75$ and $\eta \approx 0.1$:
   tradeoff is real and monotone across $\beta$, Iteration 9);
 - the RESIDUAL ANCHOR keeps the update close to the frozen decoder
   ($\eta = 0$ reproduces frozen exactly, so the method is never worse than the
-  frozen baseline -- the safety property, Iteration 9-10);
+  frozen baseline, the safety property, Iteration 9-10);
 - the label cost is the class means: 64-72 labels total (random-$k$ means per
-  class, $k = 8$) -- and the budget curve is flat, so more labels do not help
+  class, $k = 8$), and the budget curve is flat, so more labels do not help
   (Iteration 10).
 
 The frozen vs labeled-ceiling vs method table (ep10; the labeled ceiling is
-the SPECTRAL-exact oracle -- the matrix-free CG-8 approximation previously
+the SPECTRAL-exact oracle, the matrix-free CG-8 approximation previously
 used under-converges and underestimates the true ceiling by 0.04-0.06):
 
 | condition | frozen (zero labels) | method (64-72 labels) | labeled ceiling |
@@ -553,7 +553,7 @@ used under-converges and underestimates the true ceiling by 0.04-0.06):
 | wet_ground | 35.8% | **44.7%** | 67.0% |
 
 The method beats frozen on wet_ground (+8.9) and ep21-fog (+1.6) and moves
-substantially toward the ceiling on every condition -- the first label-
+substantially toward the ceiling on every condition, the first label-
 efficient update in the AL thread to do so. The update is a spectral solve
 (~4s) plus matrix-free decode; the remaining deployment step is replacing the
 oracle-informed class counts with the source-count prior (Iteration 8F).
@@ -569,7 +569,7 @@ avoidable, and the eventual cheaper method must preserve them:
    most directions carry no label signal. A truncated spectral factorization
    (Lanczos or randomized SVD over the top ~100-500 directions, matrix-free
    via $Sv = X^{\top}(X v)$) replaces the 4s eigh with a cost in the CG-8
-   class (~0.03-0.1s) -- the filter $(\lambda + \sigma)^{-\beta}$ is then a
+   class (~0.03-0.1s), the filter $(\lambda + \sigma)^{-\beta}$ is then a
    scalar operation on the returned eigenvalues.
 2. **The fractional power needs only the top-K filter, not the full inverse.**
    The sensitivity problem is the amplification of the near-zero directions;
@@ -583,7 +583,7 @@ avoidable, and the eventual cheaper method must preserve them:
    the prototype rate, and the update itself is one filtered solve. The
    cheaper version keeps: the fractional gain shaping (property 1), the
    residual safety anchor (property 2), the class-mean estimation from a few
-   labels (property 3), and the matrix-free decode -- while replacing the
+   labels (property 3), and the matrix-free decode, while replacing the
    full eigh with the truncated spectral filter.
 
 ---
@@ -759,8 +759,8 @@ budget is preserved for exactly the conditions that need it.
 
 The C12-C16 AL thread (Iterations in `docs/cov_shift/cov_shift_iterations.md`)
 trained the ball/spec AL-geometry extractors on the **corsupcon** base and found
-a deployable cheap-AL recipe -- centroid-near k=2 means (32 labels) + source-
-count prior + control variate + fractional-residual update (beta~0.6) -- that is
+a deployable cheap-AL recipe: centroid-near k=2 means (32 labels) + source-
+count prior + control variate + fractional-residual update (beta~0.6), that is
 POSITIVE on fog/crosstalk (+0.05 to +0.08) and near-zero-to-positive on snow,
 with the remaining wet_ground deficit attributed to the ridge amplification of a
 small closeable gap. **The ceiling caveat**: the ball/spec (corsupcon) spaces
@@ -772,20 +772,20 @@ fog/crosstalk ceilings. The next step is one of three:
 
 1. **Improve the AL gains on the Ball/Spec feature extractor to reach the
    ceilings.** First make the probe update robust enough to close its own
-   (lower) closeable gaps -- the sensitivity-bounded update (fractional gain
+   (lower) closeable gaps: the sensitivity-bounded update (fractional gain
    shaping, 9B clip, unstable-direction removal, residual anchor) is the
-   remaining lever -- then push the ceiling itself (more extractor training /
+   remaining lever, then push the ceiling itself (more extractor training /
    objective tuning) so the AL-closeable gap grows.
 2. **Improve the AL gates for the Cov-Shift feature extractor.** Run the same
    cheap-AL recipe (centroid k=2 + source counts + control variate) directly on
    the cov-shift `inputin_in_chan` ep10/ep21 checkpoints
    (`bash run_al_rule_budget_covshift.sh 3`) to test whether it reaches the
    cov-shift HIGH fog/crosstalk ceilings (0.433/0.594). The cov-shift frozen is
-   lower, so its closeable gaps are larger -- this is the direct test of whether
+   lower, so its closeable gaps are larger, this is the direct test of whether
    the recipe closes the full residual.
 3. **Do some other feature extractor configuration.** The hybrid candidate: apply
    the ball/spec AL-geometry objectives on the cov-shift base
    (`inputin_in_chan_ball` / `inputin_in_chan_spec`) so the geometry gains ride
-   on the higher-ceiling extractor -- aiming for one FE with the AL improvements
+   on the higher-ceiling extractor, aiming for one FE with the AL improvements
    AND the same high fog/crosstalk ceilings.
 
