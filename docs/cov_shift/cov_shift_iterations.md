@@ -1970,3 +1970,37 @@ do not fix the $mIoU$ cost. If the bank is to be the baseline, it must be used
 *as the classifier* ($1$-NN at $5056$ is $0.738$ fog, already beating $W_0$ by
 $+0.061$), not as a gate for $W_{pseudo}$. The $W$-space $U$ estimation without
 oracle remains the bottleneck, not the point predictor.
+
+**Clarification:** the $500$ bank is a good
+per-point predictor ($0.662$ fog accuracy) because it labels *each point*
+well, but its current implementation starves minority classes and their
+features in $mIoU$ averaging ($c2$ $1$ point, $c7$ $143$ points in $50$k
+pool). $W_{pseudo}$ needs per-class mass $T = \sum N_c \mu_c$, so the same
+bank that is good per point is a bad per-class mass gate.
+
+**Next steps we will keep as the baseline (all still $56+500$, extractor
+frozen, $500$ stays tiny, bank is a per-point teacher for $W$, not the
+classifier):**
+
+1. **Robustness and diversity of the bank as a teacher, not a classifier:**
+   keep the $500$ but make it cover *correction* diversity, not just feature
+   density. Test capped uniform ($5$ per class max) and farthest-point diverse
+   with a per-class floor, and measure not $1$-NN $mIoU$ but the *residual*
+   gradient $G_{bank} = \sum_{i \in B} x_i (y_i - p_0(x_i))^T$ quality and the
+   per-class $W_{pseudo}$ $\Delta$ when the $500$ pseudo-labels are used only
+   to fit $\Delta W$ (not $W$). The bank at $556$ already gives $+0.30$
+   point accuracy, so the remaining question is whether a diverse $500$ gives a
+   more varied $G$ for the linear head.
+
+2. **Stability of the update:** $W_{pseudo}$ collapses even with $500$ true
+   labels ($-0.211$ fog, same as pseudo), so the ridge on $56+500$ is
+   unstable at $HDC$ $10000$-d. Test per-class ridge $\lambda_c \propto 1/N_c$
+   and the $B1$ low-rank residual $W = W_0 + U_r C$ ($r=8$) with $C$ fit on the
+   $56+500$ (instead of $W_{pseudo}$ on $56+500$). Both keep the $500$ bank
+   but stabilize $(S + \lambda I)^{-1}$.
+
+3. **Class balance in the linear head:** make the $W$ update equal per class.
+   Test $w_c = 1/N_c$ or $1/\sqrt{N_c}$ per-sample weighting in the $56+500$
+   ridge, or per-class learning rate $\eta_c \propto 1/N_c$, and compare
+   $W_{pseudo}$ $\Delta$ vs unweighted. This directly fixes the $mIoU$
+   averaging that the current $T$ construction violates.
