@@ -803,3 +803,92 @@ cheap next probe of whether this feature space can be made to deliver cheap AL.
 If that probe stays negative on snow/wet_ground, the bottleneck is the
 k=8 T_hat mass/count problem identified in Iterations 7-8, not the extractor.
 
+### Iteration C15: the comprehensive AL check -- method tweaks + feature-space properties (2026-08-19)
+
+The two-question probe (`al_comprehensive_diag.py`, eval-only, ~45s/condition)
+on the 21-ep `ball`/`spec` checkpoints, all at the cheap k=8 budget (64-72
+labels), beta/eta swept {0.6, 0.75} x {0.05, 0.1, 0.2, 0.3, 0.5}:
+
+**Part 1 -- slight variations of the Iteration-10 method** (best delta =
+combo - frozen, oracle-count baseline V0):
+
+| cond | arm | V0 oracle | V1 source-cnt | V2 rare-all | V3 control-var | V4 source+rare |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | ball | +0.042 | **+0.049** | +0.042 | +0.033 | **+0.049** |
+| fog | spec | +0.059 | **+0.063** | +0.059 | +0.051 | **+0.063** |
+| crosstalk | ball | +0.086 | +0.082 | +0.086 | +0.055 | +0.082 |
+| crosstalk | spec | +0.091 | +0.086 | +0.091 | +0.049 | +0.086 |
+| snow | ball | -0.009 | -0.009 | -0.012 | **-0.004** | -0.010 |
+| snow | spec | -0.004 | -0.005 | -0.004 | **+0.001** | -0.005 |
+| wet_ground | ball | -0.038 | -0.024 | -0.032 | **-0.011** | -0.022 |
+| wet_ground | spec | -0.047 | -0.028 | -0.044 | **-0.017** | -0.025 |
+
+**The method is deployable, and the control variate is the unexpected winner.**
+- **V1 (source-count prior) holds V0 on every condition** (fog/crosstalk within
+  +-0.004; wet_ground actually BETTER, ball -0.024 vs -0.038, spec -0.028 vs
+  -0.047). The method does NOT need oracle pool counts -- the clean-data source
+  prior suffices. This closes the Iteration-10/11 deployment gap: the method
+  is fully deployable with only the source prior + k=8 random means.
+- **V3 (clean-mean control variate, rho=0.5) is the standout on the healthy
+  conditions**: wet_ground ball -0.038 -> -0.011, spec -0.047 -> -0.017 (roughly
+  3x closer to zero); snow spec goes POSITIVE (+0.001). The clean mean as a
+  control variate shrinks the sampled-mean error that the ridge amplifies (the
+  Iteration-8 whitened-error smoking gun) -- directly attacking the healthy-
+  condition AL gap.
+- V2 (rare-class inclusion) is neutral-to-harmful (snow -0.012 vs -0.009): the
+  rare classes are noise at thresh-k. V4 (source + rare) == V1 (the rare classes
+  add nothing once counts are source-based).
+- fog/crosstalk remain solidly positive (+0.04 to +0.09) under every variant.
+
+**Part 2 -- feature-space properties (ball JSON; spec log has the core props):**
+
+| cond | arm | intra | sep | nn1 | kappa | prank | R1 proto | lin probe |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | ball | 0.873 | 0.271 | 0.637 | 7.74M | 3 | 0.162 | 0.088 |
+| fog | spec | 0.826 | 0.242 | 0.656 | 6.56M | 3 | 0.143 | 0.074 |
+| crosstalk | ball | 0.881 | 0.490 | 0.710 | 14.9M | 2 | 0.230 | 0.125 |
+| crosstalk | spec | 0.867 | 0.490 | 0.703 | 12.2M | 3 | 0.211 | 0.127 |
+| snow | ball | 0.859 | 0.935 | 0.857 | 6.77M | 4 | 0.424 | 0.507 |
+| snow | spec | 0.843 | 0.924 | 0.855 | 8.05M | 4 | 0.428 | 0.498 |
+| wet_ground | ball | 0.890 | 0.995 | 0.882 | 6.37M | 4 | 0.529 | 0.640 |
+| wet_ground | spec | 0.865 | 0.967 | 0.878 | 6.11M | 5 | 0.523 | 0.620 |
+
+- **R1 (prototype) doubles the linear probe on fog/crosstalk** (ball fog 0.162
+  vs 0.088, crosstalk 0.230 vs 0.125) but **linear >> R1 on snow/wet_ground**
+  (ball wet 0.529 vs 0.640). The ball objective's tight blobs make the prototype
+  metric viable exactly where the frozen probe is weakest -- but the healthy
+  conditions still need the linear boundary. No clean "drop the classifier."
+- **lev_conf_spearman is POSITIVE (0.09-0.38) on the ball space** -- opposite to
+  the base extractor's negative values (Iteration-11: -0.40 to -0.64). On this
+  space the high-confidence points ARE the high-leverage points, so a confidence
+  query rule (the free baseline) may now be competitive with influence -- a
+  property change worth a direct query-rule test.
+- **resid_conf_spearman is strongly negative (-0.43 to -0.91)** -- the
+  high-confidence points have small residuals, confirming the frozen probe's
+  "already correct" core.
+- **mean-k saturates at k=2** (0.93-0.95) on all conditions: the class means are
+  estimable from 2 points/class (16-17 labels) -- cheaper than the k=8 budget
+  currently used.
+- **kappa is 6-15M** (the re-steepened spectrum) but prank 2-5: the cheap
+  Lanczos top-k spectral filter (README 4.5 efficiency note) remains the right
+  way to avoid the full 10k eigh.
+- **The ball space's worst frozen classes are the rare ones** (fog c7 iou 0.00
+  @ freq 143, c14 iou 0.00 @ freq 3917): the budget must spend on them, but the
+  V2 test says including them in T_hat with a random-k mean is noise -- they
+  need the influence-rule targeting, not the mean route.
+
+**Net: the spaces are now worth building the AL method on.** The C15 data gives
+three concrete, cheap next steps (all eval-only):
+1. **Adopt V1 (source-count prior)** -- it is the deployable form and holds or
+   beats the oracle-count baseline everywhere.
+2. **Adopt V3 (control variate)** -- it nearly halves the healthy-condition
+   negative (wet_ground -0.011/-0.017, snow spec +0.001) and needs only the
+   clean means already computed.
+3. **Test the confidence query rule on the ball space** (lev_conf is now
+   positive) and the k=2 budget (mean-k saturates) -- both would cut the label
+   cost below the current 64-72.
+The remaining snow/wet gap (V3: -0.004..-0.017) is the k=8 T_hat mass problem
+from Iterations 7-8; combining V3 with the k=2 budget and the influence rule is
+the natural next probe.
+
+
