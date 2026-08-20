@@ -117,7 +117,7 @@ def main():
     mc=min(args.max_clean,len(fa)); ci=torch.randperm(len(fa))[:mc]
     proj=get_hdc_projection(dim_in=fa.shape[1],dim_out=10000,device=device)
     Xc=hdc_codes(fa[ci],proj,device).float()
-    W0_small=ridge_fit_soft(Xc,onehot(la[ci],NUM_CLASSES),args.lam,args.cg_iters,args.nystrom_m,device)
+    W0_s=ridge_fit_soft(Xc,onehot(la[ci],NUM_CLASSES),args.lam,args.cg_iters,args.nystrom_m,device)
     # also need Xc large? reuse same clean for large (clean is same)
     results={'label':args.label,'method':args.method_b,'conds':{}}
     for cond in CONDS_ALL:
@@ -160,7 +160,7 @@ def main():
         pred_small=knn_predict(val_s, pool_s[bank_idx], pl_s[bank_idx], k=1, device=device)
         bank_miou_small=compute_miou(pred_small, vl_s)
         # W_res with oracle U (r=8) on 56+500 pseudo vs true
-        R=(Ws_s - W0_small).detach().cpu().float()
+        R=(Ws_s - W0_s).detach().cpu().float()
         U_full,_ ,_=torch.linalg.svd(R.double(),full_matrices=False); U_full=U_full.float()
         U8=U_full[:,:8]
         # pseudo labels for extra via 1-NN from 56
@@ -168,25 +168,25 @@ def main():
         X_lab_pseudo=torch.cat([Xp_s[lab_idx], Xp_s[extra]], dim=0)
         Y_pseudo=torch.cat([onehot(pl_s[lab_idx],NUM_CLASSES), onehot(extra_pred,NUM_CLASSES)], dim=0)
         Xd_p=X_lab_pseudo.to(device).float(); Yd_p=Y_pseudo.to(device).float(); U_d=U8.to(device)
-        XU_p=Xd_p @ U_d; A_p=XU_p.t()@XU_p+1e-6*torch.eye(8,device=device); b_p=XU_p.t()@(Yd_p - Xd_p@W0_small.to(device))
+        XU_p=Xd_p @ U_d; A_p=XU_p.t()@XU_p+1e-6*torch.eye(8,device=device); b_p=XU_p.t()@(Yd_p - Xd_p@W0_s.to(device))
         Cp=torch.linalg.solve(A_p,b_p).cpu()
-        W_res_pseudo=W0_small.detach().cpu() + (U8.cpu() @ Cp)
+        W_res_pseudo=W0_s.detach().cpu() + (U8.cpu() @ Cp)
         # true 500
         Y_true_pseudo=torch.cat([onehot(pl_s[lab_idx],NUM_CLASSES), onehot(pl_s[extra],NUM_CLASSES)], dim=0)
         XU_t=X_lab_pseudo.to(device).float() @ U8.to(device)
         A_t=XU_t.t()@XU_t+1e-6*torch.eye(8,device=device)
-        b_t=XU_t.t()@(Y_true_pseudo.to(device).float() - X_lab_pseudo.to(device).float()@W0_small.to(device))
+        b_t=XU_t.t()@(Y_true_pseudo.to(device).float() - X_lab_pseudo.to(device).float()@W0_s.to(device))
         Ct=torch.linalg.solve(A_t,b_t).cpu()
-        W_res_true=W0_small.detach().cpu() + (U8.cpu() @ Ct)
+        W_res_true=W0_s.detach().cpu() + (U8.cpu() @ Ct)
         # also large gap for context
         r={'refs':{}}
-        r['refs']['frozen_small']=mw(W0_small,Xv_s,vl_s); r['refs']['oracle_small']=mw(Ws_s,Xv_s,vl_s)
-        r['refs']['frozen_large']=mw(W0_small,Xv_l,vl_l)  # use small W0 but large val (approx)
-        # actually recompute W0_large for large clean? use W0_small for large val as proxy
+        r['refs']['frozen_small']=mw(W0_s,Xv_s,vl_s); r['refs']['oracle_small']=mw(Ws_s,Xv_s,vl_s)
+        r['refs']['frozen_large']=mw(W0_s,Xv_l,vl_l)  # use small W0 but large val (approx)
+        # actually recompute W0_large for large clean? use W0_s for large val as proxy
         r['refs']['gap_small']=r['refs']['oracle_small']-r['refs']['frozen_small']
-        # for large, use Ws_l vs W0_small? Better use W0_small vs Ws_l on large val
+        # for large, use Ws_l vs W0_s? Better use W0_s vs Ws_l on large val
         # Use large W0 (from large clean) vs Ws_l
-        # For simplicity, report large as Ws_l vs W0_small on large val
+        # For simplicity, report large as Ws_l vs W0_s on large val
         r['refs']['gap_large']=mw(Ws_l,Xv_l,vl_l)-r['refs']['frozen_small']
         r['bank']={'bank_miou_small':bank_miou_small,'bank_delta_small':bank_miou_small - r['refs']['frozen_small'],
                    'W_res_pseudo_small':mw(W_res_pseudo,Xv_s,vl_s),'W_res_pseudo_delta_small':mw(W_res_pseudo,Xv_s,vl_s)-r['refs']['frozen_small'],
@@ -215,7 +215,7 @@ def main():
         else:
             r['bank_large']={'bank_miou':0,'n_bank':0}
         results['conds'][cond]=r
-        del Xc,Xp_s,Xv_s,Xp_l,Xv_l,W0_small,Ws_s,Ws_l,R,U_full
+        del Xc_s,Xc_l,Xp_s,Xv_s,Xp_l,Xv_l,W0_s,W0_l,Ws_s,Ws_l,R,U_full
         if torch.cuda.is_available(): torch.cuda.empty_cache()
         print(f"\n=== {cond} ({toc(t0):.0f}s) ===")
         print(f"  small gap {r['refs']['gap_small']:+.3f} (frozen {r['refs']['frozen_small']:.3f} / oracle {r['refs']['oracle_small']:.3f})")
