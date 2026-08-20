@@ -755,37 +755,27 @@ budget is preserved for exactly the conditions that need it.
  5. Balanced allocation of the label budget across classes is folded into Pillar 3,
     to be engaged once the active-learning updates produce headroom to harvest.
 
-### 6.1 Current state and the three next steps (2026-08-19)
+### 6.1 Current state and the next steps (2026-08-19)
 
-The C12-C16 AL thread (Iterations in `docs/cov_shift/cov_shift_iterations.md`)
-trained the ball/spec AL-geometry extractors on the **corsupcon** base and found
-a deployable cheap-AL recipe: centroid-near k=2 means (32 labels) + source-
-count prior + control variate + fractional-residual update (beta~0.6), that is
-POSITIVE on fog/crosstalk (+0.05 to +0.08) and near-zero-to-positive on snow,
-with the remaining wet_ground deficit attributed to the ridge amplification of a
-small closeable gap. **The ceiling caveat**: the ball/spec (corsupcon) spaces
-have fog/crosstalk ceilings ~0.18 BELOW the cov-shift extractor
-(`inputin_in_chan`, fog 0.433 / crosstalk 0.594), while their healthy-condition
-ceilings are slightly HIGHER (snow 0.554 vs 0.510, wet 0.730 vs 0.683). The
-open goal is a feature extractor with BOTH the AL-friendly geometry AND the high
-fog/crosstalk ceilings. The next step is one of three:
+The accurate README-harness baseline (same $R4$ probe as this table, but with a
+$200$k-point clean fit so the zero-shot is not under-fit) is in
+`docs/cov_shift/cov_shift_iterations.md` (end): the closeable gaps are fog
+$+0.157$, crosstalk $+0.060$, snow $+0.052$, wet_ground $+0.243$ (smaller than
+the $100$k-fit numbers in the tables above because part of the old gap was
+just an under-fit zero-shot). The $56+500$ random bank $W_{res}$ closes $24\%$
+of the fog gap and $45\%$ of the wet gap, and is inside noise on the
+small-gap conditions (snow $-0.004$). The next step is two things:
 
-1. **Improve the AL gains on the Ball/Spec feature extractor to reach the
-   ceilings.** First make the probe update robust enough to close its own
-   (lower) closeable gaps: the sensitivity-bounded update (fractional gain
-   shaping, 9B clip, unstable-direction removal, residual anchor) is the
-   remaining lever, then push the ceiling itself (more extractor training /
-   objective tuning) so the AL-closeable gap grows.
-2. **Improve the AL gates for the Cov-Shift feature extractor.** Run the same
-   cheap-AL recipe (centroid k=2 + source counts + control variate) directly on
-   the cov-shift `inputin_in_chan` ep10/ep21 checkpoints
-   (`bash run_al_rule_budget_covshift.sh 3`) to test whether it reaches the
-   cov-shift HIGH fog/crosstalk ceilings (0.433/0.594). The cov-shift frozen is
-   lower, so its closeable gaps are larger, this is the direct test of whether
-   the recipe closes the full residual.
-3. **Do some other feature extractor configuration.** The hybrid candidate: apply
-   the ball/spec AL-geometry objectives on the cov-shift base
-   (`inputin_in_chan_ball` / `inputin_in_chan_spec`) so the geometry gains ride
-   on the higher-ceiling extractor, aiming for one FE with the AL improvements
-   AND the same high fog/crosstalk ceilings.
-
+1. **Improve the gap closed by AL where there is a gap to close.** The
+   conditions with a measurable closeable gap are fog, wet_ground,
+   cross_sensor, crosstalk, snow; the current $56+500$ random bank closes
+   only a fraction of it (fog $+0.037$ of $+0.157$, wet $+0.109$ of
+   $+0.243$). The lever is the bank's $G$-quality and the $U$-basis
+   estimation (C21-C22: oracle $U$ recovers the ceiling but estimated $U$
+   collapses), not the harness.
+2. **Get a method that tells whether there is something to close at all.**
+   A label-free gauge of the closeable gap (residual norm
+   $\|W^* - W_0\|$ or feature-shift strength vs frozen-cosine stability) so
+   the label budget is spent only on conditions where the gap is significant:
+   beam_missing ($-0.008$) and motion_blur ($+0.007$) have nothing to close,
+   and snow's $+0.052$ is borderline; labels should not be spent there.

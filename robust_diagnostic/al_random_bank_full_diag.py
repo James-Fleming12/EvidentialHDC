@@ -132,7 +132,7 @@ def main():
     model=trainer.model
     clean_parser=build_parser(args.kitti_dir,DATA,ARCH)
     fa,la=extract_features(model,clean_parser,device,args.frames_small)
-    mc=min(args.max_clean,len(fa)); ci=torch.randperm(len(fa))[:mc]
+    mc=min(args.max_clean,len(fa)); torch.manual_seed(7); ci=torch.randperm(len(fa))[:mc]
     cfit=ci[:min(args.clean_fit_n,mc)]
     proj=get_hdc_projection(dim_in=fa.shape[1],dim_out=10000,device=device)
     Xc=hdc_codes(fa[cfit],proj,device).float()
