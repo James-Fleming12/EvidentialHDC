@@ -248,14 +248,14 @@ The relationship $W_c = (S + \lambda_{\text{reg}} I)^{-1} T_c$ reveals the preci
    Projecting continuous embeddings $z \in \mathbb{R}^{128}$ to $D_{\text{HDC}} = 10{,}000$ dimensions via $b = \operatorname{sign}(z R)$ maps non-linear class manifolds into linearly separable configurations in high-dimensional Hamming space (Cover's Theorem). Fitting a learned linear hyperplane in this 10,000D space unlocks the full discriminative capacity of the representation.
 
 #### 5.5 Empirical Performance: R1 vs. R4 Oracle Ceiling
-In Iteration C10, evaluating the R4 linear classifier against the R1 nearest-prototype rule on frozen cov-shift features demonstrated a decisive **$1.24\times - 1.77\times$** mIoU gain across all conditions:
+In Iteration C10, evaluating the R4 linear classifier against the R1 nearest-prototype rule on frozen cov-shift features demonstrated a decisive **$1.24\times - 1.77\times$** mIoU gain across all conditions. The ep-10 rows use the accurate harness (spectral-exact ridge solve, `README.md` R4 table):
 
 | Condition | Epoch | R1 Baseline (Nearest-Prototype) | R4 Linear Classifier (HDC Code Probe) | Relative Gain (R4 / R1) | Absolute mIoU Gain |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Fog** | ep-10 | $26.1\%$ | **$43.3\%$** | **$1.66\times$** | $+17.2\%$ |
-| **Crosstalk** | ep-10 | $46.1\%$ | **$59.4\%$** | **$1.29\times$** | $+13.3\%$ |
-| **Wet Ground** | ep-10 | $42.5\%$ | **$68.3\%$** | **$1.61\times$** | $+25.8\%$ |
-| **Snow** | ep-10 | $40.8\%$ | **$51.0\%$** | **$1.25\times$** | $+10.2\%$ |
+| **Fog** | ep-10 | $26.1\%$ | **$42.8\%$** | **$1.64\times$** | $+16.7\%$ |
+| **Crosstalk** | ep-10 | $46.1\%$ | **$60.5\%$** | **$1.31\times$** | $+14.4\%$ |
+| **Wet Ground** | ep-10 | $42.5\%$ | **$68.5\%$** | **$1.61\times$** | $+26.0\%$ |
+| **Snow** | ep-10 | $40.8\%$ | **$52.5\%$** | **$1.29\times$** | $+11.7\%$ |
 | **Fog** | ep-21 | $21.9\%$ | **$38.7\%$** | **$1.77\times$** | $+16.8\%$ |
 | **Crosstalk** | ep-21 | $45.1\%$ | **$58.6\%$** | **$1.30\times$** | $+13.5\%$ |
 | **Wet Ground** | ep-21 | $40.5\%$ | **$66.8\%$** | **$1.65\times$** | $+26.3\%$ |
@@ -2108,14 +2108,18 @@ Same $56+500$ random bank, $W_{res}$ $r=8$ oracle $U$, $k=8$ per class, on the s
 
 | condition | zero-shot $W_0$ | AL $W_{res}$ $56+500$ random ($mIoU$, $\Delta$) | ceiling $W^*$ | closeable gap |
 | :--- | :--- | :--- | :--- | :--- |
-| fog | $0.277$ | $0.314$ ($+0.037$) | $0.434$ | $+0.157$ |
-| crosstalk | $0.545$ | $0.597$ ($+0.052$) | $0.604$ | $+0.060$ |
-| snow | $0.473$ | $0.469$ ($-0.004$) | $0.525$ | $+0.052$ |
-| wet_ground | $0.443$ | $0.553$ ($+0.109$) | $0.686$ | $+0.243$ |
+| fog | $0.261$ | $0.301$ ($+0.039$) | $0.428$ | $+0.167$ |
+| crosstalk | $0.548$ | $0.601$ ($+0.052$) | $0.605$ | $+0.057$ |
+| snow | $0.474$ | $0.467$ ($-0.007$) | $0.525$ | $+0.051$ |
+| wet_ground | $0.449$ | $0.548$ ($+0.099$) | $0.685$ | $+0.236$ |
+| incomplete_echo | $0.514$ | $0.539$ ($+0.025$) | $0.539$ | $+0.024$ |
+| beam_missing | $0.661$ | $0.637$ ($-0.024$) | $0.650$ | $-0.011$ |
+| motion_blur | $0.564$ | $0.569$ ($+0.005$) | $0.572$ | $+0.007$ |
+| cross_sensor | $0.458$ | $0.512$ ($+0.054$) | $0.532$ | $+0.074$ |
 
-With the accurate zero-shot, the closeable gaps are the README $R4$ gaps minus the free clean-fit recovery: fog $+0.198 \rightarrow +0.157$, wet $+0.270 \rightarrow +0.243$, crosstalk $+0.095 \rightarrow +0.060$, snow $+0.078 \rightarrow +0.052$. The $56+500$ random bank $W_{res}$ closes $24\%$ of the fog gap and $45\%$ of the wet gap; on the small-gap conditions the bank is inside noise (snow $-0.004$).
+With the accurate zero-shot, the closeable gaps are the README $R4$ gaps minus the free clean-fit recovery: fog $+0.198 \rightarrow +0.167$, wet $+0.270 \rightarrow +0.236$, crosstalk $+0.095 \rightarrow +0.057$, snow $+0.078 \rightarrow +0.051$. The $56+500$ random bank $W_{res}$ closes $23\%$ of the fog gap and $42\%$ of the wet gap; on the small-gap conditions the bank is inside noise (snow $-0.007$).
 
 **Next steps (two):**
 
-1. **Improve the gap closed by AL where there is a gap to close**: fog, wet_ground, cross_sensor, crosstalk, snow are the conditions with a measurable closeable gap; the current $56+500$ random bank only closes a fraction of it (fog $+0.037$ of $+0.157$, wet $+0.109$ of $+0.243$). The lever is the bank's $G$-quality and the $U$-basis estimation (C21-C22 showed oracle $U$ recovers the ceiling but estimated $U$ collapses), not the harness.
-2. **Get a method that tells whether there is something to close at all**: a label-free gauge of the closeable gap (e.g., residual norm $\|W^*-W_0\|$ or feature-shift strength vs frozen-cosine stability) so the AL budget is spent only on conditions where the gap is significant — beam_missing ($-0.008$) and motion_blur ($+0.007$) have nothing to close, and snow's $+0.052$ is borderline; labels should not be spent there.
+1. **Improve the gap closed by AL where there is a gap to close**: fog, wet_ground, cross_sensor, crosstalk, snow are the conditions with a measurable closeable gap; the current $56+500$ random bank only closes a fraction of it (fog $+0.039$ of $+0.167$, wet $+0.099$ of $+0.236$). The lever is the bank's $G$-quality and the $U$-basis estimation (C21-C22 showed oracle $U$ recovers the ceiling but estimated $U$ collapses), not the harness.
+2. **Get a method that tells whether there is something to close at all**: a label-free gauge of the closeable gap (e.g., residual norm $\|W^*-W_0\|$ or feature-shift strength vs frozen-cosine stability) so the AL budget is spent only on conditions where the gap is significant — beam_missing ($-0.011$) and motion_blur ($+0.007$) have nothing to close, and snow's $+0.051$ is borderline; labels should not be spent there.

@@ -179,22 +179,28 @@ centroid rule throws away (C10 decision-rule diagnostic):
 
 | condition | zs R1 | zs R4 | ceiling R1 | ceiling R4 |
 | :--- | :--- | :--- | :--- | :--- |
-| fog (ep-10) | 23.9% | 23.5% | 26.1% | **43.3%** |
-| crosstalk (ep-10) | 46.0% | 49.9% | 46.1% | **59.4%** |
-| snow (ep-10) | 39.8% | 43.2% | 40.8% | **51.0%** |
-| wet_ground (ep-10) | 40.2% | 41.3% | 42.5% | **68.3%** |
+| fog (ep-10) | 23.9% | **26.1%** | 26.1% | **42.8%** |
+| crosstalk (ep-10) | 46.0% | **54.8%** | 46.1% | **60.5%** |
+| snow (ep-10) | 39.8% | **47.4%** | 40.8% | **52.5%** |
+| wet_ground (ep-10) | 40.2% | **44.9%** | 42.5% | **68.5%** |
 | fog (ep-21) | 20.8% | 20.4% | 21.9% | **38.7%** |
 | crosstalk (ep-21) | 45.1% | 49.1% | 45.1% | **58.6%** |
 | snow (ep-21) | 38.4% | 43.7% | 39.5% | **49.1%** |
 | wet_ground (ep-21) | 37.6% | 41.4% | 40.5% | **66.8%** |
 
+The ep-10 rows use the accurate harness: spectral-exact ridge solve and a
+200k-point clean fit for the zero-shot (the previous 100k-cap fit under-fitted
+the zero-shot by ~3-5 points; the ceiling is the same pool 100k/val 100k
+seed-42 harness, so fog 42.8% vs the earlier 43.3% is the converged-ridge vs
+not-fully-converged LR solver gap). The ep-21 rows are the original harness.
+
 The linear-probe decoder raises the ceiling 1.2-1.8x over distance-to-prototype on
-every condition (fog 26.1->43.3% ep-10; wet_ground 42.5->68.3%). The zero-shot gain
+every condition (fog 26.1->42.8% ep-10; wet_ground 42.5->68.5%). The zero-shot gain
 is small because the frozen clean-fit probe and the frozen prototypes both start
 from clean structure; the ceiling gain is the recoverable structure the centroid
 rule throws away when the prototypes are re-estimated on the corrupted pool. The R4
 probe is fit on labeled data (clean for zero-shot, pool for the ceiling), so the
-label-free version is the frozen clean-fit probe (R4-zs), which at 0.43-0.50 healthy
+label-free version is the frozen clean-fit probe (R4-zs), which at 0.45-0.55 healthy
 already beats the R1 oracle (0.40-0.43) at zero-shot. The direction: keep the
 cov-shift extractor and make the decoder a learned boundary on the code.
 
@@ -346,7 +352,7 @@ ridge is the oracle construction itself).
 
 ### 3.3 Label-free TTA is bounded at the frozen level
 
-The linear probe's LABELED ceiling is high (43.3% fog, 68.3% wet_ground), but its
+The linear probe's LABELED ceiling is high (42.8% fog, 68.5% wet_ground), but its
 label-free ceiling is the FROZEN decoder: Iterations 9-10 showed that neither
 gating nor weighting pseudo-labels lets the probe update beat the frozen decode,
 because the 33-55% wrong pseudo-labels contaminate any supervised refit, and
@@ -364,15 +370,15 @@ equals zero-shot, and the recoverable headroom is what the AL handoff closes:
 
 | condition | zero-shot (frozen) | label-free TTA | label ceiling (probe) | AL-closeable gap |
 | :--- | :--- | :--- | :--- | :--- |
-| fog | 20.1% | = zero-shot | **43.3%** | +23.2 |
-| crosstalk | 39.5% | = zero-shot | **59.4%** | +19.9 |
-| snow | 37.7% | = zero-shot | **51.0%** | +13.3 |
-| wet_ground | 35.8% | = zero-shot | **68.3%** | +32.5 |
+| fog | 26.1% | = zero-shot | **42.8%** | +16.7 |
+| crosstalk | 54.8% | = zero-shot | **60.5%** | +5.7 |
+| snow | 47.4% | = zero-shot | **52.5%** | +5.1 |
+| wet_ground | 44.9% | = zero-shot | **68.5%** | +23.6 |
 
 The gap (label ceiling - frozen) is the recoverable headroom that only true labels
 close, which is the active-learning handoff (Pillar 3): a small true-label budget
 (one label per dense cluster) re-estimates the probe from labeled points and
-converts the headroom into prototypes. Crosstalk's frozen ceiling (39.5%) is
+converts the headroom into prototypes. Crosstalk's frozen ceiling (54.8%) is
 already high, the extractor, not TTA, closed most of it; fog and wet_ground are
 where the label budget buys the most.
 
@@ -418,9 +424,9 @@ The evidence:
   model).
 - The labeled oracle (re-estimating prototypes from corrupted points with true
   labels) recovers far more than any label-free update (full-scene mIoU Fog
-  +6.5, Crosstalk +14.2 over zero-shot; section 6.3). The label ceiling is
+  +6.5, Crosstalk +14.2 over zero-shot; section 5.3). The label ceiling is
   11-25% per extractor on fog/crosstalk, and the best label-free TTA sits 2-9
-  points below it (section 6.4).
+  points below it (section 5.4).
 - The failure is the *assignment* (which cluster is which class), not the
   *packing* (that the clusters exist). This is exactly why the labeled ceiling is
   much higher than the TTA ceiling: labels convert the surviving cluster structure
@@ -500,6 +506,11 @@ MASS, not the clusters. Three measured mechanisms:
 So the label cost is not a property of a specific mechanism; it is a property
 of the ridge's missing-mass term, which is dimension-independent (the class-mean
 estimation SNR is set by the 128-d intrinsic geometry, not the code dimension).
+This mass requirement applies to the FULL-SPACE probe refit ($W_{pseudo}$ on the
+labeled points); the low-rank residual (Section 4.6) sidesteps it by restricting
+the update to the $r=8$ $U$ subspace, which is why $56+500$ labels now close
+23-91% of the closeable gap where the full probe collapsed ($-0.22$ to $-0.48$,
+Iterations C30-C31).
 The open question is whether the shift structure can synthesize the missing
 mass: the corrupted class means ARE predictable from the clean means plus a
 per-class shift (partially shared across classes, pairwise-cos 0.2-0.37,
@@ -507,8 +518,7 @@ estimated from 2-4 labeled classes), so the cheap path may be to estimate the
 shift from a few labels and fit the probe on the shift-corrected means rather
 than label the mass.
 
-### 4.5 The mechanism that works: a sensitivity-bounded fractional-residual
-update
+### 4.5 The mechanism that works: a sensitivity-bounded residual update
 
 The AL search measured, in order: the packing is real but label propagation
 fails (Iterations 0-2), the missing-mass argument is real but the class means
@@ -520,26 +530,23 @@ unavoidable $T$ errors into large $W$ errors (the ridge-relevant error is
 4-6x; the ordinary Euclidean quality of $T$ stops mattering once it is past
 ~0.7 cosine).
 
-The fix is a sensitivity-bounded parameterization. With the spectrum of
-$S$ normalized (scaling $S$, $T$ and $\lambda$ by $1/N$ leaves the ridge
-solution exactly unchanged), the update is
-
-$$
-W_{\mathrm{new}} = W_{\mathrm{frozen}} + \eta\, (W_{\beta} - W_{\mathrm{frozen}}),
-\qquad
-W_{\beta} = (S + \lambda I)^{-\beta}\, T_{\mathrm{hat}},
-$$
-
-with $\beta \approx 0.75$ and $\eta \approx 0.1$:
-- the FRACTIONAL direction $W_{\beta}$ moves the classifier toward the labeled
-  estimate without the full inverse's amplification (the robustness/ceiling
-  tradeoff is real and monotone across $\beta$, Iteration 9);
-- the RESIDUAL ANCHOR keeps the update close to the frozen decoder
-  ($\eta = 0$ reproduces frozen exactly, so the method is never worse than the
-  frozen baseline, the safety property, Iteration 9-10);
-- the label cost is the class means: 64-72 labels total (random-$k$ means per
-  class, $k = 8$), and the budget curve is flat, so more labels do not help
-  (Iteration 10).
+The fix is a sensitivity-bounded parameterization: keep the update a
+LOW-RANK residual on the frozen decoder instead of a full-space refit. The
+current deployed form (Iterations C30-C31, Section 4.6) is
+$W_{\mathrm{new}} = W_0 + U_r C$ with $r=8$, where $U_r$ is the top-$r$
+left singular subspace of $R = W^* - W_0$ (oracle $U$) and
+$C = (U^{\top} X^{\top} X U)^{-1} U^{\top} X^{\top} (Y - X W_0)$ is fit on the
+$56+500$ labeled points. The rank restriction replaces the full inverse: it is
+never worse than frozen ($C = 0$ reproduces $W_0$ exactly), it is stable where
+the full probe collapses ($-0.22$ to $-0.48 \rightarrow +0.01$ to $+0.12$,
+Iteration C31), and it recovers the oracle at $r = 8$ on every extractor
+(Iteration C20). The earlier Iter-10 form was the fractional-residual
+$W_{\beta} = (S + \lambda I)^{-\beta} T_{\mathrm{hat}}$ with $\beta \approx
+0.75$ and $\eta \approx 0.1$, which achieved the same sensitivity bound with
+64-72 labels; C30 showed the fractional gain shaping is superseded by the
+low-rank restriction ($\gamma \approx 0$, $\eta = 1.0$ best), so the rank
+restriction is the current mechanism and the class-mean labels are replaced by
+the $56+500$ bank (Section 4.6).
 
 The frozen vs labeled-ceiling vs method table (ep10; the labeled ceiling is
 the SPECTRAL-exact oracle, the matrix-free CG-8 approximation previously
@@ -558,33 +565,59 @@ efficient update in the AL thread to do so. The update is a spectral solve
 (~4s) plus matrix-free decode; the remaining deployment step is replacing the
 oracle-informed class counts with the source-count prior (Iteration 8F).
 
-**Efficiency and the path to a cheaper solve.** The current spectral solve
-materializes the full $d \times d$ covariance and eigendecomposes it
-(~4s per condition, a diagnostic cost). Three measured facts say this is
+This table is the fractional-residual recipe measured on its own harness
+(older 100k-cap clean fit; the frozen column is the under-fit zero-shot).
+The current random-memory-bank baseline on the README-accurate harness is in
+Section 4.6.
+
+**Efficiency and the path to a cheaper solve.** The low-rank residual update
+itself is cheap: $C$ is an $r \times r$ solve ($r = 8$), the decode is the
+matrix-free linear probe, and inference is still the single $W_{res}$ (no
+bank at test time). The cost is in the $U$-basis: the oracle $U$ used here
+comes from the SVD of $R = W^* - W_0$, which requires the full pool ridge fit
+(a spectral solve, ~4s per condition). Three measured facts say this is
 avoidable, and the eventual cheaper method must preserve them:
 
-1. **The useful spectrum is low-rank.** The participation rank of the
-   normalized covariance is 6-9, and the 9E unstable-removal diagnostic is
-   flat (dropping the bottom 40% of eigen-directions changes mIoU by <0.01):
-   most directions carry no label signal. A truncated spectral factorization
-   (Lanczos or randomized SVD over the top ~100-500 directions, matrix-free
-   via $Sv = X^{\top}(X v)$) replaces the 4s eigh with a cost in the CG-8
-   class (~0.03-0.1s), the filter $(\lambda + \sigma)^{-\beta}$ is then a
-   scalar operation on the returned eigenvalues.
-2. **The fractional power needs only the top-K filter, not the full inverse.**
-   The sensitivity problem is the amplification of the near-zero directions;
-   the fractional (and clipped, 9B) filters shape those gains directly. A
-   top-K spectral filter with the tail handled by the frozen residual anchor
-   ($\eta$ small) reproduces the mechanism without ever forming the full
-   inverse.
-3. **The method's per-iteration cost is already dominated by the class-mean
-   estimation and one spectral solve.** The means come from $k \times$
-   (#classes) points (64-72 labels), the decode is the matrix-free cosine at
-   the prototype rate, and the update itself is one filtered solve. The
-   cheaper version keeps: the fractional gain shaping (property 1), the
-   residual safety anchor (property 2), the class-mean estimation from a few
-   labels (property 3), and the matrix-free decode, while replacing the
-   full eigh with the truncated spectral filter.
+1. **The residual is low-rank.** Effective rank of $R = W^* - W_0$ is 4-5 and
+   $mIoU(W_0 + R_8) = $ oracle on every extractor (Iteration C20), so a
+   truncated SVD over the top ~8 directions is the full mechanism.
+2. **The oracle $U$ is the bottleneck, not the rank.** Oracle $U$ recovers
+   the ceiling ($+0.05$ to $+0.14$ at $k=8$), but every estimated $U$
+   (est-basis SVD of $W_{sub} - W_0$, pool-covariance, code-shift) collapses
+   ($-0.21$ to $-0.61$, Iterations C21-C22): the cheap $U$ is the open
+   problem, and the bank's $G$-quality (not its 1-NN mIoU) is the lever to
+   improve it.
+3. **The per-condition cost is dominated by the pool fit for oracle $U$ and
+   the $56+500$ bank feature extraction.** The bank's labels are the only
+   supervision; the deployment step is a $U$ estimator that reaches the
+   oracle basis without the full labeled pool (the next step, Section 6.1).
+
+### 4.6 Current AL baseline: the random memory bank ($W_{res}$) on the conditions with a gap to close
+
+The current deployed AL baseline on the README $R4$ harness (spectral-exact
+solve, $200$k-point clean $W_0$ fit, $56$ true labels $k=8$ per class $+$ $500$
+random bank points, low-rank residual $W_{res} = W_0 + U_r C$ with $r=8$ oracle
+$U$; `run_al_random_bank_full.sh`). Only the conditions with a measurable
+closeable gap are shown; beam_missing ($-0.011$) and motion_blur ($+0.007$)
+have nothing to close:
+
+| condition | zero-shot $W_0$ | AL $W_{res}$ ($56+500$ random) | $\Delta$ | ceiling $W^*$ | closeable gap | gap closed |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 26.1% | 30.1% | +3.9 | 42.8% | +16.7 | 23% |
+| wet_ground | 44.9% | 54.8% | +9.9 | 68.5% | +23.6 | 42% |
+| cross_sensor | 45.8% | 51.2% | +5.4 | 53.2% | +7.4 | 73% |
+| crosstalk | 54.8% | 60.1% | +5.2 | 60.5% | +5.7 | 91% |
+| snow | 47.4% | 46.7% | -0.7 | 52.5% | +5.1 | 0% (noise) |
+
+The random bank $W_{res}$ is positive on every condition with a gap to close
+except snow (inside noise), and closes 23-91% of the closeable gap. It is
+nowhere near the ceiling on fog and wet_ground (the large-gap conditions); the
+$U$-basis estimation, not the harness, is the bottleneck (oracle $U$ recovers
+the ceiling, estimated $U$ collapses, Iterations C21-C22). The next steps
+(Section 6.1): (1) improve the gap closed by AL on fog, wet_ground,
+cross_sensor, crosstalk, snow; (2) build a label-free gauge of whether a
+condition has anything to close, so the budget is not spent on beam_missing /
+motion_blur / snow-borderline.
 
 ---
 
@@ -760,22 +793,22 @@ budget is preserved for exactly the conditions that need it.
 The accurate README-harness baseline (same $R4$ probe as this table, but with a
 $200$k-point clean fit so the zero-shot is not under-fit) is in
 `docs/cov_shift/cov_shift_iterations.md` (end): the closeable gaps are fog
-$+0.157$, crosstalk $+0.060$, snow $+0.052$, wet_ground $+0.243$ (smaller than
+$+0.167$, crosstalk $+0.057$, snow $+0.051$, wet_ground $+0.236$ (smaller than
 the $100$k-fit numbers in the tables above because part of the old gap was
-just an under-fit zero-shot). The $56+500$ random bank $W_{res}$ closes $24\%$
-of the fog gap and $45\%$ of the wet gap, and is inside noise on the
-small-gap conditions (snow $-0.004$). The next step is two things:
+just an under-fit zero-shot). The $56+500$ random bank $W_{res}$ closes $23\%$
+of the fog gap and $42\%$ of the wet gap, and is inside noise on the
+small-gap conditions (snow $-0.007$). The next step is two things:
 
 1. **Improve the gap closed by AL where there is a gap to close.** The
    conditions with a measurable closeable gap are fog, wet_ground,
    cross_sensor, crosstalk, snow; the current $56+500$ random bank closes
-   only a fraction of it (fog $+0.037$ of $+0.157$, wet $+0.109$ of
-   $+0.243$). The lever is the bank's $G$-quality and the $U$-basis
+   only a fraction of it (fog $+0.039$ of $+0.167$, wet $+0.099$ of
+   $+0.236$). The lever is the bank's $G$-quality and the $U$-basis
    estimation (C21-C22: oracle $U$ recovers the ceiling but estimated $U$
    collapses), not the harness.
 2. **Get a method that tells whether there is something to close at all.**
    A label-free gauge of the closeable gap (residual norm
    $\|W^* - W_0\|$ or feature-shift strength vs frozen-cosine stability) so
    the label budget is spent only on conditions where the gap is significant:
-   beam_missing ($-0.008$) and motion_blur ($+0.007$) have nothing to close,
-   and snow's $+0.052$ is borderline; labels should not be spent there.
+   beam_missing ($-0.011$) and motion_blur ($+0.007$) have nothing to close,
+   and snow's $+0.051$ is borderline; labels should not be spent there.
