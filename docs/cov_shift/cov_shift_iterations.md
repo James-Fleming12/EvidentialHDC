@@ -190,15 +190,15 @@ Iteration C10 systematically evaluated four decision rules on identical frozen f
 1. **Rule 1 (R1 - Nearest-Centroid Baseline):**
    $$\hat{y}_{\text{R1}} = \arg\max_{c} \frac{\langle b, P_c \rangle}{\|b\|_2 \|P_c\|_2}$$
 2. **Rule 2 (R2 - Class-Conditional Scaled Cosine):**
-   Scales each class prototype similarity by its empirical intra-class dispersion $s_c = \mathbb{E}_{i \in \mathcal{S}_c}[\langle b_i, P_c \rangle]$:
-   $$\hat{y}_{\text{R2}} = \arg\max_{c} \frac{\langle b, P_c \rangle}{(1 - s_c + \epsilon)}$$
+   Scales each class prototype by its empirical intra-class dispersion $s_c = \mathbb{E}_{i \in \mathcal{S}_c}[\langle b_i, P_c \rangle]$ (the mean cosine of a class's points to its own prototype; $s_c = 1$ = tight, lower = spread):
+   $$\hat{y}_{\text{R2}} = \arg\max_{c} \frac{\langle b, P_c / s_c \rangle}{\|P_c / s_c\|_2} = \arg\max_{c} \frac{\langle b, P_c \rangle}{s_c}$$
    *(Ablation: R2 $\le$ R1 across all conditions; simple scalar scale adjustments cannot re-orient the boundary hyperplanes).*
-3. **Rule 3 (R3 - Continuous 128D Linear Probe):**
-   Standard multi-class linear regression fit on the continuous 128-dimensional bottleneck features $z \in \mathbb{R}^{128}$:
+3. **Rule 3 (R3 - Continuous 128D Logistic-Regression Probe):**
+   Standard multi-class logistic regression fit on the continuous 128-dimensional bottleneck features $z \in \mathbb{R}^{128}$:
    $$\hat{y}_{\text{R3}} = \arg\max_{c} (z W_{128} + \beta_{128})_c$$
    *(Ablation: Underperforms R4 because 128D space lacks the linear separability of 10,000D binarized codes).*
 4. **Rule 4 (R4 - Linear Classifier on HDC Binarized Codes):**
-   A multi-class linear model parameterized by weight matrix $W \in \mathbb{R}^{D_{\text{HDC}} \times K}$ and bias $\beta \in \mathbb{R}^K$:
+   A multi-class linear model parameterized by weight matrix $W \in \mathbb{R}^{D_{\text{HDC}} \times K}$ and bias $\beta \in \mathbb{R}^K$ (logistic regression or ridge on the sign code):
    $$\hat{y}_{\text{R4}} = \arg\max_{c \in \{1, \dots, K\}} (b W + \beta)_c$$
 
 #### 4.3 Mathematical Formulation of the R4 Linear Classifier
@@ -288,7 +288,7 @@ Setting the matrix derivative with respect to $C$ to zero yields the **closed-fo
 $$C^* = \left( U_r^T X_{\text{lab}}^T X_{\text{lab}} U_r + \gamma I_r \right)^{-1} U_r^T X_{\text{lab}}^T \left( Y_{\text{lab}} - X_{\text{lab}} W_0 \right)$$
 where:
 - $Y_{\text{lab}} - X_{\text{lab}} W_0 \in \mathbb{R}^{N_{\text{lab}} \times K}$ is the **residual error matrix** of the frozen clean probe on the labeled points.
-- $U_r^T X_{\text{lab}}^T X_{\text{lab}} U_r \in \mathbb{R}^{8 \times 8}$ is an $8 \times 8$ projected covariance matrix that is well-conditioned and inverted in sub-milliseconds with $\gamma \approx 10^{-3}\text{--}10^{-1}$.
+- $U_r^T X_{\text{lab}}^T X_{\text{lab}} U_r \in \mathbb{R}^{8 \times 8}$ is an $8 \times 8$ projected covariance matrix that is well-conditioned and inverted in sub-milliseconds; the C30 sweep found $\gamma \approx 10^{-6}\text{--}10^{-3}$ (effectively $\approx 0$ ridge) best -- the $8 \times 8$ system needs no meaningful regularization.
 
 ##### 4. Why the C30 Residual Formulation is Inherently Stable
 1. **Low-Dimensional Regularization:** Inverting an $8 \times 8$ matrix rather than a $10{,}000 \times 10{,}000$ matrix completely eliminates the $11\times\text{--}125\times$ whitened error amplification.
