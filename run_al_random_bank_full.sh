@@ -13,16 +13,16 @@ echo "Using GPU $GPU"
 METHOD="supcon_vib_dglsspp_inputin_in_chan"
 CKPT="robust_diagnostic/logs/ep10_$METHOD/$METHOD"
 
-echo "=== [random-bank-full] ep10 [all 8 conds, 100 vs 200 frames] on $METHOD ==="
+echo "=== [random-bank-full] ep10 [all 8 conds, README R4 harness 100k/100k + exact solve] on $METHOD ==="
 CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/al_random_bank_full_diag.py \
-  --path_b "$CKPT" --method_b "$METHOD" --label "random_full_ep10" \
-  --out "robust_diagnostic/logs/al_random_bank_full_ep10.json" \
-  2>&1 | tee "logs/al_random_bank_full_ep10.log"
+  --path_b "$CKPT" --method_b "$METHOD" --label "random_full_ep10_readme" \
+  --out "robust_diagnostic/logs/al_random_bank_full_ep10_readme.json" \
+  2>&1 | tee "logs/al_random_bank_full_ep10_readme.log"
 
 RC=$?
 if [ $RC -eq 0 ]; then
   echo "=== RANDOM-BANK-FULL OK ==="
-  echo "Check logs/al_random_bank_full_ep10.log:"
+  echo "Check logs/al_random_bank_full_ep10_readme.log:"
   echo "  - small vs large gap (does larger dataset raise ceiling?)"
   echo "  - bank 1-NN vs W_res pseudo delta at 56+500 random"
 else

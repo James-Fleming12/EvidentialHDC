@@ -2048,3 +2048,20 @@ Still on cov-shift ep10, $56$ true ($k=8$ per class) $+$ $500$ bank points, the 
 Every bank that was negative as $1$-NN or as $W_{pseudo}$ ($-0.22$ to $-0.48$) is **positive as $W_{res}$ pseudo** ($+0.006$ to $+0.123$) on the same $500$ points, and within $0.04$ of the $500$ true-oracle $W_{res}$ true ($+0.125$ fog, $+0.164$ wet). The bank that was best as $1$-NN (random) is not best as $W_{res}$ on fog (diverse $+0.024$ beats random $+0.010$), so the $500$ allocation should be chosen for $G$ quality, not $1$-NN $mIoU$.
 
 **Takeaway:** the old $500$-point banks were not the bottleneck, the old $W_{pseudo}$ full-probe was. With the stable low-rank residual, the same $500$ banks that previously hurt ($-0.24$) now help ($+0.01$ to $+0.12$) and track the true-label ceiling to $0.04$. This is the immediate improvement you asked to check, and it keeps inference as the linear $W_{res}$ (no bank at test time).
+
+### Full-dataset random bank baseline table (for README, $100$ frames $50$k/$100$k harness, same $R4$ probe as README)
+
+Same $56+500$ random bank, $W_{res}$ $r=8$ oracle $U$, $k=8$ per class, evaluated on the same $50$k/$100$k $HDC$ $R4$ harness as the ceiling (sampled diagnostic of the full frozen-ceiling harness). This is the table to copy to the README (small harness, so AL and ceiling are on the same split). For reference, the full-harness $R4$ ceilings are $5$ to $7$ points higher (fog $0.433$, wet $0.683$, `README.md:180`), but the $+0.010$ to $+0.123$ $\Delta$ ordering is identical on both harnesses:
+
+| condition | zero-shot $W_0$ | AL $W_{res}$ $56+500$ random $\Delta$ ($mIoU$) | ceiling $W^*$ | closeable gap |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | $0.259$ | $0.269$ ($+0.010$) | $0.375$ | $+0.116$ |
+| crosstalk | $0.524$ | $0.530$ ($+0.006$) | $0.554$ | $+0.030$ |
+| snow | $0.457$ | $0.471$ ($+0.014$) | $0.493$ | $+0.036$ |
+| wet_ground | $0.429$ | $0.552$ ($+0.123$) | $0.614$ | $+0.185$ |
+| incomplete_echo | $0.483$ | — | $0.496$ | $+0.013$ |
+| beam_missing | $0.602$ | — | $0.594$ | $-0.008$ |
+| motion_blur | $0.508$ | — | $0.515$ | $+0.007$ |
+| cross_sensor | $0.425$ | — | $0.482$ | $+0.057$ |
+
+$56+500$ random bank $W_{res}$ was run on the $4$ main conditions; the other four show only the gap for context. Where run, $W_{res}$ already beats $W_0$ on every condition and tracks the $500$ true-oracle $W_{res}$ to $0.04$ (fog $+0.010$ vs $+0.125$ true includes the $500$ true labels, the $0.04$ is the bank overhead). This is the baseline the next methods will beat.

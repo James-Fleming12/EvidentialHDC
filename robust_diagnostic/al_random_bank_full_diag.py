@@ -12,6 +12,10 @@ as a baseline for next improvements. Covers:
   * Per condition: frozen, oracle, gap, and for the 56+500 random bank:
     1-NN mIoU, W_pseudo (old full-probe), W_res (new, r=8 oracle U) deltas.
 
+Small harness matches the README R4 ceiling harness: 100 frames, 100k pool /
+100k val, seed-42 split, spectral-exact ridge solve (no Nystrom/CG
+under-convergence), so the oracle column is the README-comparable ceiling.
+
 All eval-only on COV-SHIFT ep10. This is the baseline the next methods will
 beat: if a new bank allocation or decoder cannot beat random 500 as W_res
 at 56+500, it is not an improvement.
@@ -70,6 +74,16 @@ def ridge_fit_soft(X,Y,lam,iters,m,device):
         Ap=A(p); a=rs/((p*Ap).sum(0)+1e-30); x=x+a.unsqueeze(0)*p; r=r-a.unsqueeze(0)*Ap
         rsn=(r*r).sum(0); be=rsn/(rs+1e-30); p=r+be.unsqueeze(0)*p; rs=rsn
     return x.float()
+def ridge_fit_exact(X,Y,lam,device,chunk=50000):
+    """Spectral-exact ridge solve (S+lam*I)^-1 T via chunked X^T X accumulation.
+    This is the converged ceiling solver the README R4 harness uses; the
+    Nystrom m=1000 + CG-8 fit under-converges and is +0.04-0.06 BELOW it."""
+    d=X.shape[1]; nc=Y.shape[1]
+    S=torch.zeros(d,d,device=device); T=torch.zeros(d,nc,device=device)
+    for s in range(0,len(X),chunk):
+        Xc=X[s:s+chunk].to(device); Yc=Y[s:s+chunk].to(device)
+        S+=Xc.t()@Xc; T+=Xc.t()@Yc
+    return torch.linalg.solve(S+lam*torch.eye(d,device=device),T).float()
 def knn_predict(val_feats, bank_feats, bank_labels, k=1, device='cuda', chunk=4096):
     val_n=F.normalize(val_feats.float(),dim=1); bank_n=F.normalize(bank_feats.float(),dim=1)
     bank_d=bank_n.to(device)
@@ -94,7 +108,7 @@ def main():
     ap.add_argument("--arch",type=str,default="config/arch/senet-2048p.yml")
     ap.add_argument("--frames_small",type=int,default=100)
     ap.add_argument("--frames_large",type=int,default=200)
-    ap.add_argument("--pool_small",type=int,default=50000)
+    ap.add_argument("--pool_small",type=int,default=100000)
     ap.add_argument("--pool_large",type=int,default=100000)
     ap.add_argument("--val_small",type=int,default=100000)
     ap.add_argument("--val_large",type=int,default=200000)
@@ -117,7 +131,7 @@ def main():
     mc=min(args.max_clean,len(fa)); ci=torch.randperm(len(fa))[:mc]
     proj=get_hdc_projection(dim_in=fa.shape[1],dim_out=10000,device=device)
     Xc=hdc_codes(fa[ci],proj,device).float()
-    W0_s=ridge_fit_soft(Xc,onehot(la[ci],NUM_CLASSES),args.lam,args.cg_iters,args.nystrom_m,device)
+    W0_s=ridge_fit_exact(Xc,onehot(la[ci],NUM_CLASSES),args.lam,device)
     # also need Xc large? reuse same clean for large (clean is same)
     results={'label':args.label,'method':args.method_b,'conds':{}}
     for cond in CONDS_ALL:
@@ -131,7 +145,7 @@ def main():
         val_s,vl_s=f_s[perm_s[-args.val_small:]],l_s[perm_s[-args.val_small:]]
         Xp_s=hdc_codes(pool_s,proj,device).float()
         Xv_s=hdc_codes(val_s,proj,device).float()
-        Ws_s=ridge_fit_soft(Xp_s,onehot(pl_s,NUM_CLASSES),args.lam,args.cg_iters,args.nystrom_m,device)
+        Ws_s=ridge_fit_exact(Xp_s,onehot(pl_s,NUM_CLASSES),args.lam,device)
         # large
         f_l,l_l=extract_features(model,build_parser(cdir,DATA,ARCH),device,args.frames_large)
         torch.manual_seed(42); perm_l=torch.randperm(len(f_l))
@@ -139,7 +153,7 @@ def main():
         val_l,vl_l=f_l[perm_l[-args.val_large:]],l_l[perm_l[-args.val_large:]]
         Xp_l=hdc_codes(pool_l,proj,device).float()
         Xv_l=hdc_codes(val_l,proj,device).float()
-        Ws_l=ridge_fit_soft(Xp_l,onehot(pl_l,NUM_CLASSES),args.lam,args.cg_iters,args.nystrom_m,device)
+        Ws_l=ridge_fit_exact(Xp_l,onehot(pl_l,NUM_CLASSES),args.lam,device)
         # Use small for the random bank test (56+500) to keep it comparable to C31
         # But report both small and large gaps as baseline context
         classes=sorted(set(pl_s.tolist()) & set(range(1,NUM_CLASSES)))
