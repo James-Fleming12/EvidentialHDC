@@ -212,6 +212,9 @@ def main():
                     default="cov_ep10:supcon_vib_dglsspp_inputin_in_chan:"
                             "robust_diagnostic/logs/ep10_supcon_vib_dglsspp_inputin_in_chan/"
                             "supcon_vib_dglsspp_inputin_in_chan,"
+                            "cov_ep21:supcon_vib_dglsspp_inputin_in_chan:"
+                            "robust_diagnostic/logs/med_supcon_vib_dglsspp_inputin_in_chan/"
+                            "supcon_vib_dglsspp_inputin_in_chan,"
                             "dglsspp:supcon_vib_dglsspp:robust_diagnostic/logs/supcon_vib_dglsspp,"
                             "robust:supcon_vib_dglsspp_corsupcon:"
                             "robust_diagnostic/logs/med_corsupcon_21ep/supcon_vib_dglsspp_corsupcon",
