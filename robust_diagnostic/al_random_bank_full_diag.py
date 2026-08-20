@@ -215,7 +215,10 @@ def main():
         else:
             r['bank_large']={'bank_miou':0,'n_bank':0}
         results['conds'][cond]=r
-        del Xc_s,Xc_l,Xp_s,Xv_s,Xp_l,Xv_l,W0_s,W0_l,Ws_s,Ws_l,R,U_full
+        try:
+            del Xp_s,Xv_s,Xp_l,Xv_l,Ws_s,Ws_l,R,U_full
+        except NameError:
+            pass
         if torch.cuda.is_available(): torch.cuda.empty_cache()
         print(f"\n=== {cond} ({toc(t0):.0f}s) ===")
         print(f"  small gap {r['refs']['gap_small']:+.3f} (frozen {r['refs']['frozen_small']:.3f} / oracle {r['refs']['oracle_small']:.3f})")
