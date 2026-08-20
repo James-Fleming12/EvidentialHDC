@@ -2132,3 +2132,50 @@ At full scale the closeable gaps are much smaller than the subsampled harness su
 
 1. **Improve the gap closed by AL where there is a gap to close**: fog, wet_ground, cross_sensor, crosstalk, snow are the conditions with a measurable closeable gap; the current $56+500$ random bank only closes a fraction of it (fog $+0.005$ of $+0.047$, wet $+0.043$ of $+0.122$). The lever is the bank's $G$-quality and the $U$-basis estimation (C21-C22 showed oracle $U$ recovers the ceiling but estimated $U$ collapses), not the harness.
 2. **Get a method that tells whether there is something to close at all**: a label-free gauge of the closeable gap (e.g., residual norm $\|W^*-W_0\|$ or feature-shift strength vs frozen-cosine stability) so the AL budget is spent only on conditions where the gap is significant — beam_missing ($-0.001$) and motion_blur ($+0.006$) have nothing to close, and snow's $+0.013$ is borderline; labels should not be spent there.
+
+### FULL-DATASET per-class breakdown: the minority-class story (17-class setting, `al_per_class_diag.py`)
+
+Per-class IoU on every point of every frame of seq 08 (cov-shift ep-10, frozen R4
+probe; `al_per_class_ep10.json`). The 17-class taxonomy has four classes with
+**zero training content in SemanticKITTI** (barrier, construction_vehicle,
+traffic_cone, trailer: no source label maps to them in `learning_map`), so their
+IoU is 0 everywhere and they are not a loss-term target. The real minority
+classes and their clean (pre) vs fog (post) vs ceiling behavior:
+
+| class | clean support | clean IoU | fog post | fog ceiling | fog gap | failure mode |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| bicycle (2) | 178k | **0.001** | 0.00 | 0.00 | 0.00 | never predicted; absorbed by vegetation/manmade |
+| motorcycle (6) | 240k | 0.269 | 0.10 | 0.01 | -0.09 | collapses; ceiling is WORSE than frozen |
+| pedestrian (7) | 554k | 0.496 | 0.09 | 0.07 | -0.02 | collapses; leaks to vegetation/manmade |
+| truck (10) | 320k | 0.364 | 0.11 | 0.13 | +0.02 | collapses; leaks to unlabeled/vegetation |
+| other_flat (12) | 277k | **0.001** | 0.00 | 0.00 | 0.00 | never predicted; absorbed by terrain/driveable_surface |
+| car (4) | 21M | 0.825 | 0.51 | 0.66 | +0.15 | degrades but recoverable |
+| driveable_surface (11) | 67M | 0.896 | 0.70 | 0.77 | +0.07 | degrades but recoverable |
+| vegetation (16) | 94M | 0.767 | 0.47 | 0.63 | +0.17 | degrades but recoverable |
+
+Per-condition pattern (fog/crosstalk/snow/wet/beam/motion/cross_sensor):
+- **bicycle and other_flat are 0.00 EVEN ON CLEAN** (0.001) -- this is a
+  representation failure, not a corruption failure: they are never predicted
+  anywhere (recall ~0, precision ~0), absorbed by the majority classes.
+- **motorcycle/pedestrian/truck collapse under corruption** (fog: 0.27->0.10,
+  0.50->0.09, 0.36->0.11) and the **ceiling barely recovers them** (fog
+  motorcycle ceiling 0.01 < frozen 0.10: the 400k pool has so few motorcycle
+  points the labeled probe fit cannot help).
+- **The recoverable gaps at scale are in the MAJORITY classes** (wet_ground:
+  driveable_surface +0.56, sidewalk +0.45, terrain +0.29; fog: car +0.15,
+  vegetation +0.17). The AL headroom lives in the big classes, not the small ones.
+
+**Room for more robust class handling in the weights? Yes, but not in the CE
+weights -- they are already saturated.** The CE loss uses inverse-frequency
+weights $w_c = 1/(\text{content}_c + \epsilon)$ with $\epsilon = 0.001$, giving
+the minority classes 204-1000x weights (bicycle 858x, motorcycle 715x,
+pedestrian 666x, truck 316x, other_flat 204x) -- already at the ~1000x cap set
+by epsilon. Bicycle/other_flat are still 0.00 on clean, so CE-weight tuning has
+nowhere to go. The unused lever is **`class_bal` in the GMSIFC/LSCC consistency
+losses** (`modules/DGLSS.py`, currently only enabled for the
+`supcon_vib_dglsspp_bal` variant): per-point L1 weighting by inverse class
+frequency and per-class stratified InfoNCE subsampling would make the
+consistency gradients class-equal, directly targeting the minority classes the
+CE term cannot reach. A second option is a minority-anchored feature loss, but
+the clean-anchor trap (SupCon rejection, Step 2) says it must not anchor to
+clean prototypes.

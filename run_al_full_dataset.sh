@@ -14,6 +14,11 @@
 #     evaluated on NuScenes (32-beam projection, config/labels/nuscenes_new.yaml,
 #     /mnt/alpha/jmfleming/nuscenes_kitti) to test the cov-shift R4 transfer.
 #     Disable with NUSC=0.
+#   * CLASS-BALANCED PROBES (minority-class diagnostic, --bal default 1): per
+#     condition, in the SAME decode pass, the balanced probe variants are also
+#     fit and decoded: per-sample w=1/N_c (equal T mass), per-class lam~1/N_c
+#     (C29 stability), and logit-prior tau*log(N_c/N) on frozen/ceiling. Disable
+#     with BAL=0.
 #
 # Same probe machinery as the README harness (exact ridge, 200k clean fit,
 # 400k pool, oracle U r=8) but the VAL set is the full dataset (~4k frames
@@ -36,7 +41,8 @@ GPU="${1:-3}"
 CONDS="${CONDS:-fog,crosstalk,snow,wet_ground,incomplete_echo,beam_missing,motion_blur,cross_sensor}"
 MAX_FRAMES="${MAX_FRAMES:-0}"
 NUSC="${NUSC:-1}"
-echo "Using GPU $GPU (conds=$CONDS, max_frames=$MAX_FRAMES, nusc=$NUSC)"
+BAL="${BAL:-1}"
+echo "Using GPU $GPU (conds=$CONDS, max_frames=$MAX_FRAMES, nusc=$NUSC, bal=$BAL)"
 
 METHOD="supcon_vib_dglsspp_inputin_in_chan"
 CKPT="robust_diagnostic/logs/ep10_$METHOD/$METHOD"
@@ -49,7 +55,7 @@ SUFFIX="ep10"
 echo "=== [full-dataset] $SUFFIX [$CONDS] on cov-shift ep10+ep21, DGLSS++, Robust DGLSS++ ==="
 CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/al_full_dataset_diag.py \
   --label "full_${SUFFIX}" \
-  --conds "$CONDS" --max_frames "$MAX_FRAMES" --nusc "$NUSC" \
+  --conds "$CONDS" --max_frames "$MAX_FRAMES" --nusc "$NUSC" --bal "$BAL" \
   --extractors \
     "cov_ep10:${METHOD}:${CKPT},cov_ep21:${METHOD}:${CKPT21},dglsspp:supcon_vib_dglsspp:${DGLSSPP_CKPT},robust:supcon_vib_dglsspp_corsupcon:${ROBUST_CKPT}" \
   --out "robust_diagnostic/logs/al_full_dataset_${SUFFIX}.json" \

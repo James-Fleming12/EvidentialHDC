@@ -104,6 +104,38 @@ def ridge_fit_exact(X, Y, lam, device, chunk=50000):
         S += Xc.t() @ Xc; T += Xc.t() @ Yc
     return torch.linalg.solve(S + lam * torch.eye(d, device=device), T).float()
 
+def ridge_fit_balanced(X, Y, counts, lam, device, mode='w', chunk=50000):
+    """Class-balanced ridge probes (minority-class robustness diagnostic).
+    mode='w'  : per-sample weight w_i = 1/N_{y_i} so every class contributes equal
+                total mass to T (fixes the minority T-column under-representation;
+                the linear-separability lever).
+    mode='lam': per-class ridge lambda_c = lam * N / N_c (the C29 stability
+                proposal: MORE shrinkage for the classes with fewer points, so
+                their noisy directions do not blow up the fit)."""
+    d = X.shape[1]; nc = Y.shape[1]
+    N = len(X)
+    counts = counts.float().clamp(min=1.0)
+    if mode == 'w':
+        # weighted normal equations: (X^T W X + lam I) W = X^T W Y, W_ii = 1/N_{y_i}
+        S = torch.zeros(d, d, device=device); T = torch.zeros(d, nc, device=device)
+        for s in range(0, len(X), chunk):
+            Xc = X[s:s + chunk].to(device); Yc = Y[s:s + chunk].to(device)
+            w = (1.0 / counts[Yc.argmax(1)]).unsqueeze(1)
+            Xw = Xc * w; Yw = Yc * w
+            S += Xw.t() @ Xc; T += Xw.t() @ Yc
+        return torch.linalg.solve(S + lam * torch.eye(d, device=device), T).float()
+    # mode='lam': per-class regularization, solved via the shared eigensystem
+    S = torch.zeros(d, d, device=device); T = torch.zeros(d, nc, device=device)
+    for s in range(0, len(X), chunk):
+        Xc = X[s:s + chunk].to(device); Yc = Y[s:s + chunk].to(device)
+        S += Xc.t() @ Xc; T += Xc.t() @ Yc
+    lam_c = lam * (N / counts.to(device))          # (nc,)
+    evals, evecs = torch.linalg.eigh(S.double())
+    # W[:,c] = V ( (V^T T[:,c]) / (evals + lam_c[c]) )
+    VT = evecs.t() @ T.double()
+    W = evecs @ (VT / (evals.unsqueeze(1) + lam_c.double().unsqueeze(0)))
+    return W.float()
+
 def knn_predict(val_feats, bank_feats, bank_labels, k=1, device='cuda', chunk=4096):
     val_n = F.normalize(val_feats.float(), dim=1)
     bank_n = F.normalize(bank_feats.float(), dim=1).to(device)
@@ -140,12 +172,15 @@ def stream_decode_full(model, parser, proj, device, decoders, exclude=None, max_
     """Decode ALL points of all frames with each decoder, skipping the
     (frame,pt) pairs in `exclude` (dict frame -> sorted tensor of local pt idx).
     decoders: {name: {'type':'w', 'W': (10000,K)} | {'type':'proto', 'protos':
-    (K,10000), 'proto_lbls': (K,)}}. Returns {name: ConfAccum}."""
+    (K,10000), 'proto_lbls': (K,)} | {'type':'w_bias', 'W': (10000,K),
+    'bias': (K,)}}. Returns {name: ConfAccum}."""
     accs = {name: ConfAccum() for name in decoders}
     prep = {}
     for name, dec in decoders.items():
         if dec['type'] == 'w':
             prep[name] = ('w', dec['W'].to(device))
+        elif dec['type'] == 'w_bias':
+            prep[name] = ('w_bias', dec['W'].to(device), dec['bias'].to(device))
         else:
             prep[name] = ('proto', dec['protos'].to(device), dec['proto_lbls'].to(device))
     for zf, labels, fi in stream_frames(model, parser, device, max_frames):
@@ -163,6 +198,8 @@ def stream_decode_full(model, parser, proj, device, decoders, exclude=None, max_
             for name, p in prep.items():
                 if p[0] == 'w':
                     preds = (codes @ p[1]).argmax(1).cpu()
+                elif p[0] == 'w_bias':
+                    preds = (codes @ p[1] + p[2]).argmax(1).cpu()
                 else:
                     sims = F.normalize(codes, p=2, dim=1) @ p[1].t()
                     preds = p[2][sims.argmax(1)].cpu()
@@ -213,12 +250,16 @@ def build_nuscenes_parser(root, data, arch):
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
 
 def eval_target_condition(model, parser, proj, device, W0, protos_clean, args,
-                          label="target", cond_name=None):
+                          label="target", cond_name=None, bal=None):
     """Shared per-target eval: reservoir pool (seed 42) -> ceiling W* + pool
     protos, 56+500 bank (seeds 2/3) -> W_res pseudo/true (oracle U r=8), then a
     FULL streaming decode of every point (pool excluded) with R4 (frozen /
     ceiling / W_res) and R1 (frozen / ceiling) decoders. Returns the metrics dict.
-    `label` is used for print lines; `cond_name` names the JSON key."""
+    `label` is used for print lines; `cond_name` names the JSON key.
+    `bal` (optional dict) adds the class-balanced probe variants (minority-class
+    diagnostic): 'W0_w'/'W0_lam' balanced clean probes, 'clean_counts'. When
+    given, the pool-fit balanced probes are also fit and all are decoded in the
+    same pass."""
     from collections import defaultdict
     t0 = time.time()
     print(f"\n=== [{label}] {cond_name or 'target'} (pass 1: pool) ===")
@@ -228,6 +269,25 @@ def eval_target_condition(model, parser, proj, device, W0, protos_clean, args,
     Xp = hdc_codes(pf, proj, device).float()
     Ws = ridge_fit_exact(Xp, onehot(pl, NUM_CLASSES), args.lam, device)
     protos_pool = build_prototypes(Xp, pl, device=device)
+    bal_extra = {}
+    if bal is not None:
+        pool_counts = torch.bincount(pl.long(), minlength=NUM_CLASSES).float()
+        print(f"  balanced probes (pool counts: "
+              f"{[int(c) for c in pool_counts if c > 0][:6]}... )")
+        Ws_w = ridge_fit_balanced(Xp, onehot(pl, NUM_CLASSES), pool_counts,
+                                  args.lam, device, mode='w')
+        Ws_lam = ridge_fit_balanced(Xp, onehot(pl, NUM_CLASSES), pool_counts,
+                                    args.lam, device, mode='lam')
+        # logit-prior bias: tau * log(N_c / N) on the frozen and pool probes
+        tau = getattr(args, 'bal_tau', 1.0)
+        log_prior_pool = tau * torch.log(pool_counts.clamp(min=1) / len(pf))
+        log_prior_clean = tau * torch.log(bal['clean_counts'].clamp(min=1)
+                                          / bal['clean_counts'].sum())
+        bal_extra = {
+            'W0_w': bal['W0_w'], 'W0_lam': bal['W0_lam'],
+            'Ws_w': Ws_w, 'Ws_lam': Ws_lam,
+            'logit_prior_clean': log_prior_clean, 'logit_prior_pool': log_prior_pool,
+        }
     print(f"  ceiling W* + pool protos done ({time.time()-t0:.0f}s)")
 
     # bank 56+500 (same seeds as the README harness)
@@ -279,6 +339,14 @@ def eval_target_condition(model, parser, proj, device, W0, protos_clean, args,
         'proto_ceiling': {'type': 'proto', 'protos': protos_pool.cpu(),
                           'proto_lbls': torch.arange(NUM_CLASSES)},
     }
+    for k in ('W0_w', 'W0_lam', 'Ws_w', 'Ws_lam'):
+        if k in bal_extra:
+            decoders[f'linear_{k}'] = {'type': 'w', 'W': bal_extra[k].detach().cpu()}
+    if 'logit_prior_clean' in bal_extra:
+        decoders['linear_frozen_logit'] = {'type': 'w_bias', 'W': W0.detach().cpu(),
+                                           'bias': bal_extra['logit_prior_clean']}
+        decoders['linear_ceiling_logit'] = {'type': 'w_bias', 'W': Ws.detach().cpu(),
+                                            'bias': bal_extra['logit_prior_pool']}
     accs = stream_decode_full(model, parser, proj, device, decoders,
                               exclude=ex_by_frame, max_frames=args.max_frames)
     n_val = accs['linear_frozen'].n
@@ -295,12 +363,30 @@ def eval_target_condition(model, parser, proj, device, W0, protos_clean, args,
         'proto_gap': m['proto_ceiling'] - m['proto_frozen'],
         'bank_n': len(bank_idx),
     }
+    for k in ('W0_w', 'W0_lam', 'Ws_w', 'Ws_lam'):
+        if k in bal_extra:
+            out[f'linear_{k}'] = m[f'linear_{k}']
+            out[f'linear_{k}_delta'] = m[f'linear_{k}'] - m['linear_frozen']
+    for k in ('linear_frozen_logit', 'linear_ceiling_logit'):
+        if k in m:
+            out[k] = m[k]
+            out[k + '_delta'] = m[k] - (m['linear_frozen'] if k.endswith('frozen_logit')
+                                        else m['linear_ceiling'])
     print(f"  [R4] frozen {m['linear_frozen']:.3f} / ceiling {m['linear_ceiling']:.3f} "
           f"(gap {m['linear_ceiling']-m['linear_frozen']:+.3f}) | "
           f"W_res pseudo {m['linear_W_res_pseudo']:.3f} "
           f"({m['linear_W_res_pseudo']-m['linear_frozen']:+.3f}) "
           f"true {m['linear_W_res_true']:.3f} "
           f"({m['linear_W_res_true']-m['linear_frozen']:+.3f})")
+    if 'linear_W0_w' in m:
+        print(f"  [BAL] frozen w {m['linear_W0_w']:.3f} ({m['linear_W0_w']-m['linear_frozen']:+.3f}) "
+              f"lam {m['linear_W0_lam']:.3f} ({m['linear_W0_lam']-m['linear_frozen']:+.3f}) | "
+              f"ceiling w {m['linear_Ws_w']:.3f} ({m['linear_Ws_w']-m['linear_frozen']:+.3f}) "
+              f"lam {m['linear_Ws_lam']:.3f} ({m['linear_Ws_lam']-m['linear_frozen']:+.3f}) | "
+              f"logit frozen {m['linear_frozen_logit']:.3f} "
+              f"({m['linear_frozen_logit']-m['linear_frozen']:+.3f}) "
+              f"ceiling {m['linear_ceiling_logit']:.3f} "
+              f"({m['linear_ceiling_logit']-m['linear_ceiling']:+.3f})")
     print(f"  [R1] frozen {m['proto_frozen']:.3f} / ceiling {m['proto_ceiling']:.3f} "
           f"(gap {m['proto_ceiling']-m['proto_frozen']:+.3f}) | n_val {n_val} "
           f"({time.time()-t0:.0f}s)")
@@ -328,6 +414,11 @@ def main():
     ap.add_argument("--nusc_labels", type=str, default="config/labels/nuscenes_new.yaml")
     ap.add_argument("--nusc", type=int, default=1,
                     help="1 = also evaluate the extractor's frozen/ceiling/AL on NuScenes")
+    ap.add_argument("--bal", type=int, default=1,
+                    help="1 = also fit+decode the class-balanced probe variants "
+                         "(per-sample w=1/N_c, per-class lam~1/N_c, logit prior)")
+    ap.add_argument("--bal_tau", type=float, default=1.0,
+                    help="logit-prior strength tau * log(N_c / N) for the bal logit decoders")
     ap.add_argument("--extractors", type=str,
                     default="cov_ep10:supcon_vib_dglsspp_inputin_in_chan:"
                             "robust_diagnostic/logs/ep10_supcon_vib_dglsspp_inputin_in_chan/"
@@ -371,10 +462,19 @@ def main():
         Xc = hdc_codes(cf, proj, device).float()
         W0 = ridge_fit_exact(Xc, onehot(cl, NUM_CLASSES), args.lam, device)
         protos_clean = build_prototypes(Xc, cl, device=device)
+        bal = None
+        if args.bal:
+            clean_counts = torch.bincount(cl.long(), minlength=NUM_CLASSES).float()
+            W0_w = ridge_fit_balanced(Xc, onehot(cl, NUM_CLASSES), clean_counts,
+                                      args.lam, device, mode='w')
+            W0_lam = ridge_fit_balanced(Xc, onehot(cl, NUM_CLASSES), clean_counts,
+                                        args.lam, device, mode='lam')
+            bal = {'W0_w': W0_w, 'W0_lam': W0_lam, 'clean_counts': clean_counts}
+            print(f"  balanced W0 (w / lam) done ({time.time()-t0:.0f}s)")
         print(f"  clean: {len(cf)} points, W0 + clean protos done ({time.time()-t0:.0f}s)")
         del cf, cl, ck, Xc
         torch.cuda.empty_cache()
-        nusc_ready[lab] = (model, W0, protos_clean)
+        nusc_ready[lab] = (model, W0, protos_clean, bal)
 
         for cond in conds:
             t0 = time.time()
@@ -383,7 +483,7 @@ def main():
                 cdir = os.path.join(args.kittic_dir, cond, 'moderate')
             cparser = build_parser(cdir, DATA, ARCH)
             r = eval_target_condition(model, cparser, proj, device, W0, protos_clean,
-                                      args, label=lab, cond_name=cond)
+                                      args, label=lab, cond_name=cond, bal=bal)
             results['extractors'][lab]['conds'][cond] = r
 
         # ---- checkpoint after each extractor so a crash keeps the completed results ----
@@ -395,7 +495,7 @@ def main():
     # ---- pass 2: NuScenes cross-dataset transfer, sequentially after ALL KITTI-C ----
     if args.nusc:
         for lab, method, path in extractors:
-            model, W0, protos_clean = nusc_ready[lab]
+            model, W0, protos_clean, bal = nusc_ready[lab]
             print(f"\n{'='*80}\n=== [{lab}] NuScenes cross-dataset transfer ===\n{'='*80}")
             if not os.path.isdir(args.nusc_dir):
                 print(f"  WARNING: nusc_dir {args.nusc_dir} not found, skipping")
@@ -404,7 +504,7 @@ def main():
                 nusc_parser = build_nuscenes_parser(args.nusc_dir, nusc_data, ARCH)
                 results['extractors'][lab]['nuscenes'] = eval_target_condition(
                     model, nusc_parser, proj, device, W0, protos_clean,
-                    args, label=lab, cond_name='nuscenes')
+                    args, label=lab, cond_name='nuscenes', bal=bal)
             os.makedirs(os.path.dirname(args.out), exist_ok=True)
             with open(args.out, 'w') as fh:
                 json.dump(results, fh, indent=2, default=float)
