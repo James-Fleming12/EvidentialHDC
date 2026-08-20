@@ -136,12 +136,18 @@ class ConfAccum:
             ious.append(float(self.tp[c] / d) if d > 0 else 0.0)
         return float(np.mean(ious)) if ious else 0.0
 
-def stream_decode_full(model, parser, proj, device, Ws, exclude=None, max_frames=0, chunk=100000):
-    """Decode ALL points of all frames with each W in the dict, skipping the
+def stream_decode_full(model, parser, proj, device, decoders, exclude=None, max_frames=0, chunk=100000):
+    """Decode ALL points of all frames with each decoder, skipping the
     (frame,pt) pairs in `exclude` (dict frame -> sorted tensor of local pt idx).
-    Returns {name: ConfAccum}."""
-    accs = {name: ConfAccum() for name in Ws}
-    Wd = {name: W.to(device) for name, W in Ws.items()}
+    decoders: {name: {'type':'w', 'W': (10000,K)} | {'type':'proto', 'protos':
+    (K,10000), 'proto_lbls': (K,)}}. Returns {name: ConfAccum}."""
+    accs = {name: ConfAccum() for name in decoders}
+    prep = {}
+    for name, dec in decoders.items():
+        if dec['type'] == 'w':
+            prep[name] = ('w', dec['W'].to(device))
+        else:
+            prep[name] = ('proto', dec['protos'].to(device), dec['proto_lbls'].to(device))
     for zf, labels, fi in stream_frames(model, parser, device, max_frames):
         n = len(zf)
         if n == 0:
@@ -154,8 +160,12 @@ def stream_decode_full(model, parser, proj, device, Ws, exclude=None, max_frames
         for s in range(0, n, chunk):
             e = min(s + chunk, n)
             codes = torch.sign(zf[s:e].to(device) @ proj).float()
-            for name, W in Wd.items():
-                preds = (codes @ W).argmax(1).cpu()
+            for name, p in prep.items():
+                if p[0] == 'w':
+                    preds = (codes @ p[1]).argmax(1).cpu()
+                else:
+                    sims = F.normalize(codes, p=2, dim=1) @ p[1].t()
+                    preds = p[2][sims.argmax(1)].cpu()
                 lbls = labels[s:e]
                 if skip is not None:
                     m = ~skip[s:e]
@@ -168,6 +178,21 @@ def stream_decode_full(model, parser, proj, device, Ws, exclude=None, max_frames
 def sync():
     if torch.cuda.is_available():
         torch.cuda.synchronize()
+
+def build_prototypes(codes, lbls, num_classes=NUM_CLASSES, device='cuda'):
+    """Class prototypes from binarized codes: per-class mean, L2-normalized
+    (mirrors oracle_core.build_hdc_prototypes but on codes)."""
+    protos = torch.zeros(num_classes, codes.shape[1], device=device)
+    counts = torch.zeros(num_classes, device=device)
+    for c in range(num_classes):
+        mask = lbls.to(device) == c
+        if mask.sum() > 0:
+            protos[c] += codes.to(device)[mask].sum(dim=0)
+            counts[c] += mask.sum()
+    for c in range(num_classes):
+        if counts[c] > 0:
+            protos[c] /= counts[c]
+    return F.normalize(protos, p=2, dim=1)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -183,8 +208,12 @@ def main():
     ap.add_argument("--bank_extra", type=int, default=500)
     ap.add_argument("--r", type=int, default=8)
     ap.add_argument("--conds", type=str, default=",".join(CONDS_ALL))
-    ap.add_argument("--path_b", type=str, required=True)
-    ap.add_argument("--method_b", type=str, required=True)
+    ap.add_argument("--extractors", type=str,
+                    default="cov_ep10:supcon_vib_dglsspp_inputin_in_chan:"
+                            "robust_diagnostic/logs/ep10_supcon_vib_dglsspp_inputin_in_chan/"
+                            "supcon_vib_dglsspp_inputin_in_chan,"
+                            "dglsspp:supcon_vib_dglsspp:robust_diagnostic/logs/supcon_vib_dglsspp",
+                    help="comma-separated label:method:path triplets")
     ap.add_argument("--label", type=str, default="full_ep10")
     ap.add_argument("--out", type=str, required=True)
     args = ap.parse_args()
@@ -192,100 +221,128 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}")
     conds = [c.strip() for c in args.conds.split(',') if c.strip()]
-    trainer = GenTrainer(ARCH, DATA, args.kitti_dir, args.path_b, path=args.path_b, method=args.method_b)
-    model = trainer.model
+    extractors = [tuple(e.strip().split(':')) for e in args.extractors.split(',') if e.strip()]
     proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
 
-    # ---- clean W0 fit over ALL clean frames (reservoir, seed 7) ----
-    t0 = time.time()
-    print("=== clean W0 fit (all clean frames, reservoir %d) ===" % args.clean_fit_n)
-    clean_parser = build_parser(args.kitti_dir, DATA, ARCH)
-    cf, cl, ck = reservoir_collect(stream_frames(model, clean_parser, device, args.max_frames),
-                                   args.clean_fit_n, 7)
-    Xc = hdc_codes(cf, proj, device).float()
-    W0 = ridge_fit_exact(Xc, onehot(cl, NUM_CLASSES), args.lam, device)
-    print(f"  clean: {len(cf)} points, W0 fit done ({time.time()-t0:.0f}s)")
-    del cf, cl, ck, Xc
-    torch.cuda.empty_cache()
+    results = {'label': args.label, 'max_frames': args.max_frames,
+               'clean_fit_n': args.clean_fit_n, 'pool_cap': args.pool_cap,
+               'extractors': {lab: {'method': method, 'conds': {}}
+                              for lab, method, _ in extractors}}
 
-    results = {'label': args.label, 'method': args.method_b, 'max_frames': args.max_frames,
-               'clean_fit_n': args.clean_fit_n, 'pool_cap': args.pool_cap, 'conds': {}}
-    for cond in conds:
+    for lab, method, path in extractors:
+        print(f"\n{'='*80}\n=== extractor {lab} ({method}, {path}) ===\n{'='*80}")
+        trainer = GenTrainer(ARCH, DATA, args.kitti_dir, path, path=path, method=method)
+        model = trainer.model
+        clean_parser = build_parser(args.kitti_dir, DATA, ARCH)
+
+        # ---- clean W0 + clean prototypes over ALL clean frames (reservoir, seed 7) ----
         t0 = time.time()
-        cdir = os.path.join(args.kittic_dir, cond, 'heavy')
-        if not os.path.exists(cdir):
-            cdir = os.path.join(args.kittic_dir, cond, 'moderate')
-        cparser = build_parser(cdir, DATA, ARCH)
+        print(f"=== [{lab}] clean fit (all clean frames, reservoir {args.clean_fit_n}) ===")
+        cf, cl, ck = reservoir_collect(stream_frames(model, clean_parser, device, args.max_frames),
+                                       args.clean_fit_n, 7)
+        Xc = hdc_codes(cf, proj, device).float()
+        W0 = ridge_fit_exact(Xc, onehot(cl, NUM_CLASSES), args.lam, device)
+        protos_clean = build_prototypes(Xc, cl, device=device)
+        proto_lbls = torch.arange(NUM_CLASSES)
+        print(f"  clean: {len(cf)} points, W0 + clean protos done ({time.time()-t0:.0f}s)")
+        del cf, cl, ck, Xc
+        torch.cuda.empty_cache()
 
-        # ---- pass 1: reservoir pool + zero-shot decode over ALL frames ----
-        print(f"\n=== {cond} (pass 1: pool + zero-shot) ===")
-        pf, pl, pk = reservoir_collect(stream_frames(model, cparser, device, args.max_frames),
-                                       args.pool_cap, 42)
-        print(f"  pool: {len(pf)} points")
-        Xp = hdc_codes(pf, proj, device).float()
-        Ws = ridge_fit_exact(Xp, onehot(pl, NUM_CLASSES), args.lam, device)
-        print(f"  ceiling W* fit done ({time.time()-t0:.0f}s)")
+        for cond in conds:
+            t0 = time.time()
+            cdir = os.path.join(args.kittic_dir, cond, 'heavy')
+            if not os.path.exists(cdir):
+                cdir = os.path.join(args.kittic_dir, cond, 'moderate')
+            cparser = build_parser(cdir, DATA, ARCH)
 
-        # ---- bank 56+500 (same seeds as the README harness) ----
-        classes = sorted(set(pl.tolist()) & set(range(1, NUM_CLASSES)))
-        cls_idx = {c: (pl == c).nonzero().squeeze(1) for c in classes}
-        lab_idx = []
-        for c in classes:
-            idx = cls_idx[c]
-            if len(idx) < max(50, args.bank_k):
-                continue
-            torch.manual_seed(2)
-            lab_idx.append(idx[torch.randperm(len(idx))[:args.bank_k]])
-        lab_idx = torch.cat(lab_idx) if lab_idx else torch.tensor([], dtype=torch.long)
-        avail = torch.arange(len(pf))
-        mask = torch.ones(len(pf), dtype=torch.bool); mask[lab_idx] = False
-        torch.manual_seed(3)
-        extra = avail[mask][torch.randperm(len(avail[mask]))[:args.bank_extra]]
-        bank_idx = torch.cat([lab_idx, extra])
-        print(f"  bank: {len(bank_idx)} points ({len(lab_idx)} true + {len(extra)} random)")
+            # ---- pass 1: reservoir pool (seed 42) ----
+            print(f"\n=== [{lab}] {cond} (pass 1: pool) ===")
+            pf, pl, pk = reservoir_collect(stream_frames(model, cparser, device, args.max_frames),
+                                           args.pool_cap, 42)
+            print(f"  pool: {len(pf)} points")
+            Xp = hdc_codes(pf, proj, device).float()
+            Ws = ridge_fit_exact(Xp, onehot(pl, NUM_CLASSES), args.lam, device)
+            protos_pool = build_prototypes(Xp, pl, device=device)
+            print(f"  ceiling W* + pool protos done ({time.time()-t0:.0f}s)")
 
-        # ---- W_res with oracle U (r=8) on 56+500 pseudo vs true ----
-        R = (Ws - W0).detach().cpu().float()
-        U8 = torch.linalg.svd(R.double(), full_matrices=False)[0][:, :args.r].float()
-        extra_pred = knn_predict(pf[extra], pf[lab_idx], pl[lab_idx], k=1, device=device)
-        X_lab = torch.cat([Xp[lab_idx], Xp[extra]], dim=0)
-        Y_pseudo = torch.cat([onehot(pl[lab_idx], NUM_CLASSES), onehot(extra_pred, NUM_CLASSES)], dim=0)
-        Y_true = torch.cat([onehot(pl[lab_idx], NUM_CLASSES), onehot(pl[extra], NUM_CLASSES)], dim=0)
-        XU = X_lab.to(device).float() @ U8.to(device)
-        A = XU.t() @ XU + 1e-6 * torch.eye(args.r, device=device)
-        W0d = W0.to(device)
-        Cp = torch.linalg.solve(A, XU.t() @ (Y_pseudo.to(device).float() - X_lab.to(device).float() @ W0d)).cpu()
-        Ct = torch.linalg.solve(A, XU.t() @ (Y_true.to(device).float() - X_lab.to(device).float() @ W0d)).cpu()
-        W_res_pseudo = W0.detach().cpu() + (U8.cpu() @ Cp)
-        W_res_true = W0.detach().cpu() + (U8.cpu() @ Ct)
+            # ---- bank 56+500 (same seeds as the README harness) ----
+            classes = sorted(set(pl.tolist()) & set(range(1, NUM_CLASSES)))
+            cls_idx = {c: (pl == c).nonzero().squeeze(1) for c in classes}
+            lab_idx = []
+            for c in classes:
+                idx = cls_idx[c]
+                if len(idx) < max(50, args.bank_k):
+                    continue
+                torch.manual_seed(2)
+                lab_idx.append(idx[torch.randperm(len(idx))[:args.bank_k]])
+            lab_idx = torch.cat(lab_idx) if lab_idx else torch.tensor([], dtype=torch.long)
+            avail = torch.arange(len(pf))
+            mask = torch.ones(len(pf), dtype=torch.bool); mask[lab_idx] = False
+            torch.manual_seed(3)
+            extra = avail[mask][torch.randperm(len(avail[mask]))[:args.bank_extra]]
+            bank_idx = torch.cat([lab_idx, extra])
+            print(f"  bank: {len(bank_idx)} points ({len(lab_idx)} true + {len(extra)} random)")
 
-        # ---- pass 2: FULL-dataset decode (all frames, pool points excluded) ----
-        from collections import defaultdict
-        ex_by_frame = defaultdict(list)
-        for f, i in pk.tolist():
-            ex_by_frame[f].append(i)
-        ex_by_frame = {f: torch.tensor(sorted(s), dtype=torch.long) for f, s in ex_by_frame.items()}
-        print(f"  pass 2: full-dataset decode over ALL frames...")
-        accs = stream_decode_full(model, cparser, proj, device,
-                                  {'frozen': W0.detach().cpu(), 'ceiling': Ws.detach().cpu(),
-                                   'W_res_pseudo': W_res_pseudo, 'W_res_true': W_res_true},
-                                  exclude=ex_by_frame, max_frames=args.max_frames)
-        frozen = accs['frozen'].miou(); ceiling = accs['ceiling'].miou()
-        wrp = accs['W_res_pseudo'].miou(); wrt = accs['W_res_true'].miou()
-        n_val = accs['frozen'].n
-        results['conds'][cond] = {
-            'n_pool': len(pf), 'n_val': n_val,
-            'frozen': frozen, 'ceiling': ceiling, 'gap': ceiling - frozen,
-            'W_res_pseudo': wrp, 'W_res_pseudo_delta': wrp - frozen,
-            'W_res_true': wrt, 'W_res_true_delta': wrt - frozen,
-            'bank_n': len(bank_idx),
-        }
-        print(f"  frozen {frozen:.3f} / ceiling {ceiling:.3f} (gap {ceiling-frozen:+.3f}) | "
-              f"W_res pseudo {wrp:.3f} ({wrp-frozen:+.3f}) true {wrt:.3f} ({wrt-frozen:+.3f}) | "
-              f"n_val {n_val} ({time.time()-t0:.0f}s)")
-        del pf, pl, pk, Xp, Ws, R, U8, X_lab, accs
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            # ---- W_res with oracle U (r=8) on 56+500 pseudo vs true ----
+            R = (Ws - W0).detach().cpu().float()
+            U8 = torch.linalg.svd(R.double(), full_matrices=False)[0][:, :args.r].float()
+            extra_pred = knn_predict(pf[extra], pf[lab_idx], pl[lab_idx], k=1, device=device)
+            X_lab = torch.cat([Xp[lab_idx], Xp[extra]], dim=0)
+            Y_pseudo = torch.cat([onehot(pl[lab_idx], NUM_CLASSES), onehot(extra_pred, NUM_CLASSES)], dim=0)
+            Y_true = torch.cat([onehot(pl[lab_idx], NUM_CLASSES), onehot(pl[extra], NUM_CLASSES)], dim=0)
+            XU = X_lab.to(device).float() @ U8.to(device)
+            A = XU.t() @ XU + 1e-6 * torch.eye(args.r, device=device)
+            W0d = W0.to(device)
+            Cp = torch.linalg.solve(A, XU.t() @ (Y_pseudo.to(device).float() - X_lab.to(device).float() @ W0d)).cpu()
+            Ct = torch.linalg.solve(A, XU.t() @ (Y_true.to(device).float() - X_lab.to(device).float() @ W0d)).cpu()
+            W_res_pseudo = W0.detach().cpu() + (U8.cpu() @ Cp)
+            W_res_true = W0.detach().cpu() + (U8.cpu() @ Ct)
+
+            # ---- pass 2: FULL-dataset decode (all frames, pool points excluded) ----
+            from collections import defaultdict
+            ex_by_frame = defaultdict(list)
+            for f, i in pk.tolist():
+                ex_by_frame[f].append(i)
+            ex_by_frame = {f: torch.tensor(sorted(s), dtype=torch.long) for f, s in ex_by_frame.items()}
+            print(f"  pass 2: full-dataset decode over ALL frames...")
+            decoders = {
+                'linear_frozen': {'type': 'w', 'W': W0.detach().cpu()},
+                'linear_ceiling': {'type': 'w', 'W': Ws.detach().cpu()},
+                'linear_W_res_pseudo': {'type': 'w', 'W': W_res_pseudo},
+                'linear_W_res_true': {'type': 'w', 'W': W_res_true},
+                'proto_frozen': {'type': 'proto', 'protos': protos_clean.cpu(),
+                                 'proto_lbls': proto_lbls},
+                'proto_ceiling': {'type': 'proto', 'protos': protos_pool.cpu(),
+                                  'proto_lbls': proto_lbls},
+            }
+            accs = stream_decode_full(model, cparser, proj, device, decoders,
+                                      exclude=ex_by_frame, max_frames=args.max_frames)
+            n_val = accs['linear_frozen'].n
+            m = {k: accs[k].miou() for k in decoders}
+            results['extractors'][lab]['conds'][cond] = {
+                'n_pool': len(pf), 'n_val': n_val,
+                'linear_frozen': m['linear_frozen'], 'linear_ceiling': m['linear_ceiling'],
+                'linear_gap': m['linear_ceiling'] - m['linear_frozen'],
+                'linear_W_res_pseudo': m['linear_W_res_pseudo'],
+                'linear_W_res_pseudo_delta': m['linear_W_res_pseudo'] - m['linear_frozen'],
+                'linear_W_res_true': m['linear_W_res_true'],
+                'linear_W_res_true_delta': m['linear_W_res_true'] - m['linear_frozen'],
+                'proto_frozen': m['proto_frozen'], 'proto_ceiling': m['proto_ceiling'],
+                'proto_gap': m['proto_ceiling'] - m['proto_frozen'],
+                'bank_n': len(bank_idx),
+            }
+            print(f"  [R4] frozen {m['linear_frozen']:.3f} / ceiling {m['linear_ceiling']:.3f} "
+                  f"(gap {m['linear_ceiling']-m['linear_frozen']:+.3f}) | "
+                  f"W_res pseudo {m['linear_W_res_pseudo']:.3f} "
+                  f"({m['linear_W_res_pseudo']-m['linear_frozen']:+.3f}) "
+                  f"true {m['linear_W_res_true']:.3f} "
+                  f"({m['linear_W_res_true']-m['linear_frozen']:+.3f})")
+            print(f"  [R1] frozen {m['proto_frozen']:.3f} / ceiling {m['proto_ceiling']:.3f} "
+                  f"(gap {m['proto_ceiling']-m['proto_frozen']:+.3f}) | n_val {n_val} "
+                  f"({time.time()-t0:.0f}s)")
+            del pf, pl, pk, Xp, Ws, R, U8, X_lab, accs
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, 'w') as fh:
