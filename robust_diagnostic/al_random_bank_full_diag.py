@@ -114,6 +114,10 @@ def main():
     ap.add_argument("--val_large",type=int,default=200000)
     ap.add_argument("--lam",type=float,default=1e-3)
     ap.add_argument("--max_clean",type=int,default=200000)
+    ap.add_argument("--clean_fit_n",type=int,default=100000,
+                    help="cap on the clean points used for the W0 fit; matches the README R4 "
+                         "hdc_fit_n=min(100000, len(clean_codes)) so the frozen column lands at "
+                         "the README zero-shot R4 (fog ~0.235, not ~0.277 with 200k)")
     ap.add_argument("--nystrom_m",type=int,default=1000)
     ap.add_argument("--cg_iters",type=int,default=8)
     ap.add_argument("--path_b",type=str,required=True)
@@ -129,9 +133,10 @@ def main():
     clean_parser=build_parser(args.kitti_dir,DATA,ARCH)
     fa,la=extract_features(model,clean_parser,device,args.frames_small)
     mc=min(args.max_clean,len(fa)); ci=torch.randperm(len(fa))[:mc]
+    cfit=ci[:min(args.clean_fit_n,mc)]
     proj=get_hdc_projection(dim_in=fa.shape[1],dim_out=10000,device=device)
-    Xc=hdc_codes(fa[ci],proj,device).float()
-    W0_s=ridge_fit_exact(Xc,onehot(la[ci],NUM_CLASSES),args.lam,device)
+    Xc=hdc_codes(fa[cfit],proj,device).float()
+    W0_s=ridge_fit_exact(Xc,onehot(la[cfit],NUM_CLASSES),args.lam,device)
     # also need Xc large? reuse same clean for large (clean is same)
     results={'label':args.label,'method':args.method_b,'conds':{}}
     for cond in CONDS_ALL:
