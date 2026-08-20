@@ -792,7 +792,9 @@ budget is preserved for exactly the conditions that need it.
     conditions the detection signal routes to it: rank the dense per-class clusters,
     query one point per cluster under a strict label-or-don't gate, and re-estimate
     the prototypes from the labeled cluster representatives. This closes the residual
-    gap on fog/crosstalk, because it supplies the missing class labels.
+    gap on the conditions that have one (wet_ground, fog at full scale; Section 6.1),
+    because it supplies the missing class labels. The AL update itself (the
+    $U$-basis estimate) and its online form are open todos (Section 6.1).
  5. Balanced allocation of the label budget across classes is folded into Pillar 3,
     to be engaged once the active-learning updates produce headroom to harvest.
 
@@ -803,18 +805,32 @@ $200$k clean fit / $400$k pool, `run_al_full_dataset.sh`) is the paper table:
 the closeable gaps are fog $+0.047$, crosstalk $+0.014$, snow $+0.013$,
 wet_ground $+0.122$ (ep-10). The $56+500$ random bank $W_{res}$ closes $11\%$
 of the fog gap and $35\%$ of the wet gap, and is inside noise on the
-small-gap conditions (snow $-0.016$). The next step is two things:
+small-gap conditions (snow $-0.016$). The open todos, in priority order:
 
-1. **Improve the gap closed by AL where there is a gap to close.** The
-   conditions with a measurable closeable gap are fog, wet_ground,
-   cross_sensor, crosstalk, snow; the current $56+500$ random bank closes
-   only a fraction of it (fog $+0.005$ of $+0.047$, wet $+0.043$ of
-   $+0.122$). The lever is the bank's $G$-quality and the $U$-basis
-   estimation (C21-C22: oracle $U$ recovers the ceiling but estimated $U$
-   collapses), not the harness.
-2. **Get a method that tells whether there is something to close at all.**
+1. **Figure out the AL method: estimate $U$ (or a fast, low-label
+   alternative).** The $W_{res} = W_0 + U_r C$ machinery works with oracle $U$
+   (recovers the ceiling) but every estimated $U$ collapses (C21-C22: est-basis
+   SVD, pool-covariance, code-shift). The lever is a $U$-basis estimate from
+   unlabeled structure (pool covariance / code-shift / bank-gradient geometry),
+   or another update form that is fast and low-label and does not need the
+   oracle basis. This subsumes the earlier "improve the gap closed by AL" item:
+   the bank's $G$-quality and the $U$-basis estimation are the same lever.
+2. **Make the AL update online.** Current AL is batch (pool + bank). Find an
+   incremental/streaming form of the low-rank residual update (accumulate the
+   top-$r$ residual subspace over time, bounded memory, no stored pool) at a
+   very low price in either accuracy or labels required.
+3. **Explore the HDC projection $R$.** The code is $\operatorname{sign}(zR)$
+   with a fixed random projection; it is a free parameter. Test a better
+   projection (learned, class-discriminative, minority-aware) or a dynamic
+   projection-pruning mechanism, measured by the linear classifier's $mIoU$.
+4. **Get a method that tells whether there is something to close at all.**
    A label-free gauge of the closeable gap (residual norm
    $\|W^* - W_0\|$ or feature-shift strength vs frozen-cosine stability) so
    the label budget is spent only on conditions where the gap is significant:
    beam_missing ($-0.001$) and motion_blur ($+0.006$) have nothing to close,
    and snow's $+0.013$ is borderline; labels should not be spent there.
+5. **(low priority) Improve cov-shift on the healthy conditions.** The
+   healthy-condition ceiling loss vs DGLSS++ (snow/wet $2$-$4$ points below,
+   Section 3.2) is the documented open diagnostic; the scale_in/scalereg and
+   two-branch ideas were shortlisted but never trained at scale. Fixing it
+   would complete the "robust without the tradeoff" claim.
