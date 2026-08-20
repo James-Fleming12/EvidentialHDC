@@ -177,32 +177,38 @@ frozen cov-shift features, replacing nearest-centroid cosine ("R1") with a linea
 probe fit on the HDC code itself ("R4") recovers the healthy-condition ceiling the
 centroid rule throws away (C10 decision-rule diagnostic):
 
-| condition | zs R1 | zs R4 | ceiling R1 | ceiling R4 |
-| :--- | :--- | :--- | :--- | :--- |
-| fog (ep-10) | 23.9% | **26.1%** | 26.1% | **42.8%** |
-| crosstalk (ep-10) | 46.0% | **54.8%** | 46.1% | **60.5%** |
-| snow (ep-10) | 39.8% | **47.4%** | 40.8% | **52.5%** |
-| wet_ground (ep-10) | 40.2% | **44.9%** | 42.5% | **68.5%** |
-| fog (ep-21) | 20.8% | 20.4% | 21.9% | **38.7%** |
-| crosstalk (ep-21) | 45.1% | 49.1% | 45.1% | **58.6%** |
-| snow (ep-21) | 38.4% | 43.7% | 39.5% | **49.1%** |
-| wet_ground (ep-21) | 37.6% | 41.4% | 40.5% | **66.8%** |
+| condition | cov-shift zs R1 | cov-shift zs R4 | cov-shift ceil R1 | cov-shift ceil R4 | DGLSS++ zs R4 | DGLSS++ ceil R4 | Robust zs R4 | Robust ceil R4 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog (ep-10) | 29.2% | **32.2%** | 30.1% | **36.9%** | 12.9% | 17.0% | 13.7% | 17.3% |
+| crosstalk (ep-10) | 39.2% | **47.7%** | 39.4% | **49.1%** | 19.0% | 22.4% | 19.3% | 23.2% |
+| snow (ep-10) | 39.1% | **48.2%** | 39.2% | **49.5%** | 18.9% | 19.9% | 20.8% | 21.5% |
+| wet_ground (ep-10) | 24.5% | **29.7%** | 25.4% | **41.9%** | 12.4% | 19.9% | 11.7% | 22.3% |
+| fog (ep-21) | 27.4% | **31.3%** | 28.1% | **35.5%** | — | — | — | — |
+| crosstalk (ep-21) | 39.3% | **45.1%** | 39.5% | **46.2%** | — | — | — | — |
+| snow (ep-21) | 37.9% | **45.7%** | 38.1% | **46.5%** | — | — | — | — |
+| wet_ground (ep-21) | 25.4% | **30.0%** | 26.5% | **41.1%** | — | — | — | — |
 
-The ep-10 rows use the accurate harness: spectral-exact ridge solve and a
-200k-point clean fit for the zero-shot (the previous 100k-cap fit under-fitted
-the zero-shot by ~3-5 points; the ceiling is the same pool 100k/val 100k
-seed-42 harness, so fog 42.8% vs the earlier 43.3% is the converged-ridge vs
-not-fully-converged LR solver gap). The ep-21 rows are the original harness.
+The cov-shift columns are the FULL-DATASET numbers: every point of every frame
+of KITTI seq 08 (~4k frames, ~300M points/condition) streamed through the frozen
+extractor, with the zero-shot fit on a 200k clean reservoir and the ceiling on a
+400k corrupted-pool reservoir (spectral-exact ridge; `al_full_dataset_diag.py`).
+The DGLSS++ and Robust DGLSS++ columns are the same full harness on their
+checkpoints (single full runs, no ep-10/ep-21 split): the cov-shift extractor
+beats both by 0.17-0.30 on fog/crosstalk and 0.24-0.30 on the healthy conditions
+at the R4 ceiling. The earlier 100-frame harness over-estimated the headroom:
+the full-scale gaps are fog +4.7, crosstalk +1.4, snow +1.3, wet_ground +12.2
+(ep-10).
 
-The linear-probe decoder raises the ceiling 1.2-1.8x over distance-to-prototype on
-every condition (fog 26.1->42.8% ep-10; wet_ground 42.5->68.5%). The zero-shot gain
+The linear-probe decoder raises the ceiling over distance-to-prototype on every
+condition (fog 30.1->36.9% ep-10; wet_ground 25.4->41.9%). The zero-shot gain
 is small because the frozen clean-fit probe and the frozen prototypes both start
 from clean structure; the ceiling gain is the recoverable structure the centroid
 rule throws away when the prototypes are re-estimated on the corrupted pool. The R4
 probe is fit on labeled data (clean for zero-shot, pool for the ceiling), so the
-label-free version is the frozen clean-fit probe (R4-zs), which at 0.45-0.55 healthy
-already beats the R1 oracle (0.40-0.43) at zero-shot. The direction: keep the
-cov-shift extractor and make the decoder a learned boundary on the code.
+label-free version is the frozen clean-fit probe (R4-zs), which at 0.45-0.48 healthy
+(crosstalk 47.7, snow 48.2) already beats the R1 oracle (39-40) at zero-shot. The
+direction: keep the cov-shift extractor and make the decoder a learned boundary on
+the code.
 
 **Efficiency.** The probe's training (fit/refit) is the cost: ~40-50x slower than
 building prototypes (77-97s vs 2s per fit; a per-condition pool refit is 112-176s vs
@@ -352,7 +358,8 @@ ridge is the oracle construction itself).
 
 ### 3.3 Label-free TTA is bounded at the frozen level
 
-The linear probe's LABELED ceiling is high (42.8% fog, 68.5% wet_ground), but its
+The linear probe's LABELED ceiling is high relative to zero-shot (36.9% fog,
+41.9% wet_ground at full scale), but its
 label-free ceiling is the FROZEN decoder: Iterations 9-10 showed that neither
 gating nor weighting pseudo-labels lets the probe update beat the frozen decode,
 because the 33-55% wrong pseudo-labels contaminate any supervised refit, and
@@ -364,23 +371,25 @@ different statement from the prototype story (where label-free TTA reached the
 prototype's lower ceiling on the healthy conditions).
 
 Zero-shot (frozen decoder), the current label-free TTA, and the labeled ceiling for
-the current setup (cov-shift ep-10). TTA is the FROZEN DECODER: the Iteration
+the current setup (cov-shift ep-10, FULL-dataset harness: every point of every
+frame of seq 08). TTA is the FROZEN DECODER: the Iteration
 9-12 finding is that no label-free update beats it, so the label-free column
 equals zero-shot, and the recoverable headroom is what the AL handoff closes:
 
 | condition | zero-shot (frozen) | label-free TTA | label ceiling (probe) | AL-closeable gap |
 | :--- | :--- | :--- | :--- | :--- |
-| fog | 26.1% | = zero-shot | **42.8%** | +16.7 |
-| crosstalk | 54.8% | = zero-shot | **60.5%** | +5.7 |
-| snow | 47.4% | = zero-shot | **52.5%** | +5.1 |
-| wet_ground | 44.9% | = zero-shot | **68.5%** | +23.6 |
+| fog | 32.2% | = zero-shot | **36.9%** | +4.7 |
+| crosstalk | 47.7% | = zero-shot | **49.1%** | +1.4 |
+| snow | 48.2% | = zero-shot | **49.5%** | +1.3 |
+| wet_ground | 29.7% | = zero-shot | **41.9%** | +12.2 |
 
 The gap (label ceiling - frozen) is the recoverable headroom that only true labels
 close, which is the active-learning handoff (Pillar 3): a small true-label budget
 (one label per dense cluster) re-estimates the probe from labeled points and
-converts the headroom into prototypes. Crosstalk's frozen ceiling (54.8%) is
-already high, the extractor, not TTA, closed most of it; fog and wet_ground are
-where the label budget buys the most.
+converts the headroom into prototypes. At full scale the gaps are small on every
+condition except wet_ground and fog: the extractor and the R4 decoder already
+close most of the recoverable headroom, and the AL budget is only worth spending
+where the gap is real (Section 4.6).
 
 The cov-shift method's per-condition source harnesses are in
 `docs/cov_shift/cov_shift_iterations.md` (Iterations C1-C5, C11); the label-free
@@ -594,24 +603,23 @@ avoidable, and the eventual cheaper method must preserve them:
 
 ### 4.6 Current AL baseline: the random memory bank ($W_{res}$) on the conditions with a gap to close
 
-The current deployed AL baseline on the README $R4$ harness (spectral-exact
-solve, $200$k-point clean $W_0$ fit, $56$ true labels $k=8$ per class $+$ $500$
-random bank points, low-rank residual $W_{res} = W_0 + U_r C$ with $r=8$ oracle
-$U$; `run_al_random_bank_full.sh`). Only the conditions with a measurable
-closeable gap are shown; beam_missing ($-0.011$) and motion_blur ($+0.007$)
-have nothing to close:
+The current deployed AL baseline on the FULL-dataset $R4$ harness (every point of
+every frame of seq 08, spectral-exact solve, $200$k-point clean $W_0$ fit, $400$k
+pool, $56$ true labels $k=8$ per class $+$ $500$ random bank points, low-rank
+residual $W_{res} = W_0 + U_r C$ with $r=8$ oracle $U$; `run_al_full_dataset.sh`).
+Only the conditions with a measurable closeable gap are shown; beam_missing
+($-0.001$) and motion_blur ($+0.006$) have nothing to close:
 
 | condition | zero-shot $W_0$ | AL $W_{res}$ ($56+500$ random) | $\Delta$ | ceiling $W^*$ | closeable gap | gap closed |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| fog | 26.1% | 30.1% | +3.9 | 42.8% | +16.7 | 23% |
-| wet_ground | 44.9% | 54.8% | +9.9 | 68.5% | +23.6 | 42% |
-| cross_sensor | 45.8% | 51.2% | +5.4 | 53.2% | +7.4 | 73% |
-| crosstalk | 54.8% | 60.1% | +5.2 | 60.5% | +5.7 | 91% |
-| snow | 47.4% | 46.7% | -0.7 | 52.5% | +5.1 | 0% (noise) |
+| fog | 32.2% | 32.7% | +0.5 | 36.9% | +4.7 | 11% |
+| wet_ground | 29.7% | 34.1% | +4.3 | 41.9% | +12.2 | 35% |
+| cross_sensor | 42.0% | 43.0% | +1.0 | 44.6% | +2.6 | 38% |
+| crosstalk | 47.7% | 48.9% | +1.1 | 49.1% | +1.4 | 79% |
+| snow | 48.2% | 46.6% | -1.6 | 49.5% | +1.3 | 0% (noise) |
 
 The random bank $W_{res}$ is positive on every condition with a gap to close
-except snow (inside noise), and closes 23-91% of the closeable gap. It is
-nowhere near the ceiling on fog and wet_ground (the large-gap conditions); the
+except snow (inside noise), and closes 11-79% of the closeable gap. The
 $U$-basis estimation, not the harness, is the bottleneck (oracle $U$ recovers
 the ceiling, estimated $U$ collapses, Iterations C21-C22). The next steps
 (Section 6.1): (1) improve the gap closed by AL on fog, wet_ground,
@@ -790,25 +798,23 @@ budget is preserved for exactly the conditions that need it.
 
 ### 6.1 Current state and the next steps (2026-08-19)
 
-The accurate README-harness baseline (same $R4$ probe as this table, but with a
-$200$k-point clean fit so the zero-shot is not under-fit) is in
-`docs/cov_shift/cov_shift_iterations.md` (end): the closeable gaps are fog
-$+0.167$, crosstalk $+0.057$, snow $+0.051$, wet_ground $+0.236$ (smaller than
-the $100$k-fit numbers in the tables above because part of the old gap was
-just an under-fit zero-shot). The $56+500$ random bank $W_{res}$ closes $23\%$
-of the fog gap and $42\%$ of the wet gap, and is inside noise on the
-small-gap conditions (snow $-0.007$). The next step is two things:
+The full-dataset baseline (every point of every frame of seq 08, R4 probe,
+$200$k clean fit / $400$k pool, `run_al_full_dataset.sh`) is the paper table:
+the closeable gaps are fog $+0.047$, crosstalk $+0.014$, snow $+0.013$,
+wet_ground $+0.122$ (ep-10). The $56+500$ random bank $W_{res}$ closes $11\%$
+of the fog gap and $35\%$ of the wet gap, and is inside noise on the
+small-gap conditions (snow $-0.016$). The next step is two things:
 
 1. **Improve the gap closed by AL where there is a gap to close.** The
    conditions with a measurable closeable gap are fog, wet_ground,
    cross_sensor, crosstalk, snow; the current $56+500$ random bank closes
-   only a fraction of it (fog $+0.039$ of $+0.167$, wet $+0.099$ of
-   $+0.236$). The lever is the bank's $G$-quality and the $U$-basis
+   only a fraction of it (fog $+0.005$ of $+0.047$, wet $+0.043$ of
+   $+0.122$). The lever is the bank's $G$-quality and the $U$-basis
    estimation (C21-C22: oracle $U$ recovers the ceiling but estimated $U$
    collapses), not the harness.
 2. **Get a method that tells whether there is something to close at all.**
    A label-free gauge of the closeable gap (residual norm
    $\|W^* - W_0\|$ or feature-shift strength vs frozen-cosine stability) so
    the label budget is spent only on conditions where the gap is significant:
-   beam_missing ($-0.011$) and motion_blur ($+0.007$) have nothing to close,
-   and snow's $+0.051$ is borderline; labels should not be spent there.
+   beam_missing ($-0.001$) and motion_blur ($+0.006$) have nothing to close,
+   and snow's $+0.013$ is borderline; labels should not be spent there.

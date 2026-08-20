@@ -184,24 +184,7 @@ $$\hat{y}_{\text{R1}} = \arg\max_{c \in \{1, \dots, K\}} \cos(b, P_c) = \arg\max
    $$\mathcal{H}_{i,j}^{\text{R1}} = \left\{ b \in \mathbb{R}^{D_{\text{HDC}}} : \left\langle b, \frac{P_i}{\|P_i\|_2} - \frac{P_j}{\|P_j\|_2} \right\rangle = 0 \right\}$$
    When class $i$ has high dispersion (a "fat blob") and class $j$ has tight dispersion, the fixed midplane boundary slices directly through the high-variance distribution of class $i$, causing massive systematic misclassification into class $j$.
 
-#### 4.2 Decision Rules Evaluated in the Diagnostic Framework
-Iteration C10 systematically evaluated four decision rules on identical frozen feature representations:
-
-1. **Rule 1 (R1 - Nearest-Centroid Baseline):**
-   $$\hat{y}_{\text{R1}} = \arg\max_{c} \frac{\langle b, P_c \rangle}{\|b\|_2 \|P_c\|_2}$$
-2. **Rule 2 (R2 - Class-Conditional Scaled Cosine):**
-   Scales each class prototype by its empirical intra-class dispersion $s_c = \mathbb{E}_{i \in \mathcal{S}_c}[\langle b_i, P_c \rangle]$ (the mean cosine of a class's points to its own prototype; $s_c = 1$ = tight, lower = spread):
-   $$\hat{y}_{\text{R2}} = \arg\max_{c} \frac{\langle b, P_c / s_c \rangle}{\|P_c / s_c\|_2} = \arg\max_{c} \frac{\langle b, P_c \rangle}{s_c}$$
-   *(Ablation: R2 $\le$ R1 across all conditions; simple scalar scale adjustments cannot re-orient the boundary hyperplanes).*
-3. **Rule 3 (R3 - Continuous 128D Logistic-Regression Probe):**
-   Standard multi-class logistic regression fit on the continuous 128-dimensional bottleneck features $z \in \mathbb{R}^{128}$:
-   $$\hat{y}_{\text{R3}} = \arg\max_{c} (z W_{128} + \beta_{128})_c$$
-   *(Ablation: Underperforms R4 because 128D space lacks the linear separability of 10,000D binarized codes).*
-4. **Rule 4 (R4 - Linear Classifier on HDC Binarized Codes):**
-   A multi-class linear model parameterized by weight matrix $W \in \mathbb{R}^{D_{\text{HDC}} \times K}$ and bias $\beta \in \mathbb{R}^K$ (logistic regression or ridge on the sign code):
-   $$\hat{y}_{\text{R4}} = \arg\max_{c \in \{1, \dots, K\}} (b W + \beta)_c$$
-
-#### 4.3 Mathematical Formulation of the R4 Linear Classifier
+#### 4.2 Mathematical Formulation of the R4 Linear Classifier
 Let $B \in \{-1, +1\}^{N \times D_{\text{HDC}}}$ denote the matrix of binarized codes for $N$ points, and let $Y_{\text{one-hot}} \in \{0, 1\}^{N \times K}$ denote their one-hot ground truth labels. The optimal weight matrix $W^* \in \mathbb{R}^{D_{\text{HDC}} \times K}$ is obtained by regularized least-squares empirical risk minimization (Ridge Regression):
 $$W^* = \arg\min_{W \in \mathbb{R}^{D_{\text{HDC}} \times K}} \frac{1}{N} \| B W - Y_{\text{one-hot}} \|_F^2 + \lambda \|W\|_F^2$$
 
@@ -211,7 +194,7 @@ where:
 - $S = B^T B \in \mathbb{R}^{D_{\text{HDC}} \times D_{\text{HDC}}}$ is the uncentered second-moment sample covariance matrix of the binarized codes.
 - $T = B^T Y_{\text{one-hot}} \in \mathbb{R}^{D_{\text{HDC}} \times K}$ is the class-aggregated code matrix, whose $c$-th column $T_c = \sum_{i \in \mathcal{S}_c} b_i$ is proportional to the unnormalized prototype vector of class $c$.
 
-#### 4.4 Theoretical Mechanism: Why Linear Classification Resolves the Ceiling Bottleneck
+#### 4.3 Theoretical Mechanism: Why Linear Classification Resolves the Ceiling Bottleneck
 The relationship $W_c = (S + \lambda_{\text{reg}} I)^{-1} T_c$ reveals the precise mathematical distinction between R1 and R4:
 1. **Prototype Matching as Identity Covariance ($S = I$):**
    If we approximate the covariance matrix as spherical ($S \propto I$), the linear classifier weights simplify to:
@@ -224,21 +207,23 @@ The relationship $W_c = (S + \lambda_{\text{reg}} I)^{-1} T_c$ reveals the preci
 3. **Exploiting Hyperdimensional Linear Separability:**
    Projecting continuous embeddings $z \in \mathbb{R}^{128}$ to $D_{\text{HDC}} = 10{,}000$ dimensions via $b = \operatorname{sign}(z R)$ maps non-linear class manifolds into linearly separable configurations in high-dimensional Hamming space (Cover's Theorem). Fitting a learned linear hyperplane in this 10,000D space unlocks the full discriminative capacity of the representation.
 
-#### 4.5 Empirical Performance: R1 vs. R4 Oracle Ceiling
-In Iteration C10, evaluating the R4 linear classifier against the R1 nearest-prototype rule on frozen cov-shift features demonstrated a decisive **$1.24\times - 1.77\times$** mIoU gain across all conditions. The ep-10 rows use the accurate harness (spectral-exact ridge solve, `README.md` R4 table):
+#### 4.4 Empirical Performance: R1 vs. R4 Oracle Ceiling
+In Iteration C10, evaluating the R4 linear classifier against the R1 nearest-prototype rule on frozen cov-shift features demonstrated a decisive mIoU gain across all conditions. The table is the FULL-DATASET harness (every point of every frame of seq 08, `al_full_dataset_diag.py`; spectral-exact ridge, 200k clean fit / 400k pool):
 
 | Condition | Epoch | R1 Baseline (Nearest-Prototype) | R4 Linear Classifier (HDC Code Probe) | Relative Gain (R4 / R1) | Absolute mIoU Gain |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Fog** | ep-10 | $26.1\%$ | **$42.8\%$** | **$1.64\times$** | $+16.7\%$ |
-| **Crosstalk** | ep-10 | $46.1\%$ | **$60.5\%$** | **$1.31\times$** | $+14.4\%$ |
-| **Wet Ground** | ep-10 | $42.5\%$ | **$68.5\%$** | **$1.61\times$** | $+26.0\%$ |
-| **Snow** | ep-10 | $40.8\%$ | **$52.5\%$** | **$1.29\times$** | $+11.7\%$ |
-| **Fog** | ep-21 | $21.9\%$ | **$38.7\%$** | **$1.77\times$** | $+16.8\%$ |
-| **Crosstalk** | ep-21 | $45.1\%$ | **$58.6\%$** | **$1.30\times$** | $+13.5\%$ |
-| **Wet Ground** | ep-21 | $40.5\%$ | **$66.8\%$** | **$1.65\times$** | $+26.3\%$ |
-| **Snow** | ep-21 | $39.5\%$ | **$49.1\%$** | **$1.24\times$** | $+9.6\%$ |
+| **Fog** | ep-10 | $30.1\%$ | **$36.9\%$** | **$1.23\times$** | $+6.8\%$ |
+| **Crosstalk** | ep-10 | $39.4\%$ | **$49.1\%$** | **$1.25\times$** | $+9.7\%$ |
+| **Wet Ground** | ep-10 | $25.4\%$ | **$41.9\%$** | **$1.65\times$** | $+16.5\%$ |
+| **Snow** | ep-10 | $39.2\%$ | **$49.5\%$** | **$1.26\times$** | $+10.3\%$ |
+| **Fog** | ep-21 | $28.1\%$ | **$35.5\%$** | **$1.26\times$** | $+7.4\%$ |
+| **Crosstalk** | ep-21 | $39.5\%$ | **$46.2\%$** | **$1.17\times$** | $+6.7\%$ |
+| **Wet Ground** | ep-21 | $26.5\%$ | **$41.1\%$** | **$1.55\times$** | $+14.6\%$ |
+| **Snow** | ep-21 | $38.1\%$ | **$46.5\%$** | **$1.22\times$** | $+8.4\%$ |
 
-#### 4.6 Computational Efficiency: Fast Classifier Updates vs. Fast Inference
+The R4 gain over R1 is largest on wet_ground (1.55-1.65x) and smallest on the healthy conditions (1.17-1.26x). At full scale the R1 rule has almost no recoverable headroom (gaps 0.001-0.009) -- the recoverable signal lives in the R4 linear probe, not the prototype rule.
+
+#### 4.5 Computational Efficiency: Fast Classifier Updates vs. Fast Inference
 Replacing prototype matching with a linear classifier introduces two distinct computational phases:
 
 1. **How We Keep Classifier Updates Fast (Training / TTA / Active Learning):**
@@ -252,7 +237,7 @@ Replacing prototype matching with a linear classifier introduces two distinct co
    - **Classification / Decoding Cost:** For a test point with code $b \in \{-1, +1\}^{10{,}000}$, prediction is a single matrix-vector multiplication $b W^*$ followed by an $\arg\max$ over 17 classes ($\mathcal{O}(D_{\text{HDC}} \cdot K) = 1.7 \times 10^5$ operations).
    - **Inference Speed:** Runs at **$> 2.5\times 10^5$ points/sec** in real-time, matching the runtime speed of standard prototype cosine decoding.
 
-#### 4.7 The Stable Inference Update: Low-Rank Residual Decoder Update ($W_{\text{res}}$, Iteration C30)
+#### 4.6 The Stable Inference Update: Low-Rank Residual Decoder Update ($W_{\text{res}}$, Iteration C30)
 
 While the full oracle linear probe $W^* = (S + \lambda_{\text{reg}} I)^{-1} T$ defines the theoretical ceiling, **adapting the classifier under limited label budgets ($k=2\text{--}8$ labels per class, $14\text{--}56$ points)** fails if one naively attempts to refit all $10{,}000 \times 17$ parameters from scratch.
 
@@ -314,7 +299,7 @@ The complete robust LiDAR segmentation system combines:
 2. **Backbone Architecture:** ResNet-34 parameterized with internal 2D Instance Normalization across all layers.
 3. **Extractor Training Loss:** DGLSS++ structural representation consistency without destructive clean-anchoring losses:
    $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{sem}}(\hat{X}, \hat{X}^a) + \lambda_1 \mathcal{L}_{\text{GMSIFC}}(\hat{X}, \hat{X}^a) + \lambda_2 \mathcal{L}_{\text{LSCC}}(\hat{X}, \hat{X}^a)$$
-4. **Decoder & Stable Inference Update:** Lifting 128D features to 10,000D binarized codes $b = \operatorname{sign}(z R)$ and classifying via a frozen clean linear probe $W_0$. Test-time adaptation is executed via the low-rank residual update $W_{\text{res}} = W_0 + \eta U_r C$ ($r=8$), which solves an $8 \times 8$ normal equation on the probe residual $Y_{\text{lab}} - X_{\text{lab}} W_0$, closing $51\%\text{--}73\%$ of the closeable oracle headroom on severe corruptions with only $56$ labels while strictly preserving healthy-domain performance.
+4. **Decoder & Stable Inference Update:** Lifting 128D features to 10,000D binarized codes $b = \operatorname{sign}(z R)$ and classifying via a frozen clean linear probe $W_0$. Test-time adaptation is executed via the low-rank residual update $W_{\text{res}} = W_0 + \eta U_r C$ ($r=8$), which solves an $8 \times 8$ normal equation on the probe residual $Y_{\text{lab}} - X_{\text{lab}} W_0$, closing $11\%\text{--}79\%$ of the closeable oracle headroom at full scale with only $56$ labels (fog $+0.005$ of $+0.047$, wet_ground $+0.043$ of $+0.122$) while strictly preserving healthy-domain performance.
 
 ## Measured performance
 
@@ -329,6 +314,30 @@ README tables for the full comparison.
 | :--- | :--- | :--- | :--- |
 | fog | 17.6% | 15.7% | **23.5%** |
 | crosstalk | 22.2% | 18.8% | **39.4%** |
+
+### Ceilings at full scale (R4 linear probe, `al_full_dataset_diag.py`, all 8 conditions)
+
+The paper-ready ceilings: every point of every frame of seq 08 streamed through
+each frozen extractor, zero-shot on a 200k clean reservoir, ceiling on a 400k
+corrupted-pool reservoir (spectral-exact ridge). The cov-shift extractor beats
+both baselines on every condition at the R4 ceiling:
+
+| condition | Cov-shift ep-10 | Cov-shift ep-21 | DGLSS++ | Robust DGLSS++ |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | **0.369** | 0.355 | 0.170 | 0.173 |
+| crosstalk | **0.491** | 0.462 | 0.224 | 0.232 |
+| snow | **0.495** | 0.465 | 0.199 | 0.215 |
+| wet_ground | **0.419** | 0.411 | 0.199 | 0.223 |
+| incomplete_echo | **0.437** | 0.434 | 0.200 | 0.215 |
+| beam_missing | 0.487 | 0.455 | 0.204 | **0.217** |
+| motion_blur | **0.458** | 0.429 | 0.201 | 0.210 |
+| cross_sensor | **0.446** | 0.428 | 0.203 | 0.225 |
+| **mean (8)** | **0.450** | 0.430 | 0.200 | 0.214 |
+
+The cov-shift R4 ceiling is 0.25-0.30 above the DGLSS++ ceiling on the
+corrupted conditions (fog 0.369 vs 0.170, crosstalk 0.491 vs 0.224) and
+0.24-0.30 above on the healthy conditions; only beam_missing is a near-tie
+(0.487 vs 0.217 Robust).
 
 ### Label-free TTA (naive, same harness)
 
@@ -2079,24 +2088,47 @@ Every bank that was negative as $1$-NN or as $W_{pseudo}$ ($-0.22$ to $-0.48$) i
 
 **Takeaway:** the old $500$-point banks were not the bottleneck, the old $W_{pseudo}$ full-probe was. With the stable low-rank residual, the same $500$ banks that previously hurt ($-0.24$) now help ($+0.01$ to $+0.12$) and track the true-label ceiling to $0.04$. This is the immediate improvement you asked to check, and it keeps inference as the linear $W_{res}$ (no bank at test time).
 
-### Full-dataset random bank baseline table (for README, README $R4$ harness: $100$ frames, $100$k pool / $100$k val, seed-42 split, spectral-exact solve, $200$k clean $W_0$ fit)
+### FULL-DATASET cross-extractor comparison: does cov-shift still win at scale? (R4, ep-10)
 
-Same $56+500$ random bank, $W_{res}$ $r=8$ oracle $U$, $k=8$ per class, on the same harness as the README $R4$ ceiling (`hdc_rule_diag.py`: $100$ frames, $100$k pool / $100$k val, seed-42 split), with two accuracy fixes: the probe solve is spectral-exact (`al_random_bank_full_diag.py` `ridge_fit_exact`, not the under-converged Nyström+CG-8) and the clean $W_0$ fit uses $200$k points (the README's $100$k cap under-fits the zero-shot). The ceiling column now lands ON the README $R4$ numbers (fog $0.434$ vs $0.433$, wet $0.686$ vs $0.683$; crosstalk $+0.010$ and snow $+0.015$ are the converged-ridge vs not-fully-converged sklearn LR solver gap):
+The same full harness (`al_full_dataset_diag.py`) run on all extractors. The
+cov-shift extractor keeps its lead on every condition at full scale; the
+DGLSS++ and Robust DGLSS++ ceilings are 0.17-0.30 BELOW cov-shift on
+fog/crosstalk and 0.24-0.30 below on the healthy conditions:
+
+| condition | cov-shift R4 zs -> ceiling | DGLSS++ R4 zs -> ceiling | Robust R4 zs -> ceiling |
+| :--- | :--- | :--- | :--- |
+| fog | 0.322 -> 0.369 | 0.129 -> 0.170 | 0.137 -> 0.173 |
+| crosstalk | 0.477 -> 0.491 | 0.190 -> 0.224 | 0.193 -> 0.232 |
+| snow | 0.482 -> 0.495 | 0.189 -> 0.199 | 0.208 -> 0.215 |
+| wet_ground | 0.297 -> 0.419 | 0.124 -> 0.199 | 0.117 -> 0.223 |
+| incomplete_echo | 0.421 -> 0.437 | 0.198 -> 0.200 | 0.210 -> 0.215 |
+| beam_missing | 0.489 -> 0.487 | 0.191 -> 0.204 | 0.208 -> 0.217 |
+| motion_blur | 0.452 -> 0.458 | 0.193 -> 0.201 | 0.203 -> 0.210 |
+| cross_sensor | 0.420 -> 0.446 | 0.176 -> 0.203 | 0.200 -> 0.225 |
+
+**Cross-dataset transfer (NuScenes, 32-beam, same machinery):** the cov-shift
+per-scan input normalization transfers best -- frozen 0.135 / ceiling 0.213 vs
+DGLSS++ 0.080 / 0.125 and Robust 0.083 / 0.133; the AL bank closes most of the
+NuScenes gap too (cov-shift $W_{res}$ true $+0.075$ of $+0.078$).
+
+### FULL-DATASET random bank baseline table (every point of every frame of seq 08; `al_full_dataset_diag.py`)
+
+The paper-ready table: same $56+500$ random bank, $W_{res}$ $r=8$ oracle $U$, $k=8$ per class, on the FULL dataset (all $\sim$4k frames, $\sim$300M points/condition, streamed; reservoir pool $400$k, clean fit $200$k, spectral-exact ridge, pool points excluded from val). This supersedes the earlier $100$-frame harness numbers, which over-estimated the headroom (the smoke's ceiling partially fit the same frames it was tested on):
 
 | condition | zero-shot $W_0$ | AL $W_{res}$ $56+500$ random ($mIoU$, $\Delta$) | ceiling $W^*$ | closeable gap |
 | :--- | :--- | :--- | :--- | :--- |
-| fog | $0.261$ | $0.301$ ($+0.039$) | $0.428$ | $+0.167$ |
-| crosstalk | $0.548$ | $0.601$ ($+0.052$) | $0.605$ | $+0.057$ |
-| snow | $0.474$ | $0.467$ ($-0.007$) | $0.525$ | $+0.051$ |
-| wet_ground | $0.449$ | $0.548$ ($+0.099$) | $0.685$ | $+0.236$ |
-| incomplete_echo | $0.514$ | $0.539$ ($+0.025$) | $0.539$ | $+0.024$ |
-| beam_missing | $0.661$ | $0.637$ ($-0.024$) | $0.650$ | $-0.011$ |
-| motion_blur | $0.564$ | $0.569$ ($+0.005$) | $0.572$ | $+0.007$ |
-| cross_sensor | $0.458$ | $0.512$ ($+0.054$) | $0.532$ | $+0.074$ |
+| fog | $0.322$ | $0.327$ ($+0.005$) | $0.369$ | $+0.047$ |
+| crosstalk | $0.477$ | $0.489$ ($+0.011$) | $0.491$ | $+0.014$ |
+| snow | $0.482$ | $0.466$ ($-0.016$) | $0.495$ | $+0.013$ |
+| wet_ground | $0.297$ | $0.341$ ($+0.043$) | $0.419$ | $+0.122$ |
+| incomplete_echo | $0.421$ | $0.415$ ($-0.005$) | $0.437$ | $+0.017$ |
+| beam_missing | $0.489$ | $0.492$ ($+0.004$) | $0.487$ | $-0.001$ |
+| motion_blur | $0.452$ | $0.451$ ($-0.001$) | $0.458$ | $+0.006$ |
+| cross_sensor | $0.420$ | $0.430$ ($+0.010$) | $0.446$ | $+0.026$ |
 
-With the accurate zero-shot, the closeable gaps are the README $R4$ gaps minus the free clean-fit recovery: fog $+0.198 \rightarrow +0.167$, wet $+0.270 \rightarrow +0.236$, crosstalk $+0.095 \rightarrow +0.057$, snow $+0.078 \rightarrow +0.051$. The $56+500$ random bank $W_{res}$ closes $23\%$ of the fog gap and $42\%$ of the wet gap; on the small-gap conditions the bank is inside noise (snow $-0.007$).
+At full scale the closeable gaps are much smaller than the subsampled harness suggested: fog $+0.047$, crosstalk $+0.014$, snow $+0.013$, wet_ground $+0.122$. The $56+500$ random bank $W_{res}$ closes $11\%$ of the fog gap and $35\%$ of the wet gap; on the small-gap conditions the bank is inside noise (snow $-0.016$). wet_ground is the clear AL target; fog is borderline; the rest have little recoverable headroom.
 
 **Next steps (two):**
 
-1. **Improve the gap closed by AL where there is a gap to close**: fog, wet_ground, cross_sensor, crosstalk, snow are the conditions with a measurable closeable gap; the current $56+500$ random bank only closes a fraction of it (fog $+0.039$ of $+0.167$, wet $+0.099$ of $+0.236$). The lever is the bank's $G$-quality and the $U$-basis estimation (C21-C22 showed oracle $U$ recovers the ceiling but estimated $U$ collapses), not the harness.
-2. **Get a method that tells whether there is something to close at all**: a label-free gauge of the closeable gap (e.g., residual norm $\|W^*-W_0\|$ or feature-shift strength vs frozen-cosine stability) so the AL budget is spent only on conditions where the gap is significant — beam_missing ($-0.011$) and motion_blur ($+0.007$) have nothing to close, and snow's $+0.051$ is borderline; labels should not be spent there.
+1. **Improve the gap closed by AL where there is a gap to close**: fog, wet_ground, cross_sensor, crosstalk, snow are the conditions with a measurable closeable gap; the current $56+500$ random bank only closes a fraction of it (fog $+0.005$ of $+0.047$, wet $+0.043$ of $+0.122$). The lever is the bank's $G$-quality and the $U$-basis estimation (C21-C22 showed oracle $U$ recovers the ceiling but estimated $U$ collapses), not the harness.
+2. **Get a method that tells whether there is something to close at all**: a label-free gauge of the closeable gap (e.g., residual norm $\|W^*-W_0\|$ or feature-shift strength vs frozen-cosine stability) so the AL budget is spent only on conditions where the gap is significant — beam_missing ($-0.001$) and motion_blur ($+0.006$) have nothing to close, and snow's $+0.013$ is borderline; labels should not be spent there.
