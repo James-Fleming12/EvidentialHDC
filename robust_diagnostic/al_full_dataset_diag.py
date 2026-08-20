@@ -77,7 +77,7 @@ def reservoir_collect(stream, cap, seed):
         kept = keep.nonzero(as_tuple=True)[0]
         if len(kept):
             buf_f[slot[kept]] = zf[kept]
-            buf_l[slot[kept]] = labels[kept]
+            buf_l[slot[kept]] = labels[kept].long()
             buf_k[slot[kept], 0] = fi
             buf_k[slot[kept], 1] = kept
         n += m
