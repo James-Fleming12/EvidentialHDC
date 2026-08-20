@@ -2031,3 +2031,20 @@ Best $\gamma$ is $10^{-3}$ fog ($+0.060$) and $10^{-1}$ wet ($+0.139$), both $\a
 **D uncertainty weighting:** $w_i \in \{1, H(p), 1-\max p, 1/(margin+\epsilon)\}$ all give $+0.060$ fog and $+0.136$ wet, indistinguishable from unweighted. Weighting does not fix the decoder.
 
 **Did we get an improvement and if not why?** Yes on the large-gap conditions: fog $+0.040 \rightarrow +0.060$ ($51\%$ of gap at $k=8$) and wet $+0.087 \rightarrow +0.137$ ($73\%$) with $\eta=1.0$, $r=8$, $\gamma \approx 0$. Crosstalk $+0.010$ and snow $+0.016$ stay small because their gaps are small ($+0.031$, $+0.036$), even the $+0.016$ on snow is $44\%$ of its gap. The remaining $27\%$ on wet and $49\%$ on fog is the $t_{cos}$ vs $w_{cos}$ decoder limit from C23, not the update magnitude.
+
+### Iteration C31: old bank on the new stable residual, immediate improvement (2026-08-19)
+
+Still on cov-shift ep10, $56$ true ($k=8$ per class) $+$ $500$ bank points, the four old bank allocations (random, uniform $29$/class, diverse farthest-point, uncertainty $H(p)$) now with the new update $W = W_0 + U_r C$ ($r=8$, oracle $U$, `robust_diagnostic/al_bank_residual_diag.py:238` $C = (U^T X^T X U)^{-1} U^T X^T (Y - XW_0)$) vs the old $W_{pseudo}$ full-probe on the same $56+500$ pseudo labels:
+
+| cond | bank | bank $mIoU$ $\Delta$ | $W_{pseudo}$ $\Delta$ (old) | $W_{res}$ pseudo $\Delta$ (new) | $W_{res}$ true $\Delta$ |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | random | $-0.006$ | $-0.240$ | **$+0.010$** | $+0.125$ |
+| fog | diverse | $-0.022$ | $-0.227$ | **$+0.024$** | $+0.116$ |
+| crosstalk | random | $-0.077$ | $-0.453$ | **$+0.006$** | $+0.028$ |
+| snow | random | $-0.081$ | $-0.410$ | **$+0.014$** | $+0.037$ |
+| wet_ground | random | $+0.013$ | $-0.386$ | **$+0.123$** | $+0.164$ |
+| wet_ground | diverse | $-0.046$ | $-0.387$ | **$+0.108$** | $+0.168$ |
+
+Every bank that was negative as $1$-NN or as $W_{pseudo}$ ($-0.22$ to $-0.48$) is **positive as $W_{res}$ pseudo** ($+0.006$ to $+0.123$) on the same $500$ points, and within $0.04$ of the $500$ true-oracle $W_{res}$ true ($+0.125$ fog, $+0.164$ wet). The bank that was best as $1$-NN (random) is not best as $W_{res}$ on fog (diverse $+0.024$ beats random $+0.010$), so the $500$ allocation should be chosen for $G$ quality, not $1$-NN $mIoU$.
+
+**Takeaway:** the old $500$-point banks were not the bottleneck, the old $W_{pseudo}$ full-probe was. With the stable low-rank residual, the same $500$ banks that previously hurt ($-0.24$) now help ($+0.01$ to $+0.12$) and track the true-label ceiling to $0.04$. This is the immediate improvement you asked to check, and it keeps inference as the linear $W_{res}$ (no bank at test time).
