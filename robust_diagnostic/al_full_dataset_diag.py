@@ -138,7 +138,7 @@ class ConfAccum:
 
 def stream_decode_full(model, parser, proj, device, Ws, exclude=None, max_frames=0, chunk=100000):
     """Decode ALL points of all frames with each W in the dict, skipping the
-    (frame,pt) pairs in `exclude` (dict frame -> set of local pt idx).
+    (frame,pt) pairs in `exclude` (dict frame -> sorted tensor of local pt idx).
     Returns {name: ConfAccum}."""
     accs = {name: ConfAccum() for name in Ws}
     Wd = {name: W.to(device) for name, W in Ws.items()}
@@ -149,7 +149,8 @@ def stream_decode_full(model, parser, proj, device, Ws, exclude=None, max_frames
         skip = None
         if exclude and fi in exclude:
             ex = exclude[fi]
-            skip = torch.tensor([i in ex for i in range(n)])
+            pos = torch.searchsorted(ex, torch.arange(n))
+            skip = (pos < len(ex)) & (ex[pos.clamp(max=len(ex) - 1)] == torch.arange(n))
         for s in range(0, n, chunk):
             e = min(s + chunk, n)
             codes = torch.sign(zf[s:e].to(device) @ proj).float()
@@ -176,7 +177,7 @@ def main():
     ap.add_argument("--arch", type=str, default="config/arch/senet-2048p.yml")
     ap.add_argument("--max_frames", type=int, default=0, help="0 = ALL frames of seq 08")
     ap.add_argument("--clean_fit_n", type=int, default=200000)
-    ap.add_argument("--pool_cap", type=int, default=100000)
+    ap.add_argument("--pool_cap", type=int, default=400000)
     ap.add_argument("--lam", type=float, default=1e-3)
     ap.add_argument("--bank_k", type=int, default=8)
     ap.add_argument("--bank_extra", type=int, default=500)
@@ -260,10 +261,10 @@ def main():
 
         # ---- pass 2: FULL-dataset decode (all frames, pool points excluded) ----
         from collections import defaultdict
-        ex_by_frame = defaultdict(set)
+        ex_by_frame = defaultdict(list)
         for f, i in pk.tolist():
-            ex_by_frame[f].add(i)
-        ex_by_frame = {f: s for f, s in ex_by_frame.items()}
+            ex_by_frame[f].append(i)
+        ex_by_frame = {f: torch.tensor(sorted(s), dtype=torch.long) for f, s in ex_by_frame.items()}
         print(f"  pass 2: full-dataset decode over ALL frames...")
         accs = stream_decode_full(model, cparser, proj, device,
                                   {'frozen': W0.detach().cpu(), 'ceiling': Ws.detach().cpu(),

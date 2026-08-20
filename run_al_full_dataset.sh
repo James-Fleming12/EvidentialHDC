@@ -4,7 +4,7 @@
 # seq 08, per corrupted condition. Streaming/reservoir harness, memory-bounded.
 #
 # Same probe machinery as the README R4 harness (exact ridge, 200k clean fit,
-# 100k pool, oracle U r=8) but the VAL set is the full dataset (~4k frames
+# 400k pool, oracle U r=8) but the VAL set is the full dataset (~4k frames
 # x ~130k pts/scan per condition) instead of 100 frames.
 #
 # Usage:
