@@ -194,6 +194,121 @@ def build_prototypes(codes, lbls, num_classes=NUM_CLASSES, device='cuda'):
             protos[c] /= counts[c]
     return F.normalize(protos, p=2, dim=1)
 
+def build_nuscenes_parser(root, data, arch):
+    """NuScenes parser with the 32-beam projection (vs KITTI's 64-beam): NuScenes
+    scans must be projected into H=32 x W=1024 to keep point density (the
+    unsup_kitti-nuscenes.py setup)."""
+    sensor = arch["dataset"]["sensor"].copy()
+    sensor["fov_up"] = 10.0
+    sensor["fov_down"] = -30.0
+    sensor["img_prop"] = sensor["img_prop"].copy()
+    sensor["img_prop"]["height"] = 32
+    sensor["img_prop"]["width"] = 1024
+    return Parser(root=root, train_sequences=data["split"]["valid"],
+                  valid_sequences=data["split"]["valid"], test_sequences=None,
+                  labels=data["labels"], color_map=data.get("color_map", {}),
+                  learning_map=data["learning_map"],
+                  learning_map_inv=data["learning_map_inv"],
+                  sensor=sensor, max_points=arch["dataset"]["max_points"],
+                  batch_size=1, workers=4, gt=True, shuffle_train=False)
+
+def eval_target_condition(model, parser, proj, device, W0, protos_clean, args,
+                          label="target", cond_name=None):
+    """Shared per-target eval: reservoir pool (seed 42) -> ceiling W* + pool
+    protos, 56+500 bank (seeds 2/3) -> W_res pseudo/true (oracle U r=8), then a
+    FULL streaming decode of every point (pool excluded) with R4 (frozen /
+    ceiling / W_res) and R1 (frozen / ceiling) decoders. Returns the metrics dict.
+    `label` is used for print lines; `cond_name` names the JSON key."""
+    from collections import defaultdict
+    t0 = time.time()
+    print(f"\n=== [{label}] {cond_name or 'target'} (pass 1: pool) ===")
+    pf, pl, pk = reservoir_collect(stream_frames(model, parser, device, args.max_frames),
+                                   args.pool_cap, 42)
+    print(f"  pool: {len(pf)} points")
+    Xp = hdc_codes(pf, proj, device).float()
+    Ws = ridge_fit_exact(Xp, onehot(pl, NUM_CLASSES), args.lam, device)
+    protos_pool = build_prototypes(Xp, pl, device=device)
+    print(f"  ceiling W* + pool protos done ({time.time()-t0:.0f}s)")
+
+    # bank 56+500 (same seeds as the README harness)
+    classes = sorted(set(pl.tolist()) & set(range(1, NUM_CLASSES)))
+    cls_idx = {c: (pl == c).nonzero().squeeze(1) for c in classes}
+    lab_idx = []
+    for c in classes:
+        idx = cls_idx[c]
+        if len(idx) < max(50, args.bank_k):
+            continue
+        torch.manual_seed(2)
+        lab_idx.append(idx[torch.randperm(len(idx))[:args.bank_k]])
+    lab_idx = torch.cat(lab_idx) if lab_idx else torch.tensor([], dtype=torch.long)
+    avail = torch.arange(len(pf))
+    mask = torch.ones(len(pf), dtype=torch.bool); mask[lab_idx] = False
+    torch.manual_seed(3)
+    extra = avail[mask][torch.randperm(len(avail[mask]))[:args.bank_extra]]
+    bank_idx = torch.cat([lab_idx, extra])
+    print(f"  bank: {len(bank_idx)} points ({len(lab_idx)} true + {len(extra)} random)")
+
+    # W_res with oracle U (r=8) on 56+500 pseudo vs true
+    R = (Ws - W0).detach().cpu().float()
+    U8 = torch.linalg.svd(R.double(), full_matrices=False)[0][:, :args.r].float()
+    extra_pred = knn_predict(pf[extra], pf[lab_idx], pl[lab_idx], k=1, device=device)
+    X_lab = torch.cat([Xp[lab_idx], Xp[extra]], dim=0)
+    Y_pseudo = torch.cat([onehot(pl[lab_idx], NUM_CLASSES), onehot(extra_pred, NUM_CLASSES)], dim=0)
+    Y_true = torch.cat([onehot(pl[lab_idx], NUM_CLASSES), onehot(pl[extra], NUM_CLASSES)], dim=0)
+    XU = X_lab.to(device).float() @ U8.to(device)
+    A = XU.t() @ XU + 1e-6 * torch.eye(args.r, device=device)
+    W0d = W0.to(device)
+    Cp = torch.linalg.solve(A, XU.t() @ (Y_pseudo.to(device).float() - X_lab.to(device).float() @ W0d)).cpu()
+    Ct = torch.linalg.solve(A, XU.t() @ (Y_true.to(device).float() - X_lab.to(device).float() @ W0d)).cpu()
+    W_res_pseudo = W0.detach().cpu() + (U8.cpu() @ Cp)
+    W_res_true = W0.detach().cpu() + (U8.cpu() @ Ct)
+
+    # pass 2: FULL decode (all frames, pool points excluded)
+    ex_by_frame = defaultdict(list)
+    for f, i in pk.tolist():
+        ex_by_frame[f].append(i)
+    ex_by_frame = {f: torch.tensor(sorted(s), dtype=torch.long) for f, s in ex_by_frame.items()}
+    print(f"  pass 2: full decode over ALL frames...")
+    decoders = {
+        'linear_frozen': {'type': 'w', 'W': W0.detach().cpu()},
+        'linear_ceiling': {'type': 'w', 'W': Ws.detach().cpu()},
+        'linear_W_res_pseudo': {'type': 'w', 'W': W_res_pseudo},
+        'linear_W_res_true': {'type': 'w', 'W': W_res_true},
+        'proto_frozen': {'type': 'proto', 'protos': protos_clean.cpu(),
+                         'proto_lbls': torch.arange(NUM_CLASSES)},
+        'proto_ceiling': {'type': 'proto', 'protos': protos_pool.cpu(),
+                          'proto_lbls': torch.arange(NUM_CLASSES)},
+    }
+    accs = stream_decode_full(model, parser, proj, device, decoders,
+                              exclude=ex_by_frame, max_frames=args.max_frames)
+    n_val = accs['linear_frozen'].n
+    m = {k: accs[k].miou() for k in decoders}
+    out = {
+        'n_pool': len(pf), 'n_val': n_val,
+        'linear_frozen': m['linear_frozen'], 'linear_ceiling': m['linear_ceiling'],
+        'linear_gap': m['linear_ceiling'] - m['linear_frozen'],
+        'linear_W_res_pseudo': m['linear_W_res_pseudo'],
+        'linear_W_res_pseudo_delta': m['linear_W_res_pseudo'] - m['linear_frozen'],
+        'linear_W_res_true': m['linear_W_res_true'],
+        'linear_W_res_true_delta': m['linear_W_res_true'] - m['linear_frozen'],
+        'proto_frozen': m['proto_frozen'], 'proto_ceiling': m['proto_ceiling'],
+        'proto_gap': m['proto_ceiling'] - m['proto_frozen'],
+        'bank_n': len(bank_idx),
+    }
+    print(f"  [R4] frozen {m['linear_frozen']:.3f} / ceiling {m['linear_ceiling']:.3f} "
+          f"(gap {m['linear_ceiling']-m['linear_frozen']:+.3f}) | "
+          f"W_res pseudo {m['linear_W_res_pseudo']:.3f} "
+          f"({m['linear_W_res_pseudo']-m['linear_frozen']:+.3f}) "
+          f"true {m['linear_W_res_true']:.3f} "
+          f"({m['linear_W_res_true']-m['linear_frozen']:+.3f})")
+    print(f"  [R1] frozen {m['proto_frozen']:.3f} / ceiling {m['proto_ceiling']:.3f} "
+          f"(gap {m['proto_ceiling']-m['proto_frozen']:+.3f}) | n_val {n_val} "
+          f"({time.time()-t0:.0f}s)")
+    del pf, pl, pk, Xp, Ws, R, U8, X_lab, accs
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return out
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--kitti_dir", type=str, default="/mnt/alpha/jmfleming/KITTI")
@@ -208,6 +323,11 @@ def main():
     ap.add_argument("--bank_extra", type=int, default=500)
     ap.add_argument("--r", type=int, default=8)
     ap.add_argument("--conds", type=str, default=",".join(CONDS_ALL))
+    ap.add_argument("--nusc_dir", type=str, default="/mnt/alpha/jmfleming/nuscenes_kitti",
+                    help="NuScenes dataset in KITTI format (32-beam)")
+    ap.add_argument("--nusc_labels", type=str, default="config/labels/nuscenes_new.yaml")
+    ap.add_argument("--nusc", type=int, default=1,
+                    help="1 = also evaluate the extractor's frozen/ceiling/AL on NuScenes")
     ap.add_argument("--extractors", type=str,
                     default="cov_ep10:supcon_vib_dglsspp_inputin_in_chan:"
                             "robust_diagnostic/logs/ep10_supcon_vib_dglsspp_inputin_in_chan/"
@@ -234,6 +354,9 @@ def main():
                'extractors': {lab: {'method': method, 'conds': {}}
                               for lab, method, _ in extractors}}
 
+    # ---- pass 1 (per extractor): clean fit + all KITTI-C conditions ----
+    # Keep (model, W0, protos_clean) per extractor for the NuScenes pass later.
+    nusc_ready = {}
     for lab, method, path in extractors:
         print(f"\n{'='*80}\n=== extractor {lab} ({method}, {path}) ===\n{'='*80}")
         trainer = GenTrainer(ARCH, DATA, args.kitti_dir, path, path=path, method=method)
@@ -248,10 +371,10 @@ def main():
         Xc = hdc_codes(cf, proj, device).float()
         W0 = ridge_fit_exact(Xc, onehot(cl, NUM_CLASSES), args.lam, device)
         protos_clean = build_prototypes(Xc, cl, device=device)
-        proto_lbls = torch.arange(NUM_CLASSES)
         print(f"  clean: {len(cf)} points, W0 + clean protos done ({time.time()-t0:.0f}s)")
         del cf, cl, ck, Xc
         torch.cuda.empty_cache()
+        nusc_ready[lab] = (model, W0, protos_clean)
 
         for cond in conds:
             t0 = time.time()
@@ -259,99 +382,34 @@ def main():
             if not os.path.exists(cdir):
                 cdir = os.path.join(args.kittic_dir, cond, 'moderate')
             cparser = build_parser(cdir, DATA, ARCH)
+            r = eval_target_condition(model, cparser, proj, device, W0, protos_clean,
+                                      args, label=lab, cond_name=cond)
+            results['extractors'][lab]['conds'][cond] = r
 
-            # ---- pass 1: reservoir pool (seed 42) ----
-            print(f"\n=== [{lab}] {cond} (pass 1: pool) ===")
-            pf, pl, pk = reservoir_collect(stream_frames(model, cparser, device, args.max_frames),
-                                           args.pool_cap, 42)
-            print(f"  pool: {len(pf)} points")
-            Xp = hdc_codes(pf, proj, device).float()
-            Ws = ridge_fit_exact(Xp, onehot(pl, NUM_CLASSES), args.lam, device)
-            protos_pool = build_prototypes(Xp, pl, device=device)
-            print(f"  ceiling W* + pool protos done ({time.time()-t0:.0f}s)")
+        # ---- checkpoint after each extractor so a crash keeps the completed results ----
+        os.makedirs(os.path.dirname(args.out), exist_ok=True)
+        with open(args.out, 'w') as fh:
+            json.dump(results, fh, indent=2, default=float)
+        print(f"\n[checkpoint] extractor {lab} KITTI-C done, saved to {args.out}")
 
-            # ---- bank 56+500 (same seeds as the README harness) ----
-            classes = sorted(set(pl.tolist()) & set(range(1, NUM_CLASSES)))
-            cls_idx = {c: (pl == c).nonzero().squeeze(1) for c in classes}
-            lab_idx = []
-            for c in classes:
-                idx = cls_idx[c]
-                if len(idx) < max(50, args.bank_k):
-                    continue
-                torch.manual_seed(2)
-                lab_idx.append(idx[torch.randperm(len(idx))[:args.bank_k]])
-            lab_idx = torch.cat(lab_idx) if lab_idx else torch.tensor([], dtype=torch.long)
-            avail = torch.arange(len(pf))
-            mask = torch.ones(len(pf), dtype=torch.bool); mask[lab_idx] = False
-            torch.manual_seed(3)
-            extra = avail[mask][torch.randperm(len(avail[mask]))[:args.bank_extra]]
-            bank_idx = torch.cat([lab_idx, extra])
-            print(f"  bank: {len(bank_idx)} points ({len(lab_idx)} true + {len(extra)} random)")
+    # ---- pass 2: NuScenes cross-dataset transfer, sequentially after ALL KITTI-C ----
+    if args.nusc:
+        for lab, method, path in extractors:
+            model, W0, protos_clean = nusc_ready[lab]
+            print(f"\n{'='*80}\n=== [{lab}] NuScenes cross-dataset transfer ===\n{'='*80}")
+            if not os.path.isdir(args.nusc_dir):
+                print(f"  WARNING: nusc_dir {args.nusc_dir} not found, skipping")
+            else:
+                nusc_data = yaml.safe_load(open(args.nusc_labels))
+                nusc_parser = build_nuscenes_parser(args.nusc_dir, nusc_data, ARCH)
+                results['extractors'][lab]['nuscenes'] = eval_target_condition(
+                    model, nusc_parser, proj, device, W0, protos_clean,
+                    args, label=lab, cond_name='nuscenes')
+            os.makedirs(os.path.dirname(args.out), exist_ok=True)
+            with open(args.out, 'w') as fh:
+                json.dump(results, fh, indent=2, default=float)
+            print(f"\n[checkpoint] extractor {lab} NuScenes done, saved to {args.out}")
 
-            # ---- W_res with oracle U (r=8) on 56+500 pseudo vs true ----
-            R = (Ws - W0).detach().cpu().float()
-            U8 = torch.linalg.svd(R.double(), full_matrices=False)[0][:, :args.r].float()
-            extra_pred = knn_predict(pf[extra], pf[lab_idx], pl[lab_idx], k=1, device=device)
-            X_lab = torch.cat([Xp[lab_idx], Xp[extra]], dim=0)
-            Y_pseudo = torch.cat([onehot(pl[lab_idx], NUM_CLASSES), onehot(extra_pred, NUM_CLASSES)], dim=0)
-            Y_true = torch.cat([onehot(pl[lab_idx], NUM_CLASSES), onehot(pl[extra], NUM_CLASSES)], dim=0)
-            XU = X_lab.to(device).float() @ U8.to(device)
-            A = XU.t() @ XU + 1e-6 * torch.eye(args.r, device=device)
-            W0d = W0.to(device)
-            Cp = torch.linalg.solve(A, XU.t() @ (Y_pseudo.to(device).float() - X_lab.to(device).float() @ W0d)).cpu()
-            Ct = torch.linalg.solve(A, XU.t() @ (Y_true.to(device).float() - X_lab.to(device).float() @ W0d)).cpu()
-            W_res_pseudo = W0.detach().cpu() + (U8.cpu() @ Cp)
-            W_res_true = W0.detach().cpu() + (U8.cpu() @ Ct)
-
-            # ---- pass 2: FULL-dataset decode (all frames, pool points excluded) ----
-            from collections import defaultdict
-            ex_by_frame = defaultdict(list)
-            for f, i in pk.tolist():
-                ex_by_frame[f].append(i)
-            ex_by_frame = {f: torch.tensor(sorted(s), dtype=torch.long) for f, s in ex_by_frame.items()}
-            print(f"  pass 2: full-dataset decode over ALL frames...")
-            decoders = {
-                'linear_frozen': {'type': 'w', 'W': W0.detach().cpu()},
-                'linear_ceiling': {'type': 'w', 'W': Ws.detach().cpu()},
-                'linear_W_res_pseudo': {'type': 'w', 'W': W_res_pseudo},
-                'linear_W_res_true': {'type': 'w', 'W': W_res_true},
-                'proto_frozen': {'type': 'proto', 'protos': protos_clean.cpu(),
-                                 'proto_lbls': proto_lbls},
-                'proto_ceiling': {'type': 'proto', 'protos': protos_pool.cpu(),
-                                  'proto_lbls': proto_lbls},
-            }
-            accs = stream_decode_full(model, cparser, proj, device, decoders,
-                                      exclude=ex_by_frame, max_frames=args.max_frames)
-            n_val = accs['linear_frozen'].n
-            m = {k: accs[k].miou() for k in decoders}
-            results['extractors'][lab]['conds'][cond] = {
-                'n_pool': len(pf), 'n_val': n_val,
-                'linear_frozen': m['linear_frozen'], 'linear_ceiling': m['linear_ceiling'],
-                'linear_gap': m['linear_ceiling'] - m['linear_frozen'],
-                'linear_W_res_pseudo': m['linear_W_res_pseudo'],
-                'linear_W_res_pseudo_delta': m['linear_W_res_pseudo'] - m['linear_frozen'],
-                'linear_W_res_true': m['linear_W_res_true'],
-                'linear_W_res_true_delta': m['linear_W_res_true'] - m['linear_frozen'],
-                'proto_frozen': m['proto_frozen'], 'proto_ceiling': m['proto_ceiling'],
-                'proto_gap': m['proto_ceiling'] - m['proto_frozen'],
-                'bank_n': len(bank_idx),
-            }
-            print(f"  [R4] frozen {m['linear_frozen']:.3f} / ceiling {m['linear_ceiling']:.3f} "
-                  f"(gap {m['linear_ceiling']-m['linear_frozen']:+.3f}) | "
-                  f"W_res pseudo {m['linear_W_res_pseudo']:.3f} "
-                  f"({m['linear_W_res_pseudo']-m['linear_frozen']:+.3f}) "
-                  f"true {m['linear_W_res_true']:.3f} "
-                  f"({m['linear_W_res_true']-m['linear_frozen']:+.3f})")
-            print(f"  [R1] frozen {m['proto_frozen']:.3f} / ceiling {m['proto_ceiling']:.3f} "
-                  f"(gap {m['proto_ceiling']-m['proto_frozen']:+.3f}) | n_val {n_val} "
-                  f"({time.time()-t0:.0f}s)")
-            del pf, pl, pk, Xp, Ws, R, U8, X_lab, accs
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    with open(args.out, 'w') as fh:
-        json.dump(results, fh, indent=2, default=float)
     print(f"\nSaved to {args.out}")
 
 if __name__ == "__main__":
