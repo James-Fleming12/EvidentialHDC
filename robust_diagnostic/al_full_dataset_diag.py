@@ -114,7 +114,7 @@ def ridge_fit_balanced(X, Y, counts, lam, device, mode='w', chunk=50000):
                 their noisy directions do not blow up the fit)."""
     d = X.shape[1]; nc = Y.shape[1]
     N = len(X)
-    counts = counts.float().clamp(min=1.0)
+    counts = counts.float().clamp(min=1.0).to(device)
     if mode == 'w':
         # weighted normal equations: (X^T W X + lam I) W = X^T W Y, W_ii = 1/N_{y_i}
         S = torch.zeros(d, d, device=device); T = torch.zeros(d, nc, device=device)
@@ -129,7 +129,7 @@ def ridge_fit_balanced(X, Y, counts, lam, device, mode='w', chunk=50000):
     for s in range(0, len(X), chunk):
         Xc = X[s:s + chunk].to(device); Yc = Y[s:s + chunk].to(device)
         S += Xc.t() @ Xc; T += Xc.t() @ Yc
-    lam_c = lam * (N / counts.to(device))          # (nc,)
+    lam_c = lam * (N / counts)                      # (nc,), counts already on device
     evals, evecs = torch.linalg.eigh(S.double())
     # W[:,c] = V ( (V^T T[:,c]) / (evals + lam_c[c]) )
     VT = evecs.t() @ T.double()
