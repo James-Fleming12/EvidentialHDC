@@ -172,15 +172,14 @@ def main():
             cdir = os.path.join(args.kittic_dir, cond, 'moderate')
         cparser = build_parser(cdir, DATA, ARCH)
 
-        # ---- pool + val reservoirs (features held as 128-d, one extraction) ----
-        print(f"\n=== {cond} (extract once: pool + val) ===")
-        pf, pl, _ = reservoir_collect(stream_frames(model, cparser, device, args.max_frames),
-                                      args.pool_cap, 42)
-        vf, vl, _ = reservoir_collect(stream_frames(model, cparser, device, args.max_frames),
-                                      args.val_cap, 43)
-        pf, pl = pf.to(device), pl.long()
-        vf, vl = vf.to(device), vl.long()
-        print(f"  pool {len(pf)} / val {len(vf)} pts ({time.time()-t0:.0f}s)")
+        # ---- pool + val reservoirs: ONE stream pass, split a combined reservoir ----
+        print(f"\n=== {cond} (extract once: pool + val) ===", flush=True)
+        cfv, clv, _ = reservoir_collect(
+            stream_frames(model, cparser, device, args.max_frames, progress=cond),
+            args.pool_cap + args.val_cap, 42)
+        pf, pl = cfv[:args.pool_cap].to(device), clv[:args.pool_cap].to(device).long()
+        vf, vl = cfv[args.pool_cap:].to(device), clv[args.pool_cap:].to(device).long()
+        print(f"  pool {len(pf)} / val {len(vf)} pts ({time.time()-t0:.0f}s)", flush=True)
 
         cond_res = {}
         best = {'miou': -1.0, 'variant': None}
@@ -232,7 +231,7 @@ def main():
                   f"{ceiling:.3f} (gap {ceiling-frozen:+.3f}) | dead {stats['dead_frac']:.3f} "
                   f"hamm {stats['hamming']:.3f} sep {stats['sep']:+.3f} | "
                   f"min(maj) {min(pc_f[c] for c in MINORITY):.3f} "
-                  f"({time.time()-t1:.0f}s)")
+                  f"({time.time()-t1:.0f}s)", flush=True)
             del Xc, Xp, Xv, W0, Ws, cm_f, cm_c
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -241,7 +240,7 @@ def main():
         cond_res['_proxy_hamming'] = proxy
         results['conds'][cond] = cond_res
         print(f"  == {cond}: oracle-best {best['variant']} ({best['miou']:.3f}), "
-              f"hamming-proxy pick {proxy['variant']} ({proxy['hamming']:.3f})")
+              f"hamming-proxy pick {proxy['variant']} ({proxy['hamming']:.3f})", flush=True)
         del pf, pl, vf, vl
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

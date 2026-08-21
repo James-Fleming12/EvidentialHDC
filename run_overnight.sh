@@ -7,6 +7,10 @@
 #                                condition is worth active learning? (eval-only).
 #   3. run_train_covshift_nuscenes.sh  train the cov-shift extractor on NuScenes
 #                                for later NuScenes-C evaluation.
+#   4. run_al_full_dataset.sh      full-dataset R1 (prototype) + R4 numbers for the
+#                                HyperLiDAR baseline (supcon_vib med pretrain) --
+#                                only R1 is used in the paper table, but R4 comes
+#                                free with the same run.
 #
 # Runs 1-2 first (fast, ~1-2h total), then 3 (training, ~2-4h), so the eval
 # diagnostics complete even if the training is interrupted.
@@ -62,6 +66,14 @@ echo ""
 echo "=== [3/3] train cov-shift on NuScenes ($EPOCHS ep / $CUTOFF cutoff) ==="
 EPOCHS="$EPOCHS" CUTOFF="$CUTOFF" LOG_DIR="$TRAIN_LOG_DIR" \
   bash run_train_covshift_nuscenes.sh "$GPU" || fail "train-nuscenes"
+
+# ---- [4/4] HyperLiDAR baseline full-dataset numbers (R1 for the paper table) ----
+echo ""
+echo "=== [4/4] HyperLiDAR baseline (supcon_vib med) full-dataset R1+R4 ==="
+HYPER_CKPT="${HYPER_CKPT:-logs/med_pretrain_supcon_vib}"
+CONDS="$CONDS" MAX_FRAMES="$MAX_FRAMES" NUSC=0 BAL=0 \
+  EXTRACTORS="hyper:supcon_vib:${HYPER_CKPT}" \
+  bash run_al_full_dataset.sh "$GPU" || fail "hyperlidar-full"
 
 echo ""
 echo "=== OVERNIGHT COMPLETE ==="

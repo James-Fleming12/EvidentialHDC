@@ -42,13 +42,17 @@ def build_parser(root, data, arch):
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
 
-def stream_frames(model, parser, device, max_frames=0):
-    """Yield (zf, labels, frame_idx) per frame, ALL frames unless max_frames > 0."""
+def stream_frames(model, parser, device, max_frames=0, progress=None, report=500):
+    """Yield (zf, labels, frame_idx) per frame, ALL frames unless max_frames > 0.
+    With `progress` (a label string), prints every `report` frames so long
+    extraction passes are not silent."""
     model.eval()
     with torch.no_grad():
         for i, batch in enumerate(parser.get_train_set()):
             if max_frames > 0 and i >= max_frames:
                 break
+            if progress is not None and i % report == 0:
+                print(f"  [{progress}] frame {i}...", flush=True)
             in_vol = batch[0].to(device)
             labels = batch[2].to(device).view(-1)
             mask = (batch[1].to(device) > 0).view(-1)
