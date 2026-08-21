@@ -207,9 +207,10 @@ def main():
                 filt = 1.0 / (lam_d + evK)
                 P = evcK @ evcK.t()
                 def M_inv(v, filt=filt, P=P, K=K, d=d, lam_d=lam_d):
+                    vd = v.double()
                     # (I-P) part: scalar 1/lam on the uncaptured directions
-                    return (evcK @ (filt.unsqueeze(1) * (evcK.t() @ v))
-                            + (v - P @ v) / lam_d)
+                    return (evcK @ (filt.unsqueeze(1) * (evcK.t() @ vd))
+                            + (vd - P @ vd) / lam_d).float()
                 return M_inv
             M_inv = make_M()
             Wpc, ts = preconditioned_cg(X, T, args.lam, device, iters=8, M_inv=M_inv)
