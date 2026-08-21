@@ -195,22 +195,27 @@ def main():
 
         # spectral-preconditioned CG: top-K spectrum as M_inv (keeps the
         # exact-solve limit, unlike hard truncation). M_inv v = V_topK diag(
-        # 1/(lam+sigma)) V_topK^T v + (I - P) v / lam  -- cheap, exact filter on
-        # the captured directions, scalar on the rest.
+        # 1/(lam+sigma)) V_topK^T v + (I - P) v / lam_max  -- exact filter on the
+        # captured directions, bounded scalar on the rest.
         for K in (500, 1000):
             ev, evc = randomized_topk_S(X, K, iters=3, device=device)
             idx = torch.argsort(ev, descending=True)[:K]
             o = torch.argsort(ev[idx])
             evK, evcK = ev[idx][o].double().to(device), evc[:, idx][:, o].double().to(device)
             lam_d = torch.tensor(args.lam, dtype=torch.float64, device=device)
-            def make_M(evK=evK, evcK=evcK, lam_d=lam_d, K=K, d=X.shape[1]):
-                filt = 1.0 / (lam_d + evK)
-                P = evcK @ evcK.t()
-                def M_inv(v, filt=filt, P=P, K=K, d=d, lam_d=lam_d):
+            # M_inv = V_topK diag(1/(lam+sigma)) V_topK^T + (I-P) * 1/(lam+sigma_max)
+            # -- the tail gets the LARGEST-eigenvalue filter (smallest gain), so
+            # the preconditioner is SPD and its eigenvalues are bounded below by
+            # 1/(lam+sigma_max) (not 1/lam, which over-amplified the tail).
+            sig_max = evK[-1]
+            filt = 1.0 / (lam_d + evK)
+            tail_gain = 1.0 / (lam_d + sig_max)
+            P = evcK @ evcK.t()
+            def make_M(evcK=evcK, filt=filt, P=P, K=K, d=X.shape[1], tail_gain=tail_gain):
+                def M_inv(v, filt=filt, P=P, K=K, d=d, tail_gain=tail_gain):
                     vd = v.double()
-                    # (I-P) part: scalar 1/lam on the uncaptured directions
                     return (evcK @ (filt.unsqueeze(1) * (evcK.t() @ vd))
-                            + (vd - P @ vd) / lam_d).float()
+                            + (vd - P @ vd) * tail_gain).float()
                 return M_inv
             M_inv = make_M()
             Wpc, ts = preconditioned_cg(X, T, args.lam, device, iters=8, M_inv=M_inv)
