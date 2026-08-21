@@ -157,7 +157,7 @@ def main():
     ev_w, evc_w = torch.linalg.eigh(Sw)
     transforms['within_whn'] = (evc_w / (ev_w + 1e-4).sqrt().unsqueeze(0)) @ evc_w.T
     g = torch.Generator().manual_seed(5)
-    Q = torch.linalg.qr(torch.randn(128, 128, generator=g).double())[0]
+    Q = torch.linalg.qr(torch.randn(128, 128, generator=g, device=device).double())[0]
     transforms['rotated'] = Q
     transforms = {k: v.float() for k, v in transforms.items()}
     del zc, cov, Sw
