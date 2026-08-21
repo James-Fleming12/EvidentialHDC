@@ -2179,3 +2179,27 @@ consistency gradients class-equal, directly targeting the minority classes the
 CE term cannot reach. A second option is a minority-anchored feature loss, but
 the clean-anchor trap (SupCon rejection, Step 2) says it must not anchor to
 clean prototypes.
+
+### Class-balanced probe fits are a dead end (decoder-side minority fix, 2026-08-20)
+
+Follow-up to the per-class breakdown: three decoder-side balancing levers were
+fit on the full-dataset harness (`al_full_dataset_diag.py --bal`, same pool/val
+as the paper table) and all failed on cov-shift ep10 (verdict identical on
+ep21):
+
+| lever | mechanism | full-scale effect |
+| :--- | :--- | :--- |
+| per-sample weight $w_i = 1/N_c$ | equal per-class T mass in the ridge | frozen $mIoU$ DOWN on every condition ($-0.011$ to $-0.043$: fog $0.322 \rightarrow 0.310$, crosstalk $0.477 \rightarrow 0.435$) |
+| per-class ridge $\lambda_c = \lambda N / N_c$ | C29 stability proposal: more shrinkage for rare classes | exactly neutral ($-0.000$ on every condition) |
+| logit prior $\tau \log(N_c/N)$ | class-prior bias at decode | strongly negative ($-0.13$ to $-0.28$: fog frozen $0.322 \rightarrow 0.191$) |
+
+**Interpretation.** Equalizing T mass costs the majority classes more than the
+minority classes recover (the $mIoU$ mean is dominated by the majority), and
+neither the per-class ridge nor the logit prior moves the minority classes at
+all. Combined with the training-side evidence (CE weights already saturated at
+$858$-$1000$x yet bicycle/other_flat stay $0.00$ even on CLEAN; `class_bal` in
+GMSIFC/LSCC negative at micro, Iteration 7), this closes the decoder-side
+thread: **the minority failure is in the features, not in the probe fit.** The
+remaining lever for minority separability is the HDC projection/code
+construction itself (`probe_projection_diag.py`), not the ridge or the decode
+rule.
