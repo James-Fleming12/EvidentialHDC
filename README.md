@@ -829,13 +829,3 @@ small-gap conditions (snow $-0.016$). The open todos, in priority order:
    the label budget is spent only on conditions where the gap is significant:
    beam_missing ($-0.001$) and motion_blur ($+0.006$) have nothing to close,
    and snow's $+0.013$ is borderline; labels should not be spent there.
-5. **Improve the extractor on wet_ground -- the only condition that still
-   badly lags DGLSS++.** At the prototype/zero-shot level cov-shift is far
-   below DGLSS++ on wet_ground (HDC-zs $35.8\%$ vs $48.3\%$; labeled
-   prototype ceiling $40.5\%$ vs $51.4\%$, Section 2 tables), and at full
-   scale it is the extractor's weakest condition: the lowest frozen
-   ($0.297$) and the largest closeable gap ($+0.122$). Improving the
-   wet_ground features (e.g. ground/terrain-specific normalization or
-   augmentation, since the failure is concentrated in driveable_surface,
-   sidewalk, terrain -- the wet-flooded classes) would raise the zero-shot
-   and shrink the AL burden on the one condition where labels matter most.
