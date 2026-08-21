@@ -1,13 +1,17 @@
-"""probe_spectral_trunc_diag.py: exact-solve accuracy at CG-class cost for the R4
-ridge probe -- the untried middle ground in the probe-efficiency thread.
+"""probe_spectral_trunc_diag.py: is there an exact-solve-accuracy ridge at
+CG-class cost? -- and is spectral truncation the wrong tool for it?
 
 The current tradeoff is: full ridge (S + lI)^-1 T via dense eigh/solve (~4s, the
 ceiling 0.671 wet) vs the Nystrom-warm-started CG-8 (~0.034s but under-converges,
-0.616 wet, -0.055 below exact). The proposed middle is a TRUNCATED spectral
-factorization: compute the top-K eigendirections of S matrix-free (Lanczos /
-randomized SVD on Sv = X^T(X v)), then apply the (1/(lambda + sigma)) filter as a
-scalar on the returned eigenvalues -- exact-solve accuracy without forming the
-full d x d inverse and without CG's under-convergence.
+0.616 wet, -0.055 below exact).
+
+CRITICAL FRAMING (from the synthetic analysis): ridge weights direction i by
+1/(lambda + sigma_i), which is LARGEST for the SMALLEST eigenvalues. Randomized
+top-K SVD captures the LARGEST eigenvalues -- the LOW-weight directions -- so a
+hard top-K spectral fit is principal-component regression (a DIFFERENT method
+that drops the tail ridge actually amplifies), NOT an approximation of the
+closed form. It can still WIN on mIoU if the tail is pure noise (denoising), or
+LOSE if the tail carries signal. The diagnostic measures which.
 
 Methods compared (per condition, full-dataset pool reservoir):
   full_eigh   : dense eigh of S (reference ceiling), fit time measured
@@ -15,9 +19,10 @@ Methods compared (per condition, full-dataset pool reservoir):
   cg8         : Nystrom-warm CG-8  (the documented 0.034s fast path)
   cg20        : Nystrom-warm CG-20 (more accurate, ~0.08s)
   rsvd_K      : randomized SVD top-K (K = 100/500/1000) of S via Sv = X^T(Xv),
-                then per-class spectral filter
-  lanczos_K   : Lanczos top-K, same filter (if torch has linalg.eigvalsh-based
-                iteration available; falls back to rsvd only otherwise)
+                hard spectral truncation (PCR-style) -- measures whether the
+                top-K code spectrum is where the mIoU lives
+  (follow-up if truncation loses: SPECTRAL-PRECONDITIONED CG -- top-K spectrum
+   used only to precondition the iteration, keeping the exact-solve limit.)
 
 Reported per method: fit time, ceiling mIoU, delta vs full_eigh.
 
@@ -62,22 +67,43 @@ def randomized_topk_S(X, K, iters=3, seed=42, device='cuda'):
     return evals, eigvecs
 
 def spectral_filter_fit(X, Y, lam, evals, eigvecs, device, top_k=None):
-    """W = V diag(1/(lambda + sigma)) V^T T, using the (possibly truncated)
-    spectral factors. evals ascending; only the top `top_k` are kept (the rest
-    get the frozen / max filter so tail directions are not amplified)."""
+    """W = V diag(1/(lambda + sigma)) V^T T over the PROVIDED eigenpairs. evals
+    ascending (eigh convention). When the caller passes a truncated set (top-K
+    largest eigenvalues), the tail directions were never computed, so their
+    terms simply do not exist -- this is hard truncation (the stability win:
+    the small-sigma directions that full ridge amplifies are absent)."""
     d = X.shape[1]; nc = Y.shape[1]
     T = (X.t() @ Y.to(device)).double()
-    if top_k is not None and top_k < d:
-        # keep the top-k largest sigma; tail directions get filter 1/(lam + sigma_max)
-        e = evals.double(); v = eigvecs.double()
-        tail = e[-1]
-        filt = 1.0 / (lam + e)
-        filt[:d - top_k] = 1.0 / (lam + tail)
-        W = v @ (filt.unsqueeze(1) * (v.t() @ T))
-    else:
-        filt = 1.0 / (lam + evals.double())
-        W = eigvecs.double() @ (filt.unsqueeze(1) * (eigvecs.double().t() @ T))
+    filt = 1.0 / (lam + evals.double())
+    W = eigvecs.double() @ (filt.unsqueeze(1) * (eigvecs.double().t() @ T))
     return W.float()
+
+def preconditioned_cg(X, T, lam, device, iters=20, M_inv=lambda v: v,
+                      dtype=torch.float32):
+    """Preconditioned CG for (S + lam I) W = T with matrix-free A and a
+    user-supplied preconditioner M_inv (default identity = plain CG)."""
+    X = X.to(device, dtype)
+    d = X.shape[1]; C = T.shape[1]
+    x = torch.zeros(d, C, device=device, dtype=dtype)
+    def A(v): return X.t() @ (X @ v)
+    t0 = tic()
+    b = T.to(device, dtype)
+    r = b - A(x)
+    z = M_inv(r)
+    p = z.clone()
+    rz_old = (r * z).sum(dim=0)
+    for _ in range(iters):
+        Ap = A(p)
+        alpha = rz_old / ((p * Ap).sum(dim=0) + 1e-30)
+        x = x + alpha.unsqueeze(0) * p
+        r = r - alpha.unsqueeze(0) * Ap
+        z = M_inv(r)
+        rz_new = (r * z).sum(dim=0)
+        beta = rz_new / (rz_old + 1e-30)
+        p = z + beta.unsqueeze(0) * p
+        rz_old = rz_new
+    t_solve = toc(t0)
+    return x.float(), t_solve
 
 def main():
     ap = argparse.ArgumentParser()
@@ -156,12 +182,41 @@ def main():
         for K in ks:
             t_r = time.time()
             ev, evc = randomized_topk_S(X, K, iters=3, device=device)
+            # rsvd returns ascending (eigh of the small T); take the LARGEST K
+            idx = torch.argsort(ev, descending=True)[:K]
+            o = torch.argsort(ev[idx])
+            evK, evcK = ev[idx][o], evc[:, idx][:, o]
             t_rsvd = time.time() - t_r
-            Wk = spectral_filter_fit(X, Y, args.lam, ev, evc, device, top_k=K)
+            Wk = spectral_filter_fit(X, Y, args.lam, evK, evcK, device)
             r[f'rsvd{K}'] = decode_miou(Xv, Wk, vl, device)
             r[f'rsvd{K}_s'] = t_rsvd
             print(f"  rsvd-{K} {r[f'rsvd{K}']:.3f} ({t_rsvd:.2f}s, "
                   f"delta {r[f'rsvd{K}']-r['full_eigh']:+.3f})")
+
+        # spectral-preconditioned CG: top-K spectrum as M_inv (keeps the
+        # exact-solve limit, unlike hard truncation). M_inv v = V_topK diag(
+        # 1/(lam+sigma)) V_topK^T v + (I - P) v / lam  -- cheap, exact filter on
+        # the captured directions, scalar on the rest.
+        for K in (500, 1000):
+            ev, evc = randomized_topk_S(X, K, iters=3, device=device)
+            idx = torch.argsort(ev, descending=True)[:K]
+            o = torch.argsort(ev[idx])
+            evK, evcK = ev[idx][o].double().to(device), evc[:, idx][:, o].double().to(device)
+            lam_d = torch.tensor(args.lam, dtype=torch.float64, device=device)
+            def make_M(evK=evK, evcK=evcK, lam_d=lam_d, K=K, d=X.shape[1]):
+                filt = 1.0 / (lam_d + evK)
+                P = evcK @ evcK.t()
+                def M_inv(v, filt=filt, P=P, K=K, d=d, lam_d=lam_d):
+                    # (I-P) part: scalar 1/lam on the uncaptured directions
+                    return (evcK @ (filt.unsqueeze(1) * (evcK.t() @ v))
+                            + (v - P @ v) / lam_d)
+                return M_inv
+            M_inv = make_M()
+            Wpc, ts = preconditioned_cg(X, T, args.lam, device, iters=8, M_inv=M_inv)
+            r[f'pcg8_K{K}'] = decode_miou(Xv, Wpc, vl, device)
+            r[f'pcg8_K{K}_s'] = ts
+            print(f"  prec-CG-8 K={K} {r[f'pcg8_K{K}']:.3f} ({ts:.3f}s, "
+                  f"delta {r[f'pcg8_K{K}']-r['full_eigh']:+.3f})")
         results['conds'][cond] = r
         print(f"  ({time.time()-t0:.0f}s total)")
         del pf, pl, vf, vl, X, Xv, S, T

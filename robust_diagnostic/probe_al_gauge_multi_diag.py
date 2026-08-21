@@ -40,14 +40,12 @@ from robust_diagnostic.al_full_dataset_diag import (
 from robust_diagnostic.al_per_class_diag import ConfMatrix
 
 def cond_signals(model, cparser, proj, W0, protos_clean, args, cond):
-    """Compute the label-free signals + the measured gap for one condition."""
-    from collections import defaultdict
-    pf, pl, _ = reservoir_collect(stream_frames(model, cparser, device, args.max_frames,
-                                                progress=cond), args.pool_cap, 42)
-    vf, vl, _ = reservoir_collect(stream_frames(model, cparser, device, args.max_frames),
-                                  args.val_cap, 43)
-    pf, pl = pf.to(device), pl.long()
-    vf, vl = vf.to(device), vl.long()
+    """Compute the label-free signals + the measured gap for one condition.
+    ONE stream pass: pool+val come from a single combined reservoir split."""
+    pfv, plv, _ = reservoir_collect(stream_frames(model, cparser, device, args.max_frames,
+                                                  progress=cond), args.pool_cap + args.val_cap, 42)
+    pf, pl = pfv[:args.pool_cap].to(device), plv[:args.pool_cap].to(device).long()
+    vf, vl = pfv[args.pool_cap:].to(device), plv[args.pool_cap:].to(device).long()
     Xp = torch.sign(pf @ proj).float()
     Xv = torch.sign(vf @ proj).float()
 
