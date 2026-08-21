@@ -106,7 +106,10 @@ def ridge_fit_exact(X, Y, lam, device, chunk=50000):
     for s in range(0, len(X), chunk):
         Xc = X[s:s + chunk].to(device); Yc = Y[s:s + chunk].to(device)
         S += Xc.t() @ Xc; T += Xc.t() @ Yc
-    return torch.linalg.solve(S + lam * torch.eye(d, device=device), T).float()
+    # Solve in float64: some projection variants (sparse_k1) give a rank-deficient
+    # code matrix whose fp32 solve is numerically singular; double fixes it.
+    A = S.double() + lam * torch.eye(d, dtype=torch.float64, device=device)
+    return torch.linalg.solve(A, T.double()).float()
 
 def ridge_fit_balanced(X, Y, counts, lam, device, mode='w', chunk=50000):
     """Class-balanced ridge probes (minority-class robustness diagnostic).
