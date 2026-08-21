@@ -140,11 +140,12 @@ def main():
         cdir = os.path.join(args.kittic_dir, cond, 'heavy')
         if not os.path.exists(cdir):
             cdir = os.path.join(args.kittic_dir, cond, 'moderate')
+        print(f"=== {cond} ===", flush=True)
         cparser = build_parser(cdir, DATA, ARCH)
-        pf, pl, _ = reservoir_collect(stream_frames(model, cparser, device, args.max_frames),
-                                      args.pool_cap, 42)
-        vf, vl, _ = reservoir_collect(stream_frames(model, cparser, device, args.max_frames),
-                                      args.val_cap, 43)
+        pf, pl, _ = reservoir_collect(stream_frames(model, cparser, device, args.max_frames,
+                                                    progress=cond), args.pool_cap, 42)
+        vf, vl, _ = reservoir_collect(stream_frames(model, cparser, device, args.max_frames,
+                                                    progress=cond), args.val_cap, 43)
         from modules.oracle_core import get_hdc_projection
         proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
         X = torch.sign(pf.to(device) @ proj).float()
@@ -165,7 +166,6 @@ def main():
         W_full = torch.linalg.solve(S.double() + args.lam * torch.eye(10000, device=device, dtype=torch.float64), T.double()).float()
         r['solve_s'] = time.time() - t_solve
         r['full_solve'] = decode_miou(Xv, W_full, vl, device)
-        print(f"=== {cond} ===")
         print(f"  full eigh {r['full_eigh']:.3f} ({r['eigh_s']:.2f}s) | full solve "
               f"{r['full_solve']:.3f} ({r['solve_s']:.2f}s)")
 

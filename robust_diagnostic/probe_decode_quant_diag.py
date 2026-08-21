@@ -117,10 +117,11 @@ def main():
         if not os.path.exists(cdir):
             cdir = os.path.join(args.kittic_dir, cond, 'moderate')
         cparser = build_parser(cdir, DATA, ARCH)
-        pf, pl, _ = reservoir_collect(stream_frames(model, cparser, device, args.max_frames),
-                                      args.pool_cap, 42)
-        vf, vl, _ = reservoir_collect(stream_frames(model, cparser, device, args.max_frames),
-                                      args.val_cap, 43)
+        print(f"=== {cond} ===", flush=True)
+        pf, pl, _ = reservoir_collect(stream_frames(model, cparser, device, args.max_frames,
+                                                    progress=cond), args.pool_cap, 42)
+        vf, vl, _ = reservoir_collect(stream_frames(model, cparser, device, args.max_frames,
+                                                    progress=cond), args.val_cap, 43)
         X = torch.sign(pf.to(device) @ proj).float()
         Xv = torch.sign(vf.to(device) @ proj).float()
         Y = onehot(pl, NUM_CLASSES).to(device)
@@ -132,7 +133,6 @@ def main():
         C = U8.t() @ R
         W0r = W - U8 @ C
 
-        print(f"=== {cond} ===")
         r = {}
         r['fp32'] = bench('fp32', lambda: decode_fp32(Xv, W, device), Xv, vl.cpu(), device)
         r['int8'] = bench('int8', lambda: decode_int8(Xv, W, device), Xv, vl.cpu(), device)

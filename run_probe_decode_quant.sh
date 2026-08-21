@@ -14,7 +14,8 @@ set -u
 set -o pipefail
 GPU="${1:-1}"
 CONDS="${CONDS:-fog,wet_ground}"
-echo "Using GPU $GPU (conds=$CONDS)"
+MAX_FRAMES="${MAX_FRAMES:-0}"
+echo "Using GPU $GPU (conds=$CONDS, max_frames=$MAX_FRAMES)"
 
 METHOD="supcon_vib_dglsspp_inputin_in_chan"
 CKPT="robust_diagnostic/logs/ep10_$METHOD/$METHOD"
@@ -22,7 +23,7 @@ CKPT="robust_diagnostic/logs/ep10_$METHOD/$METHOD"
 echo "=== [decode-quant] $CONDS on $METHOD ==="
 CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/probe_decode_quant_diag.py \
   --path_b "$CKPT" --method_b "$METHOD" --label "decode_quant_ep10" \
-  --conds "$CONDS" \
+  --conds "$CONDS" --max_frames "$MAX_FRAMES" \
   --out "robust_diagnostic/logs/probe_decode_quant_ep10.json" \
   2>&1 | tee "logs/probe_decode_quant_ep10.log"
 RC=$?

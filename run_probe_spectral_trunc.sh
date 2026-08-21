@@ -14,7 +14,8 @@ set -u
 set -o pipefail
 GPU="${1:-1}"
 CONDS="${CONDS:-wet_ground,fog}"
-echo "Using GPU $GPU (conds=$CONDS)"
+MAX_FRAMES="${MAX_FRAMES:-0}"
+echo "Using GPU $GPU (conds=$CONDS, max_frames=$MAX_FRAMES)"
 
 METHOD="supcon_vib_dglsspp_inputin_in_chan"
 CKPT="robust_diagnostic/logs/ep10_$METHOD/$METHOD"
@@ -22,7 +23,7 @@ CKPT="robust_diagnostic/logs/ep10_$METHOD/$METHOD"
 echo "=== [spectral-trunc] $CONDS on $METHOD ==="
 CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/probe_spectral_trunc_diag.py \
   --path_b "$CKPT" --method_b "$METHOD" --label "spec_trunc_ep10" \
-  --conds "$CONDS" \
+  --conds "$CONDS" --max_frames "$MAX_FRAMES" \
   --out "robust_diagnostic/logs/probe_spectral_trunc_ep10.json" \
   2>&1 | tee "logs/probe_spectral_trunc_ep10.log"
 RC=$?
