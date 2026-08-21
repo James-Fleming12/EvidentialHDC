@@ -2203,3 +2203,73 @@ thread: **the minority failure is in the features, not in the probe fit.** The
 remaining lever for minority separability is the HDC projection/code
 construction itself (`probe_projection_diag.py`), not the ridge or the decode
 rule.
+
+### HDC projection variants: dim20k wins, whitening hurts, hamming proxy fails (2026-08-21)
+
+Full-dataset projection diagnostic (`probe_projection_diag.py`, all 8 conditions,
+frozen cov-shift ep10, pool/val 400k reservoirs). Ceiling mIoU by variant:
+
+| condition | bern (baseline) | dim20k | delta | zca | within_whn | sparse_k1 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 0.368 | **0.387** | +0.019 | 0.359 | 0.362 | 0.299 |
+| crosstalk | 0.491 | **0.501** | +0.010 | 0.469 | 0.480 | 0.366 |
+| snow | 0.498 | **0.507** | +0.009 | 0.460 | 0.471 | 0.363 |
+| wet_ground | 0.422 | **0.435** | +0.013 | 0.403 | 0.415 | 0.252 |
+| incomplete_echo | 0.434 | **0.442** | +0.008 | 0.415 | 0.428 | 0.358 |
+| beam_missing | 0.485 | **0.495** | +0.011 | 0.453 | 0.461 | 0.380 |
+| motion_blur | 0.452 | **0.464** | +0.012 | 0.425 | 0.435 | 0.355 |
+| cross_sensor | 0.447 | **0.459** | +0.012 | 0.423 | 0.432 | 0.335 |
+
+Findings:
+
+1. **dim20k is the oracle-best on ALL 8 conditions** (+0.008 to +0.019 over the
+   baseline, mean +0.012). More code capacity is a uniform, small, free gain at
+   2x the code dimension (the cost is only in the probe fit / decode memory,
+   which the streaming fits already absorb).
+2. **The whitening transforms HURT at full scale** (zca/within_whn are -0.009 to
+   -0.038 below bern on every condition), reversing the 200-frame smoke signal.
+   The whitened codes lose diversity (Hamming drops to 0.44-0.46 vs 0.47) and
+   their class-separability collapses (sep 0.04-0.16 vs 0.52-0.53) -- whitening
+   compresses the very directions the HDC code needs. The smoke's zca gain was
+   a 200-frame artifact (pool/val shared frames).
+3. **sparse_k1 is much worse everywhere** (-0.069 to -0.170): one-feature-per-bit
+   codes lose too much. sparse_k8 / gauss / ternary / rotated / concat2 are all
+   within noise of bern.
+4. **The label-free hamming proxy FAILS as a projection selector**: it picks
+   sparse_k1 (the WORST ceiling) on 6/8 conditions. Code diversity does not
+   track the linear-probe ceiling.
+
+Takeaway: the fixed random +-1 projection at 10k dims is already near-optimal;
+the only lever with a measured gain is code capacity (dim20k, +0.012 mean),
+which is a cost-vs-accuracy knob rather than a new mechanism. Dynamic
+projection selection via code statistics does not work.
+
+### Label-free AL gauge: two usable signals, dead-frac is degenerate (2026-08-21)
+
+`probe_al_gauge_diag.py` correlated label-free signals (computed without
+corrupted labels) against the measured closeable gap across the 8 conditions
+(Spearman rho):
+
+| signal | rho(gap, signal) | note |
+| :--- | :--- | :--- |
+| mean_shift_cos | **-0.69** | strongest interpretable signal: wet_ground has the largest gap (+0.101) AND the lowest feature-mean cosine (0.790); the bigger the distribution shift, the bigger the AL-closeable gap |
+| r4_r1_disagree | **+0.64** | R4-vs-R1 disagreement rate tracks the gap (fog 0.221, wet 0.203 = largest) |
+| conf_drop | +0.62 | clean-fit probe confidence drop |
+| hamming | -0.40 | weak |
+| norm_ratio | -0.17 | weak |
+| dead_frac | -0.85 | DEGENERATE: ~0.000 on every condition, the rho is an artifact of tiny float noise |
+
+The gauge works: a label-free gate ("spend labels only when
+mean_shift_cos < ~0.95 or r4_r1_disagree > ~0.18") would route the budget to
+wet_ground and fog, and away from beam_missing / motion_blur / snow -- exactly
+the conditions with nothing to close. This is the deployable label-or-don't
+gate from the README todo #4.
+
+### NuScenes cov-shift training: 21 epochs complete (2026-08-21)
+
+`train_covshift_nuscenes.py` trained the cov-shift recipe on the NuScenes train
+split (KITTI format, 32-beam projection, ~700 scenes, 4268 batches/epoch at
+batch 6). Converged cleanly: epoch-0 loss 5.30 / IoU 0.013 -> epoch-20 loss
+1.31 / IoU 0.554 (train), best-val checkpoint saved at
+`robust_diagnostic/logs/nusc_covshift_21ep/SENet`. Ready for NuScenes-C
+evaluation with the full-dataset diag (`EXTRACTORS=...` pointing at this dir).
