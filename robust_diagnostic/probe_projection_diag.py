@@ -189,7 +189,7 @@ def main():
             # build the effective projection for this variant
             if v in ('zca', 'within_whn', 'rotated'):
                 base = rng_projector(128, 10000, 'bern', 42, device)
-                R_eff = (transforms[v] @ base).to(device)
+                R_eff = (transforms[v] @ base.to(device)).to(device)
             elif v == 'dim5k':
                 R_eff = rng_projector(128, 5000, 'bern', 42, device)
             elif v == 'dim20k':
