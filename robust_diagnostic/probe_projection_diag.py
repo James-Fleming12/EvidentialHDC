@@ -74,6 +74,20 @@ def rng_projector(dim_in, dim_out, kind, seed, device):
         return ((u > 0.75).float() - (u < 0.25).float())   # {-1, 0, +1}
     raise ValueError(kind)
 
+def ridge_fit_codes(feats, R, lbls, lam, device, chunk=50000):
+    """Ridge fit with the codes built per-chunk (memory flat in code dim): W =
+    (S + lam I)^-1 T where S = X^T X, T = X^T Y, X = sign(feats @ R)."""
+    d = R.shape[1]; nc = NUM_CLASSES
+    S = torch.zeros(d, d, device=device); T = torch.zeros(d, nc, device=device)
+    for s in range(0, len(feats), chunk):
+        e = min(s + chunk, len(feats))
+        X = torch.sign(feats[s:e] @ R).float()
+        Y = onehot(lbls[s:e], nc).to(device)
+        S += X.t() @ X; T += X.t() @ Y
+        del X, Y
+    A = S.double() + lam * torch.eye(d, dtype=torch.float64, device=device)
+    return torch.linalg.solve(A, T.double()).float()
+
 def code_stats(codes, lbls):
     """Code-space statistics on a sample: dead-frac, hamming, per-class
     separability ratio (mean intra-class cos / mean inter-class cos)."""
@@ -201,20 +215,25 @@ def main():
                 R_eff = rng_projector(128, 10000, v, 42, device)
             R_eff = R_eff.to(device)
 
-            Xc = torch.sign(cf @ R_eff).float()
-            Xp = torch.sign(pf @ R_eff).float()
-            Xv = torch.sign(vf @ R_eff).float()
-            W0 = ridge_fit_exact(Xc, onehot(cl, NUM_CLASSES), args.lam, device)
-            Ws = ridge_fit_exact(Xp, onehot(pl, NUM_CLASSES), args.lam, device)
-
+            # STREAMED fits + decode: codes are built per-chunk and discarded, so
+            # memory is flat in the code dimension (dim20k would otherwise hold
+            # ~80GB of code matrices at once).
+            W0 = ridge_fit_codes(cf, R_eff, cl, args.lam, device)
+            Ws = ridge_fit_codes(pf, R_eff, pl, args.lam, device)
             cm_f = ConfMatrix(); cm_c = ConfMatrix()
-            for s in range(0, len(Xv), 100000):
-                e = min(s + 100000, len(Xv))
-                cm_f.update((Xv[s:e] @ W0).argmax(1).cpu(), vl[s:e].cpu())
-                cm_c.update((Xv[s:e] @ Ws).argmax(1).cpu(), vl[s:e].cpu())
+            for s in range(0, len(vf), 100000):
+                e = min(s + 100000, len(vf))
+                Xv = torch.sign(vf[s:e] @ R_eff).float()
+                cm_f.update((Xv @ W0).argmax(1).cpu(), vl[s:e].cpu())
+                cm_c.update((Xv @ Ws).argmax(1).cpu(), vl[s:e].cpu())
+                del Xv
             frozen, ceiling = cm_f.miou(), cm_c.miou()
             pc_f = cm_f.per_class_iou()
-            stats = code_stats(Xv, vl)
+            # code_stats on a bounded subsample (only needs a few thousand codes)
+            idx = torch.randperm(len(vf), device=device)[:20000]
+            Xv_s = torch.sign(vf[idx] @ R_eff).float()
+            stats = code_stats(Xv_s, vl[idx])
+            del Xv_s
 
             entry = {
                 'frozen': frozen, 'ceiling': ceiling,
