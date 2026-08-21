@@ -38,6 +38,7 @@ from robust_diagnostic.al_full_dataset_diag import (
     build_parser, stream_frames, reservoir_collect, hdc_codes, onehot,
     ridge_fit_exact, NUM_CLASSES, CONDS_ALL)
 from robust_diagnostic.al_per_class_diag import ConfMatrix
+from robust_diagnostic.probe_cg_speedup_diag import cg_solve, nystrom_w0, tic, toc
 
 def decode_miou(codes, W, vl, device, chunk=100000):
     cm = ConfMatrix()
@@ -170,7 +171,6 @@ def main():
               f"{r['full_solve']:.3f} ({r['solve_s']:.2f}s)")
 
         # Nystrom-warm CG (the documented fast path)
-        from robust_diagnostic.probe_cg_speedup_diag import cg_solve, nystrom_w0, tic, toc
         W_ny = nystrom_w0(X.cpu(), pl.cpu(), args.lam, device, 1000)
         for it in (8, 20):
             W, ts = cg_solve(X, T, args.lam, device, iters=it, x0=W_ny)
