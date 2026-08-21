@@ -251,7 +251,7 @@ def main():
                   f"hamm {stats['hamming']:.3f} sep {stats['sep']:+.3f} | "
                   f"min(maj) {min(pc_f[c] for c in MINORITY):.3f} "
                   f"({time.time()-t1:.0f}s)", flush=True)
-            del Xc, Xp, Xv, W0, Ws, cm_f, cm_c
+            del W0, Ws, cm_f, cm_c, Xv_s
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
