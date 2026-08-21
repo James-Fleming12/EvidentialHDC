@@ -233,7 +233,6 @@ def main():
             idx = torch.randperm(len(vf), device=device)[:20000]
             Xv_s = torch.sign(vf[idx] @ R_eff).float()
             stats = code_stats(Xv_s, vl[idx])
-            del Xv_s
 
             entry = {
                 'frozen': frozen, 'ceiling': ceiling,
