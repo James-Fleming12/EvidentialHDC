@@ -171,7 +171,7 @@ def main():
 
         # Nystrom-warm CG (the documented fast path)
         from robust_diagnostic.probe_cg_speedup_diag import cg_solve, nystrom_w0
-        W_ny = nystrom_w0(pf.cpu(), pl.cpu(), args.lam, device, 1000)
+        W_ny = nystrom_w0(X.cpu(), pl.cpu(), args.lam, device, 1000)
         for it in (8, 20):
             W, ts = cg_solve(X, T, args.lam, device, iters=it, x0=W_ny)
             r[f'cg{it}'] = decode_miou(Xv, W, vl, device)
