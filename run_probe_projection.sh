@@ -23,7 +23,8 @@ set -o pipefail
 GPU="${1:-3}"
 CONDS="${CONDS:-fog,crosstalk,snow,wet_ground,incomplete_echo,beam_missing,motion_blur,cross_sensor}"
 MAX_FRAMES="${MAX_FRAMES:-0}"
-echo "Using GPU $GPU (conds=$CONDS, max_frames=$MAX_FRAMES)"
+VARIANTS="${VARIANTS:-bern,gauss,sparse_k1,sparse_k8,ternary,zca,within_whn,rotated,dim5k,dim20k,concat2}"
+echo "Using GPU $GPU (conds=$CONDS, max_frames=$MAX_FRAMES, variants=$VARIANTS)"
 
 METHOD="supcon_vib_dglsspp_inputin_in_chan"
 CKPT="robust_diagnostic/logs/ep10_$METHOD/$METHOD"
@@ -33,7 +34,7 @@ SUFFIX="ep10"
 echo "=== [projection diag] $SUFFIX [$CONDS] on $METHOD ==="
 CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/probe_projection_diag.py \
   --path_b "$CKPT" --method_b "$METHOD" --label "proj_${SUFFIX}" \
-  --conds "$CONDS" --max_frames "$MAX_FRAMES" \
+  --conds "$CONDS" --max_frames "$MAX_FRAMES" --variants "$VARIANTS" \
   --out "robust_diagnostic/logs/probe_projection_${SUFFIX}.json" \
   2>&1 | tee "logs/probe_projection_${SUFFIX}.log"
 
