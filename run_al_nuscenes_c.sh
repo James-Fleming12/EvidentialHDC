@@ -31,9 +31,10 @@ NUSC="${NUSC:-0}"           # 0 = only NuScenes-C (pristine ref optional)
 BAL="${BAL:-0}"             # 0 = skip the (dead-end) class-balanced probes
 NUSC_C_KITTI="${NUSC_C_KITTI:-/mnt/bravo/jmfleming/nuscenes_c_kitti}"
 NUSC_C_LABELS="${NUSC_C_LABELS:-config/labels/nuscenes_c.yaml}"
+OUT_NAME="${OUT_NAME:-al_nuscenes_c}"
 EXTRACTORS="${EXTRACTORS:-nusc_cov:supcon_vib_dglsspp_inputin_in_chan:robust_diagnostic/logs/nusc_covshift_21ep}"
 echo "Using GPU $GPU (conds=$CONDS, sevs=$SEVS, nusc=$NUSC, bal=$BAL)"
-echo "NuScenes-C KITTI root: $NUSC_C_KITTI  (labels: $NUSC_C_LABELS)"
+echo "NuScenes-C KITTI root: $NUSC_C_KITTI  (labels: $NUSC_C_LABELS, out: $OUT_NAME)"
 
 [ -f "$NUSC_C_LABELS" ] || { echo "ERROR: $NUSC_C_LABELS missing (see run_al_nuscenes_c.sh header)"; exit 1; }
 
@@ -46,13 +47,13 @@ eval CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/al_full_dataset_d
   --nusc_c_dir "$NUSC_C_KITTI" \
   --nusc_c_conds "$CONDS" \
   --nusc_c_sevs "$SEVS" \
-  --out "robust_diagnostic/logs/al_nuscenes_c.json" \
-  2>&1 | tee "logs/al_nuscenes_c.log"
+  --out "robust_diagnostic/logs/${OUT_NAME}.json" \
+  2>&1 | tee "logs/${OUT_NAME}.log"
 
 RC=$?
 if [ $RC -eq 0 ]; then
   echo "=== NUSCENES-C OK ==="
-  echo "Check robust_diagnostic/logs/al_nuscenes_c.json:"
+  echo "Check robust_diagnostic/logs/${OUT_NAME}.json:"
   echo "  extractors[<label>].nuscenes_c['<cond>/<sev>'] = { linear_frozen, linear_ceiling, ... }"
 else
   echo "=== NUSCENES-C FAILED (exit $RC) ==="
