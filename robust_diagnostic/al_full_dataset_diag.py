@@ -421,6 +421,16 @@ def main():
     ap.add_argument("--nusc_labels", type=str, default="config/labels/nuscenes_new.yaml")
     ap.add_argument("--nusc", type=int, default=1,
                     help="1 = also evaluate the extractor's frozen/ceiling/AL on NuScenes")
+    ap.add_argument("--nusc_c_dir", type=str, default="",
+                    help="NuScenes-C root in KITTI format (e.g. "
+                         ".../nuscenes_c_kitti). When set, also evaluate each "
+                         "<cond>/<sev> under it, stored at "
+                         "extractors[<label>]['nuscenes_c']['<cond>/<sev>'].")
+    ap.add_argument("--nusc_c_conds", type=str, default="",
+                    help="comma-separated conditions under --nusc_c_dir "
+                         "(default: all 8)")
+    ap.add_argument("--nusc_c_sevs", type=str, default="heavy,moderate,light",
+                    help="comma-separated severities under --nusc_c_dir")
     ap.add_argument("--bal", type=int, default=1,
                     help="1 = also fit+decode the class-balanced probe variants "
                          "(per-sample w=1/N_c, per-class lam~1/N_c, logit prior)")
@@ -516,6 +526,33 @@ def main():
             with open(args.out, 'w') as fh:
                 json.dump(results, fh, indent=2, default=float)
             print(f"\n[checkpoint] extractor {lab} NuScenes done, saved to {args.out}")
+
+    # ---- pass 3: NuScenes-C per condition/severity (loop reuses the clean fit) ----
+    if args.nusc_c_dir:
+        nusc_c_conds = [c.strip() for c in args.nusc_c_conds.split(',') if c.strip()]
+        if not nusc_c_conds:
+            nusc_c_conds = CONDS_ALL
+        nusc_c_sevs = [s.strip() for s in args.nusc_c_sevs.split(',') if s.strip()]
+        nusc_c_data = yaml.safe_load(open(args.nusc_labels))
+        for lab, method, path in extractors:
+            model, W0, protos_clean, bal = nusc_ready[lab]
+            res_c = results['extractors'][lab].setdefault('nuscenes_c', {})
+            for cond in nusc_c_conds:
+                for sev in nusc_c_sevs:
+                    d = os.path.join(args.nusc_c_dir, cond, sev)
+                    if not os.path.isdir(d):
+                        print(f"  WARNING: {d} not found, skipping")
+                        continue
+                    print(f"\n{'='*80}\n=== [{lab}] NuScenes-C {cond}/{sev} ===\n{'='*80}")
+                    nusc_parser = build_nuscenes_parser(d, nusc_c_data, ARCH)
+                    res_c[f'{cond}/{sev}'] = eval_target_condition(
+                        model, nusc_parser, proj, device, W0, protos_clean,
+                        args, label=lab, cond_name=f'nuscenes_c_{cond}_{sev}', bal=bal)
+                    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+                    with open(args.out, 'w') as fh:
+                        json.dump(results, fh, indent=2, default=float)
+                    print(f"\n[checkpoint] extractor {lab} NuScenes-C {cond}/{sev} done, "
+                          f"saved to {args.out}")
 
     print(f"\nSaved to {args.out}")
 
