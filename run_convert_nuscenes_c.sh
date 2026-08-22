@@ -108,6 +108,23 @@ for c in $cond_list; do
     mkdir -p "$WORK_ROOT/samples/LIDAR_TOP" "$WORK_ROOT/lidarseg/v1.0-trainval"
     cp "$d"/samples/LIDAR_TOP/* "$WORK_ROOT/samples/LIDAR_TOP/" 2>/dev/null || true
     cp "$d"/lidarseg/v1.0-trainval/* "$WORK_ROOT/lidarseg/v1.0-trainval/" 2>/dev/null || true
+    # The base lidarseg.json covers all 34149 trainval frames, but the overlay
+    # only provides the corrupted val labels. The devkit asserts
+    # num_lidarseg_recs == num_label_files at init, so prune lidarseg.json to
+    # the records whose label files are actually present here.
+    python - "$WORK_ROOT" <<'PY'
+import glob, json, os, sys
+root = sys.argv[1]
+label_dir = os.path.join(root, 'lidarseg', 'v1.0-trainval')
+existing = {os.path.basename(p) for p in glob.glob(os.path.join(label_dir, '*.bin'))}
+lj_path = os.path.join(root, 'v1.0-trainval', 'lidarseg.json')
+with open(lj_path) as f:
+    recs = json.load(f)
+recs = [r for r in recs if os.path.basename(r['filename']) in existing]
+with open(lj_path, 'w') as f:
+    json.dump(recs, f)
+print(f"  pruned lidarseg.json -> {len(recs)} records ({len(existing)} label files)")
+PY
     out="$OUT_ROOT/$c/$s"
     mkdir -p "$out"
     echo "--- $c/$s -> $out ---"
