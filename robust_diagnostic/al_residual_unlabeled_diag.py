@@ -39,14 +39,12 @@ SKETCH_SEED = 11
 RS = [1, 2, 4, 8]
 KS = [2, 4, 8]
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -65,19 +63,16 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats), torch.cat(lbls)
 
-
 def hdc_codes(feats, proj, device, chunk=100000):
     out = []
     for s in range(0, len(feats), chunk):
         out.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(out)
 
-
 def onehot(lbls, nc):
     y = torch.zeros(len(lbls), nc)
     y[torch.arange(len(lbls)), lbls.long()] = 1
     return y
-
 
 def decode(W, codes, chunk=100000):
     W = W.detach().cpu()
@@ -86,10 +81,8 @@ def decode(W, codes, chunk=100000):
         p.append((codes[s:s + chunk].float() @ W).argmax(1))
     return torch.cat(p)
 
-
 def mw(W, Xv, vl):
     return compute_miou(decode(W, Xv), vl)
-
 
 def ridge_fit_soft(X, Y, lam, iters, m, device):
     X = X.to(device)
@@ -110,7 +103,6 @@ def ridge_fit_soft(X, Y, lam, iters, m, device):
         rsn = (r * r).sum(0); be = rsn / (rs + 1e-30); p = r + be.unsqueeze(0) * p; rs = rsn
     return x.float()
 
-
 def lsq_residual(X_lab, Y_lab, W0, U, device):
     Xd = X_lab.to(device).float(); Yd = Y_lab.to(device).float(); U_d = U.to(device)
     r = U_d.shape[1]; XU = Xd @ U_d
@@ -119,14 +111,12 @@ def lsq_residual(X_lab, Y_lab, W0, U, device):
     C = torch.linalg.solve(A, b)
     return C.cpu()
 
-
 def sync():
     if torch.cuda.is_available(): torch.cuda.synchronize()
 def tic():
     sync(); return time.time()
 def toc(t0):
     sync(); return time.time() - t0
-
 
 def main():
     ap = argparse.ArgumentParser()

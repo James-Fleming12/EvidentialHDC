@@ -50,14 +50,12 @@ from modules.oracle_core import get_hdc_projection, compute_miou
 NUM_CLASSES = 17
 SKETCH_SEED = 11
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -76,19 +74,16 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats), torch.cat(lbls)
 
-
 def hdc_codes(feats, proj, device, chunk=100000):
     out = []
     for s in range(0, len(feats), chunk):
         out.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(out)
 
-
 def onehot(lbls, nc):
     y = torch.zeros(len(lbls), nc)
     y[torch.arange(len(lbls)), lbls.long()] = 1
     return y
-
 
 def decode(W, codes, chunk=100000):
     W = W.detach().cpu()
@@ -97,16 +92,13 @@ def decode(W, codes, chunk=100000):
         p.append((codes[s:s + chunk].float() @ W).argmax(1))
     return torch.cat(p)
 
-
 def mw(W, Xv, vl):
     return compute_miou(decode(W, Xv), vl)
-
 
 def cos_sim(a, b):
     a = a.detach().cpu().float().reshape(-1)
     b = b.detach().cpu().float().reshape(-1)
     return float((a * b).sum() / (a.norm() * b.norm() + 1e-30))
-
 
 def ridge_fit_soft(X, Y, lam, iters, m, device):
     X = X.to(device)
@@ -136,7 +128,6 @@ def ridge_fit_soft(X, Y, lam, iters, m, device):
         rs = rsn
     return x.float()
 
-
 def nystrom_influence(Xd, lam, m, device):
     """I_i ~= ||(S + lI)^-1 x_i|| in the Nystrom subspace (same sketch as the
     warm start): M = (S_hat + lI)^-1 (m x m), c_i = P^T x_i,
@@ -150,21 +141,17 @@ def nystrom_influence(Xd, lam, m, device):
     MC = C @ M
     return (MC.norm(dim=1) * (Xd.shape[1] ** 0.5)).cpu()
 
-
 def sync():
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-
 
 def tic():
     sync()
     return time.time()
 
-
 def toc(t0):
     sync()
     return time.time() - t0
-
 
 def spearman(a, b):
     a = np.asarray(a)
@@ -172,7 +159,6 @@ def spearman(a, b):
     ra = a.argsort().argsort().astype(float)
     rb = b.argsort().argsort().astype(float)
     return float(np.corrcoef(ra, rb)[0, 1]) if len(a) > 10 else None
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -467,7 +453,6 @@ def main():
     print("PREMISE: if delta negative everywhere but closeable_gap large and")
     print("whitened_error small at best config and mean_cos high -> design issue")
     print("(fixable). If whitened_error large or gap small -> the space is the limit.")
-
 
 if __name__ == "__main__":
     main()

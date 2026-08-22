@@ -43,14 +43,12 @@ SKETCH_SEED = 11
 RS = [1, 2, 4, 8]
 KS = [2, 4, 8]
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -69,19 +67,16 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats), torch.cat(lbls)
 
-
 def hdc_codes(feats, proj, device, chunk=100000):
     out = []
     for s in range(0, len(feats), chunk):
         out.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(out)
 
-
 def onehot(lbls, nc):
     y = torch.zeros(len(lbls), nc)
     y[torch.arange(len(lbls)), lbls.long()] = 1
     return y
-
 
 def decode(W, codes, chunk=100000):
     W = W.detach().cpu()
@@ -90,16 +85,13 @@ def decode(W, codes, chunk=100000):
         p.append((codes[s:s + chunk].float() @ W).argmax(1))
     return torch.cat(p)
 
-
 def mw(W, Xv, vl):
     return compute_miou(decode(W, Xv), vl)
-
 
 def cos_sim(a, b):
     a = a.detach().cpu().float().reshape(-1)
     b = b.detach().cpu().float().reshape(-1)
     return float((a * b).sum() / (a.norm() * b.norm() + 1e-30))
-
 
 def ridge_fit_soft(X, Y, lam, iters, m, device):
     X = X.to(device)
@@ -129,21 +121,17 @@ def ridge_fit_soft(X, Y, lam, iters, m, device):
         rs = rsn
     return x.float()
 
-
 def sync():
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-
 
 def tic():
     sync()
     return time.time()
 
-
 def toc(t0):
     sync()
     return time.time() - t0
-
 
 def lsq_residual(X_lab, Y_lab, W0, U, device):
     """Fit C: (U^T X^T X U) C = U^T X^T (Y - X W0), with a small ridge."""
@@ -156,7 +144,6 @@ def lsq_residual(X_lab, Y_lab, W0, U, device):
     b = XU.t() @ (Yd - Xd @ W0.to(device))
     C = torch.linalg.solve(A, b)        # r x 17
     return C.cpu()
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -305,7 +292,6 @@ def main():
     print("    -> C21 is deployable as-is (W = W0 + U_hat_r C).")
     print("  - full_probe vs oracle-basis: does restricting to the residual")
     print("    subspace beat the full T_hat estimation (the Iterations-7/8 fail)?")
-
 
 if __name__ == "__main__":
     main()

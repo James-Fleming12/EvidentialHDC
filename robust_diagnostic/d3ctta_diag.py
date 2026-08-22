@@ -129,7 +129,6 @@ def feature_recoverability(z_all, l_all, clean_means, k=3):
             'rec_of_wrong': rec_of_wrong,
             'true_cos': float(np.mean(true_cos)) if true_cos else float('nan')}
 
-
 ENCODERS = {
     'plain': ('logs/med_pretrain_supcon_vib', 'supcon_vib'),
     'additive': ('logs/micro_pretrain_additive_retrain/supcon_vib_additive', 'supcon_vib_additive'),

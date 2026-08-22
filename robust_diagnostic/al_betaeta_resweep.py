@@ -40,14 +40,12 @@ from modules.oracle_core import get_hdc_projection, compute_miou
 NUM_CLASSES = 17
 SKETCH_SEED = 11
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -69,12 +67,10 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats, dim=0), torch.cat(lbls, dim=0)
 
-
 def onehot(lbls, num_classes):
     y = torch.zeros(len(lbls), num_classes)
     y[torch.arange(len(lbls)), lbls.long()] = 1.0
     return y
-
 
 def decode(W, codes, chunk=100000):
     W = W.detach().cpu()
@@ -83,16 +79,13 @@ def decode(W, codes, chunk=100000):
         preds.append((codes[s:s + chunk].float() @ W).argmax(dim=1))
     return torch.cat(preds)
 
-
 def mw(W, Xv, vl):
     return compute_miou(decode(W, Xv), vl)
-
 
 def cos_sim(a, b):
     a = a.detach().cpu().float().reshape(-1)
     b = b.detach().cpu().float().reshape(-1)
     return float((a * b).sum() / (a.norm() * b.norm() + 1e-30))
-
 
 def ridge_fit_soft(X, Y, lam, iters, m, device):
     X = X.to(device)
@@ -122,21 +115,17 @@ def ridge_fit_soft(X, Y, lam, iters, m, device):
         rs_old = rs_new
     return x.float()
 
-
 def sync():
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-
 
 def tic():
     sync()
     return time.time()
 
-
 def toc(t0):
     sync()
     return time.time() - t0
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -291,7 +280,6 @@ def main():
     print("train. If snow/wet is negative across the whole grid, the negative-AL")
     print("is a property of the space (or the T_hat/rare-class issue), not a")
     print("(beta, eta) mismatch.")
-
 
 if __name__ == "__main__":
     main()

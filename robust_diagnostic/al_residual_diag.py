@@ -38,14 +38,12 @@ NUM_CLASSES = 17
 SKETCH_SEED = 11
 RS = [0, 1, 2, 4, 8, 16, 32, 64, 128]
 
-
 def build_parser(root, data, arch):
     return Parser(root=root, train_sequences=['08'], valid_sequences=['08'],
                   test_sequences=None, labels=data["labels"], color_map=data["color_map"],
                   learning_map=data["learning_map"], learning_map_inv=data["learning_map_inv"],
                   sensor=arch["dataset"]["sensor"], max_points=arch["dataset"]["max_points"],
                   batch_size=1, workers=4, gt=True, shuffle_train=False)
-
 
 def extract_features(model, parser, device, num_frames=100):
     feats, lbls = [], []
@@ -64,19 +62,16 @@ def extract_features(model, parser, device, num_frames=100):
             lbls.append(labels[mask].cpu())
     return torch.cat(feats), torch.cat(lbls)
 
-
 def hdc_codes(feats, proj, device, chunk=100000):
     out = []
     for s in range(0, len(feats), chunk):
         out.append(torch.sign(feats[s:s + chunk].to(device) @ proj).cpu())
     return torch.cat(out)
 
-
 def onehot(lbls, nc):
     y = torch.zeros(len(lbls), nc)
     y[torch.arange(len(lbls)), lbls.long()] = 1
     return y
-
 
 def decode(W, codes, chunk=100000):
     W = W.detach().cpu()
@@ -85,16 +80,13 @@ def decode(W, codes, chunk=100000):
         p.append((codes[s:s + chunk].float() @ W).argmax(1))
     return torch.cat(p)
 
-
 def mw(W, Xv, vl):
     return compute_miou(decode(W, Xv), vl)
-
 
 def cos_sim(a, b):
     a = a.detach().cpu().float().reshape(-1)
     b = b.detach().cpu().float().reshape(-1)
     return float((a * b).sum() / (a.norm() * b.norm() + 1e-30))
-
 
 def ridge_fit_soft(X, Y, lam, iters, m, device):
     X = X.to(device)
@@ -124,21 +116,17 @@ def ridge_fit_soft(X, Y, lam, iters, m, device):
         rs = rsn
     return x.float()
 
-
 def sync():
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-
 
 def tic():
     sync()
     return time.time()
 
-
 def toc(t0):
     sync()
     return time.time() - t0
-
 
 def svd_metrics(R):
     """Singular spectrum diagnostics of a d x C residual matrix.
@@ -155,7 +143,6 @@ def svd_metrics(R):
                        for r in RS if r >= 1 and r <= len(s)},
         'total_energy': float(total),
     }
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -295,7 +282,6 @@ def main():
     print("should estimate a LOW-RANK correction (W0 + U_r C), not a full probe.")
     print("If cum_energy(r=8) ~ 0.9+ and curve(r=8) ~ oracle, the residual is")
     print("compressible -> the C21 low-rank residual decoder is the route.")
-
 
 if __name__ == "__main__":
     main()
