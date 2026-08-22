@@ -88,6 +88,11 @@ for c in $cond_list; do
       echo "  copying base metadata -> $WORK_ROOT/v1.0-trainval"
       cp -r "$NUSC_BASE/v1.0-trainval" "$WORK_ROOT/"
     fi
+    # the devkit also loads map masks (map.json -> maps/*.png)
+    if [ ! -d "$WORK_ROOT/maps" ] && [ -d "$NUSC_BASE/maps" ]; then
+      echo "  copying base maps -> $WORK_ROOT/maps"
+      cp -r "$NUSC_BASE/maps" "$WORK_ROOT/"
+    fi
     echo "  overlaying $c/$s -> $WORK_ROOT"
     mkdir -p "$WORK_ROOT/samples/LIDAR_TOP" "$WORK_ROOT/lidarseg/v1.0-trainval"
     cp -n "$d"/samples/LIDAR_TOP/* "$WORK_ROOT/samples/LIDAR_TOP/" 2>/dev/null || true
