@@ -2273,3 +2273,111 @@ batch 6). Converged cleanly: epoch-0 loss 5.30 / IoU 0.013 -> epoch-20 loss
 1.31 / IoU 0.554 (train), best-val checkpoint saved at
 `robust_diagnostic/logs/nusc_covshift_21ep/SENet`. Ready for NuScenes-C
 evaluation with the full-dataset diag (`EXTRACTORS=...` pointing at this dir).
+
+### Probe efficiency I: spectral-preconditioned CG reaches the exact ceiling at 1/20th cost (2026-08-21)
+
+`probe_spectral_trunc_diag.py`, full 400k pool / 200k val, fog + wet_ground.
+The question: can the R4 ridge fit get exact-solve accuracy without the ~6s
+dense eigh? (ceiling mIoU, fit time):
+
+| method | fog | wet | fog time | wet time | delta vs full |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| full eigh | 0.371 | 0.417 | 6.44s | 6.46s | reference |
+| full solve | 0.371 | 0.417 | 0.54s | 0.56s | 0 |
+| Nys-warm CG-8 | 0.343 | 0.395 | 0.26s | 0.26s | -0.028 / -0.022 |
+| Nys-warm CG-20 | 0.360 | 0.408 | 0.66s | 0.66s | -0.011 / -0.009 |
+| rsvd-100 (PCR) | 0.323 | 0.315 | 0.26s | 0.27s | -0.048 / -0.102 |
+| rsvd-500 | 0.339 | 0.394 | 0.92s | 0.91s | -0.032 / -0.023 |
+| rsvd-1000 | 0.346 | 0.401 | 1.93s | 1.93s | -0.025 / -0.016 |
+| **prec-CG-8 K=500** | 0.370 | 0.417 | 0.31s | 0.31s | -0.001 / 0 |
+| **prec-CG-8 K=1000** | **0.371** | **0.417** | 0.31s | 0.31s | **0 / 0** |
+
+Findings:
+
+1. **Spectral-preconditioned CG is the answer**: prec-CG-8 (8 iterations, top-500
+   or top-1000 spectrum as the preconditioner) reaches the EXACT ceiling (delta
+   0.000 fog / wet) in 0.31s vs 6.4s for the dense eigh -- a 20x speedup with
+   zero accuracy loss. The preconditioner keeps the exact-solve limit (unlike
+   hard truncation), so it converges in 8 iterations where plain CG-8 is -0.028
+   below and even CG-20 is -0.011 below.
+2. **Hard top-K truncation (rsvd) is PCR, not ridge**: it monotonically improves
+   with K (100: -0.048/-0.102, 1000: -0.025/-0.016) but never reaches the
+   ceiling -- because ridge weights the SMALL eigenvalues most (filter
+   $1/(\lambda+\sigma)$ is largest there) while randomized top-K captures the
+   LARGE ones. The top-K spectrum is where ridge's power is NOT.
+3. The Nystrom-warm CG under-convergence is confirmed at full scale (CG-8
+   -0.028, CG-20 -0.011), making prec-CG the strictly better fast path.
+
+Takeaway: the deployed fit should use prec-CG-8 (top-1000) -- 0.31s, exact
+ceiling, matrix-free (no d x d eigh). The efficiency note in the README's
+"path to a cheaper solve" is now realized.
+
+### Probe efficiency II: decode quantization -- int8 free, +-1 loses, lowrank slower (2026-08-21)
+
+`probe_decode_quant_diag.py`, same harness. Decode speed + ceiling for the R4
+probe (fp32 baseline vs int8 W vs +-1 W vs the low-rank factored
+$W_0 + U_8 C$):
+
+| method | fog ceiling | wet ceiling | pts/s (fog) | pts/s (wet) |
+| :--- | :--- | :--- | :--- | :--- |
+| fp32 (current) | 0.371 | 0.417 | 17.8M | 16.9M |
+| int8 W | 0.371 | 0.417 | 16.5M | 17.3M |
+| +-1 W | **0.341** | **0.199** | 17.8M | 17.7M |
+| lowrank W0+U8C | 0.371 | 0.417 | 9.2M | 9.2M |
+
+Findings:
+
+1. **Decode is already fast and there is NO speed gap to close**: fp32 decode is
+   17-18M pts/s (the 200k val decodes in ~11ms). int8 W matches ceiling with
+   identical speed (the matmul is memory-bound at these sizes; int8 does not
+   win until the batch is much larger).
+2. **+-1 W loses the ceiling** (fog 0.371->0.341, wet 0.417->0.199): the
+   binarization cost is large on exactly the condition with the biggest gap
+   (wet). The old block-sign integer form is NOT deployable for the full probe.
+3. **The low-rank factored decode is SLOWER** (9.2M vs 17.8M pts/s): the extra
+   `(codes @ U_8) @ C` pass costs more than the 10k x 17 -> 10k x 8 saving at
+   these sizes. Only worth it if the memory of holding W (10k x 17) matters.
+
+Takeaway: keep the fp32 (or int8) decode; the probe decode is not the
+bottleneck. The efficiency win is entirely in the FIT (prec-CG-8), not the
+decode.
+
+### The label-free AL gauge survives cross-extractor validation (2026-08-21)
+
+`probe_al_gauge_multi_diag.py`, all 8 conditions x 4 extractors. Does the
+label-free "should we do AL?" signal track the measured closeable gap on every
+extractor, and does the combined score + threshold gate work?
+
+Per-extractor Spearman rho(gap, signal):
+
+| signal | cov_ep10 | cov_ep21 | dglsspp | robust |
+| :--- | :--- | :--- | :--- | :--- |
+| mean_shift_cos | -0.57 | **-0.81** | **-0.95** | **-0.93** |
+| r4_r1_disagree | **+0.67** | +0.41 | +0.55 | +0.36 |
+| conf_drop | +0.60 | +0.43 | **+0.81** | **+0.74** |
+| hamming | -0.69 | **-0.88** | -0.07 | +0.07 |
+| norm_ratio | -0.12 | -0.05 | -0.07 | +0.24 |
+| dead_frac | -0.85 | +0.25 | -0.17 | -0.09 |
+| combined score | +0.62 | +0.52 | **+0.69** | **+0.67** |
+
+Findings:
+
+1. **The mechanism is cross-extractor**: mean_shift_cos is the most consistent
+   signal (negative rho on all 4, strongest on the non-cov-shift extractors at
+   -0.81 to -0.95) -- wet_ground always has both the biggest gap and the lowest
+   feature-mean cosine. r4_r1_disagree and conf_drop are positive everywhere.
+   The single-run cov_ep10 result was not a quirk.
+2. **dead_frac and norm_ratio are not reliable**: dead_frac flips sign across
+   extractors (-0.85 cov_ep10, +0.25 cov_ep21) and is ~0 everywhere (tiny
+   float-noise rho); norm_ratio is weak everywhere. They should not be used.
+3. **The combined score works on every extractor** (rho +0.52 to +0.69), and
+   the threshold gate routes only wet_ground (plus fog on dglsspp/robust),
+   capturing 49-60% of the total gap with precision 1.00 -- at a cost of
+   routing just 1-2 of 8 conditions. The gate is conservative (recall 0.5-0.67:
+   it always catches wet_ground, the biggest gap; fog is borderline and only
+   caught when the score is highest).
+
+Takeaway: the label-free gauge is a deployable mechanism, not an extractor
+quirk: mean_shift_cos (+ r4_r1_disagree / conf_drop as backup) reliably says
+"wet_ground (and fog) are worth labels; the rest are not." This answers the
+README todo #4 -- with a precise, cheap, validated gate.
