@@ -454,6 +454,8 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}")
     conds = [c.strip() for c in args.conds.split(',') if c.strip()]
+    if conds == ['none']:  # sentinel: skip KITTI-C conditions entirely
+        conds = []
     extractors = [tuple(e.strip().split(':')) for e in args.extractors.split(',') if e.strip()]
     proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
 

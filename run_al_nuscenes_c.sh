@@ -39,7 +39,7 @@ echo "NuScenes-C KITTI root: $NUSC_C_KITTI  (labels: $NUSC_C_LABELS)"
 
 eval CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/al_full_dataset_diag.py \
   --label "nuscenes_c" \
-  --conds "" --nusc "$NUSC" --bal "$BAL" \
+  --conds none --nusc "$NUSC" --bal "$BAL" \
   --extractors "$EXTRACTORS" \
   --nusc_dir /mnt/alpha/jmfleming/nuscenes_kitti \
   --nusc_labels "$NUSC_C_LABELS" \
