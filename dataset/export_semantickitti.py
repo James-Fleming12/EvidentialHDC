@@ -135,6 +135,21 @@ class KittiConverter:
 
                 lidar_data_token = sample['data'][self.lidar_name]
 
+                ################ 0. Skip frames missing from the dataroot ################
+                # The base may be metadata-only (no point clouds/labels for every scene);
+                # the overlay supplies the corrupted scans+labels for the scenes it
+                # covers. Frames whose files are absent are simply skipped, so the
+                # converter works on a partial overlay without crashing.
+                _sd = self.nusc.get('sample_data', lidar_data_token)
+                _scan_path = os.path.join(self.nusc.dataroot, _sd['filename'])
+                if not os.path.exists(_scan_path):
+                    print(f"  skip frame {token_idx}: missing scan {_sd['filename']}")
+                    token_idx += 1
+                    if sample['next'] == '':
+                        break
+                    sample_token = sample['next']
+                    continue
+
                 ################ 1. Load panoptic annotation ################
                 lidar_panoptic = self.nusc.get('lidarseg', lidar_data_token)
                 ### {'token', 'sample_data_token', 'filename'}
