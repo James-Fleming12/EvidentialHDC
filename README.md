@@ -218,6 +218,35 @@ accumulate-and-solve update in
 [`docs/lin_probe_updates/tta_iterations.md`](docs/lin_probe_updates/tta_iterations.md))
 is a later step.
 
+**Cross-dataset transfer: nuScenes → nuScenes-C.** The NuScenes-trained cov-shift
+extractor (`nusc_covshift_21ep`, 32-beam projection) evaluated on nuScenes-C
+(heavy severity; the corrupted archive's 150 val scenes / 6019 keyframes converted
+to KITTI format via the same `KittiConverter`, labels from the corrupted lidarseg),
+with the same full-dataset R4 machinery (200k clean-fit → frozen, 400k
+corrupted-pool → ceiling; `al_full_dataset_diag.py`):
+
+| condition (nuScenes-C, heavy) | zs R1 | zs R4 | ceil R1 | ceil R4 | R4 gap |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 16.3% | 14.4% | 27.5% | **40.4%** | +26.0 |
+| crosstalk | 20.3% | 19.1% | 38.5% | **50.1%** | +31.0 |
+| snow | 23.4% | 22.4% | 50.1% | **62.1%** | +39.7 |
+| wet_ground | 25.6% | 22.4% | 51.0% | **62.0%** | +39.6 |
+| incomplete_echo | 22.6% | 22.2% | 39.9% | **48.9%** | +26.7 |
+| beam_missing | 24.2% | 22.5% | 48.0% | **58.8%** | +36.3 |
+| motion_blur | 21.4% | 20.6% | 42.9% | **52.9%** | +32.4 |
+| cross_sensor | 21.7% | 18.6% | 38.7% | **49.4%** | +30.9 |
+| **mean (8 corrupted)** | 21.9% | 20.3% | 42.1% | **53.1%** | +32.8 |
+
+The R4 ceiling is 10-14 points above the R1 ceiling on every condition (fog 40.4
+vs 27.5, snow 62.1 vs 50.1), so the decision-rule finding transfers across
+datasets: the linear probe on the HDC code recovers the structure the
+nearest-centroid rule throws away. The R4 zero-shot (clean-fit probe) sits just
+below R1 zero-shot here (20.3 vs 21.9 mean) — the clean-fit probe transfers less
+well to the 32-beam domain than the prototypes do — but the ceiling still recovers
++32.8 mean over the frozen probe. Point-removing corruptions shrink the eval set
+(beam_missing 53.8M, cross_sensor 24.5M points vs ~101-110M for the additive
+ones); the per-condition point counts are in `al_nuscenes_c.json`.
+
 The cov-shift extractor's development, the healthy-condition ceiling-loss
 diagnostic, and the decision-rule finding are tracked in
 [`docs/cov_shift/cov_shift_iterations.md`](docs/cov_shift/cov_shift_iterations.md).
