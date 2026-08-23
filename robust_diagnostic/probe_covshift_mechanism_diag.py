@@ -171,7 +171,7 @@ def ridge_fits_shared_S(X, Y, main_lam, sweep_lams, device, chunk=50000,
     idx = torch.randperm(len(X))[:min(len(X), sweep_n)]
     Xs = X[idx].to(device); Ys = Y[idx].to(device)
     for lam in sweep_lams:
-        W, _ = ridge_fit_exact(Xs, Ys, lam, device)
+        W = ridge_fit_exact(Xs, Ys, lam, device)
         out[str(lam)] = W.detach().cpu()
     return out, S.detach().cpu(), T.detach().cpu()
 
