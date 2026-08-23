@@ -163,7 +163,7 @@ def stream_decode_full_extra(model, parser, proj, device, decoders, nn_prep,
                         nn_tp[name][c] += (preds[lc] == c).sum()
             del codes
         del zf, labels
-    nn = {name: {'recall': nn_tp[name].clone(),
+    nn = {name: {'recall': (nn_tp[name].clone() / nn_sup[name].clamp(min=1)),
                  'support': nn_sup[name].clone()} for name in nn_prep}
     return accs, nn
 
@@ -316,7 +316,8 @@ def nearest_mean_recall(X, refs, lbls, kind='code', chunk=200000):
             if lc.any():
                 support[c] += lc.sum()
                 recall[c] += (preds[lc] == c).sum()
-    return {'recall': {CLASS_NAMES[c]: float(recall[c]) for c in range(NUM_CLASSES)},
+    return {'recall': {CLASS_NAMES[c]: float(recall[c] / support[c].clamp(min=1))
+                       for c in range(NUM_CLASSES)},
             'support': {CLASS_NAMES[c]: int(support[c]) for c in range(NUM_CLASSES)}}
 
 def main():

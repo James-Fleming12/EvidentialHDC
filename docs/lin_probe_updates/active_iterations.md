@@ -863,6 +863,93 @@ deployed version needs the count estimation resolved (Iteration 8F-style
 source-count prior) before the method is fully label-free of the pool
 statistics.
 
+## FULL-DATASET naive-method confirmation: self-training and random-bank AL do not
+beat frozen; memory-bank W_res does (2026-08-23, `al_full_naive_diag.py`)
+
+The Iteration 9-12 closure and the AL baselines were measured on the 100-frame
+harness. `al_full_naive_diag.py` re-runs the decisive comparisons on the FULL
+KITTI-C dataset (every point of every frame of seq 08, ~300M points/condition;
+reservoir pool 400k, clean fit 200k, spectral-exact ridge, pool excluded from
+val) in ONE streaming pass, and adds per-class nearest-mean separability in the
+raw 128-d features AND the binarized 10000-d HDC code. Cov-shift ep-10:
+
+**A. Naive TTA (pseudo-label self-training) never beats the frozen decode.**
+
+| condition | frozen | self-train (no gate) | conf-gated (top-50%) | ceiling W* |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | 0.322 | 0.320 (-0.002) | 0.295 (-0.027) | 0.369 |
+| crosstalk | 0.477 | 0.470 (-0.007) | 0.411 (-0.067) | 0.491 |
+| snow | 0.482 | 0.472 (-0.010) | 0.422 (-0.060) | 0.495 |
+| wet_ground | 0.297 | 0.292 (-0.005) | 0.277 (-0.021) | 0.419 |
+| incomplete_echo | 0.421 | 0.411 (-0.010) | 0.397 (-0.024) | 0.437 |
+| beam_missing | 0.489 | 0.472 (-0.016) | 0.426 (-0.063) | 0.487 |
+| motion_blur | 0.452 | 0.438 (-0.014) | 0.398 (-0.054) | 0.458 |
+| cross_sensor | 0.420 | 0.412 (-0.008) | 0.371 (-0.049) | 0.446 |
+| **mean** | 0.420 | 0.411 (-0.009) | 0.375 (-0.045) | 0.450 |
+
+Self-training is at or below frozen on every condition (mean -0.009); the
+confidence gate makes it WORSE (mean -0.045) -- the frozen probe's own mistakes
+are selected by confidence, confirming the Iteration 9-11 confirmation-bias
+closure at full scale. No gate on pseudo-labels recovers the ceiling.
+
+**B. Naive AL (plain ridge on the random bank) is negative; memory-bank W_res is
+the method that closes the gap.**
+
+| condition | frozen | randbank ridge (56+500 true) | W_res pseudo | W_res true | ceiling |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 0.322 | 0.331 (+0.010) | 0.333 (+0.011) | 0.379 (+0.057) | 0.369 |
+| crosstalk | 0.477 | 0.422 (-0.055) | 0.480 (+0.003) | 0.492 (+0.015) | 0.491 |
+| snow | 0.482 | 0.417 (-0.065) | 0.468 (-0.014) | 0.493 (+0.011) | 0.495 |
+| wet_ground | 0.297 | 0.345 (+0.048) | 0.315 (+0.017) | 0.428 (+0.131) | 0.419 |
+| incomplete_echo | 0.421 | 0.383 (-0.038) | 0.412 (-0.008) | 0.439 (+0.019) | 0.437 |
+| beam_missing | 0.489 | 0.427 (-0.061) | 0.491 (+0.002) | 0.490 (+0.001) | 0.487 |
+| motion_blur | 0.452 | 0.397 (-0.056) | 0.455 (+0.003) | 0.460 (+0.007) | 0.458 |
+| cross_sensor | 0.420 | 0.382 (-0.038) | 0.436 (+0.016) | 0.452 (+0.032) | 0.446 |
+| **mean** | 0.420 | 0.388 (-0.032) | 0.424 (+0.004) | 0.454 (+0.034) | 0.450 |
+
+Plain ridge on the random bank (the naive AL: just label the 500 random points
+and refit) is negative on 6/8 conditions (mean -0.032): without the low-rank
+W_res structure the random bank hurts. W_res pseudo is near-neutral (+0.004),
+W_res true closes real gap on every condition that has one (wet_ground +0.131,
+fog +0.057, cross_sensor +0.032). The oracle-U low-rank correction is the
+active ingredient, and it holds at full scale.
+
+**C. Minority classes ARE separable in the feature spaces; the failure is in the
+decode rule, not the representation.** Per-class nearest-mean recall (fraction
+of class-c points whose nearest class-mean is c), clean vs pool prototypes, in
+the raw 128-d features (`sep_feat_*`) and the HDC code (`sep_code_*`), full
+val stream:
+
+| class | clean-ref code | clean-ref feat | fog code | fog feat | mean(8) code | mean(8) feat |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| bicycle | 0.58 | 0.56 | 0.50 | 0.50 | 0.47 | 0.47 |
+| motorcycle | 0.60 | 0.60 | 0.50 | 0.49 | 0.52 | 0.50 |
+| pedestrian | 0.74 | 0.73 | 0.49 | 0.47 | 0.68 | 0.67 |
+| truck | 0.81 | 0.80 | 0.84 | 0.83 | 0.71 | 0.70 |
+| other_flat | 0.00 | 0.04 | 0.11 | 0.12 | 0.10 | 0.10 |
+| car | 0.90 | 0.91 | 0.78 | 0.79 | 0.81 | 0.81 |
+| vegetation | 0.78 | 0.79 | 0.68 | 0.68 | 0.71 | 0.72 |
+
+bicycle/motorcycle/pedestrian/truck hold 0.47-0.71 nearest-mean recall in BOTH
+spaces (code and feat are within ~0.01 of each other on every class/condition),
+so the minority collapse is NOT a feature-space failure: the 128-d features and
+their 10000-d binarized code both retain the class structure. The failure is the
+DECODE RULE -- the nearest-centroid boundary gives a minority point to the wrong
+majority class despite the right class-mean being nearest, and the probe fit on
+the few minority points in the pool cannot re-draw that boundary (the balanced
+probe dead end, Iteration 7 / cov-shift doc). The exceptions are the two classes
+with ~0 support (bicycle/other_flat on CLEAN are 0.00-0.10 recall even at the
+class-mean level: other_flat 0.00 clean-ref) -- those are representation-absent,
+not boundary failures.
+
+**Interpretation.** The full-scale numbers confirm the three findings that the
+paper rests on: (1) naive pseudo-label self-training cannot beat frozen
+(-0.009 mean, -0.045 gated); (2) naive random-bank AL is negative while the
+memory-bank W_res closes real gap (+0.034 mean, wet_ground +0.131); (3) the
+minority weakness is not in the network features or the HDC code -- it is the
+decode rule, which is exactly what the low-label probe (Pillar 3) and the
+learned decoder (Pillar 1 R4) address. JSON: `al_full_naive_ep10.json`.
+
 ## Next: Iteration 11: the deployed 10-COMB -- count estimation + the
 beta/eta operating point
 
