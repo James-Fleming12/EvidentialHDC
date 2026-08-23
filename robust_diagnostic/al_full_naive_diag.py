@@ -183,13 +183,13 @@ def eval_condition(model, parser, proj, device, W0, protos_clean, feat_means_cle
     Xp_d = Xp.to(device)
     with torch.no_grad():
         logits = Xp_d @ W0.to(device)
-        yhat = logits.argmax(1)
+        yhat = logits.argmax(1).cpu()
         conf = torch.softmax(logits, dim=1).max(1).values
-    W_selftrain = ridge_fit_exact(Xp, onehot(yhat.cpu(), NUM_CLASSES), args.lam, device)
-    gate = conf >= torch.quantile(conf, 0.5)
+    W_selftrain = ridge_fit_exact(Xp, onehot(yhat, NUM_CLASSES), args.lam, device)
+    gate = (conf >= torch.quantile(conf, 0.5)).cpu()
     print(f"  naive self-train: {len(yhat)} pseudo-labeled pool pts "
           f"({gate.sum().item()} top-50% conf gated)")
-    W_selftrain_conf = ridge_fit_exact(Xp[gate], onehot(yhat[gate].cpu(), NUM_CLASSES),
+    W_selftrain_conf = ridge_fit_exact(Xp[gate], onehot(yhat[gate], NUM_CLASSES),
                                        args.lam, device)
 
     # --- naive AL: plain ridge on the 56+500 random bank, true labels ---
