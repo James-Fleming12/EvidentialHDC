@@ -2090,34 +2090,43 @@ Every bank that was negative as $1$-NN or as $W_{pseudo}$ ($-0.22$ to $-0.48$) i
 ### FULL-DATASET cross-extractor comparison: does cov-shift still win at scale? (R4, ep-10)
 
 The same full harness (`al_full_dataset_diag.py`) run on all extractors. **The
-DGLSS++ / Robust columns are PENDING RE-RUN**: the original harness shared one
-`ARCH` dict across extractors and `GenTrainer` mutates `ARCH["train"]["twobranch"]`
-in place (setting `input_in`/`norm_channels` for cov-shift), so DGLSS++/Robust,
-which ran after cov-shift in the same process, were built with the cov-shift
-input-normalization architecture (6.786436M params) and loaded their true
-6.796804M checkpoints with a partial `strict=False` load. The numbers below are
-therefore NOT the base DGLSS++ extractor; re-run with the per-extractor `ARCH`
-deep-copy fix in `al_full_dataset_diag.py`:
+DGLSS++ columns were RE-RUN with the true architecture** after fixing a
+shared-`ARCH` mutation bug: the original harness passed one `ARCH` dict to all
+extractors and `GenTrainer` mutates `ARCH["train"]["twobranch"]` in place
+(setting `input_in`/`norm_channels` for cov-shift), so DGLSS++, which ran after
+cov-shift in the same process, was built with the cov-shift input-normalization
+architecture (6.786436M params) and produced wrong numbers. The corrected
+single-extractor run builds DGLSS++ at its true 6.796804M params (verified in
+the log). The cov-shift columns are unchanged (cov builds its own arch either
+way):
 
-| condition | cov-shift R4 zs -> ceiling | DGLSS++ R4 zs -> ceiling | Robust R4 zs -> ceiling |
-| :--- | :--- | :--- | :--- |
-| fog | 0.322 -> 0.369 | TBD | TBD |
-| crosstalk | 0.477 -> 0.491 | TBD | TBD |
-| snow | 0.482 -> 0.495 | TBD | TBD |
-| wet_ground | 0.297 -> 0.419 | TBD | TBD |
-| incomplete_echo | 0.421 -> 0.437 | TBD | TBD |
-| beam_missing | 0.489 -> 0.487 | TBD | TBD |
-| motion_blur | 0.452 -> 0.458 | TBD | TBD |
-| cross_sensor | 0.420 -> 0.446 | TBD | TBD |
+| condition | cov-shift R4 zs -> ceiling | DGLSS++ R4 zs -> ceiling |
+| :--- | :--- | :--- |
+| fog | 0.322 -> 0.369 | 0.097 -> 0.253 |
+| crosstalk | 0.477 -> 0.491 | 0.118 -> 0.291 |
+| snow | 0.482 -> 0.495 | 0.543 -> 0.575 |
+| wet_ground | 0.297 -> 0.419 | 0.492 -> 0.570 |
+| incomplete_echo | 0.421 -> 0.437 | 0.482 -> 0.488 |
+| beam_missing | 0.489 -> 0.487 | 0.583 -> 0.587 |
+| motion_blur | 0.452 -> 0.458 | 0.548 -> 0.566 |
+| cross_sensor | 0.420 -> 0.446 | 0.469 -> 0.494 |
+
+**The corrected comparison changes the cov-shift story.** cov-shift wins only
+fog/crosstalk (the collapsed conditions it targets: ceilings 0.369/0.491 vs
+0.253/0.291) and LOSES on every healthy condition (snow 0.575 vs 0.495,
+wet_ground 0.570 vs 0.419, beam_missing 0.587 vs 0.487, motion_blur 0.566 vs
+0.458). The earlier "cov-shift beats DGLSS++ by 0.17-0.30 on the healthy
+conditions" claim was an artifact of the ARCH leak. At the mean cov-shift's edge
+disappears: cov-shift 45.0 vs DGLSS++ 47.8 mean ceiling (42.0 vs 41.6 zero-shot).
 
 **Cross-dataset transfer (NuScenes, 32-beam, same machinery):** the cov-shift
 per-scan input normalization transfers best -- frozen 0.135 / ceiling 0.213 vs
-DGLSS++ 0.080 / 0.125 and Robust 0.083 / 0.133; the AL bank closes most of the
-NuScenes gap too (cov-shift $W_{res}$ true $+0.075$ of $+0.078$).
-(**Note:** the same ARCH-leak caveat applies to the NuScenes columns of this
-original run -- the cov-shift NuScenes numbers are clean (cov ran first, sets its
-own keys), but the DGLSS++/Robust NuScenes transfer numbers above are also the
-polluted builds and should be re-read from a per-extractor run.)
+DGLSS++ 0.080 / 0.125; the AL bank closes most of the NuScenes gap too (cov-shift
+$W_{res}$ true $+0.075$ of $+0.078$).
+(**Note:** the cov-shift NuScenes transfer numbers are clean (cov ran first, sets
+its own keys); the DGLSS++ NuScenes transfer value above is from the polluted
+build and should be re-read from the corrected single-extractor run's `nuscenes`
+key when it completes.)
 
 ### FULL-DATASET random bank baseline table (every point of every frame of seq 08; `al_full_dataset_diag.py`)
 

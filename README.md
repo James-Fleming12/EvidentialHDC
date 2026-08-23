@@ -179,10 +179,14 @@ centroid rule throws away (C10 decision-rule diagnostic):
 
 | condition | cov-shift zs R1 | cov-shift zs R4 | cov-shift ceil R1 | cov-shift ceil R4 | DGLSS++ zs R4 | DGLSS++ ceil R4 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| fog (ep-10) | 29.2% | **32.2%** | 30.1% | **36.9%** | TBD | TBD |
-| crosstalk (ep-10) | 39.2% | **47.7%** | 39.4% | **49.1%** | TBD | TBD |
-| snow (ep-10) | 39.1% | **48.2%** | 39.2% | **49.5%** | TBD | TBD |
-| wet_ground (ep-10) | 24.5% | **29.7%** | 25.4% | **41.9%** | TBD | TBD |
+| fog (ep-10) | 29.2% | **32.2%** | 30.1% | **36.9%** | 9.7% | 25.3% |
+| crosstalk (ep-10) | 39.2% | **47.7%** | 39.4% | **49.1%** | 11.8% | 29.1% |
+| snow (ep-10) | 39.1% | **48.2%** | 39.2% | **49.5%** | 54.3% | **57.5%** |
+| wet_ground (ep-10) | 24.5% | **29.7%** | 25.4% | **41.9%** | 49.2% | **57.0%** |
+| incomplete_echo (ep-10) | 36.7% | **42.1%** | 36.8% | **43.7%** | 48.2% | **48.8%** |
+| beam_missing (ep-10) | 41.0% | **48.9%** | 41.0% | **48.7%** | 58.3% | **58.7%** |
+| motion_blur (ep-10) | 38.6% | **45.2%** | 38.5% | **45.8%** | 54.8% | **56.6%** |
+| cross_sensor (ep-10) | 35.2% | **42.0%** | 36.0% | **44.6%** | 46.9% | **49.4%** |
 | fog (ep-21) | 27.4% | **31.3%** | 28.1% | **35.5%** | — | — |
 | crosstalk (ep-21) | 39.3% | **45.1%** | 39.5% | **46.2%** | — | — |
 | snow (ep-21) | 37.9% | **45.7%** | 38.1% | **46.5%** | — | — |
@@ -192,17 +196,29 @@ The cov-shift columns are the FULL-DATASET numbers: every point of every frame
 of KITTI seq 08 (~4k frames, ~300M points/condition) streamed through the frozen
 extractor, with the zero-shot fit on a 200k clean reservoir and the ceiling on a
 400k corrupted-pool reservoir (spectral-exact ridge; `al_full_dataset_diag.py`).
-The DGLSS++ columns are **pending re-run**: the original full-dataset harness
-shared one `ARCH` dict across extractors, and `GenTrainer` mutates
-`ARCH["train"]["twobranch"]` in place (setting `input_in`/`norm_channels` for the
-cov-shift method) — so DGLSS++, which ran after cov-shift in the same process, was
-built with the cov-shift input-normalization architecture (6.786436M params) and
-loaded the true 6.796804M DGLSS++ checkpoint with a partial `strict=False` load.
-The listed DGLSS++/Robust numbers were therefore NOT the base DGLSS++ extractor
-and must be re-run with the per-extractor `ARCH` deep-copy fix
-(`al_full_dataset_diag.py`). The earlier 100-frame harness over-estimated the
-headroom: the full-scale gaps are fog +4.7, crosstalk +1.4, snow +1.3,
-wet_ground +12.2 (ep-10).
+The DGLSS++ columns are the SAME full harness on the base DGLSS++ checkpoint,
+re-run after fixing a shared-`ARCH` mutation bug: the original harness passed one
+`ARCH` dict to all extractors, and `GenTrainer` mutates `ARCH["train"]["twobranch"]`
+in place (setting `input_in`/`norm_channels` for the cov-shift method) — so
+DGLSS++, which ran after cov-shift in the same process, was built with the
+cov-shift input-normalization architecture and produced the WRONG numbers. The
+corrected run builds DGLSS++ with its own architecture (6.796804M params, verified
+in the log) and single-extractor, so the DGLSS++ columns above are the true base
+DGLSS++.
+
+**The corrected comparison changes the cov-shift story.** cov-shift wins ONLY the
+two collapsed conditions it targets — fog (ceil 36.9 vs 25.3) and crosstalk (49.1
+vs 29.1) — by 12-20 points. On every healthy condition DGLSS++ is BETTER than
+cov-shift at the R4 ceiling (snow 57.5 vs 49.5, wet_ground 57.0 vs 41.9,
+beam_missing 58.7 vs 48.7, motion_blur 56.6 vs 45.8). The earlier claim that
+"cov-shift beats DGLSS++ by 0.17-0.30 on the healthy conditions" was an artifact
+of the ARCH leak (cov-shift's input normalization applied to DGLSS++ features
+crushed them). The real trade-off: cov-shift sacrifices 8-15 points of
+healthy-condition ceiling to rescue fog/crosstalk; at the mean the cov-shift edge
+DISAPPEARS — cov-shift mean ceiling 45.0% vs DGLSS++ 47.8% (ep-10), with the
+cov-shift lead confined to fog/crosstalk. Zero-shot is essentially even too
+(42.0 vs 41.6 mean). The full-scale gaps (ep-10) are fog +4.7, crosstalk +1.4,
+snow +1.3, wet_ground +12.2.
 
 The linear-probe decoder raises the ceiling over distance-to-prototype on every
 condition (fog 30.1->36.9% ep-10; wet_ground 25.4->41.9%). The zero-shot gain
