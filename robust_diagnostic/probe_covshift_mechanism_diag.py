@@ -135,10 +135,10 @@ def topk_evals(X, K=50, iters=3, seed=42, device='cuda', subsample=80000):
     Runs on a SUBSAMPLE of the pool (the spectrum is a coarse conditioning
     measure; the full 400k x 10000 CPU matvecs are far too slow) and on GPU."""
     d = X.shape[1]
-    g = torch.Generator().manual_seed(seed)
     torch.manual_seed(seed)
     idx = torch.randperm(len(X))[:min(len(X), subsample)]
     Xs = X[idx].to(device).float()
+    g = torch.Generator(device=device).manual_seed(seed)
     Omega = torch.randn(d, K, generator=g, device=device)
     def apply_S(v):
         return Xs.t() @ (Xs @ v)
