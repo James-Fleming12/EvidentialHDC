@@ -147,21 +147,24 @@ def topk_evals(X, K=50, iters=3, seed=42, device='cuda'):
     evals, _ = torch.linalg.eigh(T)   # ascending (K x K, cheap)
     return evals.flip(0).float()
 
-def ridge_fits_shared_S(X, Y, lams, device, chunk=50000):
-    """Compute S = X^T X and T = X^T Y ONCE, then solve W(lam) = (S + lam I)^-1 T
-    for every lam in `lams`. All ridge fits share the (expensive) gram-matrix
-    accumulation, so a lambda sweep costs one S build + N solves instead of N
-    S builds. Returns (W_by_lam dict, S_cpu, T_cpu)."""
+def ridge_fits_shared_S(X, Y, main_lam, sweep_lams, device, chunk=50000, cg_iters=8):
+    """Build S = X^T X and T = X^T Y ONCE. The MAIN ceiling W(main_lam) is the
+    exact spectral solve on this S (matches the harness), and the sweep lams use
+    matrix-free CG-8 (reaches the exact-ridge ceiling per the spectral-trunc
+    probe) -- no second gram accumulation, no 10000x10000 eigendecomposition
+    (the fp64 eigh alone was ~70s). S is also returned for the effrank tr/tr^2."""
     d = X.shape[1]; nc = Y.shape[1]
     S = torch.zeros(d, d, device=device); T = torch.zeros(d, nc, device=device)
     for s in range(0, len(X), chunk):
         Xc = X[s:s + chunk].to(device); Yc = Y[s:s + chunk].to(device)
         S += Xc.t() @ Xc; T += Xc.t() @ Yc
-    Sd = S.double(); Td = T.double()
-    out = {}
-    for lam in lams:
-        W = torch.linalg.solve(Sd + lam * torch.eye(d, dtype=torch.float64, device=device),
-                               Td).float()
+    from robust_diagnostic.probe_cg_speedup_diag import cg_solve
+    A = S.double() + main_lam * torch.eye(d, dtype=torch.float64, device=device)
+    W_main = torch.linalg.solve(A, T.double()).float()
+    out = {str(main_lam): W_main.detach().cpu()}
+    Td = T.double()
+    for lam in sweep_lams:
+        W, _ = cg_solve(X, Td, lam, device, iters=cg_iters, dtype=torch.float64)
         out[str(lam)] = W.detach().cpu()
     return out, S.detach().cpu(), T.detach().cpu()
 
@@ -183,7 +186,7 @@ def run_condition(model, parser, proj, device, W0, protos_clean, feat_means_clea
     # D4: ONE shared S/T build -> ceiling fit + lambda sweep + effrank (tr, tr^2)
     t4 = time.time()
     W_by_lam, S_cpu, T_cpu = ridge_fits_shared_S(
-        Xp, onehot(pl, NUM_CLASSES), (args.lam, 1e-4, 1e-2), device)
+        Xp, onehot(pl, NUM_CLASSES), args.lam, (1e-4, 1e-2), device)
     Ws = W_by_lam[str(args.lam)]
     resid = (Ws - W0.detach().cpu()).float()
     r_norm = float(torch.norm(resid) / torch.norm(W0.detach().cpu().float()))
@@ -252,7 +255,7 @@ def run_condition(model, parser, proj, device, W0, protos_clean, feat_means_clea
         out['frozen_gate_off'] = m['frozen_gate_off']
         out['gate_delta_ceiling'] = m['ceiling_gate_off'] - m['ceiling']
     print(f"  [R4] frozen {out['frozen']:.3f} / ceiling {out['ceiling']:.3f} "
-          f"(gap {out['gap']:+.3f}) resid {r_norm:.3f} effrank {spec['effrank_pr']} "
+          f"(gap {out['gap']:+.3f}) resid {r_norm:.3f} effrank {pr:.1f} "
           f"| n_val {n_val} ({time.time()-t0:.0f}s)")
     del pf, pl, pk, Xp, Ws, resid
     if torch.cuda.is_available():
