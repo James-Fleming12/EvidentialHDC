@@ -38,6 +38,7 @@ Usage:
     --out robust_diagnostic/logs/probe_covshift_mechanism_ep10.json
 """
 import os, sys, time, argparse, json, yaml
+from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np, torch, torch.nn.functional as F
 from robust_diagnostic.al_full_dataset_diag import (
