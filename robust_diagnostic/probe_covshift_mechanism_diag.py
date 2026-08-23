@@ -224,7 +224,7 @@ def run_condition(model, parser, proj, device, W0, protos_clean, feat_means_clea
         'feat_var': float(feat_var.mean().item()),
         'frozen': m['frozen'], 'ceiling': m['ceiling'],
         'gap': m['ceiling'] - m['frozen'],
-        'ceil_lam': {k: m[k] for k in lam_sweep},
+        'ceil_lam': {k: m[f'ceil_lam{k}'] for k in lam_sweep},
         'per_class_frozen': {CLASS_NAMES[c]: float(pc['frozen'].per_class_iou()[c])
                              for c in range(NUM_CLASSES)},
         'per_class_ceiling': {CLASS_NAMES[c]: float(pc['ceiling'].per_class_iou()[c])
