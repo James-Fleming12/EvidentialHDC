@@ -185,7 +185,7 @@ def run_condition(model, parser, proj, device, W0, protos_clean, feat_means_clea
     W_by_lam, S_cpu, T_cpu = ridge_fits_shared_S(
         Xp, onehot(pl, NUM_CLASSES), (args.lam, 1e-4, 1e-2), device)
     Ws = W_by_lam[str(args.lam)]
-    resid = (Ws - W0).detach().cpu().float()
+    resid = (Ws - W0.detach().cpu()).float()
     r_norm = float(torch.norm(resid) / torch.norm(W0.detach().cpu().float()))
     tr = float(torch.trace(S_cpu)); tr2 = float(torch.sum(S_cpu * S_cpu))
     pr = (tr * tr) / max(tr2, 1e-12)
