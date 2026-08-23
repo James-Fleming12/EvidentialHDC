@@ -130,13 +130,11 @@ def stream_decode_mech(model, parser, proj, device, decoders, exclude=None,
         del zf, labels
     return pc
 
-def topk_evals_effrank(X, K=50, iters=3, seed=42, device='cuda'):
-    """Randomized top-K eigenvalues of S = X^T X (matrix-free) + participation
-    ratio effective rank computed EXACTLY and cheaply: PR = tr(S)^2 / tr(S^2)
-    with S = X^T X accumulated in chunks (no 10000x10000 eigendecomposition --
-    a dense float64 eigh there is O(n^3) and dominated the per-condition cost).
-    tr(S) = ||X||_F^2; tr(S^2) = sum(S^2)."""
-    d = X.shape[1]; n = len(X)
+def topk_evals(X, K=50, iters=3, seed=42, device='cuda'):
+    """Randomized top-K eigenvalues of S = X^T X (matrix-free), ascending->desc.
+    Cheap: 4 matrix-free passes of X^T(X v) on K vectors. The participation-ratio
+    effective rank is computed from the SHARED S in run_condition, not here."""
+    d = X.shape[1]
     g = torch.Generator().manual_seed(seed)
     Omega = torch.randn(d, K, generator=g)
     def apply_S(v):
@@ -147,17 +145,25 @@ def topk_evals_effrank(X, K=50, iters=3, seed=42, device='cuda'):
     Q, _ = torch.linalg.qr(Y.float())
     T = Q.t() @ apply_S(Q)
     evals, _ = torch.linalg.eigh(T)   # ascending (K x K, cheap)
-    evals = evals.flip(0).float()
-    # exact PR via chunked S accumulation (mirrors ridge_fit_exact)
-    tr = 0.0; tr2 = 0.0
-    for s in range(0, n, 100000):
-        Xc = X[s:s + 100000].float()
-        Sc = Xc.t() @ Xc
-        tr += float(torch.trace(Sc))
-        tr2 += float(torch.sum(Sc * Sc))
-    pr = (tr * tr) / max(tr2, 1e-12)
-    return {'topk': evals[:K].tolist(), 'effrank_pr': pr,
-            'tr_ratio_top50': float(evals[:50].sum() / max(tr, 1e-12))}
+    return evals.flip(0).float()
+
+def ridge_fits_shared_S(X, Y, lams, device, chunk=50000):
+    """Compute S = X^T X and T = X^T Y ONCE, then solve W(lam) = (S + lam I)^-1 T
+    for every lam in `lams`. All ridge fits share the (expensive) gram-matrix
+    accumulation, so a lambda sweep costs one S build + N solves instead of N
+    S builds. Returns (W_by_lam dict, S_cpu, T_cpu)."""
+    d = X.shape[1]; nc = Y.shape[1]
+    S = torch.zeros(d, d, device=device); T = torch.zeros(d, nc, device=device)
+    for s in range(0, len(X), chunk):
+        Xc = X[s:s + chunk].to(device); Yc = Y[s:s + chunk].to(device)
+        S += Xc.t() @ Xc; T += Xc.t() @ Yc
+    Sd = S.double(); Td = T.double()
+    out = {}
+    for lam in lams:
+        W = torch.linalg.solve(Sd + lam * torch.eye(d, dtype=torch.float64, device=device),
+                               Td).float()
+        out[str(lam)] = W.detach().cpu()
+    return out, S.detach().cpu(), T.detach().cpu()
 
 def run_condition(model, parser, proj, device, W0, protos_clean, feat_means_clean,
                   args, label, cond_name, clean_pool=None, w0_alt=None):
@@ -174,15 +180,17 @@ def run_condition(model, parser, proj, device, W0, protos_clean, feat_means_clea
     instats = input_stats_stream(model, parser, device, args.stats_frames)
     print(f"  [D3] input stats {instats} ({time.time()-t3:.0f}s)")
 
-    # D4: residual + conditioning + lambda sweep
-    Ws = ridge_fit_exact(Xp, onehot(pl, NUM_CLASSES), args.lam, device)
+    # D4: ONE shared S/T build -> ceiling fit + lambda sweep + effrank (tr, tr^2)
+    t4 = time.time()
+    W_by_lam, S_cpu, T_cpu = ridge_fits_shared_S(
+        Xp, onehot(pl, NUM_CLASSES), (args.lam, 1e-4, 1e-2), device)
+    Ws = W_by_lam[str(args.lam)]
     resid = (Ws - W0).detach().cpu().float()
     r_norm = float(torch.norm(resid) / torch.norm(W0.detach().cpu().float()))
-    spec = topk_evals_effrank(Xp, K=50, device=device)
-    lam_sweep = {}
-    for lam in (1e-4, 1e-3, 1e-2):
-        Wl = ridge_fit_exact(Xp, onehot(pl, NUM_CLASSES), lam, device)
-        lam_sweep[str(lam)] = Wl.detach().cpu()
+    tr = float(torch.trace(S_cpu)); tr2 = float(torch.sum(S_cpu * S_cpu))
+    pr = (tr * tr) / max(tr2, 1e-12)
+    spec_topk = topk_evals(Xp, K=50, device=device)
+    print(f"  [D4] resid {r_norm:.3f} effrank {pr:.1f} (shared-S {time.time()-t4:.0f}s)")
 
     protos_pool = build_prototypes(Xp, pl, device=device)
     feat_means_pool = class_means_feats(pf, pl)
@@ -200,7 +208,8 @@ def run_condition(model, parser, proj, device, W0, protos_clean, feat_means_clea
     ex_by_frame = {f: torch.tensor(sorted(s), dtype=torch.long) for f, s in ex_by_frame.items()}
 
     decoders = {'frozen': W0.detach().cpu(), 'ceiling': Ws.detach().cpu()}
-    decoders.update({f'ceil_lam{lam}': specW for lam, specW in lam_sweep.items()})
+    decoders.update({f'ceil_lam{lam}': specW for lam, specW in W_by_lam.items()
+                     if lam != str(args.lam)})
     if w0_alt is not None:
         decoders['frozen_W0_alt'] = w0_alt.detach().cpu()
     if args.gate_off and getattr(model, 'input_in', False):
@@ -218,7 +227,7 @@ def run_condition(model, parser, proj, device, W0, protos_clean, feat_means_clea
         'n_pool': len(pf), 'n_val': n_val,
         'input_stats': instats,
         'resid_rel': r_norm,
-        'spec': {'topk': spec['topk'][:10], 'effrank_pr': spec['effrank_pr']},
+        'spec': {'topk': spec_topk[:10], 'effrank_pr': pr, 'tr_ratio_top50': None},
         'code_var': float(code_var.mean().item()),
         'code_var_std': float(code_var.std().item()),
         'bit_balance_frac_pos': float((bit_balance > 0).float().mean().item()),
@@ -226,7 +235,7 @@ def run_condition(model, parser, proj, device, W0, protos_clean, feat_means_clea
         'feat_var': float(feat_var.mean().item()),
         'frozen': m['frozen'], 'ceiling': m['ceiling'],
         'gap': m['ceiling'] - m['frozen'],
-        'ceil_lam': {k: m[f'ceil_lam{k}'] for k in lam_sweep},
+        'ceil_lam': {k: m[f'ceil_lam{k}'] for k in W_by_lam if k != str(args.lam)},
         'per_class_frozen': {CLASS_NAMES[c]: float(pc['frozen'].per_class_iou()[c])
                              for c in range(NUM_CLASSES)},
         'per_class_ceiling': {CLASS_NAMES[c]: float(pc['ceiling'].per_class_iou()[c])
