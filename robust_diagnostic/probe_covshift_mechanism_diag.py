@@ -180,7 +180,7 @@ def run_condition(model, parser, proj, device, W0, protos_clean, feat_means_clea
     lam_sweep = {}
     for lam in (1e-4, 1e-3, 1e-2):
         Wl = ridge_fit_exact(Xp, onehot(pl, NUM_CLASSES), lam, device)
-        lam_sweep[str(lam)] = {'W': Wl.detach().cpu()}
+        lam_sweep[str(lam)] = Wl.detach().cpu()
 
     protos_pool = build_prototypes(Xp, pl, device=device)
     feat_means_pool = class_means_feats(pf, pl)
