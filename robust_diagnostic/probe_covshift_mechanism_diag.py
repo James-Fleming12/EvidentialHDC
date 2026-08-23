@@ -130,10 +130,12 @@ def stream_decode_mech(model, parser, proj, device, decoders, exclude=None,
         del zf, labels
     return pc
 
-def topk_evals_effrank(X, K=50, iters=3, seed=42, device='cuda', subsample=50000):
+def topk_evals_effrank(X, K=50, iters=3, seed=42, device='cuda'):
     """Randomized top-K eigenvalues of S = X^T X (matrix-free) + participation
-    ratio effective rank computed EXACTLY on a subsample's S_sub (eigh of the
-    d x d matrix on ~50k points; the full X X^T is far too large)."""
+    ratio effective rank computed EXACTLY and cheaply: PR = tr(S)^2 / tr(S^2)
+    with S = X^T X accumulated in chunks (no 10000x10000 eigendecomposition --
+    a dense float64 eigh there is O(n^3) and dominated the per-condition cost).
+    tr(S) = ||X||_F^2; tr(S^2) = sum(S^2)."""
     d = X.shape[1]; n = len(X)
     g = torch.Generator().manual_seed(seed)
     Omega = torch.randn(d, K, generator=g)
@@ -144,18 +146,18 @@ def topk_evals_effrank(X, K=50, iters=3, seed=42, device='cuda', subsample=50000
         Y = apply_S(Y)
     Q, _ = torch.linalg.qr(Y.float())
     T = Q.t() @ apply_S(Q)
-    evals, _ = torch.linalg.eigh(T)   # ascending
+    evals, _ = torch.linalg.eigh(T)   # ascending (K x K, cheap)
     evals = evals.flip(0).float()
-    # exact effective rank on a subsample of the code (S_sub is d x d)
-    torch.manual_seed(seed)
-    idx = torch.randperm(n)[:min(n, subsample)]
-    Xs = X[idx].to(device).float()
-    Ss = Xs.t() @ Xs
-    e_all = torch.linalg.eigvalsh(Ss.double()).flip(0)
-    e_all = e_all.clamp(min=1e-12)
-    pr = float((e_all.sum() ** 2) / (e_all.pow(2).sum()))
+    # exact PR via chunked S accumulation (mirrors ridge_fit_exact)
+    tr = 0.0; tr2 = 0.0
+    for s in range(0, n, 100000):
+        Xc = X[s:s + 100000].float()
+        Sc = Xc.t() @ Xc
+        tr += float(torch.trace(Sc))
+        tr2 += float(torch.sum(Sc * Sc))
+    pr = (tr * tr) / max(tr2, 1e-12)
     return {'topk': evals[:K].tolist(), 'effrank_pr': pr,
-            'tr_ratio_top50': float(e_all[:50].sum() / e_all.sum())}
+            'tr_ratio_top50': float(evals[:50].sum() / max(tr, 1e-12))}
 
 def run_condition(model, parser, proj, device, W0, protos_clean, feat_means_clean,
                   args, label, cond_name, clean_pool=None, w0_alt=None):
@@ -167,9 +169,9 @@ def run_condition(model, parser, proj, device, W0, protos_clean, feat_means_clea
     Xp = hdc_codes(pf, proj, device).float()
     pool_counts = torch.bincount(pl.long(), minlength=NUM_CLASSES)
 
-    # D3: input statistics calibration (cheap, one extra stream pass)
+    # D3: input statistics calibration (one stream pass over a capped frame set)
     t3 = time.time()
-    instats = input_stats_stream(model, parser, device, args.max_frames)
+    instats = input_stats_stream(model, parser, device, args.stats_frames)
     print(f"  [D3] input stats {instats} ({time.time()-t3:.0f}s)")
 
     # D4: residual + conditioning + lambda sweep
@@ -259,6 +261,10 @@ def main():
     ap.add_argument("--config", type=str, default="config/labels/semantic-kitti-all.yaml")
     ap.add_argument("--arch", type=str, default="config/arch/senet-2048p.yml")
     ap.add_argument("--max_frames", type=int, default=0)
+    ap.add_argument("--stats_frames", type=int, default=200,
+                    help="frames used for the D3 input-statistics calibration "
+                         "(a full extra stream of the condition data; 200 is "
+                         "statistically stable for the per-scan mean/var)")
     ap.add_argument("--clean_fit_n", type=int, default=200000)
     ap.add_argument("--pool_cap", type=int, default=400000)
     ap.add_argument("--lam", type=float, default=1e-3)

@@ -23,12 +23,14 @@ set -u
 set -o pipefail
 GPU="${1:-3}"
 MAX_FRAMES="${MAX_FRAMES:-0}"
+STATS_FRAMES="${STATS_FRAMES:-200}"
 EXTRACTORS="${EXTRACTORS:-all}"
 GATE_OFF="${GATE_OFF:-1}"
-echo "Using GPU $GPU (max_frames=$MAX_FRAMES, extractors=$EXTRACTORS, gate_off=$GATE_OFF)"
+echo "Using GPU $GPU (max_frames=$MAX_FRAMES, stats_frames=$STATS_FRAMES, extractors=$EXTRACTORS, gate_off=$GATE_OFF)"
 
 eval CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/probe_covshift_mechanism_diag.py \
-  --max_frames "$MAX_FRAMES" --extractors "$EXTRACTORS" --gate_off "$GATE_OFF" \
+  --max_frames "$MAX_FRAMES" --stats_frames "$STATS_FRAMES" \
+  --extractors "$EXTRACTORS" --gate_off "$GATE_OFF" \
   --out "robust_diagnostic/logs/probe_covshift_mechanism_ep10.json" \
   2>&1 | tee "logs/probe_covshift_mechanism_ep10.log"
 
