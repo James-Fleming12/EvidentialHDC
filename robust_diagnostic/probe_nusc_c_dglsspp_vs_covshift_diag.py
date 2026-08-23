@@ -252,7 +252,15 @@ def main():
     results = {'label': 'nusc_dglsspp_flip', 'extractors': {}}
     for lab, method, path, dataset, conds in specs:
         print(f"\n{'='*80}\n=== extractor {lab} ({method}, {dataset}) ===\n{'='*80}")
-        trainer = GenTrainer(ARCH, DATA, args.kitti_dir, path, path=path, method=method)
+        # Deep-copy ARCH per extractor: GenTrainer mutates ARCH["train"]["twobranch"]
+        # in place (norm/input_in/norm_channels for the method), so a shared dict
+        # leaks one method's input-normalization config into the next extractor's
+        # model construction. Without the copy, e.g. cov-shift before DGLSS++
+        # builds DGLSS++ with input_in=True -> wrong architecture (6.786436M vs
+        # 6.796804M) and the checkpoint load drops the mismatched params.
+        import copy as _copy
+        arch = _copy.deepcopy(ARCH)
+        trainer = GenTrainer(arch, DATA, args.kitti_dir, path, path=path, method=method)
         model = trainer.model
         clean_parser = build_parser(args.kitti_dir, DATA, ARCH)
         t0 = time.time()

@@ -469,7 +469,16 @@ def main():
     nusc_ready = {}
     for lab, method, path in extractors:
         print(f"\n{'='*80}\n=== extractor {lab} ({method}, {path}) ===\n{'='*80}")
-        trainer = GenTrainer(ARCH, DATA, args.kitti_dir, path, path=path, method=method)
+        # Deep-copy ARCH per extractor: GenTrainer mutates ARCH["train"]["twobranch"]
+        # in place (norm / input_in / norm_channels for the method), so a shared dict
+        # leaks one method's input-normalization config into the NEXT extractor's model
+        # construction. E.g. cov-shift (inputin_in_chan) before DGLSS++ built DGLSS++
+        # with input_in=True -- wrong architecture (6.786436M vs 6.796804M params) and
+        # a partial strict=False checkpoint load. Without the copy, the DGLSS++/Robust
+        # columns in the README measured DGLSS++-with-cov-shift-normalization.
+        import copy as _copy
+        arch = _copy.deepcopy(ARCH)
+        trainer = GenTrainer(arch, DATA, args.kitti_dir, path, path=path, method=method)
         model = trainer.model
         clean_parser = build_parser(args.kitti_dir, DATA, ARCH)
 

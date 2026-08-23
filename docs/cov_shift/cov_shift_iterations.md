@@ -2089,26 +2089,35 @@ Every bank that was negative as $1$-NN or as $W_{pseudo}$ ($-0.22$ to $-0.48$) i
 
 ### FULL-DATASET cross-extractor comparison: does cov-shift still win at scale? (R4, ep-10)
 
-The same full harness (`al_full_dataset_diag.py`) run on all extractors. The
-cov-shift extractor keeps its lead on every condition at full scale; the
-DGLSS++ and Robust DGLSS++ ceilings are 0.17-0.30 BELOW cov-shift on
-fog/crosstalk and 0.24-0.30 below on the healthy conditions:
+The same full harness (`al_full_dataset_diag.py`) run on all extractors. **The
+DGLSS++ / Robust columns are PENDING RE-RUN**: the original harness shared one
+`ARCH` dict across extractors and `GenTrainer` mutates `ARCH["train"]["twobranch"]`
+in place (setting `input_in`/`norm_channels` for cov-shift), so DGLSS++/Robust,
+which ran after cov-shift in the same process, were built with the cov-shift
+input-normalization architecture (6.786436M params) and loaded their true
+6.796804M checkpoints with a partial `strict=False` load. The numbers below are
+therefore NOT the base DGLSS++ extractor; re-run with the per-extractor `ARCH`
+deep-copy fix in `al_full_dataset_diag.py`:
 
 | condition | cov-shift R4 zs -> ceiling | DGLSS++ R4 zs -> ceiling | Robust R4 zs -> ceiling |
 | :--- | :--- | :--- | :--- |
-| fog | 0.322 -> 0.369 | 0.129 -> 0.170 | 0.137 -> 0.173 |
-| crosstalk | 0.477 -> 0.491 | 0.190 -> 0.224 | 0.193 -> 0.232 |
-| snow | 0.482 -> 0.495 | 0.189 -> 0.199 | 0.208 -> 0.215 |
-| wet_ground | 0.297 -> 0.419 | 0.124 -> 0.199 | 0.117 -> 0.223 |
-| incomplete_echo | 0.421 -> 0.437 | 0.198 -> 0.200 | 0.210 -> 0.215 |
-| beam_missing | 0.489 -> 0.487 | 0.191 -> 0.204 | 0.208 -> 0.217 |
-| motion_blur | 0.452 -> 0.458 | 0.193 -> 0.201 | 0.203 -> 0.210 |
-| cross_sensor | 0.420 -> 0.446 | 0.176 -> 0.203 | 0.200 -> 0.225 |
+| fog | 0.322 -> 0.369 | TBD | TBD |
+| crosstalk | 0.477 -> 0.491 | TBD | TBD |
+| snow | 0.482 -> 0.495 | TBD | TBD |
+| wet_ground | 0.297 -> 0.419 | TBD | TBD |
+| incomplete_echo | 0.421 -> 0.437 | TBD | TBD |
+| beam_missing | 0.489 -> 0.487 | TBD | TBD |
+| motion_blur | 0.452 -> 0.458 | TBD | TBD |
+| cross_sensor | 0.420 -> 0.446 | TBD | TBD |
 
 **Cross-dataset transfer (NuScenes, 32-beam, same machinery):** the cov-shift
 per-scan input normalization transfers best -- frozen 0.135 / ceiling 0.213 vs
 DGLSS++ 0.080 / 0.125 and Robust 0.083 / 0.133; the AL bank closes most of the
 NuScenes gap too (cov-shift $W_{res}$ true $+0.075$ of $+0.078$).
+(**Note:** the same ARCH-leak caveat applies to the NuScenes columns of this
+original run -- the cov-shift NuScenes numbers are clean (cov ran first, sets its
+own keys), but the DGLSS++/Robust NuScenes transfer numbers above are also the
+polluted builds and should be re-read from a per-extractor run.)
 
 ### FULL-DATASET random bank baseline table (every point of every frame of seq 08; `al_full_dataset_diag.py`)
 
