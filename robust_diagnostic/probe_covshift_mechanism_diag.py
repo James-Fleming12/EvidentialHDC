@@ -130,41 +130,48 @@ def stream_decode_mech(model, parser, proj, device, decoders, exclude=None,
         del zf, labels
     return pc
 
-def topk_evals(X, K=50, iters=3, seed=42, device='cuda'):
+def topk_evals(X, K=50, iters=3, seed=42, device='cuda', subsample=80000):
     """Randomized top-K eigenvalues of S = X^T X (matrix-free), ascending->desc.
-    Cheap: 4 matrix-free passes of X^T(X v) on K vectors. The participation-ratio
-    effective rank is computed from the SHARED S in run_condition, not here."""
+    Runs on a SUBSAMPLE of the pool (the spectrum is a coarse conditioning
+    measure; the full 400k x 10000 CPU matvecs are far too slow) and on GPU."""
     d = X.shape[1]
     g = torch.Generator().manual_seed(seed)
-    Omega = torch.randn(d, K, generator=g)
+    torch.manual_seed(seed)
+    idx = torch.randperm(len(X))[:min(len(X), subsample)]
+    Xs = X[idx].to(device).float()
+    Omega = torch.randn(d, K, generator=g, device=device)
     def apply_S(v):
-        return X.t() @ (X @ v)
+        return Xs.t() @ (Xs @ v)
     Y = apply_S(Omega)
     for _ in range(iters):
         Y = apply_S(Y)
-    Q, _ = torch.linalg.qr(Y.float())
+    Q, _ = torch.linalg.qr(Y)
     T = Q.t() @ apply_S(Q)
     evals, _ = torch.linalg.eigh(T)   # ascending (K x K, cheap)
     return evals.flip(0).float()
 
-def ridge_fits_shared_S(X, Y, main_lam, sweep_lams, device, chunk=50000, cg_iters=8):
+def ridge_fits_shared_S(X, Y, main_lam, sweep_lams, device, chunk=50000,
+                        sweep_n=60000, sweep_seed=11):
     """Build S = X^T X and T = X^T Y ONCE. The MAIN ceiling W(main_lam) is the
-    exact spectral solve on this S (matches the harness), and the sweep lams use
-    matrix-free CG-8 (reaches the exact-ridge ceiling per the spectral-trunc
-    probe) -- no second gram accumulation, no 10000x10000 eigendecomposition
-    (the fp64 eigh alone was ~70s). S is also returned for the effrank tr/tr^2."""
+    exact spectral solve on this S (matches the harness). The sweep lams are fit
+    on a sweep_n SUBSAMPLE of the pool with the exact solver -- the sweep is a
+    coarse lambda-sensitivity check, and fitting it on the full 400k pool costs
+    a second gram accumulation and a 10000x10000 solve per lambda (or a CG that
+    moves the whole pool to fp64, both far too slow). S is also returned for the
+    effrank tr/tr^2 metric."""
     d = X.shape[1]; nc = Y.shape[1]
     S = torch.zeros(d, d, device=device); T = torch.zeros(d, nc, device=device)
     for s in range(0, len(X), chunk):
         Xc = X[s:s + chunk].to(device); Yc = Y[s:s + chunk].to(device)
         S += Xc.t() @ Xc; T += Xc.t() @ Yc
-    from robust_diagnostic.probe_cg_speedup_diag import cg_solve
     A = S.double() + main_lam * torch.eye(d, dtype=torch.float64, device=device)
     W_main = torch.linalg.solve(A, T.double()).float()
     out = {str(main_lam): W_main.detach().cpu()}
-    Td = T.double()
+    torch.manual_seed(sweep_seed)
+    idx = torch.randperm(len(X))[:min(len(X), sweep_n)]
+    Xs = X[idx].to(device); Ys = Y[idx].to(device)
     for lam in sweep_lams:
-        W, _ = cg_solve(X, Td, lam, device, iters=cg_iters, dtype=torch.float64)
+        W, _ = ridge_fit_exact(Xs, Ys, lam, device)
         out[str(lam)] = W.detach().cpu()
     return out, S.detach().cpu(), T.detach().cpu()
 
