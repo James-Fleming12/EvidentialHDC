@@ -237,7 +237,8 @@ def run_condition(model, parser, proj, device, W0, protos_clean, feat_means_clea
         'n_pool': len(pf), 'n_val': n_val,
         'input_stats': instats,
         'resid_rel': r_norm,
-        'spec': {'topk': spec_topk[:10], 'effrank_pr': pr, 'tr_ratio_top50': None},
+        'spec': {'topk': [float(x) for x in spec_topk[:10].cpu().tolist()],
+                 'effrank_pr': pr, 'tr_ratio_top50': None},
         'code_var': float(code_var.mean().item()),
         'code_var_std': float(code_var.std().item()),
         'bit_balance_frac_pos': float((bit_balance > 0).float().mean().item()),
@@ -289,6 +290,9 @@ def main():
     ap.add_argument("--lam", type=float, default=1e-3)
     ap.add_argument("--gate_off", type=int, default=1,
                     help="1 = also decode with model.input_in disabled (D7 gate test)")
+    ap.add_argument("--skip_existing", type=int, default=0,
+                    help="1 = load --out and skip any extractor/condition already "
+                         "present (resume flag for re-runs)")
     ap.add_argument("--extractors", type=str, default="all",
                     help="comma list of cov_kitti,dgl_kitti,cov_nusc,dgl_nusc (default all)")
     ap.add_argument("--out", type=str, required=True)
@@ -323,9 +327,25 @@ def main():
     nusc_clean_parser = build_nuscenes_parser(args.nusc_dir, nusc_data, ARCH)
 
     results = {'label': 'covshift_mechanism', 'extractors': {}}
+    if args.skip_existing and os.path.exists(args.out):
+        try:
+            prev = json.load(open(args.out))
+            results = prev
+            print(f"  [resume] loaded existing {args.out} "
+                  f"({len(prev.get('extractors', {}))} extractors)")
+        except Exception as e:
+            print(f"  [resume] WARNING: could not load {args.out} ({e}); starting fresh")
     for lab in want:
         method, path, dataset, conds, is_nusc = specs[lab]
         print(f"\n{'='*80}\n=== extractor {lab} ({method}, {dataset}) ===\n{'='*80}")
+        if args.skip_existing and lab in results.get('extractors', {}):
+            have = set(results['extractors'][lab].get('conds', {}))
+            todo = [c for c in conds if c not in have]
+            if not todo:
+                print(f"  [{lab}] all conditions already in {args.out}, skipping extractor")
+                continue
+            print(f"  [{lab}] resume: {len(conds)-len(todo)} done, {len(todo)} to run")
+            conds = todo
         arch = _copy.deepcopy(ARCH)
         trainer = GenTrainer(arch, DATA, args.kitti_dir, path, path=path, method=method)
         model = trainer.model
@@ -366,9 +386,14 @@ def main():
             w0_alt = ridge_fit_exact(Xnc, onehot(nc_lbl, NUM_CLASSES), args.lam, device)
             print(f"  W0_nusc done ({len(nc_pool)} pts)")
 
-        results['extractors'][lab] = {'method': method, 'dataset': dataset,
-                                      'clean': clean_res, 'conds': {}}
+        entry = results.setdefault('extractors', {}).get(lab, {})
+        entry.update({'method': method, 'dataset': dataset, 'clean': clean_res})
+        entry.setdefault('conds', {})
+        results['extractors'][lab] = entry
         for cond in conds:
+            if args.skip_existing and cond in results['extractors'][lab]['conds']:
+                print(f"  [{lab}] {cond}: already in {args.out}, skipping")
+                continue
             if dataset == 'kittic':
                 cdir = os.path.join(args.kittic_dir, cond, 'heavy')
                 if not os.path.exists(cdir):
@@ -381,10 +406,10 @@ def main():
                               feat_means_clean, args, label=lab, cond_name=cond,
                               w0_alt=w0_alt)
             results['extractors'][lab]['conds'][cond] = r
-        os.makedirs(os.path.dirname(args.out), exist_ok=True)
-        with open(args.out, 'w') as fh:
-            json.dump(results, fh, indent=2, default=float)
-        print(f"\n[checkpoint] {lab} done, saved to {args.out}")
+            os.makedirs(os.path.dirname(args.out), exist_ok=True)
+            with open(args.out, 'w') as fh:
+                json.dump(results, fh, indent=2, default=float)
+            print(f"\n[checkpoint] {lab}/{cond} done, saved to {args.out}")
     print(f"\nSaved to {args.out}")
 
 if __name__ == "__main__":
