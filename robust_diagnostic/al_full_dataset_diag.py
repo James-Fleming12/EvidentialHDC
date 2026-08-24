@@ -405,7 +405,9 @@ def eval_target_condition(model, parser, proj, device, W0, protos_clean, args,
     print(f"  [R1] frozen {m['proto_frozen']:.3f} / ceiling {m['proto_ceiling']:.3f} "
           f"(gap {m['proto_ceiling']-m['proto_frozen']:+.3f}) | n_val {n_val} "
           f"({time.time()-t0:.0f}s)")
-    del pf, pl, pk, Xp, Ws, R, U8, X_lab, accs
+    del pf, pl, pk, Xp, Ws, accs
+    if not getattr(args, 'no_wres', 0):
+        del R, U8, X_lab
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     return out
