@@ -70,13 +70,20 @@ def main():
             print(f"  [{lab}] already in {args.out}, skipping")
             continue
         arch = _copy.deepcopy(ARCH)
-        # Build a FRESH model with input_in disabled; load the checkpoint after.
-        tw = arch.setdefault("train", {}).setdefault("twobranch", {})
-        tw["input_in"] = False
-        tw["norm_channels"] = None
-        trainer = GenTrainer(arch, DATA, args.kitti_dir, path, path=path, method=method)
+        # Build a FRESH model with input_in DISABLED, then load the checkpoint.
+        # CRITICAL: the method name determines input_in (GenTrainer overwrites
+        # twobranch from INPUT_NORM_VARIANTS). 'supcon_vib_dglsspp_inputin_in_chan'
+        # FORCES input_in=True (gen_trainers.py:290-301). Use
+        # 'supcon_vib_dglsspp_instancenorm' instead: same architecture (internal
+        # InstanceNorm, norm='in', same param count) but NOT in INPUT_NORM_VARIANTS,
+        # so input_in stays False. Loading the inputin_in_chan checkpoint into it
+        # (strict=False) gives the cov-shift model with ONLY the per-scan input-IN
+        # disabled -- the correct inference-time gating test.
+        trainer = GenTrainer(arch, DATA, args.kitti_dir, path, path=path,
+                             method='supcon_vib_dglsspp_instancenorm')
         model = trainer.model
-        print(f"  model input_in={getattr(model, 'input_in', 'n/a')}")
+        print(f"  model input_in={getattr(model, 'input_in', 'n/a')} "
+              f"(expect False for the gate-off build)")
 
         entry = {'method': method, 'conds': {}}
         results['extractors'][lab] = entry

@@ -42,6 +42,9 @@ def main():
     ap.add_argument("--clean_fit_n", type=int, default=200000)
     ap.add_argument("--pool_cap", type=int, default=400000)
     ap.add_argument("--lam", type=float, default=1e-3)
+    ap.add_argument("--proj_dim", type=int, default=10000,
+                    help="HDC projection dimension (default 10000; 2000 to verify "
+                         "the code-2000 peak on NuScenes-C)")
     ap.add_argument("--extractors", type=str,
                     default="cov_nusc:supcon_vib_dglsspp_inputin_in_chan:"
                             "robust_diagnostic/logs/nusc_covshift_21ep,"
@@ -54,7 +57,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     from modules.oracle_core import get_hdc_projection
     from modules.gen_trainers import GenTrainer
-    proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
+    proj = get_hdc_projection(dim_in=128, dim_out=args.proj_dim, device=device)
     nusc_data = yaml.safe_load(open(args.nusc_labels))
     conds = CONDS_ALL
 

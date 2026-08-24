@@ -501,5 +501,6 @@ conditions (snow 0.421 vs the corrected-run log's 0.575; crosstalk 0.117 vs
 so the authoritative ceiling set is unverified. Before quoting any DGLSS++
 healthy-condition ceiling, pull that JSON and reconcile (both use the full pool
 + spectral-exact ridge; the mechanism probe's λ-sweep saturation suggests the
-pool fit is sensitive to λ on dgl_kitti).
-  `probe_nusc_c_flip_ep10.json` (per-class + residual + separability).
+pool fit is sensitive to λ on dgl_kitti). **This is P1 of
+`run_overnight_covimprove.sh`** (authoritative DGLSS++ KITTI-C rerun,
+`al_full_dataset_ep10_custom_dglsspp.json`).
