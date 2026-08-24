@@ -45,6 +45,9 @@ def main():
     ap.add_argument("--bank_k", type=int, default=8)
     ap.add_argument("--bank_extra", type=int, default=500)
     ap.add_argument("--r", type=int, default=8)
+    ap.add_argument("--no_wres", type=int, default=1,
+                    help="skip the W_res oracle-U SVD (slow); only frozen/ceiling "
+                         "are needed for the W0-source probe")
     ap.add_argument("--proj_dim", type=int, default=10000,
                     help="HDC projection dimension (default 10000; 2000 to verify "
                          "the code-2000 peak on NuScenes-C)")

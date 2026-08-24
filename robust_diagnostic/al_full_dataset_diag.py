@@ -316,19 +316,27 @@ def eval_target_condition(model, parser, proj, device, W0, protos_clean, args,
     print(f"  bank: {len(bank_idx)} points ({len(lab_idx)} true + {len(extra)} random)")
 
     # W_res with oracle U (r=8) on 56+500 pseudo vs true
-    R = (Ws - W0).detach().cpu().float()
-    U8 = torch.linalg.svd(R.double(), full_matrices=False)[0][:, :args.r].float()
-    extra_pred = knn_predict(pf[extra], pf[lab_idx], pl[lab_idx], k=1, device=device)
-    X_lab = torch.cat([Xp[lab_idx], Xp[extra]], dim=0)
-    Y_pseudo = torch.cat([onehot(pl[lab_idx], NUM_CLASSES), onehot(extra_pred, NUM_CLASSES)], dim=0)
-    Y_true = torch.cat([onehot(pl[lab_idx], NUM_CLASSES), onehot(pl[extra], NUM_CLASSES)], dim=0)
-    XU = X_lab.to(device).float() @ U8.to(device)
-    A = XU.t() @ XU + 1e-6 * torch.eye(args.r, device=device)
-    W0d = W0.to(device)
-    Cp = torch.linalg.solve(A, XU.t() @ (Y_pseudo.to(device).float() - X_lab.to(device).float() @ W0d)).cpu()
-    Ct = torch.linalg.solve(A, XU.t() @ (Y_true.to(device).float() - X_lab.to(device).float() @ W0d)).cpu()
-    W_res_pseudo = W0.detach().cpu() + (U8.cpu() @ Cp)
-    W_res_true = W0.detach().cpu() + (U8.cpu() @ Ct)
+    if getattr(args, 'no_wres', 0):
+        # Skip the SVD + low-rank residual (the 10000x10000 CPU SVD is the
+        # expensive part) when only frozen/ceiling are needed (e.g. the D7
+        # gate probe and the W0-source probe). W_res_pseudo/true are left as
+        # the frozen baseline so downstream consumers of the dict still work.
+        W_res_pseudo = W0.detach().cpu()
+        W_res_true = W0.detach().cpu()
+    else:
+        R = (Ws - W0).detach().cpu().float()
+        U8 = torch.linalg.svd(R.double(), full_matrices=False)[0][:, :args.r].float()
+        extra_pred = knn_predict(pf[extra], pf[lab_idx], pl[lab_idx], k=1, device=device)
+        X_lab = torch.cat([Xp[lab_idx], Xp[extra]], dim=0)
+        Y_pseudo = torch.cat([onehot(pl[lab_idx], NUM_CLASSES), onehot(extra_pred, NUM_CLASSES)], dim=0)
+        Y_true = torch.cat([onehot(pl[lab_idx], NUM_CLASSES), onehot(pl[extra], NUM_CLASSES)], dim=0)
+        XU = X_lab.to(device).float() @ U8.to(device)
+        A = XU.t() @ XU + 1e-6 * torch.eye(args.r, device=device)
+        W0d = W0.to(device)
+        Cp = torch.linalg.solve(A, XU.t() @ (Y_pseudo.to(device).float() - X_lab.to(device).float() @ W0d)).cpu()
+        Ct = torch.linalg.solve(A, XU.t() @ (Y_true.to(device).float() - X_lab.to(device).float() @ W0d)).cpu()
+        W_res_pseudo = W0.detach().cpu() + (U8.cpu() @ Cp)
+        W_res_true = W0.detach().cpu() + (U8.cpu() @ Ct)
 
     # pass 2: FULL decode (all frames, pool points excluded)
     ex_by_frame = defaultdict(list)
@@ -415,6 +423,10 @@ def main():
     ap.add_argument("--bank_k", type=int, default=8)
     ap.add_argument("--bank_extra", type=int, default=500)
     ap.add_argument("--r", type=int, default=8)
+    ap.add_argument("--no_wres", type=int, default=0,
+                    help="1 = skip the W_res oracle-U SVD + low-rank residual "
+                         "(the 10000x10000 CPU SVD is slow); frozen/ceiling "
+                         "still computed, W_res set to the frozen baseline")
     ap.add_argument("--conds", type=str, default=",".join(CONDS_ALL))
     ap.add_argument("--nusc_dir", type=str, default="/mnt/alpha/jmfleming/nuscenes_kitti",
                     help="NuScenes dataset in KITTI format (32-beam)")
