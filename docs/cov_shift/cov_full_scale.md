@@ -554,6 +554,51 @@ micro), the healthy-capacity fix is not reachable by either forward gating or
 the existing training-side levers -- the remaining option is training a model
 with explicitly conditional input-IN. `probe_ingate_stats.json`.
 
+### Conditional input-IN training (stochastic): the gate now WORKS -- healthy recovers when OFF, rescue kept when ON (`run_micro_stoch.sh`, micro 8ep/10%)
+
+Following the eval-only gate verdict, three models were trained with the per-scan
+input-IN applied to a RANDOM SUBSET of scans at train time (`input_in_prob` in
+{0.5, 0.7, 0.9}), so the weights support BOTH normalized and raw inputs. Then the
+same model is evaluated with input-IN ON vs OFF (the gate). Frozen mIoU, micro
+8ep/10% (`micro_stoch_gate_{stoch,stoch7,stoch9}.json`):
+
+| prob | mode | snow | wet_ground | fog | crosstalk |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| p=0.5 | ON | 0.291 | 0.145 | 0.193 | 0.275 |
+| p=0.5 | OFF | **0.318** | **0.178** | 0.162 | 0.210 |
+| p=0.5 | delta | **+0.027** | **+0.034** | -0.031 | -0.065 |
+| p=0.7 | ON | 0.298 | 0.155 | 0.197 | 0.281 |
+| p=0.7 | OFF | **0.317** | **0.186** | 0.167 | 0.215 |
+| p=0.7 | delta | **+0.019** | **+0.031** | -0.030 | -0.066 |
+| p=0.9 | ON | 0.303 | 0.161 | 0.199 | 0.286 |
+| p=0.9 | OFF | **0.314** | **0.180** | 0.173 | 0.222 |
+| p=0.9 | delta | **+0.011** | **+0.019** | -0.026 | -0.064 |
+
+**The conditional training makes the gate a clean on/off the weights support --
+the exact opposite of the flat eval-only gate:**
+- **OFF recovers healthy capacity on every prob** (snow +0.011..+0.027, wet
+  +0.019..+0.034): the network now handles raw inputs, so disabling input-IN
+  recovers the healthy-condition frozen line.
+- **ON keeps most of the fog/crosstalk rescue** (fog -0.026..-0.031, crosstalk
+  -0.064..-0.066): not a full collapse, the rescue survives.
+- **Trend across p:** lower prob (more OFF exposure) recovers MORE healthy
+  capacity (p=0.5: +0.027 snow / +0.034 wet) at a slightly larger ON-side cost
+  on fog/crosstalk; higher prob keeps the rescue tighter. p=0.5-0.7 is the
+  sweet spot if healthy recovery is the priority.
+
+**Interpretation.** This confirms the mechanism: the healthy-cost and the fog
+rescue are both trainable choices. Conditional input-IN training lets the model
+learn features that are good under BOTH modes, so at deployment a stats or
+task-based gate (or no gate at all -- just choose the mode the target needs) is
+a clean decision. For the TTA line this is directly usable: a label-free
+per-scan mode switch (normalized vs raw) is now supported by the weights.
+
+**Caveats.** Micro-scale (8 ep / 10%, not converged; the absolute numbers are
+low and the OFF-recovery is small in magnitude). The full-scale conditional run
+would settle whether the +0.02-0.03 healthy recovery and the -0.06 crosstalk
+cost persist. But the DIRECTION is validated: the eval-only gate was flat, the
+conditional-train gate is not. `micro_stoch_gate_*.json`.
+
 ---
 
 ## Overnight improvement-path results (`run_overnight_covimprove.sh`, 2026-08-24)
