@@ -65,12 +65,12 @@ def nearest_mean_recall_stream(model, parser, proj, device, refs_code, refs_feat
             codes = torch.sign(zf[s:e].to(device) @ proj).float()
             # code nearest-mean
             simc = F.normalize(codes, p=2, dim=1) @ refs_code_d.t()
-            pc = lbl[simc.argmax(1)]
+            pc = lbl[simc.argmax(1)].cpu()
             # raw-feature nearest-mean
             zfn = F.normalize(zf[s:e].to(device).float(), p=2, dim=1)
             simf = zfn @ refs_feat_d.t()
-            pf = lbl[simf.argmax(1)]
-            l = labels[s:e].to(device)
+            pf = lbl[simf.argmax(1)].cpu()
+            l = labels[s:e]
             for c in range(1, NUM_CLASSES):
                 lc = (l == c)
                 if lc.any():
