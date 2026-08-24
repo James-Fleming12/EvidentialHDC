@@ -187,7 +187,8 @@ def main():
     print(f"    kNN1 (code)           : {entry['knn1_code']:.3f}")
     print(f"    kNN5 (code)           : {entry['knn5_code']:.3f}")
 
-    # raw-feature kNN (128-d, so a larger chunk is fine: 100k x 128 is tiny)
+    # raw-feature kNN (128-d, but the similarity is chunk x bank; keep the
+    # chunk small so 10k x 100k = 1e9 = 4GB, under the OOM boundary)
     def knn_decode_feat(fz_chunk):
         bn = F.normalize(bank_feats.float().to(device), p=2, dim=1)
         cn = F.normalize(fz_chunk.float().to(device), p=2, dim=1)
@@ -195,8 +196,8 @@ def main():
     acc_fknn = ConfAccum()
     for zf, labels, fi in stream_frames(model, parser, device, args.max_frames):
         n = len(zf)
-        for s in range(0, n, 100000):
-            e = min(s + 100000, n)
+        for s in range(0, n, knn_chunk):
+            e = min(s + knn_chunk, n)
             acc_fknn.update(knn_decode_feat(zf[s:e]).cpu(), labels[s:e])
         del zf, labels
     entry['knn1_raw'] = acc_fknn.miou()
