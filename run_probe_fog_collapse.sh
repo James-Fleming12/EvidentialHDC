@@ -22,7 +22,7 @@ set -o pipefail
 GPU="${1:-2}"
 MAX_FRAMES="${MAX_FRAMES:-200}"
 CONDS="${CONDS:-fog,crosstalk}"
-EXTRACTORS="${EXTRACTORS:-dgl_kitti:supcon_vib_dglsspp:robust_diagnostic/logs/supcon_vib_dglsspp,cov_kitti:supcon_vib_dglsspp_inputin_in_chan:robust_diagnostic/logs/ep10_supcon_vib_dglsspp_inputin_in_chan/supcon_vib_dglsspp_inputin_in_chan}"
+EXTRACTORS="${EXTRACTORS:-dgl_kitti:supcon_vib_dglsspp:robust_diagnostic/logs/supcon_vib_dglsspp,cov_kitti:supcon_vib_dglsspp_inputin_in_chan:robust_diagnostic/logs/ep10_supcon_vib_dglsspp_inputin_in_chan/supcon_vib_dglsspp_inputin_in_chan,dgl_nusc:supcon_vib_dglsspp:robust_diagnostic/logs/nusc_dglsspp_21ep,cov_nusc:supcon_vib_dglsspp_inputin_in_chan:robust_diagnostic/logs/nusc_covshift_21ep}"
 echo "Using GPU $GPU (max_frames=$MAX_FRAMES, conds=$CONDS)"
 
 eval CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/probe_fog_collapse_diag.py \
