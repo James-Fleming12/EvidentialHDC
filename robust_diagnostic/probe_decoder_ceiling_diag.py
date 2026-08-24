@@ -180,79 +180,80 @@ def main():
             print(f"    linear (raw 128)      : {entry['linear_raw128']:.3f}")
             _save()
 
-    # 3/4. kNN oracle (subsampled pool) on code and raw
-    torch.manual_seed(42)
-    idx = torch.randperm(len(pf))[:min(args.knn_bank, len(pf))]
-    bank_codes = Xp[idx].to(device)
-    bank_lbl = pl[idx]
-    bank_feats = pf[idx]
-    # kNN similarity matrix is (chunk x bank); keep the chunk small (10k) so
-    # 10k x 100k = 1e9 floats = 4GB, far under the OOM boundary.
-    knn_chunk = 10000
-    entry['knn1_code'] = decode_stream_codes(
-        model, parser, proj, device,
-        lambda c: knn_decode(c, bank_codes, bank_lbl, k=1, chunk=knn_chunk),
-        args.max_frames, chunk=knn_chunk)[0]
-    entry['knn5_code'] = decode_stream_codes(
-        model, parser, proj, device,
-        lambda c: knn_decode(c, bank_codes, bank_lbl, k=5, chunk=knn_chunk),
-        args.max_frames, chunk=knn_chunk)[0]
-    print(f"    kNN1 (code)           : {entry['knn1_code']:.3f}")
-    print(f"    kNN5 (code)           : {entry['knn5_code']:.3f}")
-    _save()
+            # 3/4. kNN oracle (subsampled pool) on code and raw
+            torch.manual_seed(42)
+            idx = torch.randperm(len(pf))[:min(args.knn_bank, len(pf))]
+            bank_codes = Xp[idx].to(device)
+            bank_lbl = pl[idx]
+            bank_feats = pf[idx]
+            # kNN similarity matrix is (chunk x bank); keep the chunk small (10k) so
+            # 10k x 100k = 1e9 floats = 4GB, far under the OOM boundary.
+            knn_chunk = 10000
+            entry['knn1_code'] = decode_stream_codes(
+                model, parser, proj, device,
+                lambda c: knn_decode(c, bank_codes, bank_lbl, k=1, chunk=knn_chunk),
+                args.max_frames, chunk=knn_chunk)[0]
+            entry['knn5_code'] = decode_stream_codes(
+                model, parser, proj, device,
+                lambda c: knn_decode(c, bank_codes, bank_lbl, k=5, chunk=knn_chunk),
+                args.max_frames, chunk=knn_chunk)[0]
+            print(f"    kNN1 (code)           : {entry['knn1_code']:.3f}")
+            print(f"    kNN5 (code)           : {entry['knn5_code']:.3f}")
+            _save()
 
-    # raw-feature kNN (128-d, but the similarity is chunk x bank; keep the
-    # chunk small so 10k x 100k = 1e9 = 4GB, under the OOM boundary)
-    def knn_decode_feat(fz_chunk):
-        bn = F.normalize(bank_feats.float().to(device), p=2, dim=1)
-        cn = F.normalize(fz_chunk.float().to(device), p=2, dim=1)
-        return bank_lbl.to(device)[(cn @ bn.t()).argmax(1)]
-    acc_fknn = ConfAccum()
-    for zf, labels, fi in stream_frames(model, parser, device, args.max_frames):
-        n = len(zf)
-        for s in range(0, n, knn_chunk):
-            e = min(s + knn_chunk, n)
-            acc_fknn.update(knn_decode_feat(zf[s:e]).cpu(), labels[s:e])
-        del zf, labels
-    entry['knn1_raw'] = acc_fknn.miou()
-    print(f"    kNN1 (raw 128)        : {entry['knn1_raw']:.3f}")
-    _save()
+            # raw-feature kNN (128-d, but the similarity is chunk x bank; keep the
+            # chunk small so 10k x 100k = 1e9 = 4GB, under the OOM boundary)
+            def knn_decode_feat(fz_chunk):
+                bn = F.normalize(bank_feats.float().to(device), p=2, dim=1)
+                cn = F.normalize(fz_chunk.float().to(device), p=2, dim=1)
+                return bank_lbl.to(device)[(cn @ bn.t()).argmax(1)]
+            acc_fknn = ConfAccum()
+            for zf, labels, fi in stream_frames(model, parser, device, args.max_frames):
+                n = len(zf)
+                for s in range(0, n, knn_chunk):
+                    e = min(s + knn_chunk, n)
+                    acc_fknn.update(knn_decode_feat(zf[s:e]).cpu(), labels[s:e])
+                del zf, labels
+            entry['knn1_raw'] = acc_fknn.miou()
+            print(f"    kNN1 (raw 128)        : {entry['knn1_raw']:.3f}")
+            _save()
 
-    # 5. RBF probe on code (random Fourier features + ridge)
-    # NOTE: normalize the RFF features (they have magnitude ~sqrt(d_rff)); the
-    # earlier run's RFF ridge (0.056) collapsed because the raw RFF features have
-    # large scale and the ridge lam was not matched. L2-normalize per-row before
-    # the ridge fit.
-    Zr = rbf_features(Xp.to(device), proj_rff)
-    Zr = F.normalize(Zr, p=2, dim=1)  # normalize to unit-norm rows
-    Yr = Yp.to(device)
-    W_rff = ridge_fit_exact(Zr.cpu(), Yr.cpu(), 1e-2, device).to(device)
-    def rbf_decode(codes):
-        zf = rbf_features(codes.to(device), proj_rff)
-        zf = F.normalize(zf, p=2, dim=1)
-        return (zf @ W_rff).argmax(1)
-    entry['rff_ridge_code'] = decode_stream_codes(
-        model, parser, proj, device, rbf_decode, args.max_frames)[0]
-    print(f"    RFF ridge (code)      : {entry['rff_ridge_code']:.3f}")
-    _save()
+            # 5. RBF probe on code (random Fourier features + ridge)
+            # NOTE: normalize the RFF features (they have magnitude ~sqrt(d_rff)); the
+            # earlier run's RFF ridge (0.056) collapsed because the raw RFF features have
+            # large scale and the ridge lam was not matched. L2-normalize per-row before
+            # the ridge fit.
+            Zr = rbf_features(Xp.to(device), proj_rff)
+            Zr = F.normalize(Zr, p=2, dim=1)  # normalize to unit-norm rows
+            Yr = Yp.to(device)
+            W_rff = ridge_fit_exact(Zr.cpu(), Yr.cpu(), 1e-2, device).to(device)
+            def rbf_decode(codes):
+                zf = rbf_features(codes.to(device), proj_rff)
+                zf = F.normalize(zf, p=2, dim=1)
+                return (zf @ W_rff).argmax(1)
+            entry['rff_ridge_code'] = decode_stream_codes(
+                model, parser, proj, device, rbf_decode, args.max_frames)[0]
+            print(f"    RFF ridge (code)      : {entry['rff_ridge_code']:.3f}")
+            _save()
 
-    # 6. balanced linear probe (per-class lam)
-    from robust_diagnostic.al_full_dataset_diag import ridge_fit_balanced
-    counts = torch.bincount(pl.long(), minlength=NUM_CLASSES)
-    W_bal = ridge_fit_balanced(Xp, Yp, counts, 1e-3, device, mode='lam').to(device)
-    entry['linear_bal_lam'] = decode_stream_codes(
-        model, parser, proj, device,
-        lambda c: (c @ W_bal).argmax(1), args.max_frames)[0]
-    print(f"    linear (bal lam)      : {entry['linear_bal_lam']:.3f}")
+            # 6. balanced linear probe (per-class lam)
+            from robust_diagnostic.al_full_dataset_diag import ridge_fit_balanced
+            counts = torch.bincount(pl.long(), minlength=NUM_CLASSES)
+            W_bal = ridge_fit_balanced(Xp, Yp, counts, 1e-3, device, mode='lam').to(device)
+            entry['linear_bal_lam'] = decode_stream_codes(
+                model, parser, proj, device,
+                lambda c: (c @ W_bal).argmax(1), args.max_frames)[0]
+            print(f"    linear (bal lam)      : {entry['linear_bal_lam']:.3f}")
+            _save()
 
-    entry['n_val'] = n
-    entry['pool_n'] = len(pf)
-    results['extractors'][lab]['conds'][cond] = entry
-    os.makedirs(os.path.dirname(args.out), exist_ok=True)
-    with open(args.out, 'w') as fh:
-        json.dump(results, fh, indent=2, default=float)
-    print(f"    ({time.time()-t0:.0f}s) [checkpoint saved]")
-    print(f"[checkpoint] {lab} done")
+            entry['n_val'] = n
+            entry['pool_n'] = len(pf)
+            results['extractors'][lab]['conds'][cond] = entry
+            os.makedirs(os.path.dirname(args.out), exist_ok=True)
+            with open(args.out, 'w') as fh:
+                json.dump(results, fh, indent=2, default=float)
+            print(f"    ({time.time()-t0:.0f}s) [checkpoint saved]")
+        print(f"[checkpoint] {lab} done")
     print(f"\nSaved to {args.out}")
 
 if __name__ == "__main__":
