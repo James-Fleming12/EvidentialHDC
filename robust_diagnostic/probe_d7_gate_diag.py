@@ -73,8 +73,15 @@ def main():
     for lab, method, path in [tuple(e.strip().split(':')) for e in args.extractors.split(',')]:
         print(f"\n{'='*80}\n=== extractor {lab} ({method}) GATE-OFF (input_in=False) ===\n{'='*80}")
         if args.skip_existing and lab in results.get('extractors', {}):
-            print(f"  [{lab}] already in {args.out}, skipping")
-            continue
+            existing = set(results['extractors'][lab].get('conds', {}))
+            all_keys = {f'{ds}:{c}' for ds, cs in (('kittic', CONDS_ALL), ('nuscenes_c', CONDS_ALL))
+                        for c in cs}
+            if existing >= all_keys:
+                print(f"  [{lab}] all conditions already in {args.out}, skipping")
+                continue
+            missing = all_keys - existing
+            print(f"  [{lab}] resume: {len(existing)} done, {len(missing)} to run "
+                  f"({sorted(missing)[:3]}...)")
         arch = _copy.deepcopy(ARCH)
         # Build a FRESH model with input_in DISABLED, then load the checkpoint.
         # CRITICAL: the method name determines input_in (GenTrainer overwrites
@@ -104,6 +111,10 @@ def main():
         print(f"  clean fit done ({time.time()-t0:.0f}s)")
         for dataset, conds in (('kittic', CONDS_ALL), ('nuscenes_c', CONDS_ALL)):
             for cond in conds:
+                key = f'{dataset}:{cond}'
+                if args.skip_existing and key in entry['conds']:
+                    print(f"  [{lab}] {key} already in {args.out}, skipping")
+                    continue
                 if dataset == 'kittic':
                     cdir = os.path.join(args.kittic_dir, cond, 'heavy')
                     if not os.path.exists(cdir):
@@ -115,7 +126,7 @@ def main():
                 t0 = time.time()
                 r = eval_target_condition(model, parser, proj, device, W0, protos_clean,
                                           args, label=lab, cond_name=cond, bal=None)
-                entry['conds'][f'{dataset}:{cond}'] = r
+                entry['conds'][key] = r
                 os.makedirs(os.path.dirname(args.out), exist_ok=True)
                 with open(args.out, 'w') as fh:
                     json.dump(results, fh, indent=2, default=float)

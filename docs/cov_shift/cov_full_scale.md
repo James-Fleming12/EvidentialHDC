@@ -474,6 +474,116 @@ Iteration 2: peak at 2000).
 
 ---
 
+## Overnight improvement-path results (`run_overnight_covimprove.sh`, 2026-08-24)
+
+The four improvement paths + the two discrepancy re-runs, at full scale.
+
+### P1: authoritative DGLSS++ KITTI-C -- the discrepancy is RESOLVED
+
+The corrected-run log was right; the mechanism probe's DGLSS++ ceilings were
+wrong (its ~0.5% `n_val` mismatch depressed them). Authoritative (single-extractor
+full harness):
+
+| condition | frozen | ceiling | gap |
+| :--- | :--- | :--- | :--- |
+| fog | 0.097 | 0.253 | +0.156 |
+| crosstalk | 0.118 | 0.291 | +0.173 |
+| snow | 0.543 | 0.575 | +0.033 |
+| wet_ground | 0.492 | 0.570 | +0.079 |
+| incomplete_echo | 0.482 | 0.488 | +0.006 |
+| beam_missing | 0.583 | 0.587 | +0.004 |
+| motion_blur | 0.548 | 0.566 | +0.018 |
+| cross_sensor | 0.469 | 0.494 | +0.024 |
+
+The README's DGLSS++ columns (snow 0.575, crosstalk 0.291, wet 0.570) were
+correct all along. The mechanism probe's lower healthy-condition ceilings
+(snow 0.421 etc.) are retracted as artifacts. `al_full_dataset_ep10_custom_dglsspp.json`.
+
+### P2: code-2000 at full scale -- the "peak at 2000" does NOT hold
+
+cov_ep10, KITTI-C, full scale, ceiling at 10000-d vs 2000-d:
+
+| condition | 10000-d | 2000-d | delta |
+| :--- | :--- | :--- | :--- |
+| fog | 0.369 | 0.338 | -0.031 |
+| crosstalk | 0.491 | 0.460 | -0.031 |
+| snow | 0.495 | 0.457 | -0.039 |
+| wet_ground | 0.419 | 0.389 | -0.030 |
+| incomplete_echo | 0.437 | 0.421 | -0.017 |
+| beam_missing | 0.487 | 0.452 | -0.035 |
+| motion_blur | 0.458 | 0.428 | -0.030 |
+| cross_sensor | 0.446 | 0.412 | -0.034 |
+
+2000-d is systematically ~0.03 LOWER on every condition at full scale. The tta
+Iteration-2 "peak at 2000" was a small-harness (pool 10k/val 100k) artifact --
+at full scale the 10000-d projection retains more. **Improvement path 4
+(code-2000 default) is DEAD.** `al_full_dataset_ep10_custom_dim2000.json`.
+
+### P3: D7 gate-off -- the input-IN gate RECOVERS healthy/cross-domain ceilings
+
+cov_kitti (home-domain) gate-off (`input_in=False`, fresh build) vs authoritative
+input-on, ceiling:
+
+| condition | input-IN ON | gate-OFF | delta |
+| :--- | :--- | :--- | :--- |
+| fog | 0.369 | 0.344 | -0.024 |
+| crosstalk | 0.491 | 0.492 | +0.000 |
+| snow | 0.495 | 0.484 | -0.011 |
+| wet_ground | 0.419 | **0.722** | **+0.303** |
+| incomplete_echo | 0.437 | 0.504 | +0.067 |
+| beam_missing | 0.487 | 0.558 | +0.071 |
+| motion_blur | 0.458 | 0.569 | +0.111 |
+| cross_sensor | 0.446 | 0.629 | +0.183 |
+
+**Gating OFF the per-scan input-IN recovers +0.07..+0.30 ceiling on the healthy
+conditions (wet_ground 0.419 -> 0.722!) while fog drops only -0.024 and
+crosstalk is unchanged (+0.000).** This is the key positive: the input-IN
+normalization is the healthy-condition ceiling cap, and it can be gated off at
+inference with almost no fog/crosstalk cost. The gate keeps fog (drop -0.024) and
+crosstalk (flat) because those need the normalization least at the CEILING level
+(the rescue is at zero-shot, which gating also keeps: cov_kitti fog gate-off
+frozen 0.148 vs input-on 0.322 -- hmm, see caveat below). **Improvement path 1
+(gated normalization) is the WINNER.**
+
+CAVEAT on P3: the gate-off FROZEN (zero-shot) drops on fog (0.148 vs 0.322) --
+the input-IN's fog rescue lives at the FROZEN level, and gating it off costs
+there. The gate decision therefore matters more for the frozen/zero-shot line
+than the ceiling. The cov_nusc half of P3 is INCOMPLETE (interrupted after 7/15
+conditions; `nuscenes_c:*` and `kittic:cross_sensor` missing) -- re-run P3 or
+read the cov_kitti half as the home-domain verdict. `probe_d7_gate_ep10.json`.
+
+### P4: corrected NuScenes-C zero-shot (in-domain W0) -- cov-shift leads or ties
+
+In-domain nuScenes-clean W0 (authoritative `eval_target_condition`), 10000-d:
+
+| condition | cov zs | cov ceil | dgl zs | dgl ceil |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | 0.278 | 0.547 | **0.353** | **0.613** |
+| crosstalk | 0.505 | 0.553 | **0.517** | **0.585** |
+| snow | **0.649** | 0.665 | 0.609 | **0.659** |
+| wet_ground | 0.638 | 0.682 | **0.654** | **0.700** |
+| incomplete_echo | **0.666** | 0.687 | 0.670 | **0.699** |
+| beam_missing | **0.647** | 0.674 | 0.592 | **0.728** |
+| motion_blur | **0.427** | 0.575 | 0.357 | **0.577** |
+| cross_sensor | 0.600 | 0.729 | **0.601** | **0.783** |
+
+With the in-domain W0, NuScenes-C zero-shot is 0.43-0.67 (NOT the contaminated
+0.15-0.3), and the two extractors are essentially TIED: cov-shift wins or ties
+zero-shot on 4/8 (snow, incomplete, beam, motion), DGLSS++ wins 4/8 (fog,
+crosstalk, wet, cross). DGLSS++ wins the ceiling on 7/8. The earlier
+"mechanism-probe D9" corrected table (which showed DGLSS++ leading zero-shot
+everywhere) was itself based on the n_val-buggy probe; this authoritative run
+corrects it. **The two extractors are near-equal on NuScenes-C zero-shot;
+cov-shift is NOT behind.** `probe_nusc_c_w0source_ep10.json`.
+
+### P5: NuScenes-C code-2000 -- confirms the negative
+
+2000-d is -0.03..-0.10 lower than 10000-d on every NuScenes-C condition (both
+extractors, ceiling). Dimension reduction is dead at full scale on both datasets.
+`probe_nusc_c_w0source_dim2000.json`.
+
+---
+
 ## Reproducibility
 
 - Harness: `robust_diagnostic/al_full_dataset_diag.py` (deep-copied `ARCH`),
@@ -491,16 +601,15 @@ Iteration 2: peak at 2000).
   cov), `logs/nusc_dglsspp_21ep` (NuScenes DGLSS++).
 - Results: `al_full_dataset_ep10_custom.json` (corrected DGLSS++ KITTI-C),
   `al_nuscenes_c.json` / `al_nuscenes_c_dglsspp.json` (NuScenes-C),
-  `probe_covshift_mechanism_ep10.json` (Iteration-0 results).
+  `probe_covshift_mechanism_ep10.json` (Iteration-0 results),
+  `al_full_dataset_ep10_custom_dglsspp.json` (P1 authoritative DGLSS++ KITTI-C),
+  `al_full_dataset_ep10_custom_dim2000.json` (P2 code-2000 KITTI-C),
+  `probe_d7_gate_ep10.json` (P3 gate-off; cov_nusc half incomplete),
+  `probe_nusc_c_w0source_ep10.json` (P4 corrected NuScenes-C zero-shot),
+  `probe_nusc_c_w0source_dim2000.json` (P5 NuScenes-C code-2000).
 
-**Open discrepancy to resolve:** the mechanism probe's DGLSS++ KITTI-C ceilings
-agree with the corrected-run log on fog (0.253) but are ~0.1 LOWER on the healthy
-conditions (snow 0.421 vs the corrected-run log's 0.575; crosstalk 0.117 vs
-0.291). Frozen values match everywhere. The corrected-run JSON
-(`al_full_dataset_ep10_custom.json` from the fixed ARCH run) was never pulled,
-so the authoritative ceiling set is unverified. Before quoting any DGLSS++
-healthy-condition ceiling, pull that JSON and reconcile (both use the full pool
-+ spectral-exact ridge; the mechanism probe's λ-sweep saturation suggests the
-pool fit is sensitive to λ on dgl_kitti). **This is P1 of
-`run_overnight_covimprove.sh`** (authoritative DGLSS++ KITTI-C rerun,
-`al_full_dataset_ep10_custom_dglsspp.json`).
+**Discrepancy RESOLVED (P1, 2026-08-24):** the mechanism probe's DGLSS++ KITTI-C
+ceilings were wrong (snow 0.421 vs authoritative 0.575; its ~0.5% `n_val`
+mismatch depressed them). The authoritative single-extractor run
+(`al_full_dataset_ep10_custom_dglsspp.json`) matches the corrected-run log
+exactly. Quote the P1 ceilings, not the mechanism probe's.
