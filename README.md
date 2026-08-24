@@ -971,3 +971,75 @@ paper's external comparison, we need a method that raises our frozen/zero-shot
 toward our ceiling on the conditions where we are below their adapted number
 (fog, motion_blur, wet_ground) — which is precisely the Pillar-3 AL/TTA target,
 not a feature-extractor redesign.
+
+### Comparison points that INVALIDATE a direct mIoU table comparison (from the GeoID repo, `thirdparty/GeoID`)
+
+The paper's tables (SemanticKITTI-C 46.96, nuScenes-C 56.73) are **not directly
+comparable** to our numbers on at least four axes. These must be resolved (or
+the comparison reframed) before quoting any table side-by-side.
+
+**1. Different class config — the tables use a 10-class COMMON map, not the
+full taxonomy.** The repo evaluates on a **merged 11-class common set**
+(`configs/label_mapping/common_map_merged.yaml`: noise/bicycle/vehicle/
+motorcycle/pedestrian/driveable_surface/other_flat/sidewalk/terrain/manmade/
+vegetation, `ignored` index 0 = noise). Their SemanticKITTI model is trained
+with `out_classes: 19` (the SemanticKITTI learning_map), nuScenes with
+`out_classes: 16`, but the **reported tables remap BOTH to the 10-class common
+set** (`learning_map_from_kitti_to_common` / `learning_map_from_nusc_to_common`,
+`SemanticEval(len(class_str_common), ..., [0])`). This means:
+- They merge car/truck/other-vehicle/bus → "vehicle", person/bicyclist → one
+  class, fence/pole/sign → "manmade" — a much easier (coarser) problem than our
+  16-class nuScenes-C setting.
+- Our tables use the **16-class nuScenes taxonomy** (config/labels/nuscenes_new
+  + nuscenes_c.yaml), which is finer.
+- **To compare fairly we must either (a) remap our nuScenes-C predictions to
+  their 10-class common map and recompute our mIoU on that set, or (b) run
+  GeoID's eval on our class set.** Without this, the raw numbers are not
+  comparable — a 10-class mIoU is systematically higher than a 16-class one
+  (fewer classes to confuse, minority classes merged away). This is the single
+  largest invalidation.
+
+**2. Different backbone, size, and input representation.**
+- GeoID: **MinkUNet34** (MinkowskiEngine sparse voxel net, `in_feat_size: 1`,
+  `voxel_size: 0.2`, 64-beam KITTI / 32-beam nuScenes). Sparse-conv point/voxel
+  network, 8 blocks of planes (32,64,128,256,256,128,96,96) — substantially
+  larger and architecturally different from our **projection-based SENet
+  (~6.8M params)**.
+- Their TTA backprops the GeoID loss through the **shared encoder** (feature
+  extractor + GeoID head), so their adapted numbers include an encoder update
+  our frozen-extractor numbers do not.
+- Different voxel/beam geometry means different effective receptive field and
+  point density handling. A direct mIoU table is not apples-to-apples.
+
+**3. Per-scan efficiency — theirs is gradient TTT, ours is closed-form.**
+- GeoID's per-test-sample cost: backprop through the shared encoder for the
+  GeoID loss on B synthetic point sets per scan (`geoid_configure_type: 'axis'`,
+  `min_dist 1, max_dist 3`), with an SGD/Adam step. They report **~12 FPS on an
+  NVIDIA A6000 at update-stride 30** (Fig. 5), and state the cost is dominated
+  by backpropagation.
+- Ours: **decode-only, ~17M pts/s** (fp32/int8, from `probe_decode_quant_ep10`),
+  and the AL/TTA update is a **closed-form low-rank solve** (no gradients). No
+  per-scan backprop.
+- The fair efficiency metric is **mIoU per watt / per second-per-scan** — our
+  closed-form update has no gradient cost, so "same mIoU at orders-of-magnitude
+  lower compute" is the paper's claim, but it must be measured, not assumed.
+
+**4. Severity averaging and benchmark split.**
+- GeoID reports the **average over all three severity levels** (light/moderate/
+  heavy) and uses the Robo3D `SemanticKITTI-C`/`nuScenes-C` corruption
+  benchmarks with `data_path_orig` for the clean reference.
+- Our numbers are **heavy-severity only** on our own converted nuScenes-C.
+  Comparing our heavy to their 3-level average is unfair to us (heavy is the
+  hardest). We should either (a) compute our heavy/moderate/light and average
+  the same way, or (b) state the severity explicitly and compare condition-by-
+  condition at matched severity.
+
+**Bottom line for the paper:** the direct "our ceiling vs their adapted" table in
+this README is only a directional sketch. To make GeoID a legitimate external
+comparison we must (1) remap to a common class set (or state the class-count
+difference), (2) report matched severity, (3) include an explicit
+efficiency/throughput table (ours closed-form ~17M pts/s vs their 12 FPS
+backprop), and (4) state the backbone difference. The defensible claim that
+survives all four: **our closed-form decoder reaches (or exceeds) a
+gradient-based TTT method's adapted result at a fraction of the per-scan
+compute — without touching the feature extractor.**
