@@ -190,7 +190,7 @@ def main():
     # raw-feature kNN (128-d, so a larger chunk is fine: 100k x 128 is tiny)
     def knn_decode_feat(fz_chunk):
         bn = F.normalize(bank_feats.float().to(device), p=2, dim=1)
-        cn = F.normalize(fz_chunk.float(), p=2, dim=1)
+        cn = F.normalize(fz_chunk.float().to(device), p=2, dim=1)
         return bank_lbl.to(device)[(cn @ bn.t()).argmax(1)]
     acc_fknn = ConfAccum()
     for zf, labels, fi in stream_frames(model, parser, device, args.max_frames):
