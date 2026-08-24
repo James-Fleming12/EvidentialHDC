@@ -65,24 +65,25 @@ def gate_apply(in_vol, tau, clean_mu, clean_var):
     shifted vs clean, no corruption-type knowledge."""
     mu, var = per_scan_stats(in_vol)
     # deviate if range var OR remission var is far from clean (relative diff)
-    engage = torch.zeros(len(in_vol), dtype=torch.bool)
+    dev = torch.zeros(len(in_vol), dtype=torch.bool, device=in_vol.device)
     for c in GATE_CH:
         rel = (var[c] / max(clean_var[c], 1e-12)).clamp(min=1e-3, max=1e3)
-        engage |= (rel - 1.0).abs() > tau
+        dev |= (rel - 1.0).abs() > tau
+    if not dev.any():
+        return in_vol
     x = in_vol.clone()
-    if engage.any():
-        valid = (in_vol[:, 0:1, :, :] > 0).float()
-        for c in GATE_CH:
-            sub = x[:, c:c+1, :, :]
-            xv = sub * valid
-            denom = valid.sum(dim=(2, 3)).clamp(min=1)
-            m = xv.sum(dim=(2, 3), keepdim=True) / denom
-            v = ((xv - m).pow(2) * valid).sum(dim=(2, 3), keepdim=True) / denom
-            std = v.clamp(min=1e-6).sqrt()
-            normed = ((xv - m) / std) * valid
-            # only overwrite the engaged scans
-            x[engage, c:c+1, :, :] = torch.where(valid[engage].bool(),
-                                                 normed[engage], x[engage, c:c+1, :, :])
+    valid = (in_vol[:, 0:1, :, :] > 0).float()
+    for c in GATE_CH:
+        sub = x[:, c:c+1, :, :]
+        xv = sub * valid
+        denom = valid.sum(dim=(2, 3)).clamp(min=1)
+        m = xv.sum(dim=(2, 3), keepdim=True) / denom
+        v = ((xv - m).pow(2) * valid).sum(dim=(2, 3), keepdim=True) / denom
+        std = v.clamp(min=1e-6).sqrt()
+        normed = ((xv - m) / std) * valid
+        # only overwrite the engaged scans
+        x[dev, c:c+1, :, :] = torch.where(valid[dev].bool(),
+                                          normed[dev], x[dev, c:c+1, :, :])
     return x
 
 def stream_forward_gated(model, parser, proj, device, W, tau, clean_mu, clean_var,
