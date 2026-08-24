@@ -240,6 +240,13 @@ INPUT_NORM_VARIANTS = {
 }
 for _m in INPUT_NORM_VARIANTS:
     DGLSS_METHODS.add(_m)
+# Conditional input-IN (stochastic) variants: same input_in=True + channels {0,4}
+# config, but GenTrainer sets input_in_prob so training applies the per-scan
+# normalization to a random subset of scans (see the forward hook in ResNet).
+for _m in ('_stoch', '_stoch7', '_stoch9'):
+    INPUT_NORM_VARIANTS[f'supcon_vib_dglsspp_inputin_in_chan{_m}'] = (
+        {'norm': 'in', 'norm_channels': (0, 4)})
+    DGLSS_METHODS.add(f'supcon_vib_dglsspp_inputin_in_chan{_m}')
 # C18 hybrid: the ball/spec AL-geometry variants of the cov-shift base must
 # inherit the cov-shift INPUT-NORM config (per-scan normalization on channels
 # 0/4 + internal InstanceNorm) -- otherwise the 'inputin_in_chan' name is
@@ -344,6 +351,26 @@ class GenTrainer(Trainer):
             self.optimizer.add_param_group({'params': self.logvar_head.parameters()})
         else:
             self.logvar_head = None
+
+        # Conditional input-IN (stochastic) variants: train with the per-scan
+        # input-IN applied to a random subset of scans (input_in_prob), so the
+        # network learns features that work BOTH with and without the input
+        # normalization. At eval a gate is then a clean on/off the weights
+        # support. Method suffix: _stoch (prob 0.5), _stoch7 (prob 0.7),
+        # _stoch9 (prob 0.9). Set BEFORE the checkpoint load so the flag survives.
+        for _m, _p in (('_stoch', 0.5), ('_stoch7', 0.7), ('_stoch9', 0.9)):
+            _full = f'supcon_vib_dglsspp_inputin_in_chan{_m}'
+            if self.method == _full:
+                prob = _p
+                break
+        else:
+            prob = None
+        if prob is not None:
+            mdl = getattr(self, 'model', None)
+            if mdl is not None and hasattr(mdl, 'input_in_prob'):
+                mdl.input_in_prob = prob
+                print(f"  conditional input-IN: input_in_prob={prob} "
+                      f"(stochastic per-scan at train time)")
 
         # Phase 25 Addition 2 (evidential head): a 1x1 conv on the 128D bottleneck outputting
         # per-pixel Dirichlet evidence. Trained so the augmented (corruption-hard) views carry

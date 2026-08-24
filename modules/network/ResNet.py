@@ -205,6 +205,7 @@ class ResNet_34(nn.Module):
         self.corr_mode = corr_mode
         self.inv_dim = inv_dim
         self.input_in = input_in
+        self.input_in_prob = None  # set by the trainer for conditional-input-IN
         # norm_channels: if set, per-scan input normalization applies ONLY to these
         # channel indices (e.g. (0,4) = range+remission) and leaves the rest (xyz
         # geometry) untouched -- the Iteration-19.11.2 condition-aware fix.
@@ -298,7 +299,19 @@ class ResNet_34(nn.Module):
 
     def forward(self, x, only_feat=False, return_enc=False, return_stage4=False):
         if self.input_in:
-            x = self._input_instancenorm(x)
+            if self.input_in_prob is not None and self.training:
+                # Stochastic input-IN (conditional-input-IN training): apply the
+                # per-scan normalization to a RANDOM SUBSET of the batch's scans
+                # at train time, so the network learns to produce good features
+                # under BOTH normalized and raw inputs. At eval input_in_prob is
+                # ignored -> the gate (on/off) is a clean choice the weights
+                # support (unlike the failed eval-only gate, whose weights were
+                # trained with input-IN always on).
+                keep = (torch.rand(x.size(0), device=x.device) < self.input_in_prob)
+                x_n = self._input_instancenorm(x)
+                x = torch.where(keep.view(-1, 1, 1, 1), x_n, x)
+            else:
+                x = self._input_instancenorm(x)
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.conv3(x)

@@ -511,6 +511,49 @@ recovers the 0.12 clean gap relative to the current cov-shift. The micro run
 here is against plain DGLSS++ and cannot answer that. This is the pending full
 `_scope` run.
 
+### Stats-thresholded input-IN gate: the tau sweep is FLAT -- the gate does NOT recover healthy capacity (`probe_ingate_stats_diag.py`, micro 200 frames)
+
+The self-detecting gate engages per-scan input-IN only when the scan's
+{range, remission} statistics deviate from the clean reference by > tau (no
+corruption-type knowledge needed). Frozen mIoU, cov_kitti, KITTI-C (micro
+200-frame; always-off = gate fully disabled):
+
+| condition | always_off | tau0.1 | tau0.5 | tau1.0 | tau2.0 | spread |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 0.220 | 0.231 | 0.229 | 0.231 | 0.227 | 0.011 |
+| crosstalk | 0.384 | 0.379 | 0.377 | 0.388 | 0.387 | 0.011 |
+| snow | 0.446 | 0.442 | 0.439 | 0.449 | 0.449 | 0.010 |
+| wet_ground | 0.356 | 0.338 | 0.353 | 0.357 | 0.360 | 0.021 |
+
+**The tau sweep is flat (spread 0.01-0.02 across all thresholds) on every
+condition.** Varying the engagement threshold from 0.1 to 2.0 changes nothing:
+- **No healthy recovery** -- snow/wet frozen stay at the always-off level (0.44 /
+  0.35) regardless of tau; the gate does NOT recover the healthy capacity.
+- **No fog rescue kept** -- fog stays at ~0.23, far below the always-on reference
+  (0.293 at 200 frames from the fog-collapse probe). The gate is essentially
+  always-off on the conditions that matter, and the tiny tau-driven variation
+  (+0.01 fog) is noise.
+
+**Why it fails (mechanism).** The gate re-applies per-scan normalization to a
+model whose weights were trained WITH input-IN always active. The train/eval
+mismatch dominates: whether a given scan is normalized or not, the network
+expects the input-IN-transformed distribution, so selectively normalizing by a
+stats threshold does not reproduce the training-time behavior -- it just lands
+somewhere between always-off and always-on, and the threshold cannot steer it.
+The input-IN's healthy-cost (D1: clean 0.520 vs 0.640) and its fog rescue are
+both baked into the weights at training; an eval-time forward gate cannot
+separate them.
+
+**Verdict: the eval-only stats gate is DEAD.** It does not recover healthy
+capacity and does not keep the fog rescue. A gate that works must be
+training-side: the model must be trained to handle BOTH normalized and
+un-normalized inputs (e.g., stochastic/conditional input-IN during training), so
+that at eval the gate is a clean on/off the weights support. This is a TRAINING
+change, not a forward gate. Combined with the C8 variants (which also failed at
+micro), the healthy-capacity fix is not reachable by either forward gating or
+the existing training-side levers -- the remaining option is training a model
+with explicitly conditional input-IN. `probe_ingate_stats.json`.
+
 ---
 
 ## Overnight improvement-path results (`run_overnight_covimprove.sh`, 2026-08-24)
