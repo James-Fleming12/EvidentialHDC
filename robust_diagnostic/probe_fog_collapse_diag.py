@@ -149,8 +149,8 @@ def main():
                     model, parser, proj, device, protos_code, protos_feat,
                     max_frames=args.max_frames)
                 # frozen R4 mIoU with the in-domain W0 (reuse stream + a ConfMatrix)
-                from robust_diagnostic.al_full_dataset_diag import ConfMatrix
-                cm = ConfMatrix()
+                from robust_diagnostic.al_full_dataset_diag import ConfAccum as _ConfAccum
+                cm = _ConfAccum()
                 W0d = W0.to(device)
                 for zf, labels, fi in stream_frames(model, parser, device, args.max_frames):
                     n = len(zf)
