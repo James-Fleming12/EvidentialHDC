@@ -501,7 +501,7 @@ correct all along. The mechanism probe's lower healthy-condition ceilings
 
 ### P2: code-2000 at full scale -- the "peak at 2000" does NOT hold
 
-cov_ep10, KITTI-C, full scale, ceiling at 10000-d vs 2000-d:
+cov_ep10, KITTI-C, full scale (n_val 290M), ceiling at 10000-d vs 2000-d:
 
 | condition | 10000-d | 2000-d | delta |
 | :--- | :--- | :--- | :--- |
@@ -519,68 +519,21 @@ Iteration-2 "peak at 2000" was a small-harness (pool 10k/val 100k) artifact --
 at full scale the 10000-d projection retains more. **Improvement path 4
 (code-2000 default) is DEAD.** `al_full_dataset_ep10_custom_dim2000.json`.
 
-### P3: D7 gate-off -- the input-IN gate RECOVERS healthy/cross-domain ceilings
+### P3/P4/P5: SMOKE-ONLY -- the full overnight was NOT run
 
-cov_kitti (home-domain) gate-off (`input_in=False`, fresh build) vs authoritative
-input-on, ceiling:
+The `probe_d7_gate_ep10.json` and `probe_nusc_c_w0source_ep10.json` /
+`probe_nusc_c_w0source_dim2000.json` files pulled are the **30-frame SMOKE**
+outputs (n_val ~1-2M on KITTI-C, ~15-250k on NuScenes-C vs the full-scale 290M /
+~100M), written by `SMOKE=1` to the same output paths. **None of the P3/P4/P5
+numbers above are valid full-scale results and must NOT be quoted.** The full
+overnight (`bash run_overnight_covimprove.sh`, no SMOKE) was not executed.
 
-| condition | input-IN ON | gate-OFF | delta |
-| :--- | :--- | :--- | :--- |
-| fog | 0.369 | 0.344 | -0.024 |
-| crosstalk | 0.491 | 0.492 | +0.000 |
-| snow | 0.495 | 0.484 | -0.011 |
-| wet_ground | 0.419 | **0.722** | **+0.303** |
-| incomplete_echo | 0.437 | 0.504 | +0.067 |
-| beam_missing | 0.487 | 0.558 | +0.071 |
-| motion_blur | 0.458 | 0.569 | +0.111 |
-| cross_sensor | 0.446 | 0.629 | +0.183 |
-
-**Gating OFF the per-scan input-IN recovers +0.07..+0.30 ceiling on the healthy
-conditions (wet_ground 0.419 -> 0.722!) while fog drops only -0.024 and
-crosstalk is unchanged (+0.000).** This is the key positive: the input-IN
-normalization is the healthy-condition ceiling cap, and it can be gated off at
-inference with almost no fog/crosstalk cost. The gate keeps fog (drop -0.024) and
-crosstalk (flat) because those need the normalization least at the CEILING level
-(the rescue is at zero-shot, which gating also keeps: cov_kitti fog gate-off
-frozen 0.148 vs input-on 0.322 -- hmm, see caveat below). **Improvement path 1
-(gated normalization) is the WINNER.**
-
-CAVEAT on P3: the gate-off FROZEN (zero-shot) drops on fog (0.148 vs 0.322) --
-the input-IN's fog rescue lives at the FROZEN level, and gating it off costs
-there. The gate decision therefore matters more for the frozen/zero-shot line
-than the ceiling. The cov_nusc half of P3 is INCOMPLETE (interrupted after 7/15
-conditions; `nuscenes_c:*` and `kittic:cross_sensor` missing) -- re-run P3 or
-read the cov_kitti half as the home-domain verdict. `probe_d7_gate_ep10.json`.
-
-### P4: corrected NuScenes-C zero-shot (in-domain W0) -- cov-shift leads or ties
-
-In-domain nuScenes-clean W0 (authoritative `eval_target_condition`), 10000-d:
-
-| condition | cov zs | cov ceil | dgl zs | dgl ceil |
-| :--- | :--- | :--- | :--- | :--- |
-| fog | 0.278 | 0.547 | **0.353** | **0.613** |
-| crosstalk | 0.505 | 0.553 | **0.517** | **0.585** |
-| snow | **0.649** | 0.665 | 0.609 | **0.659** |
-| wet_ground | 0.638 | 0.682 | **0.654** | **0.700** |
-| incomplete_echo | **0.666** | 0.687 | 0.670 | **0.699** |
-| beam_missing | **0.647** | 0.674 | 0.592 | **0.728** |
-| motion_blur | **0.427** | 0.575 | 0.357 | **0.577** |
-| cross_sensor | 0.600 | 0.729 | **0.601** | **0.783** |
-
-With the in-domain W0, NuScenes-C zero-shot is 0.43-0.67 (NOT the contaminated
-0.15-0.3), and the two extractors are essentially TIED: cov-shift wins or ties
-zero-shot on 4/8 (snow, incomplete, beam, motion), DGLSS++ wins 4/8 (fog,
-crosstalk, wet, cross). DGLSS++ wins the ceiling on 7/8. The earlier
-"mechanism-probe D9" corrected table (which showed DGLSS++ leading zero-shot
-everywhere) was itself based on the n_val-buggy probe; this authoritative run
-corrects it. **The two extractors are near-equal on NuScenes-C zero-shot;
-cov-shift is NOT behind.** `probe_nusc_c_w0source_ep10.json`.
-
-### P5: NuScenes-C code-2000 -- confirms the negative
-
-2000-d is -0.03..-0.10 lower than 10000-d on every NuScenes-C condition (both
-extractors, ceiling). Dimension reduction is dead at full scale on both datasets.
-`probe_nusc_c_w0source_dim2000.json`.
+The P3 smoke does confirm the MECHANISM directionally (gate-off recovers
+healthy-condition ceiling: cov_kitti wet_ground 0.430/0.722 smoke vs the
+input-on authoritative 0.419; cross_sensor 0.486/0.629 vs 0.446), but these are
+smoke-scale and the exact deltas are not final. **Run the full overnight and
+re-pull P3/P4/P5 before quoting any of them.** The `--skip_existing` resume now
+works per-condition, so a full re-run will only compute what's missing.
 
 ---
 
