@@ -381,6 +381,97 @@ term. For the ADA framework: the decoder should be the low-rank `W_res`
 (evidence 3), and the zero-shot baseline to compare against must use in-domain
 W0 (evidence 4).
 
+### FOG-COLLAPSE CONFIRMATION: the collapse is corruption-generator-specific, not extractor-specific (`probe_fog_collapse_diag.py`, 200 frames, fog+crosstalk)
+
+The direct test: same extractor, evaluated under BOTH corruption generators,
+measuring nearest-mean recall (R1-geometry) and frozen R4 on the corrupted
+stream with in-domain clean prototypes/W0. If the collapse were extractor-side,
+the same extractor would collapse under both generators; if it is
+generator-side, only KITTI-C fog/crosstalk collapse it.
+
+| extractor (trained on) | dataset / cond | frozen R4 | code recall | feat recall |
+| :--- | :--- | :--- | :--- | :--- |
+| **dgl_nusc** (NuScenes) | KITTI-C fog | 0.068 | 0.143 | 0.148 |
+| **dgl_nusc** (NuScenes) | KITTI-C crosstalk | 0.120 | 0.165 | 0.171 |
+| **dgl_nusc** (NuScenes) | **NuScenes-C fog** | **0.305** | **0.575** | 0.574 |
+| **dgl_nusc** (NuScenes) | **NuScenes-C crosstalk** | **0.357** | **0.609** | 0.609 |
+| dgl_kitti (KITTI) | KITTI-C fog | 0.104 | 0.268 | 0.263 |
+| dgl_kitti (KITTI) | NuScenes-C fog | 0.104 | 0.236 | 0.242 |
+| cov_kitti (KITTI) | KITTI-C fog | 0.293 | 0.513 | 0.514 |
+| cov_kitti (KITTI) | KITTI-C crosstalk | 0.473 | 0.639 | 0.646 |
+| cov_kitti (KITTI) | NuScenes-C fog | 0.115 | 0.311 | 0.307 |
+| cov_nusc (NuScenes) | NuScenes-C fog | 0.229 | 0.486 | 0.478 |
+| cov_nusc (NuScenes) | NuScenes-C crosstalk | 0.332 | 0.595 | 0.592 |
+
+**The same NuScenes-trained DGLSS++ collapses on KITTI-C fog (recall 0.143, near
+the ~0.06 random baseline) but is NOT collapsed on NuScenes-C fog (recall 0.575).**
+The collapse is therefore a property of the KITTI-C fog/crosstalk GENERATOR, not
+of the DGLSS++ extractor or of fog-in-general. The two fog generators produce
+different input statistics (KITTI-C fog: remission var ~0, range var 4.0;
+NuScenes-C fog: range var ~5000, remission kept -- D3), and KITTI-C's fog
+destroys the feature geometry while NuScenes-C's leaves it intact.
+
+Additional reads:
+- **cov_kitti on KITTI-C fog is NOT collapsed** (recall 0.513): the cov-shift
+  input normalization rescues KITTI-C fog exactly as designed -- this is the
+  extractor's home-domain win. cov_kitti on NuScenes-C fog is depressed
+  (0.311) only because it is a KITTI-trained extractor seeing cross-domain data,
+  not a normalization failure.
+- **R1-geometry (recall) and R4-linear (frozen R4) collapse TOGETHER** on
+  KITTI-C fog (dgl_nusc 0.143 recall / 0.068 R4; cov_nusc 0.575 / 0.305). The
+  probe-vs-prototype choice is NOT what saves NuScenes-C -- the geometry itself
+  survives there. The R4-vs-R1 divergence appears at the CEILING (labeled fit),
+  not at the frozen level.
+- cov_nusc NuScenes-C fog recall 0.486 < dgl_nusc 0.575: even in-domain, cov-shift
+  is slightly more compressed than DGLSS++ on the healthy/fog recall -- the same
+  clean-inherited capacity gap (D1) showing up at the recall level.
+
+**Confirmation:** the "collapse on fog in KITTI but not NuScenes" story is
+validated. The collapse is generator-specific; cov-shift's normalization rescues
+its home-domain generator and transfers only partially.
+
+### DIAGNOSTICS FOR IMPROVING COV-SHIFT (from the mechanism + collapse probes)
+
+The healthy-condition deficit and the cross-domain ceiling cap both trace to the
+input normalization being **calibrated to KITTI-C's generator**. Improvement
+levers, in expected-value order:
+
+1. **Gated / data-dependent normalization (the D7 re-test, corrected).** D3 shows
+   the two generators are distinguishable by input statistics (KITTI-C fog =
+   remission var collapse; NuScenes-C fog = range var explosion). If the
+   input-IN engaged only when the corruption has the "home-domain" signature
+   (remission collapse, mild range inflation), cov-shift would keep the KITTI-C
+   fog rescue AND stop paying the healthy/cross-domain compression cost.
+   Decisive test: build a fresh model with `input_in=False` and load the
+   checkpoint (fix D7's toggle), measure healthy + NuScenes-C ceilings with the
+   gate on/off. If gating off recovers the DGLSS++-level healthy ceilings while
+   keeping fog, the gate is the whole fix.
+2. **Channel-scope / scale-only normalization.** The `scale_only` variant
+   (divide by per-scan std WITHOUT mean subtraction) preserves direction while
+   absorbing magnitude shifts. D3 shows fog's range inflation is a magnitude
+   shift; scale-only may rescue NuScenes-C fog without the healthy compression.
+   Micro-test it on cov-shift (train + eval), compare healthy/fog/NuScenes-C
+   ceilings against the current mean+std form.
+3. **Capacity recovery on the healthy conditions.** D1: cov-shift pays 0.12
+   clean capacity. The compression is NOT in the code (D5/D6 rejected
+   compression -- cov-shift code variance is HIGHER), so the healthy loss is
+   elsewhere (likely the internal InstanceNorm replacing BatchNorm, or the
+   per-scan mean subtraction removing a clean-directional constant). Test:
+   internal-IN vs input-IN disentangled (train input-IN with BN trunk; train
+   IN trunk without input-IN) -- pins which lever costs the 0.12.
+4. **Joint with the code-2000 finding.** The residual is large everywhere
+   (resid ~1.2); the ceiling cap is ridge-extraction, and code-2000 improves
+   conditioning (tta Iteration 2). A cov-shift trained/evaluated at 2000-d may
+   recover ceiling headroom on the healthy conditions for free. Orthogonal to
+   the normalization levers; adopt as the default projection if it holds at
+   full scale.
+
+**Not worth pursuing from the evidence:** a new loss term for the healthy
+conditions (D1: the deficit is clean-inherited capacity, not an over-regulating
+term -- diagnostic 8 is deprioritized); smarter bank selection for the AL line
+(C28: diverse/uncertainty lost to random); projection-dim beyond 2000 (tta
+Iteration 2: peak at 2000).
+
 ---
 
 ## Reproducibility
@@ -392,6 +483,9 @@ W0 (evidence 4).
 - Mechanism probe: `robust_diagnostic/probe_covshift_mechanism_diag.py`, runner
   `run_probe_covshift_mechanism.sh` (D1 clean baseline, D3 input stats, D4
   residual/effrank/λ-sweep, D5/D6 variance, D7 gate, D9 W0-source).
+- Fog-collapse probe: `robust_diagnostic/probe_fog_collapse_diag.py`, runner
+  `run_probe_fog_collapse.sh` (nearest-mean recall + frozen R4, same extractor
+  under both generators; `probe_fog_collapse.json`).
 - Checkpoints: `logs/ep10_supcon_vib_dglsspp_inputin_in_chan/...` (KITTI cov),
   `logs/supcon_vib_dglsspp` (KITTI DGLSS++), `logs/nusc_covshift_21ep` (NuScenes
   cov), `logs/nusc_dglsspp_21ep` (NuScenes DGLSS++).
