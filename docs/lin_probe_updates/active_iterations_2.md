@@ -269,3 +269,22 @@ farthest-point-in-feature-space.
 - Existing results: `al_full_dataset_ep10.json` (full-scale $W_{res}$ tables),
   `probe_al_gauge_ep10.json` (gate signals), `probe_pseudolabel_struct_*.json`
   (per-class precision / S-T decomposition).
+
+## Connection to the extractor-mechanism probe (Iteration 0 of `cov_full_scale.md`)
+
+Two results from the mechanism probe directly constrain this ADA framework:
+
+1. **The residual is large everywhere (resid_rel ~1.1-1.3)** on every extractor
+   and condition -- there is recoverable structure to close. The ceiling cap is
+   a ridge-extraction problem (the C16-C28 ill-conditioning), which is exactly
+   what the low-rank $W_{res}$ decoder (this framework's core) already fixes.
+2. **D9: the NuScenes-C zero-shot was contaminated by a cross-domain W0 fit.**
+   In-domain W0 raises frozen by +0.13..+0.5. For ADA this means: the "gap to
+   close" that motivates the update must be measured against an in-domain
+   frozen probe, not a cross-domain one -- otherwise the framework spends labels
+   chasing a probe-fit artifact.
+3. **D1: the healthy-condition deficit is mostly clean-inherited** (DGLSS++ clean
+   0.640 vs cov-shift 0.520), so a healthy-condition "regression" of an ADA
+   update is more likely capacity than corruption. The zero-degradation
+   guarantee (N4 gate) should be judged against the CLEAN baseline, not the
+   corrupted frozen number.

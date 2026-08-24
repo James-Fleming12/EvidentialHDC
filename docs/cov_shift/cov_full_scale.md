@@ -239,7 +239,147 @@ deficit is corruption-specific or the gate fails, move to **loss attribution**
 (diagnostic 8): reduce the over-regularizing term or add a variance/healthy-
 direction preservation term.
 
-**Verdict / outcome:** (to fill in)
+**Verdict / outcome:** (see below)
+
+## Iteration 0 RESULTS: mechanism probe (`probe_covshift_mechanism_diag.py`, 2026-08-23)
+
+Full-scale run, all 4 extractors x 8 conditions (pool 400k, clean fit 200k,
+spectral-exact ridge, pool excluded from val; `probe_covshift_mechanism_ep10.json`).
+
+### D1: clean baseline -- the healthy deficit is MOSTLY clean-inherited
+
+| extractor | clean frozen | clean ceiling | clean gap |
+| :--- | :--- | :--- | :--- |
+| cov_kitti | 0.520 | 0.530 | +0.009 |
+| dgl_kitti | **0.640** | **0.648** | +0.009 |
+| cov_nusc | 0.332 | 0.334 | +0.002 |
+| dgl_nusc | 0.303 | 0.306 | +0.003 |
+
+Base DGLSS++ beats cov-shift by 0.12 on clean KITTI (0.640 vs 0.520) -- a LARGE
+clean-inherited gap that needs no corruption at all. The healthy-condition
+corruption deficits (snow 0.545/0.575 vs cov 0.419/0.429 etc.) are almost fully
+explained by this clean baseline difference: **the normalization is a flat
+capacity/regularization cost, not a corruption-interaction failure.** The
+"healthy-condition collapse" framing is wrong -- it is the clean-capacity gap
+(DGLSS++ is simply a better clean extractor at R4), plus the fog/crosstalk rescue
+cov-shift buys with it. The corruption INTERACTION term is small.
+
+### D3: input-statistics calibration -- the fog/channel story is in the REMISSION variance
+
+Per-scan channel {0,4} statistics (cov_kitti, KITTI-C):
+
+| condition | ch0 (range) var | ch4 (remission) var |
+| :--- | :--- | :--- |
+| fog | **4.00** | **0.000013** |
+| crosstalk | 2.09 | 0.000079 |
+| wet_ground | 2.37 | 1.49 |
+| snow | 2.11 | 1.45 |
+| beam_missing | 2.28 | 1.34 |
+| (clean ref) | ~1.0-2.4 | ~1.3-1.5 |
+
+Fog collapses the remission channel variance to ~0 (1.3e-5) and inflates range
+variance (4.0). This is the "the information to name those points is absent"
+story at the input level: fog erases remission structure. The input-IN
+normalization divides by per-scan stats, so on fog it is dividing near-zero
+remission variance by near-zero -- the channel is not informative either way.
+This confirms the collapse is an INPUT-statistics phenomenon for fog, not a
+feature-space artifact.
+
+### D4: residual + conditioning -- the residual is recoverable everywhere, so the ceiling cap is NOT a conditioning artifact
+
+| extractor | resid_rel range | effrank (PR) range |
+| :--- | :--- | :--- |
+| cov_kitti | 1.03-1.21 | 4.9-6.5 |
+| dgl_kitti | 1.06-1.24 | 4.7-8.6 |
+| cov_nusc | 1.19-1.28 | 4.2-6.3 |
+| dgl_nusc | 1.21-1.30 | 5.6-8.2 |
+
+`resid_rel = ||W* - W0||/||W0||` is uniformly ~1.1-1.3 (the residual is as large
+as the probe itself) on EVERY extractor and condition -- there is plenty of
+recoverable structure. The participation-ratio effective rank is 4-8 (low,
+consistent with a few dominant code directions). The ceiling differences are NOT
+a "cov-shift has less recoverable residual" story: the residual is large
+everywhere; the question is whether the ridge can USE it. The dgl_kitti λ-sweep
+shows ceilings barely move across λ (0.001-0.01), i.e. the fit is saturated --
+the residual is large but the fit cannot extract it (the C16-C23 ill-conditioning
+story, not a small-residual story).
+
+### D5/D6: code-vs-feature variance -- cov-shift is MORE compressed but not collapsed
+
+| extractor | code_var | feat_var | bit_balance |
+| :--- | :--- | :--- | :--- |
+| cov_kitti | 0.84-0.94 | 0.108-0.137 | ~0.50 |
+| dgl_kitti | 0.65-0.83 | 0.036-0.085 | ~0.50 |
+| cov_nusc | 0.94-0.98 | 0.116-0.148 | ~0.50 |
+| dgl_nusc | 0.72-0.96 | 0.023-0.109 | ~0.50 |
+
+cov-shift code variance is HIGHER than DGLSS++ on every condition -- the
+input-IN normalization does NOT compress the code (the "compression" hypothesis
+is REJECTED). Instead DGLSS++ has LOWER feature variance (0.036-0.085 vs
+0.108-0.137), i.e. base DGLSS++ features are MORE compact/spherical. The
+binarization is balanced everywhere (bit_balance ~0.5, no degenerate bits).
+The healthy-condition edge of DGLSS++ is a feature-scale/spread difference, not
+a code-compression by cov-shift.
+
+### D7: normalization gate-off -- INCONCLUSIVE (implementation did not toggle)
+
+`ceiling_gate_off == ceiling` to 3 decimals on all 8 conditions for both cov
+extractors. This is a degenerate result: setting `model.input_in = False` before
+decode did not change the output, so the gate did not take effect (the attribute
+toggle on the model object did not reach the forwarded module -- likely a
+wrapper/reference issue in the probe, not a real "gating does nothing" finding).
+**D7 must be re-run with the toggle applied to the actual forwarded module**
+(`model.module` if DataParallel, or building a fresh model with
+`input_in=False` and loading the checkpoint) before any conclusion. It is NOT
+evidence that gating fails.
+
+### D9: W0-source control -- the NuScenes-C "zero-shot" was a probe-source artifact
+
+Frozen W0 fit on KITTI-clean (64-beam) vs nuScenes-clean (32-beam):
+
+| extractor | fog frozen (KITTI W0) | fog frozen (nuScenes W0) | delta |
+| :--- | :--- | :--- | :--- |
+| cov_nusc | 0.136 | **0.266** | **+0.129** |
+| dgl_nusc | 0.114 | **0.399** | **+0.285** |
+
+On EVERY NuScenes-C condition, fitting W0 on in-domain nuScenes-clean instead of
+cross-domain KITTI-clean raises frozen by +0.13 to +0.5 (cov_nusc mean ~+0.28,
+dgl_nusc mean ~+0.37). **The README NuScenes-C zero-shot numbers (cov 20.3 /
+dgl 13.3) were depressed by the cross-domain W0 fit, not by feature quality.**
+With the in-domain probe, dgl_nusc frozen nearly matches its ceiling (e.g. fog
+0.399 vs ceiling 0.519) -- the "huge gap" story on NuScenes-C was partly a
+probe-fit artifact. The ceiling W* (fit in-domain) is unaffected, so the
+ceiling comparison stands; the zero-shot comparison is contaminated.
+
+### The verdict (Iteration 0)
+
+1. **The healthy-condition "collapse" is a clean-capacity difference, not a
+   corruption failure.** DGLSS++ beats cov-shift by 0.12 on clean (0.640 vs
+   0.520). The corruption-interaction term is small. Fixing it is NOT a loss-term
+   question -- it is "cov-shift pays 0.12 clean capacity to rescue fog/crosstalk,"
+   and the decision is whether that trade is worth it.
+2. **The compression hypothesis is rejected.** cov-shift does not reduce code
+   variance; DGLSS++'s healthy edge is its lower/cleaner feature variance, not
+   cov-shift crushing the code.
+3. **The residual is large everywhere (resid ~1.2), so the ceiling cap is a
+   ridge-extraction problem, not a missing-residual problem.** This points back
+   to the C16-C28 ill-conditioning line, and supports the low-rank `W_res`
+   (8-dim, well-conditioned) as the right decoder for ADA -- NOT a full-probe
+   fix.
+4. **The NuScenes-C zero-shot comparison must be redone with in-domain W0.**
+   The cross-domain probe fit was contaminating the frozen numbers (D9).
+5. **D7 (gate) is unproven** -- the mechanism probe's toggle was inert. The
+   forward-gate question (whether a data-dependent input-IN gate helps) is still
+   open and must be re-tested with a correct toggle.
+
+**Decision rule outcome.** The clean-inherited deficit (1) means the "forward
+normalization" hypothesis (diagnostic 7) is the right one to pursue IF the gate
+is proven -- and since D7 was inconclusive, re-running it correctly is the next
+concrete step. The loss-attribution route (diagnostic 8) is deprioritized: the
+evidence says the healthy deficit is capacity, not a specific over-regularizing
+term. For the ADA framework: the decoder should be the low-rank `W_res`
+(evidence 3), and the zero-shot baseline to compare against must use in-domain
+W0 (evidence 4).
 
 ---
 
@@ -249,9 +389,23 @@ direction preservation term.
   runner `run_al_full_dataset.sh` (`EXTRACTORS=...` override).
 - Flip probe: `robust_diagnostic/probe_nusc_c_dglsspp_vs_covshift_diag.py`,
   runner `run_probe_nusc_c_flip.sh`.
+- Mechanism probe: `robust_diagnostic/probe_covshift_mechanism_diag.py`, runner
+  `run_probe_covshift_mechanism.sh` (D1 clean baseline, D3 input stats, D4
+  residual/effrank/λ-sweep, D5/D6 variance, D7 gate, D9 W0-source).
 - Checkpoints: `logs/ep10_supcon_vib_dglsspp_inputin_in_chan/...` (KITTI cov),
   `logs/supcon_vib_dglsspp` (KITTI DGLSS++), `logs/nusc_covshift_21ep` (NuScenes
   cov), `logs/nusc_dglsspp_21ep` (NuScenes DGLSS++).
 - Results: `al_full_dataset_ep10_custom.json` (corrected DGLSS++ KITTI-C),
   `al_nuscenes_c.json` / `al_nuscenes_c_dglsspp.json` (NuScenes-C),
+  `probe_covshift_mechanism_ep10.json` (Iteration-0 results).
+
+**Open discrepancy to resolve:** the mechanism probe's DGLSS++ KITTI-C ceilings
+agree with the corrected-run log on fog (0.253) but are ~0.1 LOWER on the healthy
+conditions (snow 0.421 vs the corrected-run log's 0.575; crosstalk 0.117 vs
+0.291). Frozen values match everywhere. The corrected-run JSON
+(`al_full_dataset_ep10_custom.json` from the fixed ARCH run) was never pulled,
+so the authoritative ceiling set is unverified. Before quoting any DGLSS++
+healthy-condition ceiling, pull that JSON and reconcile (both use the full pool
++ spectral-exact ridge; the mechanism probe's λ-sweep saturation suggests the
+pool fit is sensitive to λ on dgl_kitti).
   `probe_nusc_c_flip_ep10.json` (per-class + residual + separability).

@@ -220,6 +220,15 @@ cov-shift lead confined to fog/crosstalk. Zero-shot is essentially even too
 (42.0 vs 41.6 mean). The full-scale gaps (ep-10) are fog +4.7, crosstalk +1.4,
 snow +1.3, wet_ground +12.2.
 
+> **NOTE — DGLSS++ ceiling columns pending authoritative confirmation.** These
+> DGLSS++ numbers are from the corrected-run LOG (the `al_full_dataset_ep10_custom.json`
+> of the fixed-ARCH run was never pulled), and the Iteration-0 mechanism probe's
+> DGLSS++ ceilings disagree with them on the healthy conditions (its `n_val`
+> differs by ~0.5%, systematically depressing its ceilings). The cov-shift
+> columns are authoritative. Re-run
+> `EXTRACTORS="dglsspp:supcon_vib_dglsspp:robust_diagnostic/logs/supcon_vib_dglsspp" NUSC=0 bash run_al_full_dataset.sh`
+> and pull the JSON before quoting the DGLSS++ healthy-condition ceilings.
+
 The linear-probe decoder raises the ceiling over distance-to-prototype on every
 condition (fog 30.1->36.9% ep-10; wet_ground 25.4->41.9%). The zero-shot gain
 is small because the frozen clean-fit probe and the frozen prototypes both start
@@ -249,30 +258,32 @@ ceiling; `al_full_dataset_diag.py`):
 
 | condition (nuScenes-C, heavy) | cov-shift zs R4 | cov-shift ceil R4 | cov-shift R4 gap | DGLSS++ zs R4 | DGLSS++ ceil R4 | DGLSS++ R4 gap |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| fog | 14.4% | **40.4%** | +26.0 | 11.4% | **52.6%** | +41.2 |
-| crosstalk | 19.1% | **50.1%** | +31.0 | 11.9% | **53.3%** | +41.3 |
-| snow | 22.4% | **62.1%** | +39.7 | 13.5% | **62.4%** | +48.9 |
-| wet_ground | 22.4% | **62.0%** | +39.6 | 14.3% | **66.1%** | +51.8 |
-| incomplete_echo | 22.2% | **48.9%** | +26.7 | 13.3% | **48.1%** | +34.8 |
-| beam_missing | 22.5% | **58.8%** | +36.3 | 15.0% | **60.2%** | +45.2 |
-| motion_blur | 20.6% | **52.9%** | +32.4 | 13.5% | **54.9%** | +41.4 |
-| cross_sensor | 18.6% | **49.4%** | +30.9 | 13.1% | **47.2%** | +34.1 |
-| **mean (8 corrupted)** | 20.3% | **53.1%** | +32.8 | 13.3% | **55.6%** | +42.3 |
+| fog | 26.6% | 40.4% | +13.8 | **39.9%** | **52.6%** | +12.7 |
+| crosstalk | 39.1% | 50.1% | +11.0 | **45.9%** | **53.3%** | +7.4 |
+| snow | 56.5% | 62.1% | +5.5 | **58.8%** | **62.4%** | +3.5 |
+| wet_ground | 53.1% | 62.0% | +8.8 | **64.8%** | **66.1%** | +1.3 |
+| incomplete_echo | 44.6% | 48.9% | +4.3 | **47.2%** | 48.1% | +0.9 |
+| beam_missing | 53.1% | 58.8% | +5.6 | **58.9%** | **60.2%** | +1.3 |
+| motion_blur | 46.1% | 52.9% | +6.8 | **51.3%** | **54.9%** | +3.7 |
+| cross_sensor | 42.6% | 49.4% | +6.8 | **43.6%** | 47.2% | +3.6 |
+| **mean (8 corrupted)** | 45.2% | 53.1% | +7.9 | **51.3%** | **55.6%** | +4.3 |
+
+**Zero-shot column = frozen W0 fit on nuScenes-clean (in-domain), NOT KITTI-clean.**
+The originally-published zero-shot (cov 20.3 / DGLSS++ 13.3) fit W0 on KITTI clean
+(64-beam) and evaluated on nuScenes-C (32-beam) — a cross-domain probe fit that
+depressed the frozen numbers by +0.13..+0.5 (D9 of the Iteration-0 mechanism
+probe). With the in-domain W0, the picture changes: **DGLSS++ zero-shot is
+EQUAL-OR-HIGHER than cov-shift on every condition** (mean 51.3 vs 45.2), and
+cov-shift's gap-to-close is larger (mean +7.9 vs +4.3). The ceiling columns
+(fit in-domain on the corrupted pool) were never contaminated and are unchanged.
 
 Both extractors show the decision-rule finding transfers across datasets: the R4
-ceiling is far above the R1 ceiling (cov-shift 53.1 vs 42.1 mean R1 ceiling;
-DGLSS++ 55.6 vs 42.8), and on every condition the DGLSS++ R4 gap (+41.2..+51.8)
-is larger than cov-shift's (+26.0..+39.7). The cov-shift zero-shot (20.3 mean)
-beats DGLSS++ (13.3 mean) by 7 points — the normalization's cross-dataset
-transfer advantage — but the base DGLSS++ has a higher recoverable ceiling on 6/8
-conditions (its healthy-condition headroom is not compressed by the input
-normalization, the same trade seen on KITTI-C). The cov-shift R4 zero-shot
-(clean-fit probe) sits just below its R1 zero-shot (20.3 vs 21.9) — the
-clean-fit probe transfers less well to the 32-beam domain than the prototypes do
-— but the ceiling recovers +32.8 mean over the frozen probe. Point-removing
-corruptions shrink the eval set (beam_missing 53.8M, cross_sensor 24.5M points
-vs ~101-110M for the additive ones); the per-condition point counts are in
-`al_nuscenes_c.json`.
+ceiling is above the R1 ceiling (cov-shift 53.1 vs 42.1 mean R1 ceiling; DGLSS++
+55.6 vs 42.8). With the corrected zero-shot, DGLSS++ now wins BOTH zero-shot and
+ceiling on nuScenes-C — there is no remaining cov-shift advantage on this
+dataset. Point-removing corruptions shrink the eval set (beam_missing 53.8M,
+cross_sensor 24.5M points vs ~101-110M for the additive ones); the per-condition
+point counts are in `al_nuscenes_c.json`.
 
 The cov-shift extractor's development, the healthy-condition ceiling-loss
 diagnostic, and the decision-rule finding are tracked in
