@@ -45,15 +45,18 @@ CONDS = ['fog', 'crosstalk', 'snow', 'wet_ground', 'incomplete_echo',
          'beam_missing', 'motion_blur', 'cross_sensor']
 
 def decode_stream_codes(model, parser, proj, device, decode_fn, max_frames=0,
-                        chunk=100000):
+                        chunk=100000, progress=True):
     """Stream all frames; codes = sign(z @ proj). decode_fn(codes_chunk) -> preds.
     `chunk` is the VAL chunk size (per-frame code batch); the kNN decoders pass a
     smaller chunk so the (chunk x bank) similarity stays under memory."""
     cm = ConfAccum()
-    for zf, labels, fi in stream_frames(model, parser, device, max_frames):
+    t0 = time.time()
+    for i, (zf, labels, fi) in enumerate(stream_frames(model, parser, device, max_frames)):
         n = len(zf)
         if n == 0:
             continue
+        if i % 50 == 0:
+            print(f"      [decode] frame {i} ({time.time()-t0:.0f}s, n_val={cm.n})", flush=True)
         for s in range(0, n, chunk):
             e = min(s + chunk, n)
             codes = torch.sign(zf[s:e].to(device) @ proj).float()
@@ -91,8 +94,10 @@ def main():
     ap.add_argument("--max_frames", type=int, default=200)
     ap.add_argument("--clean_fit_n", type=int, default=50000)
     ap.add_argument("--pool_cap", type=int, default=200000)
-    ap.add_argument("--knn_bank", type=int, default=100000,
-                    help="bank size for the kNN oracle (subsample of the pool)")
+    ap.add_argument("--knn_bank", type=int, default=30000,
+                    help="bank size for the kNN oracle (subsample of the pool). "
+                         "Smaller = faster: 30k over 300M val pts is ~5 min/cond "
+                         "vs ~30 min at 100k.")
     ap.add_argument("--rff_dim", type=int, default=2048)
     ap.add_argument("--conds", type=str, default=",".join(CONDS))
     ap.add_argument("--extractors", type=str,
@@ -137,14 +142,21 @@ def main():
             Xp = hdc_codes(pf, proj, device).float()
             Yp = onehot(pl, NUM_CLASSES)
             print(f"  {cond}: pool {len(pf)} ({time.time()-t0:.0f}s)")
-
             entry = {}
+            results['extractors'][lab]['conds'][cond] = entry
+            # save after each decoder so a mid-condition failure keeps the
+            # earlier decoders' rows (per-decoder checkpoint)
+            def _save():
+                with open(args.out, 'w') as fh:
+                    json.dump(results, fh, indent=2, default=float)
+
             # 1. R4 linear on code (reference ceiling)
             W_lin = ridge_fit_exact(Xp, Yp, 1e-3, device).to(device)
             miou, n = decode_stream_codes(model, parser, proj, device,
                                           lambda c: (c @ W_lin).argmax(1), args.max_frames)
             entry['r4_linear_code'] = miou
             print(f"    R4 linear (code)      : {miou:.3f}")
+            _save()
 
             # 2. linear on raw 128-d (binarization check)
             # fit ridge on raw features
@@ -166,6 +178,7 @@ def main():
                 del zf, labels
             entry['linear_raw128'] = acc_raw.miou()
             print(f"    linear (raw 128)      : {entry['linear_raw128']:.3f}")
+            _save()
 
     # 3/4. kNN oracle (subsampled pool) on code and raw
     torch.manual_seed(42)
@@ -186,6 +199,7 @@ def main():
         args.max_frames, chunk=knn_chunk)[0]
     print(f"    kNN1 (code)           : {entry['knn1_code']:.3f}")
     print(f"    kNN5 (code)           : {entry['knn5_code']:.3f}")
+    _save()
 
     # raw-feature kNN (128-d, but the similarity is chunk x bank; keep the
     # chunk small so 10k x 100k = 1e9 = 4GB, under the OOM boundary)
@@ -202,6 +216,7 @@ def main():
         del zf, labels
     entry['knn1_raw'] = acc_fknn.miou()
     print(f"    kNN1 (raw 128)        : {entry['knn1_raw']:.3f}")
+    _save()
 
     # 5. RBF probe on code (random Fourier features + ridge)
     # NOTE: normalize the RFF features (they have magnitude ~sqrt(d_rff)); the
@@ -219,6 +234,7 @@ def main():
     entry['rff_ridge_code'] = decode_stream_codes(
         model, parser, proj, device, rbf_decode, args.max_frames)[0]
     print(f"    RFF ridge (code)      : {entry['rff_ridge_code']:.3f}")
+    _save()
 
     # 6. balanced linear probe (per-class lam)
     from robust_diagnostic.al_full_dataset_diag import ridge_fit_balanced
