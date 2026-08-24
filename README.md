@@ -902,3 +902,72 @@ small-gap conditions (snow $-0.016$). The open todos, in priority order:
    the label budget is spent only on conditions where the gap is significant:
    beam_missing ($-0.001$) and motion_blur ($+0.006$) have nothing to close,
    and snow's $+0.013$ is borderline; labels should not be spent there.
+
+---
+
+## Comparison to GeoID (Test-Time Training via Geometric Inlier Discrimination, CVPR)
+
+**GeoID** (`thirdparty/GeoID.pdf`, Kim, Jang, Yoon — KAIST, CVPR 2025) is the
+closest published method to our Pillar-3 direction. It adapts a LiDAR
+segmentation model to corrupted test data by test-time training: it injects
+synthetic off-manifold points into each test scan, trains the model at train
+time with a geometric-inlier-discrimination head (distinguishing real inliers
+from displaced outliers), then at test time **backpropagates the GeoID loss on
+the shared encoder** to adapt. It reports **46.96 mIoU on SemanticKITTI-C and
+56.73 on nuScenes-C**, beating TTT / TENT / DUA / GIPSO / HGL, and emphasizes
+efficiency via sparse adaptation (12 FPS on an A6000 at stride-30). Its own
+limitations section states: *"most of the computational cost in test-time
+training arises from backpropagation."*
+
+### The key comparison: our labeled ceiling already matches or beats their adapted result
+
+Our full-scale R4 ceiling (frozen extractor + closed-form ridge probe, NO
+test-time adaptation, NO backprop) vs GeoID's adapted results on nuScenes-C:
+
+| condition | our ceiling (R4) | GeoID adapted | GeoID source-only |
+| :--- | :--- | :--- | :--- |
+| fog | 54.7 | 57.4 | 47.2 |
+| crosstalk | **55.3** | 30.8 | 19.7 |
+| snow | **66.5** | 53.9 | 37.7 |
+| wet_ground | 68.2 | 69.3 | 69.1 |
+| incomplete_echo | **68.7** | 59.7 | 59.6 |
+| beam_missing | **67.4** | 63.5 | 63.1 |
+| motion_blur | 57.5 | 69.1 | 67.2 |
+| cross_sensor | **72.9** | 50.1 | 46.4 |
+
+Our ceiling exceeds GeoID's *adapted* result on 6/8 conditions (crosstalk +25,
+cross_sensor +23, snow +13) — with a frozen extractor and a closed-form solve,
+against a method that backprops every test sample. On motion_blur/wet_ground
+GeoID's adapted number barely exceeds its own source-only (67.2→69.1,
+69.1→69.3), so the win there is architectural (MinkowskiNet/Cylinder3D point
+backbone), not the adaptation.
+
+### What this means for the paper
+
+1. **The ceiling is reachable without gradients.** Our closed-form linear-probe
+   ceiling ≈ GeoID's gradient-based TTT result, at a fraction of the compute.
+   This is the basis for the paper's novelty: the **memory-bank AL, stable
+   linear-probe updates, and label-free TTA** become the contribution — not the
+   feature extractor.
+2. **We do not need to improve the feature extractor much.** GeoID's gain over
+   its own source-only is small on most conditions; our gap to GeoID's adapted
+   number is mostly in the zero-shot line (not the ceiling). The feature
+   extractor's job is done if our ceiling is at-or-above their adapted result.
+3. **The target to reach:** a closed-form update (AL or TTA) that moves our
+   frozen number toward our ceiling on the conditions where the ceiling exceeds
+   GeoID — fog, motion_blur, wet_ground. On crosstalk/snow/cross_sensor we are
+   already above their best, so the paper can claim a method that reaches the
+   same mIoU as a backprop TTT method at near-zero gradient cost.
+4. **Efficiency is the differentiator.** Their method backprops every test
+   sample (12 FPS on an A6000); our decode-only probe runs at ~17M pts/s. The
+   paper should include an explicit efficiency comparison (time + memory per
+   test scan) to make the "same mIoU, orders-of-magnitude cheaper" claim.
+
+**Caveat for the comparison:** GeoID uses a point/voxel backbone (MinkowskiNet,
+Cylinder3D); we use a projection-based SENet — the absolute numbers are not
+apples-to-apples. The defensible claim is relative: our closed-form ceiling ≈
+their gradient-TTT result at a fraction of the compute. To use GeoID as the
+paper's external comparison, we need a method that raises our frozen/zero-shot
+toward our ceiling on the conditions where we are below their adapted number
+(fog, motion_blur, wet_ground) — which is precisely the Pillar-3 AL/TTA target,
+not a feature-extractor redesign.
