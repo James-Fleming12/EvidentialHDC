@@ -42,8 +42,9 @@ CONDS="${CONDS:-fog,crosstalk,snow,wet_ground,incomplete_echo,beam_missing,motio
 MAX_FRAMES="${MAX_FRAMES:-0}"
 NUSC="${NUSC:-1}"
 BAL="${BAL:-1}"
+PROJ_DIM="${PROJ_DIM:-10000}"
 EXTRACTORS="${EXTRACTORS:-}"
-echo "Using GPU $GPU (conds=$CONDS, max_frames=$MAX_FRAMES, nusc=$NUSC, bal=$BAL)"
+echo "Using GPU $GPU (conds=$CONDS, max_frames=$MAX_FRAMES, nusc=$NUSC, bal=$BAL, proj_dim=$PROJ_DIM)"
 
 METHOD="supcon_vib_dglsspp_inputin_in_chan"
 CKPT="robust_diagnostic/logs/ep10_$METHOD/$METHOD"
@@ -53,6 +54,7 @@ ROBUST_CKPT="robust_diagnostic/logs/med_corsupcon_21ep/supcon_vib_dglsspp_corsup
 SUFFIX="ep10"
 [ "$MAX_FRAMES" != "0" ] && SUFFIX="${SUFFIX}_f${MAX_FRAMES}"
 [ -n "$EXTRACTORS" ] && SUFFIX="${SUFFIX}_custom"
+[ -n "$OUT_SUFFIX" ] && SUFFIX="${SUFFIX}_${OUT_SUFFIX}"
 
 if [ -n "$EXTRACTORS" ]; then
   echo "=== [full-dataset] $SUFFIX [$CONDS] on custom extractors ($EXTRACTORS) ==="
@@ -66,6 +68,7 @@ fi
 eval CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/al_full_dataset_diag.py \
   --label "full_${SUFFIX}" \
   --conds "$CONDS" --max_frames "$MAX_FRAMES" --nusc "$NUSC" --bal "$BAL" \
+  --proj_dim "$PROJ_DIM" \
   $EXTRAS \
   --out "robust_diagnostic/logs/al_full_dataset_${SUFFIX}.json" \
   2>&1 | tee "logs/al_full_dataset_${SUFFIX}.log"

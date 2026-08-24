@@ -421,6 +421,10 @@ def main():
     ap.add_argument("--nusc_labels", type=str, default="config/labels/nuscenes_new.yaml")
     ap.add_argument("--nusc", type=int, default=1,
                     help="1 = also evaluate the extractor's frozen/ceiling/AL on NuScenes")
+    ap.add_argument("--proj_dim", type=int, default=10000,
+                    help="HDC projection dimension (default 10000; code-2000 peaks "
+                         "per tta Iteration 2 -- this lets the full harness verify "
+                         "the projection-dim effect at full scale)")
     ap.add_argument("--nusc_c_dir", type=str, default="",
                     help="NuScenes-C root in KITTI format (e.g. "
                          ".../nuscenes_c_kitti). When set, also evaluate each "
@@ -457,7 +461,7 @@ def main():
     if conds == ['none']:  # sentinel: skip KITTI-C conditions entirely
         conds = []
     extractors = [tuple(e.strip().split(':')) for e in args.extractors.split(',') if e.strip()]
-    proj = get_hdc_projection(dim_in=128, dim_out=10000, device=device)
+    proj = get_hdc_projection(dim_in=128, dim_out=args.proj_dim, device=device)
 
     results = {'label': args.label, 'max_frames': args.max_frames,
                'clean_fit_n': args.clean_fit_n, 'pool_cap': args.pool_cap,
