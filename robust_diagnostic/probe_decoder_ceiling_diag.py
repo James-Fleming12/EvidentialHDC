@@ -203,11 +203,17 @@ def main():
     print(f"    kNN1 (raw 128)        : {entry['knn1_raw']:.3f}")
 
     # 5. RBF probe on code (random Fourier features + ridge)
+    # NOTE: normalize the RFF features (they have magnitude ~sqrt(d_rff)); the
+    # earlier run's RFF ridge (0.056) collapsed because the raw RFF features have
+    # large scale and the ridge lam was not matched. L2-normalize per-row before
+    # the ridge fit.
     Zr = rbf_features(Xp.to(device), proj_rff)
+    Zr = F.normalize(Zr, p=2, dim=1)  # normalize to unit-norm rows
     Yr = Yp.to(device)
     W_rff = ridge_fit_exact(Zr.cpu(), Yr.cpu(), 1e-2, device).to(device)
     def rbf_decode(codes):
         zf = rbf_features(codes.to(device), proj_rff)
+        zf = F.normalize(zf, p=2, dim=1)
         return (zf @ W_rff).argmax(1)
     entry['rff_ridge_code'] = decode_stream_codes(
         model, parser, proj, device, rbf_decode, args.max_frames)[0]
