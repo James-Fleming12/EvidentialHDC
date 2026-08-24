@@ -93,7 +93,6 @@ def stream_forward_gated(model, parser, proj, device, W, tau, clean_mu, clean_va
         if max_frames > 0 and i >= max_frames:
             break
         in_vol = batch[0].to(device)
-        labels = batch[2].to(device).view(-1)
         mask = (batch[1].to(device) > 0).view(-1)
         if tau is not None:
             in_vol = gate_apply(in_vol, tau, clean_mu, clean_var)
@@ -101,6 +100,7 @@ def stream_forward_gated(model, parser, proj, device, W, tau, clean_mu, clean_va
             out = model(in_vol)
             z8 = out[2] if len(out) == 3 else out[1]
             zf = z8.permute(0, 2, 3, 1).reshape(-1, z8.shape[1])[mask]
+            labels = batch[2].to(device).view(-1)[mask].cpu()
         n = len(zf)
         if n == 0:
             continue

@@ -472,6 +472,45 @@ term -- diagnostic 8 is deprioritized); smarter bank selection for the AL line
 (C28: diverse/uncertainty lost to random); projection-dim beyond 2000 (tta
 Iteration 2: peak at 2000).
 
+### C8 training-side lever micro test: the healthy-capacity fix is NOT in the variants
+
+The clean-capacity gap (cov 0.520 vs dgl 0.640 clean KITTI) is the input-IN's
+cost. The three training-side variants designed to fix it (`_scope`, `_scalein`,
+`_scalereg`) were trained at micro scale (8 ep / 10%) and gated vs plain
+DGLSS++ (`run_micro_c8fix.sh`, `micro_c8_gate_{scope,scalein,scalereg}.json`).
+Support-weighted zs (micro, A = plain DGLSS++, B = variant):
+
+| condition | scope A→B | scalein A→B | scalereg A→B |
+| :--- | :--- | :--- | :--- |
+| fog | 0.215 → **0.360** | 0.215 → **0.366** | 0.215 → **0.354** |
+| crosstalk | 0.180 → **0.452** | 0.180 → **0.466** | 0.180 → **0.451** |
+| snow | 0.691 → **0.502** | 0.691 → **0.497** | 0.691 → **0.470** |
+| wet_ground | 0.664 → **0.343** | 0.663 → **0.415** | 0.663 → **0.373** |
+
+**All three variants boost fog/crosstalk (the input-IN rescue, +0.14..+0.28) but
+DEGRADE the healthy conditions (snow -0.19..-0.22, wet -0.25..-0.32).** The
+healthy drop is NOT recovered by any of the training-side levers at micro scale.
+The corr_tight metric (the C6 packing signal) also drops on the healthy classes
+(e.g. wet car 0.964→0.775, snow driveable 0.961→0.867) -- the packing erosion
+persists.
+
+**Interpretation.** These are micro-scale (8 ep / 10%, so not converged) AND they
+compare against plain DGLSS++ (a two-lever change: base + input-IN + variant), so
+they cannot separate "the input-IN cost" from "the variant's own effect." But the
+consistent healthy drop across all three -- including `_scope`, which was
+specifically designed to keep early-layer BatchNorm -- suggests the healthy-cost
+mechanism is NOT in the late-stage InstanceNorm placement (scope's target) nor
+the scale/centering form (scalein/scalereg's target). Combined with D5/D6
+(rejecting code compression) and D1 (clean-inherited), the clean-capacity gap
+appears to live in the per-scan INPUT normalization's interaction with the early
+geometry layers, not in a trainable knob the C8 variants touch.
+
+**Follow-up needed:** a proper cov-shift-vs-`_scope` comparison (same input-IN,
+only the IN placement differs) at MEDIUM/full scale would settle whether `_scope`
+recovers the 0.12 clean gap relative to the current cov-shift. The micro run
+here is against plain DGLSS++ and cannot answer that. This is the pending full
+`_scope` run.
+
 ---
 
 ## Overnight improvement-path results (`run_overnight_covimprove.sh`, 2026-08-24)
