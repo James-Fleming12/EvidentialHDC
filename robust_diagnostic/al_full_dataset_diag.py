@@ -430,6 +430,10 @@ def main():
                          "(the 10000x10000 CPU SVD is slow); frozen/ceiling "
                          "still computed, W_res set to the frozen baseline")
     ap.add_argument("--conds", type=str, default=",".join(CONDS_ALL))
+    ap.add_argument("--kittic_sev", type=str, default="heavy",
+                    help="severity for the KITTI-C conditions (heavy/moderate/light). "
+                         "Lets the harness run light/moderate so the 3-severity average "
+                         "matches GeoID's reporting.")
     ap.add_argument("--nusc_dir", type=str, default="/mnt/alpha/jmfleming/nuscenes_kitti",
                     help="NuScenes dataset in KITTI format (32-beam)")
     ap.add_argument("--nusc_labels", type=str, default="config/labels/nuscenes_new.yaml")
@@ -524,7 +528,7 @@ def main():
 
         for cond in conds:
             t0 = time.time()
-            cdir = os.path.join(args.kittic_dir, cond, 'heavy')
+            cdir = os.path.join(args.kittic_dir, cond, args.kittic_sev)
             if not os.path.exists(cdir):
                 cdir = os.path.join(args.kittic_dir, cond, 'moderate')
             cparser = build_parser(cdir, DATA, ARCH)

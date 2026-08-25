@@ -35,6 +35,9 @@ def main():
     ap.add_argument("--nusc_dir", type=str, default="/mnt/alpha/jmfleming/nuscenes_kitti",
                     help="pristine nuScenes in KITTI format (nuScenes-clean W0 source)")
     ap.add_argument("--nusc_c_dir", type=str, default="/mnt/bravo/jmfleming/nuscenes_c_kitti")
+    ap.add_argument("--nusc_c_sev", type=str, default="heavy",
+                    help="NuScenes-C severity (heavy/moderate/light) for the 3-severity "
+                         "average matching GeoID's reporting")
     ap.add_argument("--nusc_labels", type=str, default="config/labels/nuscenes_c.yaml")
     ap.add_argument("--config", type=str, default="config/labels/semantic-kitti-all.yaml")
     ap.add_argument("--arch", type=str, default="config/arch/senet-2048p.yml")
@@ -105,7 +108,7 @@ def main():
         entry = {'method': method, 'conds': {}, 'W0_nusc_n': len(cf)}
         results['extractors'][lab] = entry
         for cond in conds:
-            cdir = os.path.join(args.nusc_c_dir, cond, 'heavy')
+            cdir = os.path.join(args.nusc_c_dir, cond, args.nusc_c_sev)
             parser = build_nuscenes_parser(cdir, nusc_data, ARCH)
             print(f"\n=== [{lab}] {cond} ===")
             r = eval_target_condition(model, parser, proj, device, W0_nusc, protos_clean,
