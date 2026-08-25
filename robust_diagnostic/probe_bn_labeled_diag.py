@@ -165,12 +165,13 @@ def fit_affine(pre_means, post_targets, channels):
 def substitute_affine(model, affines):
     """Set BN weight/bias from the fitted {name: (gamma, beta)}."""
     applied = []
-    for name, m in model.named_modules():
-        if name in affines and isinstance(m, torch.nn.BatchNorm2d):
-            g, b = affines[name]
-            m.weight.copy_(g.float().to(m.weight.device))
-            m.bias.copy_(b.float().to(m.bias.device))
-            applied.append(name)
+    with torch.no_grad():
+        for name, m in model.named_modules():
+            if name in affines and isinstance(m, torch.nn.BatchNorm2d):
+                g, b = affines[name]
+                m.weight.copy_(g.float().to(m.weight.device))
+                m.bias.copy_(b.float().to(m.bias.device))
+                applied.append(name)
     return applied
 
 
@@ -180,10 +181,11 @@ def snapshot_affine(model):
 
 
 def restore_affine(model, snap):
-    for name, m in model.named_modules():
-        if name in snap and isinstance(m, torch.nn.BatchNorm2d):
-            m.weight.copy_(snap[name][0])
-            m.bias.copy_(snap[name][1])
+    with torch.no_grad():
+        for name, m in model.named_modules():
+            if name in snap and isinstance(m, torch.nn.BatchNorm2d):
+                m.weight.copy_(snap[name][0])
+                m.bias.copy_(snap[name][1])
 
 
 def decode_w(model, parser, proj, device, W, max_frames=0):
