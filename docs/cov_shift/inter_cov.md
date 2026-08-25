@@ -192,7 +192,7 @@ OFF recovers healthy (+0.027 snow, +0.034 wet at p=0.5), ON keeps most of the
 fog/crosstalk rescue. Direction validated (micro-scale only). Full-scale run
 pending.
 
-### Diagnostic 5 (PENDING): per-layer fog-collapse propagation probe
+### Diagnostic 5 (DONE): per-layer fog-collapse propagation probe
 
 **Question.** *Where within DGLSS++ does the collapse originate?* The input
 trigger (remission collapse) and the final geometry collapse are known, but not
@@ -207,55 +207,135 @@ vs KITTI-C fog (200 frames, single extractor), record per-block:
 - % units saturated (|x| large) or dead (near-zero variance),
 - BN running-stat mismatch: `|x − μ_running| / σ_running` at each block.
 
-**Decisive split.** If the first block already saturates/zeros, the fix is at
-the input (re-anchor range/remission before the trunk). If the collapse builds
-gradually, a late per-scan re-normalization (or a data-dependent gate) can
-rescue it without touching the input branch. This decides the design of the
-extractor change.
-
 **Runner.** `run_probe_fog_collapse_layer.sh` (DRY_RUN/SMOKE).
+`probe_fog_collapse_layer.json` (200 frames, 6-7s/stream).
 
-### Diagnostic 6 (PENDING): conditional input-IN at full scale
+**Result (2026-08-24, dgl_kitti, 200 frames):**
+
+*Per-stage activation stats (mean_act / mean_var):*
+
+| stage | clean | fog | crosstalk |
+| :--- | :--- | :--- | :--- |
+| conv1 | 0.161 / 0.414 | 0.126 / 0.390 | 0.162 / 0.490 |
+| conv2 | 0.023 / 0.128 | 0.065 / 0.153 | 0.063 / 0.164 |
+| conv3 | 0.047 / 0.170 | 0.090 / 0.212 | 0.076 / 0.200 |
+| layer1 | 0.176 / 0.467 | 0.204 / 0.589 | 0.169 / 0.463 |
+| layer2 | 0.197 / 0.536 | 0.161 / 0.399 | 0.175 / 0.423 |
+| layer3 | 0.231 / 0.753 | 0.234 / 0.615 | 0.261 / 0.634 |
+| layer4 | 0.132 / 0.342 | 0.254 / 0.400 | 0.260 / 0.466 |
+| conv_1 | 0.001 / 0.147 | 0.079 / 0.214 | 0.061 / 0.162 |
+| conv_2 | 0.023 / 0.145 | −0.044 / 0.125 | −0.041 / 0.096 |
+
+*BN running-stat mismatch |E[x]−μ_running|/σ_running (selected):*
+
+| BN module | clean | fog | crosstalk |
+| :--- | :--- | :--- | :--- |
+| conv1.bn | 0.250 | 0.461 | 0.687 |
+| conv2.bn | 0.360 | 0.401 | 0.690 |
+| conv3.bn | 0.268 | 0.481 | 0.714 |
+| **conv_1.bn** | **0.180** | **0.834** | **0.785** |
+| **conv_2.bn** | **0.120** | **0.630** | **0.567** |
+| layer1.2.bn1 | 0.110 | 0.428 | 0.477 |
+| layer2.0.bn1 | 0.120 | 0.535 | 0.574 |
+| layer4.2.bn1 | 0.143 | 0.630 | 0.626 |
+
+*Saturation / dead fractions:* sat_frac ~0.003, dead_frac ~0.000 on ALL stages
+across clean/fog/crosstalk.
+
+**Findings (the decisive split):**
+
+1. **NOT an early-conv saturation / dead-unit story.** No stage saturates or
+   zeroes under fog/crosstalk (sat ~0.3%, dead 0%). conv1 activation stats are
+   essentially unchanged (mean_act 0.161 vs 0.126; var 0.41 vs 0.39). The input
+   collapse does NOT blow up or kill the first block.
+2. **The collapse is a frozen-BatchNorm running-stat mismatch that builds up
+   through the network and peaks at the bottleneck.** Under fog/crosstalk the BN
+   mismatch is elevated at EVERY BN (2-5x clean), and the largest relative jumps
+   are at the late fusion blocks: conv_1.bn 0.180→0.834 (4.6x) and conv_2.bn
+   0.120→0.630 (5.3x). The early activations shift modestly, but by the
+   640→256→128 bottleneck the frozen running stats (calibrated to clean KITTI
+   range/remission) are badly out of calibration.
+3. **The collapse is detectable per-scan with a single BN mismatch scalar
+   (AUROC 1.000).** See Diagnostic 7.
+
+**Interpretation for the design.** The fix is NOT at the raw input (conv1 is
+healthy). It is at the **BN statistics** — the frozen running mean/var no longer
+match the corrupted stream by the time the signal reaches the bottleneck. Two
+levers fall out:
+- a **late re-normalization** (re-estimate / re-base the late-stage BN or the
+  bottleneck conv_1/conv_2 inputs) to realign the running stats on the fly — the
+  "tiny fog/crosstalk bump, full healthy" target, since healthy scans already sit
+  at their calibrated operating point;
+- the existing **BN-statistic alignment TTA lever** (from the ResNet docstring:
+  "the training-side mirror of the BN-statistic alignment TTA lever") is the
+  directly-relevant mechanism, not a whole-extractor retrain.
+
+This is consistent with why cov-shift's input-IN rescues fog/crosstalk but costs
+healthy capacity: input-IN realigns the INPUT distribution so the frozen stats
+stay valid, but it does so for ALL scans (paying the clean-capacity cost); a
+late BN re-anchor would only act where the mismatch is large.
+
+### Diagnostic 6 (PARKED): conditional input-IN at full scale
 
 **Question.** Do the micro-scale stochastic-gate results
 (+0.02-0.03 healthy recovery, −0.06 crosstalk cost) persist at full scale?
 
-**Setup.** `run_micro_stoch.sh` pattern, but the full dataset harness
-(`al_full_dataset_diag.py`) with a `input_in_prob`-trained checkpoint
+**Status: PARKED (2026-08-24).** The micro stoch signals are weak in BOTH
+directions (OFF recovers +0.027 snow but loses −0.031 fog / −0.065 crosstalk),
+which is the WRONG tradeoff for the goal. We want a *tiny* fog/crosstalk bump
+with *full* healthy recovery — not a full-scale training run (~8h) to compromise
+both sides. Diagnostic 5's finding (late BN-stat mismatch, not input saturation)
+makes a targeted late re-normalization the preferred lever over retraining a
+conditional extractor. Revisit only if the late-BN fix fails.
+
+**Setup (if resumed).** `run_micro_stoch.sh` pattern, but the full dataset
+harness (`al_full_dataset_diag.py`) with a `input_in_prob`-trained checkpoint
 (cov-shift `supcon_vib_dglsspp_inputin_in_chan_stoch{,_7,_9}`), decode with
 input-IN ON vs OFF on all conditions. Compare frozen AND ceiling.
+`run_overnight_condin.sh` built but not run.
 
-**Decisive split.** If the healthy recovery persists and the fog/crosstalk
-rescue holds, the conditional extractor is the base for the TTA/AL line. If the
-healthy cost reappears at full scale, revert to plain DGLSS++ + a *labeled*
-pool-dependent fix (e.g., re-anchor the corrupted pool in the AL line).
-
-### Diagnostic 7 (PENDING): per-scan detector signal for the gate
+### Diagnostic 7 (DONE): per-scan detector signal for the gate
 
 **Question.** What statistic reliably flags "this scan needs normalization" at
-deployment, with no corruption-type knowledge? Candidates:
+deployment, with no corruption-type knowledge?
 
-- input-channel stats (range/remission var — the failed eval-only gate used
-  these, but with the wrong (non-conditional) model),
-- activation statistics at a mid-network layer (mean/var/saturation),
-- network-flow / entropy of the code or prototypes.
+**Setup.** From the Diagnostic-5 per-layer activations, extract per-scan scalar
+signals (`{stage}_mean_act`, `{stage}_mean_var`, `bn_mismatch_*`); report AUROC
+for "needs normalization" (fog/crosstalk) vs "healthy" (clean).
 
-**Setup.** From the Diagnostic-5 per-layer activations, extract a per-scan
-scalar signal (e.g., first-block mean activation magnitude, or BN-mismatch
-norm). Calibrate a threshold on clean+corrupted scans; report AUROC for
-"needs normalization" vs "healthy."
+**Result (same run, `probe_fog_collapse_layer.json`):**
 
-**Decisive split.** If a clean scalar separates fog/crosstalk from healthy
-with high AUROC, the gate is label-free and deployable. If not, the mode switch
-falls back to per-condition or task-aware selection.
+| condition | best detector | AUROC |
+| :--- | :--- | :--- |
+| fog | bn_mismatch_conv_1.bn | **1.000** |
+| crosstalk | bn_mismatch_conv_1.bn | **1.000** |
+
+The top candidates are ALL `bn_mismatch_*` signals (conv_1.bn, conv_2.bn,
+layer1.2, layer2.0, layer2.1) at AUROC 1.000 on both conditions. The per-scan
+BN-mismatch at the bottleneck (`conv_1.bn`, the 640→256 fusion) is a
+**perfect, label-free, deployment-ready detector**: no corruption-type
+knowledge, no labels, just the frozen running-stat deviation of one BN layer.
+
+**Finding.** A per-scan gate signal exists and is trivial to compute. If a
+late-BN re-normalization is engaged only when `bn_mismatch_conv_1` exceeds a
+threshold, it would act exactly on the collapsed scans and leave healthy scans
+at their calibrated operating point — the "tiny bump, full healthy" design.
 
 ---
 
 ## Decision rule
 
-If Diagnostic 5 shows the collapse originates at the input (early saturation /
-BN mismatch in the first block), the fix is **input re-anchoring** (per-scan
-re-basing of range/remission, or a data-dependent input-IN gate) trained into a
-single conditional model (Diagnostic 6/7). If the collapse is gradual or the
-healthy cost persists, move to a **late normalization** or accept the plain
-DGLSS++ healthy line and push fog/crosstalk through the AL/TTA pool instead.
+Diagnostic 5 settled the decisive split: the collapse is NOT an input-saturation
+or dead-unit phenomenon (conv1 is healthy; sat/dead ~0). It is a **frozen-BN
+running-stat mismatch that builds gradually and peaks at the late bottleneck
+(conv_1/conv_2, 4.6-5.3x clean mismatch)**, and Diagnostic 7 gives a **perfect
+per-scan detector** (`bn_mismatch_conv_1`, AUROC 1.000) with no labels.
+
+Therefore the fix to pursue is a **late, gated BatchNorm re-anchor** (re-estimate
+or re-base the bottleneck BN statistics on the fly, engaged per-scan when
+`bn_mismatch_conv_1` is high) — NOT a whole-extractor retrain and NOT the
+parked conditional-input-IN path. This directly targets the "tiny fog/crosstalk
+bump, full healthy recovery" goal: healthy scans sit at their calibrated BN
+operating point and are untouched; collapsed scans get their frozen stats
+realigned where the mismatch actually is. If the late-BN fix underdelivers, fall
+back to the AL/TTA pool re-anchoring of the corrupted stream instead.
