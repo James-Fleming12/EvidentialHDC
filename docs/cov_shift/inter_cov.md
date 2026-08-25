@@ -321,6 +321,34 @@ late-BN re-normalization is engaged only when `bn_mismatch_conv_1` exceeds a
 threshold, it would act exactly on the collapsed scans and leave healthy scans
 at their calibrated operating point — the "tiny bump, full healthy" design.
 
+### Diagnostic 8 (PENDING): BatchNorm re-anchor headroom probe
+
+**Question.** How much of the frozen→ceiling gap on fog/crosstalk does a
+label-free BatchNorm running-stat re-anchor close? This is the concrete
+implementation of the Diagnostic-5 finding (the collapse is a frozen-BN
+running-stat mismatch at the late bottleneck, not input saturation) and the
+second online lever alongside the linear-classifier W update.
+
+**Setup.** `probe_bn_reanchor_diag.py` + `run_probe_bn_reanchor.sh`: dgl_kitti,
+fog+crosstalk. For each condition: W0 on clean (frozen BN) → frozen baseline;
+re-estimate the late BN `running_mean/var` from the CORRUPTED stream (statistic
+substitution, label-free, closed-form); decode with W0 → `bn_recal`; W* on the
+corrupted pool → labeled ceiling. Report:
+
+- `bn_recal` vs `frozen` (the label-free gain),
+- `bn_recal_frac_of_gap` = (bn_recal − frozen)/(ceiling − frozen) — the fraction
+  of the labeled headroom a BN re-anchor alone recovers,
+- `bn_recal_Ws` (does the recal help the labeled ceiling too?),
+- `--bn_scope` in {bottleneck, late, all} to locate which BN subset carries the
+  recoverable signal.
+
+**Decisive split.** If `bn_recal_frac_of_gap` ~ 1.0, a BN re-anchor *alone*
+nearly reaches the labeled ceiling — the label-free lever is the whole fix, and
+the TTA/AL pipeline becomes: per-scan BN re-anchor (gated on
+`bn_mismatch_conv_1`, AUROC 1.000) + the online W update. If the fraction is
+small, the recoverable gap needs the labeled pool after all (BN recal helps, but
+the ceiling is pool-bound).
+
 ---
 
 ## Decision rule
@@ -331,11 +359,11 @@ running-stat mismatch that builds gradually and peaks at the late bottleneck
 (conv_1/conv_2, 4.6-5.3x clean mismatch)**, and Diagnostic 7 gives a **perfect
 per-scan detector** (`bn_mismatch_conv_1`, AUROC 1.000) with no labels.
 
-Therefore the fix to pursue is a **late, gated BatchNorm re-anchor** (re-estimate
-or re-base the bottleneck BN statistics on the fly, engaged per-scan when
+The fix to pursue is a **late, gated BatchNorm re-anchor** (re-estimate or
+re-base the bottleneck BN statistics on the fly, engaged per-scan when
 `bn_mismatch_conv_1` is high) — NOT a whole-extractor retrain and NOT the
-parked conditional-input-IN path. This directly targets the "tiny fog/crosstalk
-bump, full healthy recovery" goal: healthy scans sit at their calibrated BN
-operating point and are untouched; collapsed scans get their frozen stats
-realigned where the mismatch actually is. If the late-BN fix underdelivers, fall
-back to the AL/TTA pool re-anchoring of the corrupted stream instead.
+parked conditional-input-IN path. Diagnostic 8 measures how much of the labeled
+ceiling this lever alone recovers (`bn_recal_frac_of_gap`). If it is ~1.0, the
+TTA/AL pipeline combines the BN re-anchor with the online W update for the
+"tiny fog/crosstalk bump, full healthy recovery" target. If it underdelivers,
+fall back to the AL/TTA pool re-anchoring of the corrupted stream instead.
