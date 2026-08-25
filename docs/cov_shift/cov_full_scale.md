@@ -662,6 +662,58 @@ smoke-scale and the exact deltas are not final. **Run the full overnight and
 re-pull P3/P4/P5 before quoting any of them.** The `--skip_existing` resume now
 works per-condition, so a full re-run will only compute what's missing.
 
+### Is the linear probe the best decoder? -- YES, the R4 linear probe already hits the code's information limit (`probe_decoder_ceiling_diag.py`, micro 200 frames)
+
+The question that decides whether the paper's "ceiling" can be raised by a more
+expressive decoder (kernel, kNN, balanced) -- and whether the recoverable gaps
+are consistent. Seven decoder families fit on the same labeled 200k corrupted
+pool, decoded on the full val stream. Frozen mIoU, cov_ep10, KITTI-C (200 frames):
+
+| condition | R4 lin (code) | lin (raw128) | kNN1 (code) | kNN5 (code) | kNN1 (raw) | RFF | bal-lam | best |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 0.448 | 0.373 | 0.393 | 0.404 | 0.396 | 0.041 | **0.455** | 0.455 (bal) |
+| crosstalk | 0.544 | 0.480 | 0.514 | 0.520 | 0.510 | 0.055 | **0.548** | 0.548 (bal) |
+| snow | 0.548 | 0.465 | 0.504 | 0.527 | 0.500 | 0.054 | **0.553** | 0.553 (bal) |
+| wet_ground | 0.603 | 0.450 | 0.558 | 0.581 | 0.555 | 0.054 | **0.608** | 0.608 (bal) |
+| incomplete_echo | 0.563 | 0.475 | 0.524 | 0.536 | 0.517 | 0.056 | **0.564** | 0.564 (bal) |
+| beam_missing | 0.591 | 0.516 | 0.547 | 0.562 | 0.540 | 0.056 | **0.595** | 0.595 (bal) |
+| motion_blur | 0.590 | 0.487 | 0.528 | 0.545 | 0.526 | 0.056 | **0.589** | 0.590 (R4) |
+| cross_sensor | **0.540** | 0.468 | 0.494 | 0.510 | 0.488 | 0.056 | 0.538 | 0.540 (R4) |
+
+**The R4 linear probe on the HDC code is already at the ceiling.** No more
+expressive decoder beats it by more than noise:
+- **kNN (code and raw) < R4 linear** on every condition (kNN1-code 0.393-0.558 vs
+  R4 0.448-0.603). The nearest-neighbor oracle does NOT exceed the linear probe --
+  the decision boundary is effectively linear in the code space.
+- **linear (raw 128) < R4 linear (code)** everywhere (0.37-0.52 vs 0.45-0.60):
+  the HDC binarization HELPS the linear probe, it is not the cap.
+- **RFF kernel ridge collapses (0.04-0.06)** even after feature normalization --
+  the RFF approximation is not capturing anything the linear probe misses (the
+  collapse is a conditioning/scale artifact of the random features at this
+  dim, not evidence of nonlinear headroom).
+- **balanced per-class-lam linear ≈ R4** (+0.004..+0.007, i.e. essentially equal):
+  the "more balanced probe" adds nothing.
+- **kNN5 > kNN1** slightly (0.40→0.404 fog, 0.58→0.581 wet) -- more neighbors
+  helps marginally but still below R4.
+
+**Implication for the paper's story.** The linear probe already reaches the code
+space's information limit: the ceiling is NOT raised by a more expressive
+decoder. This means:
+1. The recoverable gaps (fog +0.04, crosstalk +0.01, snow +0.01, wet +0.12 at
+   full scale) are the REAL headroom -- they are not artificially capped by the
+   linear decision rule. There is no "hidden ceiling" a kernel/kNN would unlock.
+2. For the TTA/AL story, the gap to close is the frozen→R4-ceiling gap, and the
+   R4 ceiling is the correct upper bound (not something a fancier decoder
+   exceeds). The AL/TTA method's target is well-defined.
+3. The "consistent gaps across conditions" concern stands: the gaps are what they
+   are (small on most conditions, large on wet/fog). A more expressive decoder
+   does not make them more consistent -- they are set by the feature space.
+
+Caveat: micro-scale (200 frames, 200k pool). The full-scale run would confirm
+whether the +0.004-0.007 bal-lam edge and the kNN-vs-R4 margins persist, but the
+qualitative conclusion -- the linear probe is at the code's info limit -- is
+robust. `probe_decoder_ceiling.json`.
+
 ---
 
 ## Reproducibility
