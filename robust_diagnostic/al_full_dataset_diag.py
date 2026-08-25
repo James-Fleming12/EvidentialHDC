@@ -434,6 +434,12 @@ def main():
                     help="severity for the KITTI-C conditions (heavy/moderate/light). "
                          "Lets the harness run light/moderate so the 3-severity average "
                          "matches GeoID's reporting.")
+    ap.add_argument("--gate_off", type=int, default=0,
+                    help="1 = disable per-scan input-IN at decode (model.input_in=False) "
+                         "for EVERY extractor. Only meaningful for conditional-input-IN "
+                         "(stochastic) checkpoints, whose weights support raw inputs; "
+                         "for always-on checkpoints this is a train/eval mismatch "
+                         "(the eval-only gate is dead).")
     ap.add_argument("--nusc_dir", type=str, default="/mnt/alpha/jmfleming/nuscenes_kitti",
                     help="NuScenes dataset in KITTI format (32-beam)")
     ap.add_argument("--nusc_labels", type=str, default="config/labels/nuscenes_new.yaml")
@@ -502,6 +508,9 @@ def main():
         arch = _copy.deepcopy(ARCH)
         trainer = GenTrainer(arch, DATA, args.kitti_dir, path, path=path, method=method)
         model = trainer.model
+        if args.gate_off and hasattr(model, 'input_in'):
+            model.input_in = False
+            print(f"  [gate_off] per-scan input-IN DISABLED for {lab}")
         clean_parser = build_parser(args.kitti_dir, DATA, ARCH)
 
         # ---- clean W0 + clean prototypes over ALL clean frames (reservoir, seed 7) ----
