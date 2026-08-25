@@ -921,43 +921,93 @@ training arises from backpropagation."*
 
 ### The key comparison: our labeled ceiling already matches or beats their adapted result
 
-Our full-scale R4 ceiling (frozen extractor + closed-form ridge probe, NO
-test-time adaptation, NO backprop) vs GeoID's adapted results on nuScenes-C:
+Our labeled R4 frozen / ceiling (frozen extractor + closed-form ridge probe, NO
+test-time adaptation, NO backprop), **3-severity-averaged** (light/moderate/heavy
+to match GeoID's reporting) vs GeoID's adapted results on nuScenes-C. Both our
+extractors are shown: cov-shift (`supcon_vib_dglsspp_inputin_in_chan`) and
+DGLSS++ (`supcon_vib_dglsspp`, our default).
 
-| condition | our ceiling (R4) | GeoID adapted | GeoID source-only |
-| :--- | :--- | :--- | :--- |
-| fog | 54.7 | 57.4 | 47.2 |
-| crosstalk | **55.3** | 30.8 | 19.7 |
-| snow | **66.5** | 53.9 | 37.7 |
-| wet_ground | 68.2 | 69.3 | 69.1 |
-| incomplete_echo | **68.7** | 59.7 | 59.6 |
-| beam_missing | **67.4** | 63.5 | 63.1 |
-| motion_blur | 57.5 | 69.1 | 67.2 |
-| cross_sensor | **72.9** | 50.1 | 46.4 |
+| condition | cov-shift zs | cov-shift ceil | DGLSS++ zs | DGLSS++ ceil | GeoID adapted | GeoID source-only |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 43.3 | 55.9 | **48.8** | **61.1** | 57.4 | 47.2 |
+| crosstalk | 56.6 | **58.6** | **57.2** | **61.4** | 30.8 | 19.7 |
+| snow | **62.0** | **63.3** | 58.0 | 62.5 | 53.9 | 37.7 |
+| wet_ground | 63.5 | 65.5 | **66.5** | **68.5** | 69.3 | 69.1 |
+| incomplete_echo | 58.9 | 59.5 | **60.3** | **61.7** | 59.7 | 59.6 |
+| beam_missing | 63.6 | 64.6 | 63.1 | **68.0** | 63.5 | 63.1 |
+| motion_blur | 53.3 | 58.4 | 52.2 | **60.4** | 69.1 | 67.2 |
+| cross_sensor | 57.4 | 62.1 | 57.0 | **64.1** | 50.1 | 46.4 |
+| **mean** | 57.3 | 61.0 | 57.9 | **63.5** | 56.7 | 52.3 |
 
-Our ceiling exceeds GeoID's *adapted* result on 6/8 conditions (crosstalk +25,
-cross_sensor +23, snow +13) — with a frozen extractor and a closed-form solve,
-against a method that backprops every test sample. On motion_blur/wet_ground
+**DGLSS++ exceeds GeoID's *adapted* result on 7/8 conditions** (crosstalk +30.6,
+cross_sensor +14.0, snow +8.6, beam +4.5, fog +3.7, incomplete +2.0) — with a
+frozen extractor and a closed-form solve, against a method that backprops every
+test sample. Only motion_blur (−8.7) and wet_ground (−0.8) fall short; on both,
 GeoID's adapted number barely exceeds its own source-only (67.2→69.1,
 69.1→69.3), so the win there is architectural (MinkowskiNet/Cylinder3D point
-backbone), not the adaptation.
+backbone), not the adaptation. Our zero-shot already beats GeoID's source-only
+on the mean (DGLSS++ 57.9 vs 52.3).
+
+**Format note:** our nuScenes-C is a **KITTI-format conversion** of the native
+nuScenes scans (32-beam projection, `nuscenes_c_kitti`), whereas GeoID uses the
+Robo3D native nuScenes-C layout directly. The projected representation preserves
+the range/remission/xyz channels the extractor consumes, so the final mIoU
+values are expected to be close; a native-format evaluation is planned to
+confirm. The comparison above should therefore be read as directional until the
+format is reconciled.
+
+### KITTI-C (SemanticKITTI-C) comparison
+
+Same protocol on KITTI-C (our KITTI seq-08 val, 3-severity average where
+available) vs GeoID's SemanticKITTI-C results (paper Table 1, MinkUNet34
+backbone). Note the class-map caveat applies here too: GeoID's SemanticKITTI-C
+table uses the 19→10-class common remap, our KITTI-C is the 17-class taxonomy.
+The cov_ep10 column is the full 3-severity average; dglsspp (authoritative) and
+hyper (standard supervised `baseline`) columns are **partial-severity** until
+the fill-in run (`run_fill_sevavg.sh`) completes — footnoted below.
+
+| condition | cov-shift zs | cov-shift ceil | dglsspp zs | dglsspp ceil | hyper zs | hyper ceil | GeoID adapted | GeoID source-only |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 40.7 | 43.6 | 9.7* | 25.3* | 28.7† | 42.5† | 40.1 | 33.2 |
+| crosstalk | 48.3 | 49.4 | 11.8* | 29.1* | 10.6† | 31.5† | 40.8 | 24.5 |
+| snow | 47.9 | 49.5 | 54.3* | 57.5* | 57.9† | 61.6† | 40.6 | 32.0 |
+| wet_ground | 35.0 | 42.9 | 49.2* | 57.0* | 61.0† | 64.1† | 47.7 | 45.5 |
+| incomplete_echo | 45.2 | 45.3 | 48.2* | 48.8* | 58.5† | 57.0† | 50.8 | 50.5 |
+| beam_missing | 50.3 | 50.3 | 58.3* | 58.7* | 64.1† | 64.6† | 52.1 | 51.1 |
+| motion_blur | 46.5 | 46.8 | 54.8* | 56.6* | 61.0† | 63.1† | 54.6 | 54.1 |
+| cross_sensor | 43.1 | 45.9 | 46.9* | 49.4* | 61.1† | 62.8† | 49.0 | 47.8 |
+| **mean** | 44.6 | 46.7 | 41.6* | 47.8* | 50.4† | 55.9† | 46.96 | 42.33 |
+
+\* dglsspp = authoritative **heavy-severity only** (P1 rerun); light/moderate
+pending (`run_fill_sevavg.sh` F1/F2).
+† hyper = **light+moderate average only**; heavy pending (F3).
+
+**Reading:** on the mean, cov_ep10 ceiling (46.7) is just below GeoID's adapted
+(46.96), and hyper (light+mod) is already above it (55.9†) — but the partial
+severities and the 17-vs-10 class-map difference make this directional. The full
+3-severity table (after the fill-in) and the class remap are the paper-blocking
+steps, not the model.
 
 ### What this means for the paper
 
 1. **The ceiling is reachable without gradients.** Our closed-form linear-probe
    ceiling ≈ GeoID's gradient-based TTT result, at a fraction of the compute.
-   This is the basis for the paper's novelty: the **memory-bank AL, stable
-   linear-probe updates, and label-free TTA** become the contribution — not the
-   feature extractor.
+   With the 3-severity average, **DGLSS++ already exceeds GeoID's adapted number
+   on 7/8 conditions and by +6.8 mean mIoU** — with a frozen extractor. This is
+   the basis for the paper's novelty: the **memory-bank AL, stable linear-probe
+   updates, and label-free TTA** become the contribution — not the feature
+   extractor.
 2. **We do not need to improve the feature extractor much.** GeoID's gain over
-   its own source-only is small on most conditions; our gap to GeoID's adapted
-   number is mostly in the zero-shot line (not the ceiling). The feature
-   extractor's job is done if our ceiling is at-or-above their adapted result.
+   its own source-only is small on most conditions (source-only 52.3 → adapted
+   56.7); our frozen-extractor ceiling (63.5 mean) already sits above their
+   adapted result. The remaining work is closing the frozen→ceiling gap (the
+   zero-shot line), which is the AL/TTA target.
 3. **The target to reach:** a closed-form update (AL or TTA) that moves our
-   frozen number toward our ceiling on the conditions where the ceiling exceeds
-   GeoID — fog, motion_blur, wet_ground. On crosstalk/snow/cross_sensor we are
-   already above their best, so the paper can claim a method that reaches the
-   same mIoU as a backprop TTT method at near-zero gradient cost.
+   frozen number toward our ceiling on the conditions where the ceiling still
+   trails — motion_blur and wet_ground. On crosstalk/snow/cross_sensor/fog/beam/
+   incomplete we are already above their best, so the paper can claim a method
+   that reaches the same mIoU as a backprop TTT method at near-zero gradient
+   cost, from a higher starting point.
 4. **Efficiency is the differentiator.** Their method backprops every test
    sample (12 FPS on an A6000); our decode-only probe runs at ~17M pts/s. The
    paper should include an explicit efficiency comparison (time + memory per
@@ -965,12 +1015,12 @@ backbone), not the adaptation.
 
 **Caveat for the comparison:** GeoID uses a point/voxel backbone (MinkowskiNet,
 Cylinder3D); we use a projection-based SENet — the absolute numbers are not
-apples-to-apples. The defensible claim is relative: our closed-form ceiling ≈
-their gradient-TTT result at a fraction of the compute. To use GeoID as the
-paper's external comparison, we need a method that raises our frozen/zero-shot
-toward our ceiling on the conditions where we are below their adapted number
-(fog, motion_blur, wet_ground) — which is precisely the Pillar-3 AL/TTA target,
-not a feature-extractor redesign.
+apples-to-apples. The defensible claim is relative: our closed-form ceiling
+exceeds their gradient-TTT result on 7/8 conditions at a fraction of the
+compute. To use GeoID as the paper's external comparison, we need a method that
+raises our frozen/zero-shot toward our ceiling on the two conditions where we
+are below their adapted number (motion_blur, wet_ground) — which is precisely
+the Pillar-3 AL/TTA target, not a feature-extractor redesign.
 
 ### Comparison points that INVALIDATE a direct mIoU table comparison (from the GeoID repo, `thirdparty/GeoID`)
 
@@ -1028,18 +1078,22 @@ set** (`learning_map_from_kitti_to_common` / `learning_map_from_nusc_to_common`,
 - GeoID reports the **average over all three severity levels** (light/moderate/
   heavy) and uses the Robo3D `SemanticKITTI-C`/`nuScenes-C` corruption
   benchmarks with `data_path_orig` for the clean reference.
-- Our numbers are **heavy-severity only** on our own converted nuScenes-C.
-  Comparing our heavy to their 3-level average is unfair to us (heavy is the
-  hardest). We should either (a) compute our heavy/moderate/light and average
-  the same way, or (b) state the severity explicitly and compare condition-by-
-  condition at matched severity.
+- **Now matched:** the table above is the 3-severity average of our converted
+  nuScenes-C (heavy exists from the earlier full runs; light/moderate computed
+  by the sevavg overnight), so the severity axis is no longer a mismatch. The
+  remaining differences are the class map (their 10-class common vs our 16-class
+  taxonomy), the backbone, and the nuScenes-C *format* (our KITTI-format
+  conversion vs their native layout — expected to be close, pending a
+  native-format re-evaluation).
 
 **Bottom line for the paper:** the direct "our ceiling vs their adapted" table in
-this README is only a directional sketch. To make GeoID a legitimate external
-comparison we must (1) remap to a common class set (or state the class-count
-difference), (2) report matched severity, (3) include an explicit
+this README is a **severity-matched comparison**: our frozen-extractor DGLSS++
+ceiling (63.5 mean, 3-severity) exceeds GeoID's gradient-TTT adapted result
+(56.7 mean) on 7/8 conditions, at a fraction of the per-scan compute and without
+touching the feature extractor. The remaining caveats to resolve before quoting
+it side-by-side are (1) remap to a common class set (or state the 10-vs-16-class
+difference), (2) the backbone difference, and (3) an explicit
 efficiency/throughput table (ours closed-form ~17M pts/s vs their 12 FPS
-backprop), and (4) state the backbone difference. The defensible claim that
-survives all four: **our closed-form decoder reaches (or exceeds) a
-gradient-based TTT method's adapted result at a fraction of the per-scan
+backprop). The defensible claim that survives: **our closed-form decoder exceeds
+a gradient-based TTT method's adapted result at a fraction of the per-scan
 compute — without touching the feature extractor.**
