@@ -78,9 +78,9 @@ class PerClassBNAccum:
             return
         if self.labels is None:
             return
-        # downscale the label grid (1,1,64,2048) to (1,1,h,w)
-        lg = F.interpolate(self.labels.float(), size=(h, w), mode='nearest').long()
-        lg = lg[0, 0]                   # (h, w)
+        # downscale the label grid to (1,1,h,w); self.labels is (1, 64, 2048)
+        lg = F.interpolate(self.labels.float().unsqueeze(0),
+                           size=(h, w), mode='nearest').long()[0, 0]
         valid = lg > 0
         if not valid.any():
             return
