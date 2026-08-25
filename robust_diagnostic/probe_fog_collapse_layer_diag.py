@@ -64,11 +64,14 @@ class LayerStats:
         self._hooks = []
 
     def _stage_hook(self, label):
-        def hook(module, inp, out):
-            x = out
-            if isinstance(x, (list, tuple)):
-                x = x[0]
-            x = x.detach().float()
+        # torch forward hooks are called with (module, input, output) OR
+        # (module, input, kwargs, output) depending on the version; use *args
+        # and take the last arg as the output so both conventions work.
+        def hook(module, *args):
+            out = args[-1]
+            if isinstance(out, (list, tuple)):
+                out = out[0]
+            x = out.detach().float()
             C = x.shape[1]
             mu = x.mean(dim=(0, 2, 3)).cpu()
             var = x.var(dim=(0, 2, 3), unbiased=False).cpu()
@@ -86,7 +89,8 @@ class LayerStats:
             self.signals.setdefault(f'{label}_mean_var', []).append(float(var.mean()))
         return hook
 
-    def _bn_hook(self, module, inp):
+    def _bn_hook(self, module, *args):
+        inp = args[0]
         x = inp[0].float()
         if module.num_batches_tracked <= 0:
             return
