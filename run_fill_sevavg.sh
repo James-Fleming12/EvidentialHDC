@@ -112,8 +112,8 @@ if [ "$SMOKE" = "1" ]; then
   exit 0
 fi
 echo "=== FILL-IN DONE ==="
-echo "F1 dglsspp light:    robust_diagnostic/logs/al_full_dataset_ep10_custom_light_dglsspp.json"
-echo "F2 dglsspp moderate: robust_diagnostic/logs/al_full_dataset_ep10_custom_moderate_dglsspp.json"
+echo "F1 dglsspp light:    robust_diagnostic/logs/al_full_dataset_ep10_custom_light_dglsspp_light.json"
+echo "F2 dglsspp moderate: robust_diagnostic/logs/al_full_dataset_ep10_custom_moderate_dglsspp_moderate.json"
 echo "F3 hyper heavy:      robust_diagnostic/logs/al_full_dataset_ep10_custom_heavy_hyper.json"
 echo "Then combine with existing heavy (dglsspp) / light+moderate (hyper) for the 3-severity average."
 exit 0
