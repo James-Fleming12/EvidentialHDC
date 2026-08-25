@@ -316,54 +316,83 @@ BN-mismatch at the bottleneck (`conv_1.bn`, the 640→256 fusion) is a
 **perfect, label-free, deployment-ready detector**: no corruption-type
 knowledge, no labels, just the frozen running-stat deviation of one BN layer.
 
-**Finding.** A per-scan gate signal exists and is trivial to compute. If a
-late-BN re-normalization is engaged only when `bn_mismatch_conv_1` exceeds a
-threshold, it would act exactly on the collapsed scans and leave healthy scans
-at their calibrated operating point — the "tiny bump, full healthy" design.
+**Finding.** A per-scan gate signal exists and is trivial to compute, and it
+perfectly flags collapsed scans (AUROC 1.000). **Caveat (Diagnostic 8):** the
+mismatch is a perfect *detector* but NOT a *recoverable lever* — re-anchoring
+the BN stats that produce it is negative (a symptom of the input collapse, not
+the cause). As a gate it can still decide *when to engage an input-level
+intervention* (e.g., input-IN) or the AL pool, but not to correct the features
+itself.
 
-### Diagnostic 8 (PENDING): BatchNorm re-anchor headroom probe
+### Diagnostic 8 (DONE): BatchNorm re-anchor headroom probe -- NEGATIVE
 
 **Question.** How much of the frozen→ceiling gap on fog/crosstalk does a
-label-free BatchNorm running-stat re-anchor close? This is the concrete
-implementation of the Diagnostic-5 finding (the collapse is a frozen-BN
-running-stat mismatch at the late bottleneck, not input saturation) and the
-second online lever alongside the linear-classifier W update.
+label-free BatchNorm running-stat re-anchor close? The Diagnostic-5 finding (the
+collapse is a frozen-BN running-stat mismatch at the late bottleneck) suggested
+statistic substitution could be the whole fix.
 
 **Setup.** `probe_bn_reanchor_diag.py` + `run_probe_bn_reanchor.sh`: dgl_kitti,
-fog+crosstalk. For each condition: W0 on clean (frozen BN) → frozen baseline;
-re-estimate the late BN `running_mean/var` from the CORRUPTED stream (statistic
-substitution, label-free, closed-form); decode with W0 → `bn_recal`; W* on the
-corrupted pool → labeled ceiling. Report:
+fog+crosstalk. W0 on clean (frozen BN) → frozen baseline; re-estimate the late
+BN `running_mean/var` (scope=late: layer3/4 + conv_1/2) from the CORRUPTED
+stream (statistic substitution, label-free, closed-form); decode with W0 →
+`bn_recal`; W* on the corrupted pool → labeled ceiling.
 
-- `bn_recal` vs `frozen` (the label-free gain),
-- `bn_recal_frac_of_gap` = (bn_recal − frozen)/(ceiling − frozen) — the fraction
-  of the labeled headroom a BN re-anchor alone recovers,
-- `bn_recal_Ws` (does the recal help the labeled ceiling too?),
-- `--bn_scope` in {bottleneck, late, all} to locate which BN subset carries the
-  recoverable signal.
+**Result (dgl_kitti, 500 frames, `probe_bn_reanchor.json`):**
 
-**Decisive split.** If `bn_recal_frac_of_gap` ~ 1.0, a BN re-anchor *alone*
-nearly reaches the labeled ceiling — the label-free lever is the whole fix, and
-the TTA/AL pipeline becomes: per-scan BN re-anchor (gated on
-`bn_mismatch_conv_1`, AUROC 1.000) + the online W update. If the fraction is
-small, the recoverable gap needs the labeled pool after all (BN recal helps, but
-the ceiling is pool-bound).
+| condition | base (frozen) | bn_recal (TTA) | labeled ceiling | bn_recal Δ | frac of gap |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 0.076 | 0.046 | 0.296 | **−0.030** | **−14%** |
+| crosstalk | 0.121 | 0.053 | 0.360 | **−0.068** | **−28%** |
+
+`bn_recal_Ws` (W* decoded with re-anchored BN) is also *worse* than the frozen
+ceiling on both (fog 0.028, crosstalk 0.052 vs ceiling 0.296/0.360).
+
+**Finding: the BN re-anchor is NEGATIVE.** Substituting the corrupted-stream
+BN running stats into the late layers *hurts* both conditions (−0.03 fog,
+−0.07 crosstalk) and closes a negative fraction of the frozen→ceiling gap. The
+re-anchored features are WORSE for the W0 probe than the frozen ones.
+
+**Why (mechanism, from the combined evidence).** The Diagnostic-5 "BN mismatch"
+was a *symptom of the input collapse*, not the cause. The probe showed conv1 is
+healthy (no saturation) — the geometry dies because the *remission channel
+itself* is erased at the input (D3: var → 1.3e-5), so the information to name
+points is absent before the network ever sees it. Re-calibrating the frozen BN
+stats cannot create information that was destroyed at the input; it just moves
+the features to a different operating point, which the clean-fitted W0 doesn't
+recognize. This is consistent with the fog-collapse probe (the SAME extractor is
+healthy on NuScenes-C fog where remission survives) and with D3.
+
+**Implication.** The recoverable gap on fog/crosstalk is **input-bound, not
+BN-bound**: no amount of late-network statistic realignment restores it. The
+only thing that rescues KITTI-C fog/crosstalk is re-anchoring the INPUT
+distribution (cov-shift's input-IN, which re-bases the collapsed remission) —
+and that costs healthy capacity (D1). The labeled ceiling remains reachable only
+through the corrupted pool (W*), which is the AL/TTA pool mechanism.
 
 ---
 
 ## Decision rule
 
-Diagnostic 5 settled the decisive split: the collapse is NOT an input-saturation
-or dead-unit phenomenon (conv1 is healthy; sat/dead ~0). It is a **frozen-BN
-running-stat mismatch that builds gradually and peaks at the late bottleneck
-(conv_1/conv_2, 4.6-5.3x clean mismatch)**, and Diagnostic 7 gives a **perfect
-per-scan detector** (`bn_mismatch_conv_1`, AUROC 1.000) with no labels.
+Diagnostic 5 showed the collapse is NOT input saturation (conv1 healthy), and
+the BN-mismatch signal (Diagnostic 7, AUROC 1.000) is a perfect *detector* — but
+Diagnostic 8 proved the BN re-anchor itself is **negative** (a symptom, not the
+cause). The frozen-BN mismatch is *measurable* but not *recoverable* by
+re-calibration.
 
-The fix to pursue is a **late, gated BatchNorm re-anchor** (re-estimate or
-re-base the bottleneck BN statistics on the fly, engaged per-scan when
-`bn_mismatch_conv_1` is high) — NOT a whole-extractor retrain and NOT the
-parked conditional-input-IN path. Diagnostic 8 measures how much of the labeled
-ceiling this lever alone recovers (`bn_recal_frac_of_gap`). If it is ~1.0, the
-TTA/AL pipeline combines the BN re-anchor with the online W update for the
-"tiny fog/crosstalk bump, full healthy recovery" target. If it underdelivers,
-fall back to the AL/TTA pool re-anchoring of the corrupted stream instead.
+So the direction is **NOT a BN re-anchor**. The two things that DO work:
+
+1. **Input re-anchoring** (cov-shift's per-scan input-IN) rescues KITTI-C
+   fog/crosstalk (+12-20 ceiling) — it re-bases the collapsed remission channel
+   at the input, where the information loss is. Its cost is the 0.12 clean
+   capacity gap (D1), which is why the conditional/stochastic-gate idea existed.
+   The gate signal (Diagnostic 7) is a perfect detector, but Diagnostic 4/6
+   showed the stochastic model only weakly recovers healthy in OFF mode.
+2. **The labeled corrupted pool** (W* / AL) reaches the ceiling — this is the
+   existing AL/TTA mechanism and is unaffected by this result.
+
+The "tiny fog/crosstalk bump, full healthy recovery" goal is therefore bounded:
+BN re-anchor is out. The remaining candidates are (a) input-IN gated by the
+perfect detector (accepting the conditional-model compromise), or (b) the
+pool-based AL path. For the GeoID comparison, the pool-based AL is the cleaner
+claim — it does not touch the healthy conditions at all, and it is what the
+existing TTA/AL line already does.
