@@ -64,7 +64,10 @@ run_phase() {
     fi
   else
     echo "  [RUN] full phase, logging to $logf"
-    eval "$env_pre $*" > "$logf" 2>&1
+    # CRITICAL: clear any inherited smoke env (MAX_FRAMES/CONDS exported in the
+    # shell from a prior SMOKE=1 run) so the FULL run is not capped at 30 frames
+    # or restricted to fog. This leaked before (output had _f30 and n_val 2.3M).
+    eval "unset MAX_FRAMES CONDS; $env_pre $*" > "$logf" 2>&1
     local c=$?
     echo "  [$name] exit=$c"
     if [ $c -ne 0 ]; then
@@ -77,7 +80,7 @@ run_phase() {
 
 # --- P1: KITTI-C light ---
 if [ "$RUN_P1" = "1" ]; then
-  _env="EXTRACTORS=\"cov_ep10:supcon_vib_dglsspp_inputin_in_chan:$COV_CKPT\" NUSC=0 BAL=1 KITTIC_SEV=light OUT_SUFFIX=sev_light"
+  _env="EXTRACTORS=\"cov_ep10:supcon_vib_dglsspp_inputin_in_chan:$COV_CKPT\" NUSC=0 BAL=1 KITTIC_SEV=light"
   _cmd="CUDA_VISIBLE_DEVICES=$GPU bash run_al_full_dataset.sh $GPU"
   if [ "$SMOKE" = "1" ]; then _env="$_env MAX_FRAMES=$SM_FRAMES CONDS=$SM_CONDS"; fi
   run_phase "p1_kittic_light" "$_env" "$_cmd" || rc=1
@@ -85,7 +88,7 @@ fi
 
 # --- P2: KITTI-C moderate ---
 if [ "$RUN_P2" = "1" ]; then
-  _env="EXTRACTORS=\"cov_ep10:supcon_vib_dglsspp_inputin_in_chan:$COV_CKPT\" NUSC=0 BAL=1 KITTIC_SEV=moderate OUT_SUFFIX=sev_moderate"
+  _env="EXTRACTORS=\"cov_ep10:supcon_vib_dglsspp_inputin_in_chan:$COV_CKPT\" NUSC=0 BAL=1 KITTIC_SEV=moderate"
   _cmd="CUDA_VISIBLE_DEVICES=$GPU bash run_al_full_dataset.sh $GPU"
   if [ "$SMOKE" = "1" ]; then _env="$_env MAX_FRAMES=$SM_FRAMES CONDS=$SM_CONDS"; fi
   run_phase "p2_kittic_moderate" "$_env" "$_cmd" || rc=1
@@ -118,8 +121,8 @@ if [ "$SMOKE" = "1" ]; then
   exit 0
 fi
 echo "=== OVERNIGHT SEV-AVG DONE ==="
-echo "P1 KITTI-C light:     robust_diagnostic/logs/al_full_dataset_ep10_custom_sev_light.json"
-echo "P2 KITTI-C moderate:  robust_diagnostic/logs/al_full_dataset_ep10_custom_sev_moderate.json"
+echo "P1 KITTI-C light:     robust_diagnostic/logs/al_full_dataset_ep10_custom_light.json"
+echo "P2 KITTI-C moderate:  robust_diagnostic/logs/al_full_dataset_ep10_custom_moderate.json"
 echo "P3 NuScenes-C light:  robust_diagnostic/logs/probe_nusc_c_w0source_sev_light.json"
 echo "P4 NuScenes-C moderate: robust_diagnostic/logs/probe_nusc_c_w0source_sev_moderate.json"
 echo "Average the 3 severities (heavy exists) per condition for the GeoID comparison."
