@@ -152,7 +152,8 @@ class ResNet_34(nn.Module):
     def __init__(self, nclasses, aux, block=BasicBlock, layers=[3, 4, 6, 3], if_BN=True, zero_init_residual=False,
                  norm_layer=None, groups=1, width_per_group=64, use_adaptor=True,
                  corr_dim=0, corr_mode='ind', inv_dim=128, norm='bn', input_in=False,
-                 norm_channels=None, scale_only=False, norm_scope='all', scale_in=False):
+                 norm_channels=None, scale_only=False, norm_scope='all', scale_in=False,
+                 geoid_head=False):
         super(ResNet_34, self).__init__()
         if norm_layer is None:
             norm_layer = norm_layer_for(norm, scale_in)
@@ -224,6 +225,15 @@ class ResNet_34(nn.Module):
             self.aux_head1 = nn.Conv2d(128, nclasses, 1)
             self.aux_head2 = nn.Conv2d(128, nclasses, 1)
             self.aux_head3 = nn.Conv2d(128, nclasses, 1)
+
+        # GeoID inlier-discrimination head (port of exp_geoid.py final_cls): a 1x1
+        # conv on the bottleneck output -> 1 channel (logit of "real inlier" vs
+        # "synthetic displaced outlier"). Trained with BCE alongside the seg loss;
+        # the synthetic points are injected by GenTrainer's get_augmented_view for
+        # the geo_inlier methods. Enabled via input_in-like flag (geoid_head).
+        self.geoid_head = None
+        if geoid_head:
+            self.geoid_head = nn.Conv2d(inv_dim, 1, 1)
 
     def _make_layer(self, block, planes, blocks, stride=1, dilate=False, use_adaptor=False, norm=None):
         norm_layer = self._norm_layer if norm is None else norm_layer_for(norm, self.scale_in)
@@ -349,6 +359,13 @@ class ResNet_34(nn.Module):
             aux2 = F.softmax(self.aux_head1(res_2), dim=1)
             aux3 = F.softmax(self.aux_head2(res_3), dim=1)
             aux4 = F.softmax(self.aux_head3(res_4), dim=1)
+            if self.geoid_head is not None:
+                geoid_logits = self.geoid_head(out)
+                if return_stage4:
+                    return pred, [aux2, aux3, aux4], out, x_4, geoid_logits
+                if return_enc:
+                    return pred, [aux2, aux3, aux4], out, feat_map, geoid_logits
+                return pred, [aux2, aux3, aux4], out, geoid_logits
             if return_stage4:
                 return pred, [aux2, aux3, aux4], out, x_4
             if return_enc:
