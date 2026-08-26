@@ -92,33 +92,35 @@ if [ "$RUN_HYPER" = "1" ]; then
   if [ -f "$HYPER_NUSC_CKPT/SENet" ]; then
     echo "  [P1] NuScenes HyperLiDAR checkpoint exists at $HYPER_NUSC_CKPT/SENet -- skipping"
   else
-    _ep="$NUSC_EPOCHS"; _cut="1.0"
-    if [ "$SMOKE" = "1" ]; then _ep="1"; _cut="0.01"; fi
+    _ep="$NUSC_EPOCHS"; _cut="1.0"; _log="$HYPER_NUSC_CKPT"
+    if [ "$SMOKE" = "1" ]; then _ep="1"; _cut="0.01"; _log="${HYPER_NUSC_CKPT}_smoke"; fi
     _env="CUDA_VISIBLE_DEVICES=$GPU"
-    _cmd="uv run python robust_diagnostic/train_covshift_nuscenes.py --method baseline --epochs $_ep --cutoff $_cut --log_dir $HYPER_NUSC_CKPT"
+    _cmd="uv run python robust_diagnostic/train_covshift_nuscenes.py --method baseline --epochs $_ep --cutoff $_cut --log_dir $_log"
     run_phase "p1_train_hyper_nusc" "$_env" "$_cmd" || rc=1
   fi
 fi
 
 # --- P2: train disentangle variant A (input-IN only, BN trunk) ---
 if [ "$RUN_TRAIN_DIS" = "1" ]; then
-  _ep="$DIS_EPOCHS"; _cut="$DIS_CUTOFF"
-  if [ "$SMOKE" = "1" ]; then _ep="1"; _cut="0.01"; fi
+  _ep="$DIS_EPOCHS"; _cut="$DIS_CUTOFF"; _cond=""; _log="$DIS_A_DIR"
+  if [ "$SMOKE" = "1" ]; then _ep="1"; _cut="0.01"; _cond="--conditions fog --frames 5"; _log="${DIS_A_DIR}_smoke"; fi
   _env="CUDA_VISIBLE_DEVICES=$GPU"
-  _cmd="uv run python robust_diagnostic/isotropy_diag.py --methods $DIS_A --epochs $_ep --cutoff $_cut --log_dir $DIS_A_DIR"
+  _cmd="uv run python robust_diagnostic/isotropy_diag.py --methods $DIS_A --epochs $_ep --cutoff $_cut --log_dir $_log $_cond"
   run_phase "p2_train_dis_a" "$_env" "$_cmd" || rc=1
 
   # --- P3: train disentangle variant B (input-IN + internal IN, all channels) ---
-  _ep="$DIS_EPOCHS"; _cut="$DIS_CUTOFF"
-  if [ "$SMOKE" = "1" ]; then _ep="1"; _cut="0.01"; fi
+  _ep="$DIS_EPOCHS"; _cut="$DIS_CUTOFF"; _cond=""; _log="$DIS_B_DIR"
+  if [ "$SMOKE" = "1" ]; then _ep="1"; _cut="0.01"; _cond="--conditions fog --frames 5"; _log="${DIS_B_DIR}_smoke"; fi
   _env="CUDA_VISIBLE_DEVICES=$GPU"
-  _cmd="uv run python robust_diagnostic/isotropy_diag.py --methods $DIS_B --epochs $_ep --cutoff $_cut --log_dir $DIS_B_DIR"
+  _cmd="uv run python robust_diagnostic/isotropy_diag.py --methods $DIS_B --epochs $_ep --cutoff $_cut --log_dir $_log $_cond"
   run_phase "p3_train_dis_b" "$_env" "$_cmd" || rc=1
 fi
 
 # --- P4: eval the disentangle variants (fog/crosstalk frozen+ceiling) ---
 if [ "$RUN_EVAL_DIS" = "1" ]; then
-  _env="EXTRACTORS=\"dis_a:$DIS_A:$DIS_A_DIR/${DIS_A},dis_b:$DIS_B:$DIS_B_DIR/${DIS_B},cov_ref:$DIS_REF:robust_diagnostic/logs/ep10_${DIS_REF}/${DIS_REF}\" NUSC=0 BAL=0 OUT_SUFFIX=disentangle"
+  _a_dir="$DIS_A_DIR"; _b_dir="$DIS_B_DIR"
+  if [ "$SMOKE" = "1" ]; then _a_dir="${DIS_A_DIR}_smoke"; _b_dir="${DIS_B_DIR}_smoke"; fi
+  _env="EXTRACTORS=\"dis_a:$DIS_A:$_a_dir/${DIS_A},dis_b:$DIS_B:$_b_dir/${DIS_B},cov_ref:$DIS_REF:robust_diagnostic/logs/ep10_${DIS_REF}/${DIS_REF}\" NUSC=0 BAL=0 OUT_SUFFIX=disentangle"
   _cmd="CUDA_VISIBLE_DEVICES=$GPU bash run_al_full_dataset.sh $GPU"
   if [ "$SMOKE" = "1" ]; then _env="$_env MAX_FRAMES=$SM_FRAMES CONDS=$SM_CONDS"; fi
   run_phase "p4_eval_disentangle" "$_env" "$_cmd" || rc=1
