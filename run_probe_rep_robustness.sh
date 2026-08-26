@@ -42,7 +42,7 @@ if [ "$SMOKE" = "1" ]; then
   echo "  [SMOKE] using max_frames=$MAX_FRAMES, conds=$CONDS"
 fi
 
-CMD="CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/probe_rep_robustness_diag.py \
+CMD="CUDA_VISIBLE_DEVICES=$GPU .venv/bin/python robust_diagnostic/probe_rep_robustness_diag.py \
   --max_frames $MAX_FRAMES --conds $CONDS --extractors \"$EXTRACTORS\" \
   --out robust_diagnostic/logs/probe_rep_robustness.json"
 echo "CMD: $CMD"
