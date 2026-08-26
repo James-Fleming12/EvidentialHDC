@@ -97,13 +97,15 @@ def effrank(codes, device, K=50):
     return float((evals.sum() ** 2 / (evals ** 2).sum()).item())
 
 
-def margin_sweep_frozen(codes, lbls, W0, proj, device, tau, chunk=100000):
+def margin_sweep_frozen(feats, lbls, W0, proj, device, tau, chunk=100000):
     """Frozen R4 accuracy after zeroing pre-sign activations below tau*scale.
-    Measures how much of the zero-shot (clean-fit W0) signal sits at fragile
-    boundaries. A large drop when fragile margins are zeroed = the zero-shot
-    boundary is fragile under the corruption-induced shift."""
-    pre = codes.to(device).float() @ proj
-    scale = pre.abs().mean()  # per-point mean |pre| scale
+    Takes the RAW 128-d features; computes pre-sign = feats @ proj, zeros the
+    fragile (small-|pre-sign|) coordinates, re-binarizes, and decodes with the
+    CLEAN-fit W0. A large drop = the zero-shot boundary sits at sign-flip
+    coordinates that the corruption-induced shift flips."""
+    feats = feats.to(device).float()
+    pre = feats @ proj                      # (N, 10000) pre-sign activations
+    scale = pre.abs().mean()
     thr = tau * scale
     z = pre.clone()
     z[pre.abs() < thr] = 0.0
@@ -236,7 +238,7 @@ def main():
             sweeps = {}
             for tau in (0.5, 1.0, 2.0):
                 sweeps[f'tau{tau}'] = margin_sweep_frozen(
-                    Xp, pl_s, W0, proj, device, tau)
+                    pf_s, pl_s, W0, proj, device, tau)
             corr_means = class_means(pf_s, pl_s)
             shift = class_shift(clean_means, corr_means)
 
