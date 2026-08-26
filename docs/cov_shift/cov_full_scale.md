@@ -511,6 +511,73 @@ recovers the 0.12 clean gap relative to the current cov-shift. The micro run
 here is against plain DGLSS++ and cannot answer that. This is the pending full
 `_scope` run.
 
+### DISENTANGLE (FULL SCALE, 6 ep / 100%): the channel-restricted input-IN IS what raises the recoverable fog/crosstalk ceiling (`run_overnight_disentangle.sh`, `al_full_dataset_ep10_custom_disentangle.json`)
+
+**Question.** The eval-time input/BN modifications (Diagnostics 8/8b/9) do NOT
+raise the ceiling (probe_ceiling_under_mod was negative). But cov-shift
+(`_in_chan`) has a genuinely higher full-scale fog/crosstalk ceiling than
+DGLSS++ (fog 36.9 vs 25.3, crosstalk 49.1 vs 29.1). This is therefore a
+TRAINING-time effect. Which training component creates it? Three candidates,
+each isolating one lever:
+
+- `dis_a` = `supcon_vib_dglsspp_inputin` (per-scan input-IN, **BN trunk**) →
+  isolates the internal-InstanceNorm contribution
+- `dis_b` = `supcon_vib_dglsspp_inputin_in` (input-IN + internal IN, **all
+  channels**) → isolates the channel-restriction {0,4}
+- `cov_ref` = `supcon_vib_dglsspp_inputin_in_chan` (input-IN + internal IN +
+  **channel-restricted {0,4}**) = the existing cov-shift winner
+
+Both `dis_a`/`dis_b` trained 6 ep / 100% KITTI seq-08 (`isotropy_diag`), then
+the full harness evaluated all three (frozen + ceiling, full n_val 290M fog).
+
+**Result (full scale, ceiling):**
+
+| condition | dis_a (inputin) | dis_b (inputin_in) | cov_ref (_in_chan) | DGLSS++ heavy |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | 18.9 | 20.8 | **36.9** | 25.3 |
+| crosstalk | 25.7 | 29.4 | **49.1** | 29.1 |
+| snow | 28.1 | 29.2 | **49.5** | 57.5 |
+| wet_ground | 26.4 | 24.4 | **41.9** | 57.0 |
+| incomplete_echo | 30.4 | 31.3 | **43.7** | 48.8 |
+| beam_missing | 30.0 | 30.7 | **48.7** | 58.7 |
+| motion_blur | 30.3 | 31.1 | **45.8** | 56.6 |
+| cross_sensor | 26.4 | 28.8 | **44.6** | 49.4 |
+
+(Frozen, fog/crosstalk: dis_a 16.1/18.4, dis_b 18.3/27.2, cov_ref 32.2/47.7.)
+
+**Findings.**
+
+1. **The channel-restriction {0,4} is the lever that raises the recoverable
+   ceiling.** `cov_ref` (the only variant with `norm_channels=(0,4)`) crushes
+   both disentangle variants on fog/crosstalk ceiling (fog 36.9 vs 18.9/20.8;
+   crosstalk 49.1 vs 25.7/29.4) AND on every healthy condition (snow 49.5 vs
+   28-29, wet_ground 41.9 vs 24-26). `dis_a`→`dis_b` (adding internal IN)
+   barely moves the ceiling (fog 18.9→20.8, crosstalk 25.7→29.4); the jump is
+   `dis_b`→`cov_ref` (adding the {0,4} restriction), a ~16-20 point ceiling
+   gain on fog/crosstalk.
+2. **The internal-InstanceNorm and the input-IN alone do NOT create headroom.**
+   `dis_a` (input-IN, BN trunk) and `dis_b` (input-IN + internal IN) both sit at
+   ~19-29 ceiling on fog/crosstalk, comparable to plain DGLSS++ (fog 25.3,
+   crosstalk 29.1) and far below `cov_ref`. The recoverable-geometry gain comes
+   specifically from normalizing ONLY the range+remission channels and leaving
+   the xyz geometry untouched.
+3. **6-ep caveat:** dis_a/dis_b are undertrained vs the ep10 cov_ref (both 6 ep
+   vs cov_ref's 10 ep), which partly explains their lower healthy ceilings. But
+   the fog/crosstalk ceiling gap is far too large (+16-20) to be training-length
+   alone, and the DGLSS++ heavy reference (41.6 mean ceiling) is also a
+   full-scale checkpoint the 6-ep variants trail on healthy conditions. The
+   direction is robust: the {0,4} restriction is the mechanism that makes
+   fog/crosstalk recoverable at training time.
+
+**Implication.** For the paper pivot (linear-classifier TTA/AL), the extractor
+lever that actually raises the recoverable fog/crosstalk ceiling is the
+channel-restricted input normalization `norm_channels=(0,4)` at TRAINING time.
+Eval-time input/BN modifications do not (probe_ceiling_under_mod negative). If
+the goal is more headroom for the TTA/AL line, a cov-shift trained with the
+{0,4} restriction (i.e. the existing cov_ref / a full-length version of it) is
+the extractor to pair with the linear-classifier work; the disentangle variants
+confirm that neither plain input-IN nor internal IN is sufficient on its own.
+
 ### Stats-thresholded input-IN gate: the tau sweep is FLAT -- the gate does NOT recover healthy capacity (`probe_ingate_stats_diag.py`, micro 200 frames)
 
 The self-detecting gate engages per-scan input-IN only when the scan's
@@ -728,9 +795,15 @@ robust. `probe_decoder_ceiling.json`.
 - Fog-collapse probe: `robust_diagnostic/probe_fog_collapse_diag.py`, runner
   `run_probe_fog_collapse.sh` (nearest-mean recall + frozen R4, same extractor
   under both generators; `probe_fog_collapse.json`).
+- Disentangle training: `run_overnight_disentangle.sh` (trains `_inputin` and
+  `_inputin_in` at 6 ep / 100%, plus the NuScenes HyperLiDAR `baseline`;
+  evaluates all three vs the ep10 `_in_chan` on fog/crosstalk;
+  `al_full_dataset_ep10_custom_disentangle.json`).
 - Checkpoints: `logs/ep10_supcon_vib_dglsspp_inputin_in_chan/...` (KITTI cov),
   `logs/supcon_vib_dglsspp` (KITTI DGLSS++), `logs/nusc_covshift_21ep` (NuScenes
-  cov), `logs/nusc_dglsspp_21ep` (NuScenes DGLSS++).
+  cov), `logs/nusc_dglsspp_21ep` (NuScenes DGLSS++),
+  `logs/nusc_pretrain` (NuScenes HyperLiDAR `baseline`), and the disentangle
+  variants in `robust_diagnostic/logs/dis6_*`.
 - Results: `al_full_dataset_ep10_custom.json` (corrected DGLSS++ KITTI-C),
   `al_nuscenes_c.json` / `al_nuscenes_c_dglsspp.json` (NuScenes-C),
   `probe_covshift_mechanism_ep10.json` (Iteration-0 results),
@@ -738,7 +811,10 @@ robust. `probe_decoder_ceiling.json`.
   `al_full_dataset_ep10_custom_dim2000.json` (P2 code-2000 KITTI-C),
   `probe_d7_gate_ep10.json` (P3 gate-off; cov_nusc half incomplete),
   `probe_nusc_c_w0source_ep10.json` (P4 corrected NuScenes-C zero-shot),
-  `probe_nusc_c_w0source_dim2000.json` (P5 NuScenes-C code-2000).
+  `probe_nusc_c_w0source_dim2000.json` (P5 NuScenes-C code-2000),
+  `al_full_dataset_ep10_custom_disentangle.json` (disentangle fog/crosstalk
+  ceiling), `probe_ceiling_under_mod.json` (eval-time mods do NOT raise the
+  ceiling).
 
 **Discrepancy RESOLVED (P1, 2026-08-24):** the mechanism probe's DGLSS++ KITTI-C
 ceilings were wrong (snow 0.421 vs authoritative 0.575; its ~0.5% `n_val`
