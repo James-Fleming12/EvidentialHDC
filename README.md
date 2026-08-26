@@ -1007,36 +1007,45 @@ cov_ep10, dglsspp, and hyper columns are full **3-severity averages**.
 
 | condition | cov-shift zs | cov-shift ceil | dglsspp zs | dglsspp ceil | hyper zs | hyper ceil | GeoID adapted | GeoID source-only |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| fog | 40.7 | 43.6 | 22.5 | 35.2 | 22.4 | 38.0 | 40.1 | 33.2 |
-| crosstalk | 48.3 | 49.4 | 11.9 | 29.4 | 10.5 | 31.5 | 40.8 | 24.5 |
-| snow | 47.9 | 49.5 | 53.2 | 56.6 | 58.6 | 62.1 | 40.6 | 32.0 |
-| wet_ground | 35.0 | 42.9 | 53.1 | 58.1 | 59.3 | 63.6 | 47.7 | 45.5 |
-| incomplete_echo | 45.2 | 45.3 | 52.7 | 51.8 | 55.3 | 55.3 | 50.8 | 50.5 |
-| beam_missing | 50.3 | 50.3 | 60.6 | 61.0 | 61.1 | 61.9 | 52.1 | 51.1 |
-| motion_blur | 46.5 | 46.8 | 56.8 | 57.9 | 59.0 | 61.9 | 54.6 | 54.1 |
-| cross_sensor | 43.1 | 45.9 | 53.4 | 55.4 | 53.4 | 56.9 | 49.0 | 47.8 |
-| **mean** | 44.6 | 46.7 | 45.5 | 50.7 | 47.5 | 53.9 | 46.96 | 42.33 |
+| fog | 40.7 | 43.6 | 22.5 | 35.2 | 18.5 | 25.3 | 40.1 | 33.2 |
+| crosstalk | 48.3 | 49.4 | 11.9 | 29.4 | 9.8 | 18.2 | 40.8 | 24.5 |
+| snow | 47.9 | 49.5 | 53.2 | 56.6 | 44.1 | 47.9 | 40.6 | 32.0 |
+| wet_ground | 35.0 | 42.9 | 53.1 | 58.1 | 51.2 | 49.6 | 47.7 | 45.5 |
+| incomplete_echo | 45.2 | 45.3 | 52.7 | 51.8 | 45.5 | 45.1 | 50.8 | 50.5 |
+| beam_missing | 50.3 | 50.3 | 60.6 | 61.0 | 51.1 | 49.4 | 52.1 | 51.1 |
+| motion_blur | 46.5 | 46.8 | 56.8 | 57.9 | 48.4 | 47.7 | 54.6 | 54.1 |
+| cross_sensor | 43.1 | 45.9 | 53.4 | 55.4 | 45.1 | 44.7 | 49.0 | 47.8 |
+| **mean** | 44.6 | 46.7 | 45.5 | 50.7 | 39.2 | 41.0 | 46.96 | 42.33 |
 
-**Reading:** on the **fair zero-shot** axis, our frozen-extractor means beat
-GeoID's source-only mean (cov-shift 44.6, dglsspp 45.5, hyper 47.5 vs their
-42.3), and hyper/dglsspp beat its *adapted* mean (46.96) on the zero-shot line
-too. The **labeled ceiling** (dglsspp 50.7, hyper 53.9, cov-shift 46.7) marks
-the headroom a label-free TTA/AL could unlock. The 17-vs-10 class-map difference
-makes this directional; the class remap is the paper-blocking step, not the
-model.
+**Decision rule note:** the hyper column uses the **R1 prototype-distance
+decision rule** (the HyperLiDAR default). The other extractors use the R4 linear
+probe (as does the GeoID comparison). With the **R4 linear classifier** the
+HyperLiDAR numbers jump substantially (3-sev mean zs 39.2 → **47.4**, ceiling
+41.0 → **53.9**; e.g. fog ceiling 25.3 → 38.0, snow ceiling 47.9 → 62.1) —
+showing the plain pretrained extractor's features are highly linearly separable,
+just not captured by the simple prototype rule. R1 is shown here to match
+HyperLiDAR's default reporting; the R4 rows are what we compare against GeoID.
 
-**Severity-profile caveat (read the mean carefully):** hyper's high 3-severity
-mean is **not** a heavy-severity strength. At heavy severity (the hardest, and
-the more conservative comparison) all three extractors are effectively tied on
-zero-shot (cov-shift 42.0, dglsspp 41.7, hyper 41.6 mean zs). Hyper's 3-sev
-edge comes from the **light severity being much easier for it** (e.g. fog zs
-46.6 at light vs 9.7 at heavy; cross_sensor 64.3 vs 38.1), i.e. it has the
-**steepest severity cliff** of the three. So hyper looks best only under the
-3-severity averaging GeoID uses; per-condition at matched heavy severity the
-three extractors are comparable, and per-condition at light/moderate hyper's
-healthy-condition strength shows up instead. Quote either the severity-matched
-per-condition rows or the heavy-only means, not the 3-sev mean as a claim of
-absolute superiority.
+**Reading:** on the **fair zero-shot** axis, cov-shift and dglsspp beat GeoID's
+source-only mean (44.6, 45.5 vs 42.3), while hyper's prototype-rule zero-shot
+(39.2) trails; with the R4 linear rule hyper's zero-shot (47.4) beats it too.
+The **labeled ceiling** (dglsspp 50.7, hyper 41.0 R1 / 53.9 R4, cov-shift 46.7)
+marks the headroom a label-free TTA/AL could unlock. The 17-vs-10 class-map
+difference makes this directional; the class remap is the paper-blocking step,
+not the model.
+
+**Severity-profile caveat (read the mean carefully):** hyper's 3-severity mean
+is **not** a heavy-severity strength. At heavy severity (the hardest, and the
+more conservative comparison) all three extractors are effectively tied on
+zero-shot (cov-shift 42.0, dglsspp 41.7, hyper 35.2 mean zs at the R1 rule used
+for hyper). Hyper's 3-sev edge comes from the **light severity being much
+easier for it** (e.g. fog zs 36.5 at light vs 8.8 at heavy; cross_sensor 52.3 vs
+33.8), i.e. it has the **steepest severity cliff** of the three. So hyper looks
+best only under the 3-severity averaging GeoID uses; per-condition at matched
+heavy severity the extractors are closer, and per-condition at light/moderate
+hyper's healthy-condition strength shows up instead. Quote either the
+severity-matched per-condition rows or the heavy-only means, not the 3-sev mean
+as a claim of absolute superiority.
 
 ### What this means for the paper
 
