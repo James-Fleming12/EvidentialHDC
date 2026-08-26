@@ -478,6 +478,78 @@ pivot (linear-classifier TTA/AL), this is the label-free detection signal that
 can gate *where* to spend AL/TTA effort, even if the input-IN itself is not the
 final lever.
 
+### Diagnostic 10 (DONE): representation-robustness probe -- invariance does NOT predict the ceiling (`probe_rep_robustness_diag.py`, `run_probe_rep_robustness.sh`)
+
+**Question.** Why does the plain-supervised HyperLiDAR extractor (`baseline`)
+beat DGLSS++/cov-shift on KITTI-C (R4 ceiling hyper 53.9 vs dgl 50.7 vs cov
+46.7) but LOSE on NuScenes-C (55.1 vs 63.5 vs 61.0)? Hypothesis: hyper's features
+are more *invariant* to KITTI-C corruptions but less to NuScenes-C's. This probe
+measures, per (extractor, condition) on its home dataset: feature-space shift
+(clean→corrupted per-class mean cosine), per-class separability retention,
+BN running-stat mismatch at conv_1.bn, code variance, and effective rank.
+
+**Setup.** 6 extractors (hyper/dgl/cov × kitti/nusc), 200 frames, fog+crosstalk+snow,
+in-domain clean reference. (Note: the initial full run OOM'd at ~600 GB in
+`hdc_codes`; the probe was made memory-bounded by subsampling to 100k pts before
+the 10000-d projection.)
+
+**Result (`probe_rep_robustness.json`):**
+
+| dataset | extractor | cond | shift | sep_ret | bn_clean→corr |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| KITTI-C | hyper | fog | 0.215 | **0.12** | 0.17→0.82 |
+| KITTI-C | hyper | crosstalk | 0.261 | **0.16** | 0.17→0.84 |
+| KITTI-C | hyper | snow | 0.951 | 0.96 | 0.17→0.18 |
+| KITTI-C | dgl | fog | 0.169 | 0.38 | 0.16→0.82 |
+| KITTI-C | dgl | crosstalk | 0.211 | 0.47 | 0.16→0.83 |
+| KITTI-C | dgl | snow | 0.949 | 1.00 | 0.16→0.16 |
+| KITTI-C | cov | fog | 0.914 | 1.05 | 0→0* |
+| KITTI-C | cov | crosstalk | 0.977 | 0.97 | 0→0* |
+| KITTI-C | cov | snow | 0.983 | 1.00 | 0→0* |
+| NuScenes-C | hyper | fog | 0.763 | **0.94** | 0.20→0.38 |
+| NuScenes-C | hyper | crosstalk | 0.799 | 1.04 | 0.20→0.26 |
+| NuScenes-C | hyper | snow | 0.802 | 1.07 | 0.20→0.28 |
+| NuScenes-C | dgl | fog | 0.937 | 0.99 | 0.18→0.30 |
+| NuScenes-C | dgl | crosstalk | 0.917 | 0.95 | 0.18→0.23 |
+| NuScenes-C | dgl | snow | 0.924 | 0.97 | 0.18→0.20 |
+| NuScenes-C | cov | fog | 0.905 | 1.03 | 0→0* |
+| NuScenes-C | cov | crosstalk | 0.937 | 1.02 | 0→0* |
+| NuScenes-C | cov | snow | 0.941 | 1.01 | 0→0* |
+
+\* cov-shift uses internal InstanceNorm (no BatchNorm), so its `bn_mismatch` is
+an artifact (the hook skips non-BN); the 0→0 is not meaningful for cov.
+
+**Findings (the invariance hypothesis is REVERSED):**
+
+1. **hyper is NOT more invariant on KITTI-C -- it is the LEAST invariant, yet it
+   has the HIGHEST KITTI-C ceiling.** On KITTI-C fog/crosstalk hyper's separability
+   retention is the worst (0.12/0.16 vs dgl 0.38/0.47, cov ~1.0) and its BN
+   mismatch is the largest (0.82/0.84). Its raw feature geometry COLLAPSES most.
+   Yet its R4 ceiling (29.1/31.3) beats dgl (25.3/29.1). So the invariance
+   metrics (sep_retention, shift, bn_mismatch) do NOT predict the recoverable
+   ceiling in the direction hypothesized.
+2. **On NuScenes-C hyper is MORE invariant (sep_ret 0.94-1.07, low bn drift) yet
+   has the LOWEST ceiling (47.9-49.5 vs dgl 58.5-61.3).** The exact opposite
+   pattern: hyper's NuScenes-C features stay geometrically intact but are less
+   recoverable by the labeled probe.
+3. **cov-shift (input-IN) is the invariant outlier: it preserves separability on
+   BOTH datasets (~1.0 retention) and has the KITTI-C fog/crosstalk ceiling edge
+   (36.9/49.1) -- but NOT the NuScenes-C edge, where dgl wins.** So cov-shift's
+   input-IN is invariant everywhere, yet still loses NuScenes-C to dgl.
+
+**Interpretation.** The feature-space invariance (raw geometry retention, BN
+drift, class shift) does NOT determine the labeled ceiling. The recoverable
+ceiling is set by something else: how much *linearly separable* structure the
+features retain under the probe, which is a different property than geometric
+invariance. Hyper's KITTI-C advantage and NuScenes-C disadvantage are therefore
+NOT explained by "more/less invariant representations" -- they are a property of
+how the linear probe interacts with each extractor's feature geometry, likely
+tied to the input statistics (D3: KITTI-C fog collapses remission; NuScenes-C
+fog inflates range) and how each extractor's normalization reacts. This
+reframes the earlier "hyper is more robust" claim: hyper's features are NOT more
+invariant; they are differently *distributed* such that the R4 linear probe
+rewards them on KITTI-C but not NuScenes-C.
+
 ---
 
 ## Decision rule
