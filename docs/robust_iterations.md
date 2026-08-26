@@ -670,7 +670,7 @@ The norm-gated prototype update on the medium DGLSS++ extractor
    mIoU rises from 0.456 (micro) to 0.530 (medium) and the 8-condition corrupted
    mean from 0.310 to 0.369; the space is also less anisotropic at scale (clean PR
    2.7 to 4.3, mean-fraction 0.51 to 0.39). The medium run does not degrade the
-   DGLSS++ decoder — it improves it.
+    DGLSS++ decoder: it improves it.
 2. **The mean-dominance mechanism localizes to the collapsed conditions.** The dead
    fraction is zero on every healthy condition but fires on fog (0.221) and
    crosstalk (0.147), the only conditions with an elevated mean-fraction (0.830 fog,
@@ -687,7 +687,7 @@ The norm-gated prototype update on the medium DGLSS++ extractor
    indicative, not controlled.
 4. **The assignment wall persists at scale.** Medium DGLSS++ fog rec@3 is 0.137
    (below the ~0.19 random baseline) and the gated oracle-vs-LP gap is ~0.002-0.007
-   — detection without assignment, exactly as at micro scale. One structural change:
+    (detection without assignment, exactly as at micro scale). One structural change:
    on fog the recoverable set is smaller (rec@3 0.14 vs 0.21 micro) but far more
    cleanly labeled (LPrec 0.54 vs 0.04), so what is recoverable is better
    recoverable.
@@ -700,7 +700,7 @@ The norm-gated prototype update on the medium DGLSS++ extractor
 6. **The norm-gate lever does not scale its gap fraction.** The Iteration-3 headline
    (norm gate closes 58% of the DGLSS++ fog gap) was on the under-converged micro
    extractor with a small oracle (0.143). At medium scale the oracle is larger (fog
-   0.198, crosstalk 0.249) and the norm gate closes 0.20 / 0.08 of the gap — exactly
+    0.198, crosstalk 0.249) and the norm gate closes 0.20 / 0.08 of the gap, exactly
    matching naive EMA (0.20 / 0.08) and below BN alignment (0.32 / 0.31). The
    absolute gain is similar (fog +0.022), but relative to the larger oracle gap its
    fraction halves. The "norm gate as the superior lever" result was a small-scale
@@ -758,7 +758,7 @@ assigns to it; the quality the naive update depends on):
 | building (15) | 0.323 | **0.006** |
 | pedestrian (7) | 0.000 | 0.000 |
 
-Spearman rho(freq, feat_cos) — distance-to-prototype becomes frequency-dependent
+Spearman rho(freq, feat_cos): distance-to-prototype becomes frequency-dependent
 at scale: fog 0.04 (micro) to **0.48** (med); crosstalk 0.33 to 0.29.
 
 **Per-class naive-update effect on fog** (zs -> naive per-class IoU, micro vs med):
@@ -858,13 +858,13 @@ dg_med car naive 0.252 -> LP+support 0.313, the one variant that clearly helps).
    (-0.09 to -0.38) on both conditions. Even the HDC-decode labels only reduce the
    damage (sv_med fog car 0.026 -> 0.114) without going positive.
 2. **The binding limit for supcon_vib is the labeled ceiling, not the update
-   noise.** sv_med fog oracle is 0.146 vs zs 0.090 — only 0.056 of headroom to work
+    noise.** sv_med fog oracle is 0.146 vs zs 0.090 (only 0.056 of headroom to work
    with; dg_med fog has 0.176 vs 0.082 (0.094). supcon_vib's corrupted features are
    less recoverable *even with true labels* (fog car oracle 0.200 vs 0.303, terrain
    0.161 vs 0.204, vegetation 0.173 vs 0.185). With almost no gap to close, any
    label-free update noise pushes the result below zero-shot.
 3. **This answers the noise-robustness question:** supcon_vib med is not "less
-   robust to update noise" in a way a better update fixes — its medium-scale fog
+    robust to update noise" in a way a better update fixes: its medium-scale fog
    space has a low recoverable ceiling, so the LP's noise (fog LP recall for car
    0.005) has nothing to cancel and the update net-negative. dglsspp med, with real
    headroom, is the extractor on which the naive update works at all (+0.19).
@@ -928,7 +928,7 @@ Iterations 4-5 established that (a) the label-free TTA failure at scale is the
 assignment wall plus a low recoverable ceiling, and (b) the minority-class drift is
 a corruption-shift under fog/crosstalk. The natural training lever is the one
 mechanism supcon_vib has that the DGLSS arms lack: the corruption-targeted
-augmented view. This iteration adds a **`supcon_vib_dglsspp_cor`** arm — DGLSS++
+augmented view. This iteration adds a **`supcon_vib_dglsspp_cor`** arm, DGLSS++
 (GMSIFC + LSCC + CE, still VIB-free) but with the augmented view set to supcon_vib's
 `get_augmented_view` (beam-drop + fog depth jitter + 20% density sparsity) plus a
 crosstalk fake-return injection, so the consistency constraints learn invariance to
@@ -963,8 +963,8 @@ micro runs (best-val IoU 0.303 vs dg 0.283 / sv 0.289).
    halved (0.183 -> 0.101) and the 8-condition HDC mean is at least tied with the
    baseline, so the augmentation does not trade robustness for a decode loss.
 3. **The minority feat_cos are roughly unchanged at micro** (car 0.825 vs 0.847,
-   vegetation 0.450 vs 0.431, building 0.409 vs 0.451) — the micro effect is a
-   cleaner overall fog space and a protected majority prototype, not yet a
+    vegetation 0.450 vs 0.431, building 0.409 vs 0.451), the micro effect is a
+    cleaner overall fog space and a protected majority prototype, not yet a
    per-minority tightening. The minority-specific claim is only decidable where the
    baseline polarizes, i.e. at medium scale.
 
@@ -978,7 +978,7 @@ oracle 0.176) the cor variant holds minority classes closer to their prototypes
 The medium-lite corruption-augmented run completed cleanly (12 epochs, train IoU
 0.161 -> 0.432). Isotropy, compared with the plain DGLSS++ medium run (dg_med, 24
 ep / 100% data). Budget caveat up front: cor_med used HALF the epochs of dg_med, so
-this is not a same-budget comparison — it shows the cor variant is at least as
+this is not a same-budget comparison: it shows the cor variant is at least as
 robust as the baseline at half the cost.
 
 **HDC mIoU per condition (higher is better):**
@@ -1020,7 +1020,7 @@ robust as the baseline at half the cost.
    crosstalk, the same direction the micro run showed for fog.
 3. **The fog mean-fraction stays high** (0.830, matching dg_med) and the fog
    dead-fraction only improves slightly (0.221 -> 0.208), so the augmentation has
-   not eliminated fog's shared-mean dominance at this budget — but it no longer
+    not eliminated fog's shared-mean dominance at this budget, but it no longer
    needs to, because the decode is at least as good.
 4. **The decisive per-class test is still pending.** The isotropy does not measure
    the minority-class proximity (rho(freq, feat_cos)), the fog/crosstalk labeled
@@ -1121,8 +1121,8 @@ Isotropy (8-condition HDC mean / clean HDC / best-val IoU): plain dglsspp 0.297 
    halves the fog dead-fraction (0.183 -> 0.081).
 2. **VIB is a qualified direction.** Naive gaps are positive (+0.19 / +0.17) and
    it is the ONLY variant that flips the fog rho negative (-0.14), i.e. minority
-   classes end up closer to their prototypes than the majority — the
-   polarization-reduction it was meant to deliver. But the 8-condition decode is
+    classes end up closer to their prototypes than the majority: the
+    polarization-reduction it was meant to deliver. But the 8-condition decode is
    slightly below baseline (0.293) and the fog dead-fraction stays high (0.159),
    so at this budget VIB compresses the space at some decode cost. Worth a
    medium-scale look only if paired with something that restores the decode.
@@ -1144,17 +1144,17 @@ Isotropy (8-condition HDC mean / clean HDC / best-val IoU): plain dglsspp 0.297 
 **Caveat and next.** These are micro gates: the naive-gap flips are measurable at
 micro (the -0.43 -> +0.49 fog signal is real), but the polarization / ceiling
 effects need medium scale. The recommendation is a medium-lite DGLSS++ + SupCon
-run (the winner), and — because SupCon improves assignment while the corruption
-augmentation improves efficiency/ceiling — testing them COMBINED as the paper's
+run (the winner), and (because SupCon improves assignment while the corruption
+augmentation improves efficiency/ceiling) testing them COMBINED as the paper's
 robust-DGLSS++ variant (beam-drop + corruption view is orthogonal to the SupCon
 pull).
 
 ## Iteration 8: the combined robust-DGLSS++ variant at medium scale
 
-The paper's candidate — DGLSS++ with BOTH the corruption-targeted augmented view
-and the decoupled SupCon pull (`supcon_vib_dglsspp_corsupcon`, VIB-free) — trained
+The paper's candidate, DGLSS++ with BOTH the corruption-targeted augmented view
+and the decoupled SupCon pull (`supcon_vib_dglsspp_corsupcon`, VIB-free), trained
 for 21 ep / 100% data (~10.5h) and evaluated with the same per-class autopsy.
-Training converged cleanly (IoU 0.164 -> 0.482, best val 0.396 — the best of every
+Training converged cleanly (IoU 0.164 -> 0.482, best val 0.396, the best of every
 medium run). Comparison vs the plain medium DGLSS++ baseline (dg_med, 24 ep) and
 the augmentation-only medium (cor_med, 12 ep):
 
@@ -1191,25 +1191,25 @@ Key per-class: car fog feat_cos 0.826 vs dg_med 0.321 (2.5x closer), fog zs-corr
 **What the combined run shows:**
 
 1. **The majority polarization is INVERTED.** fog rho(freq, feat_cos) goes +0.48
-   (dg_med) to **-0.49** — the first medium-scale run where the minority classes are
+    (dg_med) to **-0.49**, the first medium-scale run where the minority classes are
    NOT disproportionately far from their prototypes; they are now closer than the
    majority. The SupCon pull anchors them (car feat_cos 0.826 vs 0.321). This is the
    structural fix the SupCon direction was designed to deliver.
-2. **The crosstalk naive-EMA gap is +0.52** (vs dg_med +0.02, cor_med +0.14) — the
+2. **The crosstalk naive-EMA gap is +0.52** (vs dg_med +0.02, cor_med +0.14), the
    largest label-free TTA gain measured at scale. The naive update now lifts car
    (gap 0.99) and sidewalk (gap 1.05) on crosstalk instead of leaving them flat or
    destroying them.
 3. **Best fog zero-shot and decode** (zs 0.095, HDC 0.085 vs dg_med 0.082 / 0.068).
    The fog naive gap is small (+0.08) only because zero-shot is already high (less
    headroom), and the fog labeled ceiling is still below dg_med (oracle 0.157 vs
-   0.176) — the "raise the fog ceiling" goal is not met, consistent with the
+    0.176), the "raise the fog ceiling" goal is not met, consistent with the
    ceiling being feature/budget-bound rather than assignment-bound.
 4. **Tied aggregate at 3 fewer epochs** (8-condition mean 0.369 at 21 ep vs dg_med
    0.369 at 24 ep) with the best val IoU (0.396). The combined variant is at least
    as robust per epoch as the plain DGLSS++, and the crosstalk dead-fraction drops
    to 0.048 (vs 0.147).
 5. **The fog space is the most mean-dominated measured** (mean-fraction 0.890, PR
-   2.04) yet decodes the best on fog — a clean instance of the structured-anisotropy
+    2.04) yet decodes the best on fog, a clean instance of the structured-anisotropy
    result: the dominant direction carries the classes, so low rank / high
    mean-dominance does not itself predict HDC failure.
 6. **The one regression:** crosstalk HDC decode is below dg_med (0.098 vs 0.115),
@@ -1220,7 +1220,7 @@ Key per-class: car fog feat_cos 0.826 vs dg_med 0.321 (2.5x closer), fog zs-corr
 augmentation + SupCon. It fixes the assignment/polarization (SupCon), improves
 efficiency (augmentation), and gives the best label-free TTA (crosstalk +0.52) and
 best fog decode at scale. The remaining open item is the fog labeled ceiling, which
-neither the augmentation nor SupCon raises — pointing back to the active-learning
+neither the augmentation nor SupCon raises, pointing back to the active-learning
 fallback as the only path past it.
 
 ### 8.1 Three more epochs (21 -> 24) and the overtraining question
@@ -1246,7 +1246,7 @@ clean decode improves slightly (0.528 -> 0.533), but the fog decode itself ticks
 down (0.085 -> 0.079) and the crosstalk NAIVE-EMA gap HALVES (+0.52 -> +0.20) even
 though the crosstalk ceiling ROSE (oracle 0.188 -> 0.210, now matching dg_med's
 0.222). The +0.52 crosstalk gap at 21 ep was a transient sweet spot, driven by
-sidewalk (naive 0.003 -> 0.198 at 21 ep vs 0.013 -> 0.035 at 24 ep) — more training
+sidewalk (naive 0.003 -> 0.198 at 21 ep vs 0.013 -> 0.035 at 24 ep): more training
 does not sustain it. (2) The majority polarization keeps inverting (rho -0.66), so
 the SupCon's minority anchoring strengthens with training.
 
@@ -1280,7 +1280,7 @@ ablations (each keeps CE + SupCon + the corruption view; `_nogmsifc` / `_nolscc`
 Note: the `nocons` scale_gap autopsy log was corrupted in transit; its numbers are
 from `scale_gap_results_corsupcon_nocons_micro.json`.
 
-**What the ablation shows — each consistency term has a distinct, load-bearing role:**
+**What the ablation shows. Each consistency term has a distinct, load-bearing role:**
 
 1. **GMSIFC is the TTA engine.** Dropping it collapses the naive-EMA gains (fog
    +0.48 -> +0.03, crosstalk +0.34 -> +0.08) even though the frozen decode is fine
@@ -1291,7 +1291,7 @@ from `scale_gap_results_corsupcon_nocons_micro.json`.
    0.296 -> 0.285, and the space over-collapses, PR ~1.3). The correlation
    consistency is what keeps the bottleneck structured enough to decode.
 3. **Both are needed; the "too many things" hypothesis is refuted.** The full stack
-   is not dead weight — it is the only configuration with BOTH strong TTA (fog
+    is not dead weight: it is the only configuration with BOTH strong TTA (fog
    +0.48, crosstalk +0.34) and a healthy decode (8-cond 0.296). Each term earns its
    place for a different reason, and neither subsumes the other (nor does CE + SupCon
    + the corruption view alone, at 8-cond 0.286).
@@ -1306,7 +1306,7 @@ degrades one or the other.
 
 ### 8.3 TTA battery on the 21-ep robust extractor (is it meaningfully better for TTA?)
 
-The full TTA battery (`tta_ceiling_diag.py`, 500k pool / 100k val — the same split
+The full TTA battery (`tta_ceiling_diag.py`, 500k pool / 100k val, the same split
 as the Iteration-4 medium numbers) run on the 21-ep robust-DGLSS++ checkpoint, vs
 the plain DGLSS++ medium (dg_med):
 
@@ -1323,21 +1323,21 @@ the plain DGLSS++ medium (dg_med):
 
 1. **Crosstalk TTA is dramatically better.** The robust extractor's naive EMA closes
    52% of the crosstalk gap vs 8% for plain DGLSS++ (absolute 0.168 vs 0.149), and
-   this beats even dg_med's best label-free lever (BN at 0.31). Crosstalk — the wall
-   in every prior iteration — is now the condition where the label-free update works
+    this beats even dg_med's best label-free lever (BN at 0.31). Crosstalk, the wall
+    in every prior iteration, is now the condition where the label-free update works
    best. This is consistent with the SupCon's polarization inversion: crosstalk was
    where the naive update destroyed the minority prototypes, and that is fixed.
 2. **Fog TTA is a wash-to-regression.** Naive/dist are ~tied (0.116 vs 0.114/0.117),
    gap-closed 0.15 vs 0.20, and the fog ceiling DROPPED (oracle 0.165 vs 0.200) so
-   there is less to close. The robust extractor buys fog TTA nothing — the fog
-   bottleneck is the ceiling, not the assignment.
+    there is less to close. The robust extractor buys fog TTA nothing: the fog
+    bottleneck is the ceiling, not the assignment.
 3. **The best label-free lever changes.** BN-statistic alignment was the best method
    on plain DGLSS++ (0.127 fog, 0.174 crosstalk); on the robust extractor it sits
    below naive/dist (0.114 / 0.132). The feature statistics the robust extractor
    produces make the simple weighted update the stronger lever, not BN alignment.
 4. **The assignment wall still binds, now more sharply on fog.** The robust extractor
-   fog rec@3 is 0.061 (vs dg_med 0.137, below the ~0.19 random baseline) — the
-   zero-shot-wrong points are less recoverable — even though cosine-to-true is higher
+    fog rec@3 is 0.061 (vs dg_med 0.137, below the ~0.19 random baseline), the
+    zero-shot-wrong points are less recoverable, even though cosine-to-true is higher
    (cosT 0.055 vs 0.006) and the recoverable set is cleaner (LPrec 0.579 vs 0.542).
    Detection-without-assignment persists.
 
@@ -1349,7 +1349,7 @@ lower). The TTA improvement is real and attributable to the extractor changes
 (assignment/polarization), and it is the strongest label-free TTA result at scale in
 this project.
 
-## Iteration 9: extractor diff — why crosstalk improved, why fog regressed, how to raise the fog ceiling
+## Iteration 9: extractor diff. Why crosstalk improved, why fog regressed, how to raise the fog ceiling
 
 `extractor_diff_diag.py` compared plain DGLSS++ (24 ep) vs the robust 21-ep variant
 per class and per condition, measuring feat_cos (corrupted -> clean prototype),
@@ -1366,14 +1366,14 @@ per-class numbers:
 | car naive-gain | crosstalk | -0.099 (hurt) | **+0.141** (helps) |
 | sidewalk naive-gain | crosstalk | +0.078 | **+0.201** |
 
-**Q1 — what made crosstalk better: the update stopped destroying the classes it now
+**Q1. What made crosstalk better: the update stopped destroying the classes it now
 finds.** The naive-gain flipped for car (-0.099 -> +0.141) and more than doubled for
 sidewalk (+0.078 -> +0.201), with car's LP recall up (0.40 -> 0.48) and feat_cos up
 (0.52 -> 0.88). The SupCon anchoring made the minority classes findable and
 prototype-safe under crosstalk, which is exactly the wall the earlier iterations
 measured.
 
-**Q2 — what made fog worse: the anchoring erased car's recoverable shift.** The fog
+**Q2. What made fog worse: the anchoring erased car's recoverable shift.** The fog
 oracle drop is dominated by car (0.303 -> 0.148, -0.155), whose fog features were
 pulled from a shifted, recoverable direction (dir-retention 0.37, far from clean)
 onto the clean car anchor (dir-retention 0.87, feat_cos 0.32 -> 0.83). Re-estimating
@@ -1382,10 +1382,10 @@ Building follows the same pattern (oracle 0.095 -> 0.046); sidewalk's smaller dr
 (0.241 -> 0.204) is separate (its features moved AWAY from clean). Road and
 vegetation are unchanged or slightly better.
 
-**Q3 — the ceiling is capped by clean-anchoring over-alignment (confirmed).**
+**Q3. The ceiling is capped by clean-anchoring over-alignment (confirmed).**
 Spearman rho(feat_cos, oracle_gain) on fog: plain DGLSS++ **+0.32** (closer to clean
-HELPED recoverability) vs robust **-0.68** (closer to clean HURT recoverability) —
-the sign flips and is strongly negative. The classes the SupCon anchored hardest have
+HELPED recoverability) vs robust **-0.68** (closer to clean HURT recoverability), the
+sign flips and is strongly negative. The classes the SupCon anchored hardest have
 the least recoverable ceiling. The direction-retention->oracle link that held for
 plain DGLSS++ (rho +0.67) is destroyed (+0.10). The over-alignment is the mechanism:
 anchoring the corrupted features onto their clean prototypes is GREAT for assignment
@@ -1406,7 +1406,7 @@ erase the corruption shift. Options, in order of leverage:
 
 This is the central tension of the paper method: the same clean-anchoring mechanism
 delivers the crosstalk TTA breakthrough (Q1) and caps the fog ceiling (Q2/Q3). A
-partial anchor is the natural resolution — enough anchoring to fix assignment, enough
+partial anchor is the natural resolution: enough anchoring to fix assignment, enough
 shift to keep the ceiling.
 
 ## Iteration 10: anchoring-direction micro tests (soft anchor, lower weight, per-point, channel-split)
@@ -1433,8 +1433,8 @@ and the full corsupcon micro (fog +0.48, crosstalk +0.34).
 1. **The soft alpha-blend anchor is the direction.** blend05 (anchor = the class's
    clean/shifted mean blended 50/50) is the ONLY variant that improves BOTH the fog
    gap (+0.72 vs +0.48) AND the crosstalk gap (+0.39 vs +0.34) over the reference,
-   with the car fog oracle up (0.096). blend03 (alpha 0.3) also improves fog (+0.37)
-   — so across the alpha sweep the direction holds (fog up), and alpha 0.5 is the
+    with the car fog oracle up (0.096). blend03 (alpha 0.3) also improves fog (+0.37),
+    so across the alpha sweep the direction holds (fog up), and alpha 0.5 is the
    sweet spot for keeping crosstalk. The partial anchor preserves the recoverable
    shift while still providing a clustering signal.
 2. **Lowering the SupCon weight is a robust, simpler lever.** w03 / w05 both raise
@@ -1453,14 +1453,14 @@ and the full corsupcon micro (fog +0.48, crosstalk +0.34).
    oracle recovery at scale.
 
 **Verdict.** The overnight candidate is **blend05** (soft alpha-blend anchor, alpha
-0.5) — the only variant to improve both conditions at micro — with **w03** as the
+0.5), the only variant to improve both conditions at micro, with **w03** as the
 fallback if the blend form-change is a concern (it achieves the same goal with a
 single knob, the SupCon weight, at 0.03).
 
 ## Iteration 11: the soft-anchor medium run does NOT transfer (micro-to-medium reversal)
 
 The Iteration-10 winner (blend05, alpha 0.5) was trained overnight at medium scale
-(21 ep / 100%) to confirm the fog-ceiling recovery. It did not — the result is a
+(21 ep / 100%) to confirm the fog-ceiling recovery. It did not. The result is a
 regression on TTA.
 
 **Aggregate gap-closed (same 100k/100k split), vs the references:**
@@ -1474,7 +1474,7 @@ regression on TTA.
 Isotropy: 8-condition mean 0.364 (below both dg_med and corsupcon_med at 0.369),
 clean HDC 0.522, fog dead-fraction 0.251 (highest of the family), crosstalk
 dead-fraction 0.098, best val IoU 0.385 (below corsupcon's 0.396). Per class:
-car fog oracle 0.088 (vs 0.148 full, 0.303 plain) — the soft anchor did NOT recover
+car fog oracle 0.088 (vs 0.148 full, 0.303 plain), the soft anchor did NOT recover
 car's fog ceiling; car crosstalk oracle 0.565 (the highest seen) yet the naive
 update only reaches 0.265.
 
@@ -1482,7 +1482,7 @@ update only reaches 0.265.
 
 1. **The soft anchor regressed both TTA gaps at medium.** The fog gap went negative
    (-0.24, the naive update now hurts) and the crosstalk gap collapsed from +0.52 to
-   -0.01 — the exact opposite of the micro signal (fog +0.72, crosstalk +0.39).
+    -0.01, the exact opposite of the micro signal (fog +0.72, crosstalk +0.39).
 2. **The micro gate is not reliable for TTA direction.** This is the third
    micro-to-medium reversal (norm gate +0.58 -> +0.20; micro fog naive near-ceiling
    -> negative; now blend05). Micro under-converged dynamics do not predict the
@@ -1498,7 +1498,7 @@ update only reaches 0.265.
 
 **Verdict.** The overnight blend05 run closes the soft-anchor hypothesis (negative).
 The TTA-refinement work should proceed on the full corsupcon 21-ep checkpoint, and
-the fog labeled ceiling — which neither the hard SupCon nor the soft anchor raises —
+the fog labeled ceiling, which neither the hard SupCon nor the soft anchor raises,
 remains the active-learning fallback's target.
 
 ## Iteration 12: what drives the label ceiling, and is the robust extractor AL-ready?
@@ -1517,7 +1517,7 @@ both questions.
 | soft-anchor (blend05) | 0.519 | **0.488** |
 
 **This is a negative for the "robust extractor is AL-cleaner" hypothesis.** The
-Robust variants are NOT cleaner at the class-mean probe — on fog the plain extractor
+Robust variants are NOT cleaner at the class-mean probe, on fog the plain extractor
 is actually the highest (0.547 vs 0.534 / 0.519), on crosstalk they are tied
 (~0.47-0.49), and in absolute terms the purity is only ~0.5: a naive "query one point
 at each class mean" would label roughly half a class's points correctly on any
@@ -1538,11 +1538,11 @@ packed AND shifted into a distinct direction; the hard anchor erases the directi
 (-> 0.148); the soft anchor leaves the direction partially (0.69) but loosens the
 packing (tightness 0.95 -> 0.91) and the oracle is lowest (0.088). The crosstalk
 correlation confirms it: rho(dir-retention, oracle) is +0.55 (robust) and +0.74
-(blend05) — classes that retain their shifted direction are the recoverable ones,
+(blend05), classes that retain their shifted direction are the recoverable ones,
 and on crosstalk blend05's car (oracle 0.565) is the cleanest example.
 
 **What to look at (the concrete lever):** the ceiling is not set by the clean-anchor
-strength alone — it is set by whether the corrupted class keeps its OWN tight,
+strength alone: it is set by whether the corrupted class keeps its OWN tight,
 shifted cluster. The natural next design is a **corrupted-only clustering term**:
 pull corrupted points toward their CORRUPTED class means (maximize intra-corrupted
 packing) WITHOUT any pull toward the clean direction (so direction-retention is left
@@ -1553,7 +1553,7 @@ distinct from both tested anchors and directly targets the two measured drivers.
 Robust features are not AL-ready beyond the plain baseline). The path to "one model
 that does both" is the corrupted-only clustering design: it keeps the label-free TTA
 (which needs the clean anchor / assignment) and should raise the label ceiling (which
-needs the packed, direction-retained corrupted clusters) — testable at micro first.
+needs the packed, direction-retained corrupted clusters), testable at micro first.
 
 ## Iteration 13: point-level active-learning readiness (the AL fallback is not cleaner)
 
@@ -1573,7 +1573,7 @@ labeled ceiling (oracle).
 
 **The AL-cleaner hypothesis is rejected at the point level too.** The Robust
 extractor has LOWER 1-NN purity than plain DGLSS++ on both conditions (fog 0.405 vs
-0.425, crosstalk 0.538 vs 0.566) — the active-learning framework would need MORE
+0.425, crosstalk 0.538 vs 0.566), the active-learning framework would need MORE
 labels, not fewer, on it. The class-mean probe (Iteration 12) and the point-level
 probe agree.
 
@@ -1587,19 +1587,19 @@ recoverable (high ceiling) and AL-friendly (fewer labels). A lever that raises t
 0.40-0.57 on the trained medium extractors, far below the 75-87% corrupted 1-NN
 purity the Corruption Atlas reported for the UNTRAINED baseline. If comparable, the
 training that makes the class MEANS separable (better decode) is entangling the
-point-level neighborhoods under corruption — which is exactly what both the AL
+point-level neighborhoods under corruption, which is exactly what both the AL
 framework and the label ceiling need. The exception that confirms it: blend05 car
 crosstalk has the cleanest neighborhood (nn1 0.840) and the highest oracle (0.565).
 
 **Verdict.** Both paper requirements fail on the current Robust extractor: it is not
 AL-cleaner (lower nn1) and its ceilings are lower. The next step is to raise the
-point-level cluster purity (nn1) directly — which the nn1-oracle correlation says
+point-level cluster purity (nn1) directly, which the nn1-oracle correlation says
 should lift the ceilings and the AL readiness together.
 
 ### 13.1 Next diagnostics (what is needed)
 
 1. **Confirm training reduced the purity.** Re-run `al_readiness_diag.py` on the
-   UNTRAINED baseline (if the checkpoint exists) — if its nn1 is ~0.7-0.9 vs
+   UNTRAINED baseline (if the checkpoint exists), if its nn1 is ~0.7-0.9 vs
    0.40-0.57 for the trained extractors, the training actively entangles the
    corrupted neighborhoods and the fix is a training-time term, not a TTA/AL tweak.
 2. **Per-class entanglement map.** The JSON gives nn1 per class: the classes with
@@ -1612,9 +1612,9 @@ should lift the ceilings and the AL readiness together.
    This quantifies "requiring less labels" for each extractor.
 4. **The design lever: a neighborhood-purity regularizer.** A training term that
    directly maximizes the 1-NN same-class purity (e.g., pull each point toward its
-   nearest same-class neighbor's feature — a local smoothness that the class-mean /
+   nearest same-class neighbor's feature, a local smoothness that the class-mean /
    clean-anchor terms do not provide). Since nn1-oracle correlates at +0.7-0.9, this
-   single term should raise the ceilings AND the AL readiness together — the first
+   single term should raise the ceilings AND the AL readiness together, the first
    design to micro-test.
 
 ### 13.2 Diagnostic batch: purity across extractors, muddle check, label budget
@@ -1648,21 +1648,21 @@ micro piecewise variants + the analysis):
 
 1. **The low point-level purity is universal to ALL trained extractors.** supcon_vib
    med is equally low (0.419 / 0.519), so it is intrinsic to corruption for trained
-   models — not a robust-specific failure — and well below the untrained baseline's
+    models, not a robust-specific failure, and well below the untrained baseline's
    Corruption-Atlas 75-87%.
 2. **The muddle hypothesis is weakly supported.** Dropping the consistency stack
    (nocons) gives the highest micro nn1 (0.368 fog / 0.531 crosstalk), so GMSIFC+LSCC
-   do contribute to the neighborhood entanglement — but the gain is small and even
+    do contribute to the neighborhood entanglement, but the gain is small and even
    nocons is low (~0.37 fog), so removing pieces does not restore clean neighborhoods.
 3. **The label budget confirms the robust extractor is marginally worse for AL:** a
    1/nn1 of 2.47 on fog (vs 2.35 plain) means ~5% more labels.
 4. **The entangled set is identical across every extractor:** bicycle (~0),
-   pedestrian (~0.2), building (~0.3), terrain (~0.4), sidewalk (~0.53) — the same
-   rare/minority classes are the entanglement everywhere.
+    pedestrian (~0.2), building (~0.3), terrain (~0.4), sidewalk (~0.53), the same
+    rare/minority classes are the entanglement everywhere.
 
 **Verdict.** No current training (robust, plain, supcon_vib) fixes the point-level
 entanglement, and it is not primarily a combination-muddle (dropping pieces helps
-only slightly). This is the case for the neighborhood-purity regularizer — the only
+only slightly). This is the case for the neighborhood-purity regularizer, the only
 design aimed directly at the measured property (nn1), which the nn1-oracle
 correlation (+0.7-0.9) says should raise the ceilings and the AL readiness together.
 The muddle result also motivates testing it on the simpler nocons base. Cost: ~1% of
@@ -1687,26 +1687,26 @@ AL-cleanest base (`nocons_nnpull`) and gated on nn1 and the TTA gaps.
 
 **What the gate shows:**
 
-1. **The regularizer did not raise nn1 on the full method** — it went DOWN (0.335 ->
+1. **The regularizer did not raise nn1 on the full method**: it went DOWN (0.335 ->
    0.320 fog, 0.513 -> 0.494 crosstalk). The training-time pull optimizes the SYNTHETIC
    augmented view's neighborhoods, not the real SemanticKITTI-C fog/crosstalk
    neighborhoods, so it does not transfer to the evaluated point-level purity.
 2. **On the nocons base it added nothing** (0.352/0.530 vs plain nocons 0.368/0.531).
-3. **It hurt the TTA** (fog +0.48 -> +0.18, crosstalk +0.34 -> +0.18) — the extra term
+3. **It hurt the TTA** (fog +0.48 -> +0.18, crosstalk +0.34 -> +0.18), the extra term
    at 0.1 dilutes the assignment gain (car fog LP recall drops).
 4. The only positive is car's fog oracle rising (0.086 -> 0.124), insufficient to
    offset the failures.
 
 **The broader conclusion.** Three successive attempts to fix the entanglement / raise
-the ceiling — corrupted-only clustering (Iteration 11 coclust), the soft anchor
-(blend05), and now the neighborhood-purity regularizer — all fail at medium or in the
+the ceiling, corrupted-only clustering (Iteration 11 coclust), the soft anchor
+(blend05), and now the neighborhood-purity regularizer, all fail at medium or in the
 micro gate. The point-level entanglement under the REAL corruptions is not addressable
 by training-time terms that operate on the SYNTHETIC augmented view (the only
 corruption available at train time). The Robust DGLSS++'s measured contribution is the
 label-free TTA (crosstalk +0.52, the strongest at scale); the "higher ceilings" and
 "AL requires fewer labels" claims are NOT supported by the method or any fix tried.
 For the paper, the honest framing is: Robust DGLSS++ delivers the label-free TTA
-advantage, and the AL fallback / ceiling work is a stated limitation — the AL budget
+advantage, and the AL fallback / ceiling work is a stated limitation: the AL budget
 analysis (Iteration 13) shows the fallback would need roughly the same labels on every
 trained extractor, so the AL framework is viable but not extractor-advantaged.
 
@@ -1722,7 +1722,7 @@ procedure, new extractor only; success criterion `TTA_new >= TTA_robust - eps` a
 - The ceiling needs BOTH intra-corrupted packing AND a retained shifted direction
   (plain car fog: tightness 0.87 + dir-retention 0.37 = oracle 0.303; Robust: tightness
   0.95 + dir-retention 0.87 = oracle 0.148; blend05: 0.91 + 0.69 = 0.088).
-- The SupCon clean-anchor erases the direction the network would otherwise retain —
+- The SupCon clean-anchor erases the direction the network would otherwise retain:
   it does NOT add a new loss that teaches it. rho(feat_cos, oracle_gain) flips from
   +0.32 (plain) to -0.68 (Robust) on fog.
 - Every training-time term operating on the SYNTHETIC augmented view failed to
@@ -1731,11 +1731,11 @@ procedure, new extractor only; success criterion `TTA_new >= TTA_robust - eps` a
   objectives.
 
 **Shortlist, ranked (each is a medium-scale commitment; micro is only a stability
-smoke test, NOT a TTA gate — three micro-to-medium reversals so far):**
+smoke test, NOT a TTA gate: three micro-to-medium reversals so far):**
 
 1. **Two-branch bottleneck** `z = [z_inv, z_corr]` (inv 64D + corr 64D, test 96/32 and
    32/96 after). `z_inv` carries GMSIFC + LSCC + SupCon (assignment / TTA); `z_corr`
-   carries CE + LSCC only, NO clean anchor — inherits the plain-DGLSS++ geometry
+   carries CE + LSCC only, NO clean anchor, inherits the plain-DGLSS++ geometry
    (packed + shifted). The HDC decoder reads the concatenation, so the oracle has
    access to the retained direction. This is architecturally distinct from the failed
    `coclust` (fought over one shared 128D) and `ch64` (gradients still flow through
@@ -1744,7 +1744,7 @@ smoke test, NOT a TTA gate — three micro-to-medium reversals so far):**
    `get_hdc_projection(dim_in=...)` threaded through the diag scripts.
 2. **Residual form** `z_corr = z_inv + Δz` with weak `L_res = ||Δz||^2` (the corr
    branch learns the corruption-specific deformation; small penalty so it is used
-   only when needed). Ablation/interpretation form of #1, not a competitor — do after
+   only when needed). Ablation/interpretation form of #1, not a competitor; do after
    #1 confirms the split helps. Needs an orthogonality term or the residual collapses
    into duplicating `z_inv`.
 3. **Displacement-direction consistency** (angular coherence of the per-class
@@ -1752,7 +1752,7 @@ smoke test, NOT a TTA gate — three micro-to-medium reversals so far):**
    = +0.55..+0.74 directly, and is the weakest structural commitment so most likely
    to survive the synthetic->real transfer. Complement to #1, not standalone.
 4. **HDC-side projection head** `g(z) = Az` (learned A in R^(128x128)) or an
-   HDC-aware surrogate loss — cheap, decoder-side, TTA untouched. Capped by the
+    HDC-aware surrogate loss: cheap, decoder-side, TTA untouched. Capped by the
    information bound: it cannot recover a direction already erased in the continuous
    space, so it only helps up to what the extractor retains.
 5. **Two-stage / asymmetric two-stage** (stage 1: ceiling structure; stage 2:
@@ -1799,12 +1799,12 @@ the full concat.
 
 **What the gate shows:**
 
-1. **The corr branch did NOT become shifted — the decoupling mechanism did not
+1. **The corr branch did NOT become shifted: the decoupling mechanism did not
    activate.** In both variants the corr `dir_retention` is ~0.91-0.95, essentially
    the same as the inv branch (0.96). The goal was corr_dir < 1 (ideally ~0.3-0.6,
    like plain DGLSS++'s car fog 0.37). The reason is in the loss routing: LSCC IS a
    clean-view alignment term (correlation consistency between clean and corrupted
-   views), so applying it to the corr slice — as the shortlist prescribed — re-pulls
+    views), so applying it to the corr slice, as the shortlist prescribed, re-pulls
    the corr branch toward clean. CE on the full concat additionally backprops
    clean-label class-discriminative gradients into corr. The corr head was never free
    to retain the shift.
@@ -1812,12 +1812,12 @@ the full concat.
    ceiling DROPPED (oracle 0.117 -> 0.108 fog, 0.208 -> 0.165 crosstalk), the fog
    naive gap went NEGATIVE (-0.22, the update now hurts), and AL purity fell on both
    conditions. The added 64D capacity did not help and degraded the representation.
-3. **The residual variant is a partial positive — real ceiling gains on the classes
+3. **The residual variant is a partial positive: real ceiling gains on the classes
    we care about, at the cost of TTA.** car oracle UP (fog 0.086 -> 0.104, crosstalk
    0.375 -> 0.494), traffic-sign fog 0.135 -> 0.222, and rho(dir_retention, oracle)
    crosstalk rose +0.62 -> +0.81. BUT the fog aggregate ceiling gain is small
    (0.117 -> 0.128), crosstalk ceiling is slightly DOWN (0.208 -> 0.199), and both
-   naive gaps dropped (+0.48 -> +0.25 fog, +0.34 -> +0.24 crosstalk) — the TTA side
+   naive gaps dropped (+0.48 -> +0.25 fog, +0.34 -> +0.24 crosstalk), the TTA side
    regressed, violating the success criterion (TTA >= robust - eps).
 4. **The residual's car gains are likely extra capacity + a small perturbation, not
    true decoupling.** With L_res = 0.05 the Δz is strongly shrunk toward zero, so
@@ -1831,13 +1831,13 @@ retained the shifted direction, and TTA gaps did not hold. The residual's car ce
 gains are real but unexplained by the mechanism we intended. Two concrete next
 directions, in order of leverage:
 1. **Give the corr branch genuine freedom**: drop LSCC (and the clean-view alignment)
-   from the corr slice so CE + the concatenated decoder are its only pulls — the
-   purest "free capacity" test. If LSCC-on-corr is what re-anchored it, this is the
+    from the corr slice so CE + the concatenated decoder are its only pulls, the
+    purest "free capacity" test. If LSCC-on-corr is what re-anchored it, this is the
    fix.
 2. **Test the displacement-direction consistency explicitly** (Iteration-15 idea #3,
    the angular-coherence term): rather than hoping the shift emerges, train
-   `L_dir = 1 - cos(Δz, sg(δ_c))` with a per-class EMA displacement target — the one
-   objective that directly targets rho(dir_retention, oracle) = +0.55..+0.81 and is
+    `L_dir = 1 - cos(Δz, sg(δ_c))` with a per-class EMA displacement target, the one
+    objective that directly targets rho(dir_retention, oracle) = +0.55..+0.81 and is
    the weakest structural commitment (direction, not magnitude).
 Both are cheap micro re-gates (~2-3h) that test the mechanism properly before the 10h
 run is on the table.
@@ -1847,7 +1847,7 @@ run is on the table.
 Follow-up to Iteration 16. The first gate's corr branch never became shifted because
 LSCC (a clean-view alignment term) was applied to the corr slice. This gate tests the
 two fixes (`run_decouple_gate2.sh`, 12 ep / 10% data, vs the corsupcon micro ref):
-`twobranch_128_64_corrfree` (LSCC dropped on the corr slice — corr's only clean pull
+`twobranch_128_64_corrfree` (LSCC dropped on the corr slice, corr's only clean pull
 is CE on the full concat) and `residual_128_128_dircons` (residual form + `L_dir =
 1 - cos(dz, sg(delta_c))` with a per-class EMA displacement direction, so same-class
 corrupted points move coherently).
@@ -1880,8 +1880,8 @@ corrupted points move coherently).
 1. **`dircons` is the first variant where the corr branch actually retains a shifted
    direction AND the ceiling moves with it.** The displacement-direction consistency
    (EMA per-class direction, detached target) produces corr_dir 0.35-0.36 for
-   traffic-sign on both conditions and 0.35 for vegetation — classes with a real
-   retained shift — and their oracles rise accordingly (sig13 fog 0.135 -> 0.178,
+    traffic-sign on both conditions and 0.35 for vegetation, classes with a real
+    retained shift, and their oracles rise accordingly (sig13 fog 0.135 -> 0.178,
    sig13 crosstalk 0.178 -> 0.230, veg16 fog 0.171 -> 0.191). rho(dir_retention,
    oracle) crosstalk rises +0.62 -> +0.83. The mechanism from Iteration 12 (packed +
    retained shifted direction = recoverable) is finally reproduced at micro.
@@ -1914,7 +1914,7 @@ dir_w (0.1 -> 0.2) to reach the classes that did not shift; (b) add the HDC-side
 projection head (shortlist #4) since the crosstalk ceiling loss is on the dominant
 classes whose direction never moved.
 
-## Iteration 18: the dircons medium run (17 ep) — ceiling up, crosstalk TTA down
+## Iteration 18: the dircons medium run (17 ep). Ceiling up, crosstalk TTA down
 
 The Iteration-17 winner (`residual_128_128_dircons`, inv 128 + corr=inv+dz,
 L_res=0.05, L_dir=0.1) trained at medium scale (17 ep / 100%, ~9.5h; the run was
@@ -1958,14 +1958,14 @@ below).
    0.272, car fog 0.148 -> 0.211. The crosstalk oracle (0.2145) is the best measured
    for this family at this scale. The per-branch gate shows the mechanism at medium:
    corr_dir for ts(13) and og(14) is ~-0.07..0.07 (fully displaced), while car stays
-   anchored (corr_dir 0.85-0.92) with inv_feat_cos high (0.94-0.96) — the split
-   behaved as designed.
+    anchored (corr_dir 0.85-0.92) with inv_feat_cos high (0.94-0.96), the split
+    behaved as designed.
 2. **But the crosstalk label-free TTA collapsed: gap +0.52 -> +0.14.** The naive
    update now reaches 0.1242 (vs robust 0.1494). Per-class this is concentrated:
    traffic-sign crosstalk naive 0.203 -> 0.071 and building(15) 0.257 -> 0.072
    COLLAPSED while car went 0.272 -> 0.431. The classes the dircons shifted hardest
-   (ts, og) lost their naive-EMA assignment — the shift the ceiling needs is the
-   shift the label-free assignment can't recover at medium. This violates the
+    (ts, og) lost their naive-EMA assignment: the shift the ceiling needs is the
+    shift the label-free assignment can't recover at medium. This violates the
    success criterion (TTA >= robust - eps).
 3. **The oracle gain does not come free on the dominant classes.** vegetation fog
    oracle regressed 0.243 -> 0.186 (the largest single ceiling loss), and road(11)
@@ -1976,7 +1976,7 @@ below).
 
 **Verdict: partial. The decoupling mechanism survives at medium and raises the
 ceiling (the headline oracle gains on car/ts), but it costs the crosstalk label-free
-TTA — the exact trade the method was meant to break.** The naive update fails on the
+TTA, the exact trade the method was meant to break.** The naive update fails on the
 very classes whose direction the dircons retained. The most likely fix is
 two-pronged and cheap to micro-test: (a) reduce L_dir's effect on the classes the
 assignment needs (weight dircons by the class's inverse oracle-need, or apply it
@@ -1989,7 +1989,7 @@ conflict, the residual form cannot hold both and the two-stage or
 displacement-consistency-only (no residual) variant becomes the better bet.**
 
 **Harness bug fixed during this analysis:** `tta_ceiling_diag`, `frozen_ceiling_diag`
-and `ttagate_diag` still hardcoded `get_hdc_projection(dim_in=128)` — they crashed
+and `ttagate_diag` still hardcoded `get_hdc_projection(dim_in=128)`; they crashed
 on the 256D dircons features (`frozen_ceiling_diag.py:133`,
 `tta_ceiling_diag.py:170`, and ttagate silently wrote an empty JSON because the
 dircons method was also missing from its `GATES` dict). All three now derive the
@@ -2057,11 +2057,11 @@ traffic-sign (naive 0.205 -> 0.065, oracle 0.190 -> 0.272) and building (0.257 -
    lands the prototype off the true cluster. This is a TTA-operator problem, not a
    feature/assignment problem.
 3. **A different TTA operator DOES work on dircons: BN-statistic alignment.** On
-   crosstalk, bn reaches 0.1449 vs robust's 0.1322 (+0.013) — the ONLY dircons
+   crosstalk, bn reaches 0.1449 vs robust's 0.1322 (+0.013), the ONLY dircons
    crosstalk lever that beats robust's best. BN aligns clean->corrupted feature
    statistics, which effectively de-shifts the distribution without touching
    prototypes. So the crosstalk TTA is recoverable on dircons with the BN mechanism,
-   no retraining needed — it is a different operator, not a broken representation.
+   no retraining needed: it is a different operator, not a broken representation.
 4. **But the dircons ceiling is crosstalk-specific.** The frozen ceiling shows crosstalk
    UP (+0.026) but fog DOWN (-0.012), snow -0.024, and the geometric conditions all
    slightly DOWN (-0.005 to -0.011). The two-head 256D representation helps the
@@ -2081,7 +2081,7 @@ keeps its structure. Both are micro-testable before any further medium spend.
 
 ## Iteration 19.5: dircons_w02 derisk micro-gate (dir_w 0.1 -> 0.2)
 
-The Iteration-19 lever (a) — raise dir_w to reach the classes that never shifted —
+The Iteration-19 lever (a), raise dir_w to reach the classes that never shifted,
 was micro-gated (`run_dircons_derisk.sh`, 8 ep / 10%, reduced-cost frames=50 /
 pool=50k, vs the corsupcon micro reference). The gate FAILED on the key signals:
 
@@ -2098,13 +2098,13 @@ pool=50k, vs the corsupcon micro reference). The gate FAILED on the key signals:
 | veg(16) oracle | crosstalk | 0.463 | 0.385 | DOWN |
 
 **Verdict: the stronger pull (0.2) does NOT reach the classes that never shifted
-(car corr_dir stays ~0.95), and the oracle does not rise — it falls.** The only
+(car corr_dir stays ~0.95), and the oracle does not rise: it falls.** The only
 positive is the crosstalk naive TTA improving (+0.31 -> +0.46), which is the TTA
 side, not the ceiling side the decoupling was built for. So the dircons_w02
 direction is NOT worth a 10h run as-is.
 
 **What this means for the medium commitment:** the ceiling problem is NOT a matter of
-pull strength — it is the residual coupling (L_res = 0.05 shrinks car's residual to
+pull strength: it is the residual coupling (L_res = 0.05 shrinks car's residual to
 zero before it can develop a direction) and the all-class coupling (the healthy
 conditions' residual is pulled too). The two remaining levers are therefore:
 (a) **relax L_res** (0.05 -> 0.01) so the residual can actually develop for car, and
@@ -2118,31 +2118,31 @@ medium-scale batch comparison.
 The Iteration-19.5/feedback directions were implemented as a broad micro sweep
 (`run_overnight.sh`), each its own training call so one failure does not kill the
 batch: the dircons L_res closure (0.01 / 0.02), **corrsc** (corruption-manifold
-multi-positive SupCon — two independently corrupted views pulled together per class,
+multi-positive SupCon: two independently corrupted views pulled together per class,
 weak clean anchor), **corrfree_corrsc** (the free corr head + corrupted-manifold
 supervision it was missing), **hdc** (HDC-aware soft-prototype CE on the binarized
 geometry the decoder reads), and the eval-only **concat_diag** (do the FROZEN robust
-+ plain DGLSS++ features combine in one HDC decoder — the teacher-premise
++ plain DGLSS++ features combine in one HDC decoder, the teacher-premise
 falsification). Implementation review caught and fixed: (1) the hdc projection was
 being rebuilt every step, which calls `torch.manual_seed(42)` internally and would
 reset the training RNG (destroying augmentation/subsample randomness and making the
-two corrsc views identical) — now built once in `__init__` with the RNG preserved;
+two corrsc views identical), now built once in `__init__` with the RNG preserved;
 (2) the fragile-only dircons EMA could see zero-count classes whose
-`F.normalize(0)=NaN` row would poison the EMA — now zero-masked per class; (3) the
+`F.normalize(0)=NaN` row would poison the EMA, now zero-masked per class; (3) the
 single-branch corrsc was getting a 0.1 clean-anchor from the standard SupCon block,
 dominating its 0.1 corrupted-manifold term (backwards from the "weak clean term"
-intent) — capped to 0.02 via SUPCON_VARIANTS, and the redundant inline 0.02 removed;
+intent), capped to 0.02 via SUPCON_VARIANTS, and the redundant inline 0.02 removed;
 (4) concat_diag's naive-TTA classifier was fit on the 128D inv slice but applied to
-256D concat features — now fit per-row on that row's clean features.
+256D concat features, now fit per-row on that row's clean features.
 
 **Decision rule for the sweep:** a direction passes if it raises the oracle on
 fog/crosstalk (for the dircons levers: car corr_dir < 1) WITHOUT collapsing the
-naive TTA and WITHOUT hurting the healthy conditions — judgment, not a threshold.
+naive TTA and WITHOUT hurting the healthy conditions, judgment, not a threshold.
 If no direction moves the ceiling, the representation line is closed and the paper
 rests on the AL framework with the robust extractor (ceiling as a stated
 architectural limitation).
 
-**If the sweep fails — the D3CTTA fallback (why does theirs work?):** D3CTTA's
+**If the sweep fails. The D3CTTA fallback (why does theirs work?):** D3CTTA's
 reported numbers show a feature extractor that handles fog and crosstalk about as
 well as the healthy conditions, which our extractor family has never achieved at
 any scale. The next step is to understand WHY theirs works, in two parts:
@@ -2157,7 +2157,7 @@ any scale. The next step is to understand WHY theirs works, in two parts:
 2. **The 7-class confound check.** D3CTTA (and GIPSO) report in the 7-class map
    that folds the fragile rare classes (bicycle, truck, traffic-sign) into
    background. Iteration 7-class diagnostics showed the 7-class map hides the dead
-   classes rather than fixing them — so test whether their fog/crosstalk gains
+   classes rather than fixing them, so test whether their fog/crosstalk gains
    survive the 17-class map. If their extractor's fog/crosstalk advantage is real
    at 17 classes, replicate its key training ingredient (which the diagnostics
    suggest would be either their corruption augmentation regime or their
@@ -2171,7 +2171,7 @@ any scale. The next step is to understand WHY theirs works, in two parts:
 **corrsc** (corruption-manifold multi-positive SupCon), **corrfree_corrsc** (free corr
 head + corrupted-manifold supervision), **hdc** (HDC-aware soft-prototype CE), and the
 eval-only **concat_diag** (do the FROZEN robust + plain DGLSS++ features combine in
-one HDC decoder — the teacher-premise falsification). The harness bugs from the
+one HDC decoder, the teacher-premise falsification). The harness bugs from the
 sweep's own run (unaligned dual extraction, key mismatch) were fixed and re-run.
 
 **Aggregates (ref -> variant; fog / crosstalk oracle):**
@@ -2209,35 +2209,35 @@ best of the sweep, matching the earlier supcon_vib-era numbers.
 1. **The representation line is closed.** No direction moved the ceiling: every
    variant is flat-to-negative on fog/crosstalk oracle vs the reference, and none
    beat plain DGLSS++'s ceiling (fog 0.198 / crosstalk 0.249). The dircons L_res
-   lever did NOT shift car either (corr_dir 0.93-0.96, still anchored) — confirming
-   Iteration 19.5 that the residual coupling is not the sole blocker; the geometry
+    lever did NOT shift car either (corr_dir 0.93-0.96, still anchored), confirming
+    Iteration 19.5 that the residual coupling is not the sole blocker; the geometry
    simply will not move for the dominant classes at micro scale.
-2. **The teacher premise FAILS at the frozen level — the cheapest possible
+2. **The teacher premise FAILS at the frozen level: the cheapest possible
    falsification.** Concatenating the frozen robust + plain DGLSS++ features into
    one 256D HDC decoder gives fog 0.194 / crosstalk 0.238, *below* plain DGLSS++'s
    own 0.198 / 0.249. If the free concatenation cannot combine the two geometries
-   better than plain DGLSS++ alone, no distillation training objective is going to —
-   the teacher-preserved branch is not worth a 10h run.
+    better than plain DGLSS++ alone, no distillation training objective is going to,
+    the teacher-preserved branch is not worth a 10h run.
 3. **No training-time representation loss tested in the whole iteration history
    (coclust, nnpull, soft-anchor, blend, two-head, residual, dircons, corrsc, hdc)
    has raised the frozen labeled ceiling above plain DGLSS++.** The single measured
    ceiling gain in the family remains the dircons MEDIUM run (crosstalk oracle 0.203
-   vs robust 0.177, Iteration 18) — which still did not clear plain DGLSS++'s 0.214
-   and cost the naive TTA.
+    vs robust 0.177, Iteration 18), which still did not clear plain DGLSS++'s 0.214
+    and cost the naive TTA.
 
 **Verdict: the Robust-DGLSS++-as-ceiling-improver direction is closed.** The paper
 rests on the AL-primary framing (per the README pivot): the robust extractor is the
 TTA component, plain DGLSS++'s ceiling is the AL recovery target, and the next step
 is the D3CTTA fallback (Iteration 19.6): understand why a feature extractor can
 handle fog/crosstalk as well as the healthy conditions, and whether that survives
-the 17-class map — the only remaining lead that does not require the extractor to
+the 17-class map, the only remaining lead that does not require the extractor to
 learn a geometry the evidence says it will not retain.
 
 ## Iteration 19.8: the common-failure diagnosis (why nothing beats DGLSS++'s ceiling)
 
 The Iteration-19.7 micro verdict was KNOWN-unreliable (three documented micro-to-
 medium reversals: norm gate +0.58 -> +0.20, micro fog naive near-ceiling -> negative,
-blend05 +0.72/+0.39 -> -0.24/-0.01 — Iterations 4.5, 5, 11). So instead of more
+blend05 +0.72/+0.39 -> -0.24/-0.01, Iterations 4.5, 5, 11). So instead of more
 micros, this iteration diagnoses what the failed variants have in COMMON vs DGLSS++,
 using the medium-scale per-class structure already measured.
 
@@ -2258,9 +2258,9 @@ using the medium-scale per-class structure already measured.
 | dircons_med | +0.18 | +0.48 |
 | blend05_med | +0.13 | +0.69 |
 
-**What this shows — every variant we built trains AGAINST the property that gives
+**What this shows: every variant we built trains AGAINST the property that gives
 DGLSS++ its ceiling.** In plain DGLSS++, the classes closest to the clean prototype
-are the most recoverable (rho +0.67/+0.76) — meaning the recoverable classes are the
+are the most recoverable (rho +0.67/+0.76), meaning the recoverable classes are the
 ones that DID shift (low feat_cos = far from clean = recoverable, and it's a positive
 correlation because feat_cos high = recoverable). Every variant's objectives
 (GMSIFC cross-view alignment, LSCC, SupCon clean-anchor, dircons direction,
@@ -2275,7 +2275,7 @@ not erase it.** Every objective we tested either (a) pulls corrupted toward clea
 (anchor), (b) pulls corrupted toward a self-referential coherence (dircons/corrsc),
 or (c) is invariant-to-corruption (GMSIFC/LSCC). None explicitly says "the corrupted
 features of a class should keep the SAME relationship to the clean features that the
-untrained/plain model had" — i.e., distill the PLAIN DGLSS++ geometry itself, not the
+untrained/plain model had", i.e., distill the PLAIN DGLSS++ geometry itself, not the
 extractor's own dynamics.
 
 The diagnostics to run next (all medium-scale, since micro is unreliable):
@@ -2287,7 +2287,7 @@ The diagnostics to run next (all medium-scale, since micro is unreliable):
    between corrupted and clean class means), so the network keeps whatever shift
    develops naturally, without imposing a target direction.
 3. **Teacher-from-plain-DGLSS++ at medium**: the concat_diag FAILED at frozen level
-   (Iteration 19.7), but the failure diagnosis reframes it — the question is not
+   (Iteration 19.7), but the failure diagnosis reframes it: the question is not
    "do the two frozen spaces concatenate" but "can training reproduce the plain
    DGLSS++ per-class shift" (dir_retention ~0.37 for car fog) instead of erasing it.
 
@@ -2295,7 +2295,7 @@ The diagnostics to run next (all medium-scale, since micro is unreliable):
 
 `run_micro_robustness.sh` micro-gated three candidates (8 ep / 10%, frames=50 /
 pool=50k) vs the corsupcon micro reference: **antianchor** (plain DGLSS++ + a penalty
-on the corrupted->clean cosine — the explicit inverse of every objective we tried),
+on the corrupted->clean cosine, the explicit inverse of every objective we tried),
 **instancenorm** (plain DGLSS++ with InstanceNorm replacing BatchNorm), and
 **cor_instancenorm** (the robust corruption-view base with InstanceNorm).
 
@@ -2311,31 +2311,31 @@ on the corrupted->clean cosine — the explicit inverse of every objective we tr
 (antianchor's extractor_diff JSON came back NUL-corrupted and its gate log was not
 pulled, so only its isotropy decode health is available; the gate numbers are missing.)
 
-**What the InstanceNorm result shows — the first real signal in the sweep:**
+**What the InstanceNorm result shows. The first real signal in the sweep:**
 
 1. **InstanceNorm is the first variant to raise the fog TTA AND the fog decode
    simultaneously.** instancenorm fog naive 0.105 (vs ref 0.085) and fog HDC-zs 0.105
-   (vs ref ~0.07 and plain dglsspp 0.068) — a genuinely higher fog decode, and
-   crosstalk LP 0.589 vs 0.24-0.33 everywhere else. The BN running-statistics
+    (vs ref ~0.07 and plain dglsspp 0.068), a genuinely higher fog decode, and
+    crosstalk LP 0.589 vs 0.24-0.33 everywhere else. The BN running-statistics
    sensitivity under covariate shift was real, and removing it at the source helped.
 2. **But the mechanism is NOT the retained-shift one.** instancenorm pulls corrupted
    features TOWARD clean (ts fog feat_cos 0.29 -> 0.55, dir_ret 0.39 -> 0.83; og
    dir_ret -0.39 -> 0.56; most classes dir_ret up toward ~0.8-0.9) yet the oracle
    still rises on the shifted classes (ts fog 0.210 -> 0.261, og fog 0.125 -> 0.185,
    og crosstalk 0.211 -> 0.280). So InstanceNorm improves recoverability WITHOUT the
-   shift-retention — the opposite geometry from the diagnosis. It likely helps by
+    shift-retention, the opposite geometry from the diagnosis. It likely helps by
    fixing the per-instance feature statistics so the class structure is cleaner,
    which is a different (complementary) mechanism than "don't erase the shift".
 3. **The ceiling is still not above plain DGLSS++ on crosstalk.** instancenorm
    crosstalk oracle 0.198 vs plain DGLSS++'s 0.249 and the ref 0.208. fog is the
    win (0.126 vs ref 0.112). So InstanceNorm is a fog-focused improvement.
-4. **cor_instancenorm is worse than instancenorm** on fog oracle (0.094 vs 0.126) —
+4. **cor_instancenorm is worse than instancenorm** on fog oracle (0.094 vs 0.126),
    the corruption-view base + InstanceNorm does not combine the two effects; the
    beam-drop base is where InstanceNorm helps.
 
 **Verdict: InstanceNorm is the first candidate worth promoting to medium-lite** (the
 fog decode/TTA lift is the cleanest new signal since the dircons medium run, and it
-uses a mechanism we have not explored — covariate-shift statistics rather than
+uses a mechanism we have not explored, covariate-shift statistics rather than
 geometry). antianchor's verdict is incomplete (missing gate log) and its isotropy is
 flat-to-negative (fog HDC 0.057 vs instancenorm 0.105), so it is deprioritized.
 **Missing file needed to complete the record:** `logs/micro_gate_antianchor.log` (the
@@ -2369,10 +2369,10 @@ gate JSON was NUL-corrupted in transit).
 | oracle | crosstalk | **0.208** | 0.198 | -0.010 |
 | gap-closed | crosstalk | **0.31** | -0.05 | -0.36 |
 
-(antianchor: fog oracle 0.096 / crosstalk 0.185, both below the corsupcon ref —
+(antianchor: fog oracle 0.096 / crosstalk 0.185, both below the corsupcon ref,
 flat-to-negative, and its isotropy fog HDC 0.057 confirms it is not the direction.)
 
-**The three-way read — each extractor occupies a different corner of the
+**The three-way read. Each extractor occupies a different corner of the
 TTA-vs-ceiling space:**
 
 1. **DGLSS++ is the ceiling extractor**: highest oracle on both conditions at medium
@@ -2380,11 +2380,11 @@ TTA-vs-ceiling space:**
    Its ceiling comes from never being told to undo corruption (Iteration 19.8).
 2. **Robust is the TTA extractor**: best gap-closed (crosstalk 0.52 vs 0.11) and best
    naive on crosstalk (0.150), but the lowest ceiling (crosstalk oracle 0.188 vs
-   DGLSS++ 0.222) — the SupCon clean-anchor trades ceiling for assignment.
+    DGLSS++ 0.222), the SupCon clean-anchor trades ceiling for assignment.
 3. **InstanceNorm is a third corner, not a synthesis**: it raises zero-shot AND naive
    on BOTH conditions (the strongest raw TTA of the three at micro), but the
    gap-closed is low (fog 0.07, crosstalk -0.05) because its zero-shot is already
-   near its ceiling — and its ceiling (crosstalk 0.198) is still below DGLSS++.
+    near its ceiling, and its ceiling (crosstalk 0.198) is still below DGLSS++.
    It also raises the fog oracle above the corsupcon ref (0.127 vs 0.112), the only
    variant to do so, via the covariate-shift mechanism (not shift-retention).
 
@@ -2392,11 +2392,11 @@ TTA-vs-ceiling space:**
 targets a different part of the gap. DGLSS++ supplies the ceiling (shift retention);
 Robust supplies the assignment/TTA (clean anchor); InstanceNorm supplies raw
 robustness at the zero-shot level (covariate-shift statistics). No single variant has
-combined more than one. The natural next test — worth a micro before any medium — is
+combined more than one. The natural next test (worth a micro before any medium) is
 **InstanceNorm applied to the DGLSS++ base** (already built as `instancenorm`,
 micro-tested) promoted to see if its zero-shot lift survives scale, and whether it
 can be combined with the Robust anchor (the `cor_instancenorm` micro was worse, so
-the combination is not trivial — the beam-drop base is where IN helps, but the
+the combination is not trivial: the beam-drop base is where IN helps, but the
 anchor needs the corruption view).
 
 ## Iteration 19.10: the ceiling-focus pivot + the D3CTTA extractor question
@@ -2408,20 +2408,20 @@ framework can handle the TTA side, the extractor's only job is the labeled ceili
 The ceiling contributors we have found are narrow and precise: (a) DON'T erase the
 corruption shift (DGLSS++'s ceiling comes from never being told to undo corruption),
 and (b) fix the covariate-shift statistics (InstanceNorm is the only variant that
-RAISES the fog oracle). Everything that teaches corruption-erasure — clean-anchor
-SupCon, GMSIFC/LSCC view-invariance, dircons/corrsc/hdc coherence — lowers it.
+RAISES the fog oracle). Everything that teaches corruption-erasure (clean-anchor
+SupCon, GMSIFC/LSCC view-invariance, dircons/corrsc/hdc coherence) lowers it.
 
-**The D3CTTA extractor question.** The user's premise — that D3CTTA's numbers show a
-feature extractor CAN handle fog/crosstalk — is confirmed by their own paper
+**The D3CTTA extractor question.** The user's premise, that D3CTTA's numbers show a
+feature extractor CAN handle fog/crosstalk, is confirmed by their own paper
 (`thirdparty/d3ctta.pdf`): their SOURCE model (MinkUNet18 trained on Synth4D, zero
 adaptation) sits around 18-20 mIoU on fog in the 7-class setting, versus our medium
 DGLSS++ at ~6.8% and robust at ~8.5% (HDC-zs). So the extractor itself is genuinely
-better at fog — the fog/crosstalk robustness is NOT an inherent property of the
+better at fog: the fog/crosstalk robustness is NOT an inherent property of the
 corruption; it is attainable by a different backbone + pretraining. Three structural
 differences to test (in order of diagnostic value):
 1. **7-class vs 17-class map.** Their numbers are in the 7-class map that folds the
    fragile classes (bicycle, truck, traffic-sign) into background. Iteration-7
-   diagnostics showed this map HIDES dead classes rather than fixes them — the fog
+   diagnostics showed this map HIDES dead classes rather than fixes them, the fog
    mIoU is carried by road and the partial survivors. This is the cheapest test:
    does their 18-20 fog survive a 17-class evaluation of the SAME backbone?
 2. **MinkUNet18 (3D sparse conv) vs SENet-2048p (2D range-image).** Different
@@ -2444,7 +2444,7 @@ distinguishing ingredient (likely the synthetic-data pretraining or the sparse-3
 backbone) in our SENet pipeline; if it evaporates, the D3CTTA comparison is a
 7-class label-map artifact and our extractor is not as far behind as the headline
 suggests.
-### 19.10.1 The D3CTTA extractor diagnostic — isolating the three candidate causes
+### 19.10.1 The D3CTTA extractor diagnostic. Isolating the three candidate causes
 
 Since Synth4D is no longer downloadable, we cannot replicate their pretraining
 directly. But the goal is to attribute D3CTTA's fog robustness to one of three
@@ -2459,7 +2459,7 @@ compare the 7-class fog mIoU to D3CTTA's source-model ~18-20. If our extractors
 also jump to ~15-20 on the 7-class map, the D3CTTA advantage is mostly the label
 map and we are far less behind than the headline suggests; if they stay low, the
 backbone/pretraining is the real difference. Pure re-evaluation of existing
-checkpoints — no new training, no MinkowskiEngine. Run FIRST.
+checkpoints, no new training, no MinkowskiEngine. Run FIRST.
 
 **B. The backbone effect (needs MinkEngine + their checkpoint).** If A shows the
 map is not the explanation, obtain the D3CTTA Synth4D checkpoint (Google Drive link
@@ -2472,14 +2472,14 @@ replication target is the sparse-3D architecture; if it is low on 17 classes eve
 with their checkpoint, then A's map effect explains their headline and the
 MinkEngine install is not worth it.
 
-**C. The pretraining-domain effect (Synth4D unavailable — proxy).** If B shows the
+**C. The pretraining-domain effect (Synth4D unavailable, proxy).** If B shows the
 backbone matters but the pretraining is the likely contributor, the proxy is:
 fine-tune their MinkUNet18 from scratch on OUR clean SemanticKITTI sequence 08
 (same objective as DGLSS++) and compare to their Synth4D checkpoint on fog. The
 difference isolates how much the synthetic pretraining (vs the architecture)
 contributes. Requires MinkEngine + a clean-SK pretraining run.
 
-**Decision tree:** run A now (pure re-eval, ~30 min). If A resolves it, done — no
+**Decision tree:** run A now (pure re-eval, ~30 min). If A resolves it, done, no
 MinkEngine needed. If A shows the map is not the explanation, then B decides
 backbone-vs-pretraining; only C if B shows the backbone but not the pretraining.
 
@@ -2500,27 +2500,27 @@ is already AT or ABOVE D3CTTA's source-model fog on the 7-class map (0.226 vs
 ~0.18-0.20), and its 7-class crosstalk (0.284) is far above.** The 7-class fog
 headline gap is therefore a MEASUREMENT artifact: D3CTTA's ~18-20 is reported on a
 map that hides the fragile classes, and our extractors are not behind on that same
-map — DGLSS++ exceeds it. The label-map effect (candidate A) is REJECTED as the
+map, DGLSS++ exceeds it. The label-map effect (candidate A) is REJECTED as the
 source of the perceived D3CTTA advantage.
 
 **What this means for the diagnostic tree:**
 - Candidate A (7-class map) is closed: not the explanation.
 - The D3CTTA edge, if real, is in candidates B (MinkUNet18 sparse-3D backbone) or
-  C (Synth4D pretraining) — but the headline fog number itself does NOT show an
+  C (Synth4D pretraining), but the headline fog number itself does NOT show an
   extractor edge once the map is matched. The remaining question is whether their
   backbone+pretraining achieves something qualitatively different (better
-  per-class recoverability, higher 17-class ceiling) than our SENet pipeline — which
+  per-class recoverability, higher 17-class ceiling) than our SENet pipeline, which
   is only answerable by running their checkpoint (MinkEngine install), and is now a
   lower-priority question because the headline comparison no longer shows we are
   behind at the matched map.
 - **Pivot back to the ceiling focus:** with the D3CTTA comparison substantially
-  deflated, the extractor ceiling work returns to the measured levers — InstanceNorm
+  deflated, the extractor ceiling work returns to the measured levers: InstanceNorm
   (the one variant that raised the fog oracle) promoted to medium-lite, and the
   "don't erase the shift" principle guiding any new objective.
 
 Caveat: the 7-class aggregation used the best-member oracle per superclass as a proxy
 for the true merged-IoU (pooling multiple classes into one superclass can change IoU
-slightly up or down). The direction — DGLSS++ ~0.226 vs D3CTTA ~0.18-0.20 — is robust
+slightly up or down). The direction, DGLSS++ ~0.226 vs D3CTTA ~0.18-0.20, is robust
 to that approximation. A fully rigorous re-eval would decode the pooled superclass
 directly, but the headline conclusion (we are not behind on the matched map) holds.
 
@@ -2539,19 +2539,19 @@ GIPSO, EATA, ViDA, **Source**, T3A, **Ours**), the per-domain Source vs Ours:
 **The premise "fog/crosstalk end up similar to the other conditions" is NOT what the
 paper shows.** D3CTTA's adapted fog (20.11) stays the WORST domain, far below echo
 (31.12) and motion (26.12). Its adaptation lifts fog modestly (+3.36) but the biggest
-wins are on motion (+14.34) and snow (+3.23) — the same "healthy-ish" conditions our
+wins are on motion (+14.34) and snow (+3.23), the same "healthy-ish" conditions our
 own TTA already handles well. Fog/crosstalk remain the hard domains for D3CTTA too.
 
 **So D3CTTA does NOT demonstrate that an extractor brings fog/crosstalk to par with
 other conditions.** On the matched 7-class map our DGLSS++ source is already at/above
-their source (0.226 vs ~0.18-0.20, test A), and their adaptation — like ours — helps
+their source (0.226 vs ~0.18-0.20, test A), and their adaptation, like ours, helps
 the mid conditions most and fog least. The consistent structural fact across both
 projects: fog is the ceiling-limited domain, and no extractor or TTA mechanism has
 closed it. This strengthens the paper's honest framing: the AL framework (Pillar 2)
 is the path to the fog ceiling, because the representation itself caps it.
 
 **What remains of the D3CTTA investigation:** nothing that contradicts the
-ceiling-focus pivot. Their motion win (+14.34) is the one outlier — motion-blur
+ceiling-focus pivot. Their motion win (+14.34) is the one outlier: motion-blur
 shifts statistics more than structure, which our own BN-alignment / InstanceNorm
 lever also targets, reinforcing the covariate-shift direction (InstanceNorm) as the
 ceiling-relevant mechanism to promote to medium-lite.
@@ -2582,14 +2582,14 @@ internal BatchNorm) and **inputin_in** (the stack: input-IN + internal InstanceN
 
 1. **The stack (inputin_in) is a real crosstalk win.** crosstalk oracle +0.031 over
    plain DGLSS++ (0.245 vs 0.214), crosstalk naive +0.123 (0.241 vs 0.118), and the
-   crosstalk HDC decode 0.258 vs plain's ~0.10-0.12 — the strongest crosstalk numbers
-   in the whole family. The covariate-shift fix at both levels (input + internal)
+    crosstalk HDC decode 0.258 vs plain's ~0.10-0.12, the strongest crosstalk numbers
+    in the whole family. The covariate-shift fix at both levels (input + internal)
    genuinely helps crosstalk, whose failure was always statistics-like.
 2. **Fog regresses on the oracle** (inputin -0.051, inputin_in -0.025), though the
    zero-shot and naive IMPROVE (inputin_in fog zs 0.132 vs 0.068, naive 0.119 vs
    0.089). The fog oracle drop is dominated by car (0.216 -> 0.130 inputin, -> 0.094
    stack) and road (0.517 -> 0.372). Fog's recoverable structure is NOT statistics-
-   driven the way crosstalk's is — normalizing it away hurts the ceiling.
+   driven the way crosstalk's is: normalizing it away hurts the ceiling.
 3. **This is the same fog-vs-crosstalk asymmetry seen throughout**: crosstalk is a
    statistics problem (covariate-shift fixes help), fog is a structure problem
    (normalization erases what little recoverable signal exists). The stack helps the
@@ -2598,7 +2598,7 @@ internal BatchNorm) and **inputin_in** (the stack: input-IN + internal InstanceN
 **Verdict: the stack is worth medium-lite for crosstalk, but it is NOT a clean
 ceiling improvement because fog regresses.** The "covariate-shift-aware DGLSS++"
 story would require the crosstalk gain WITHOUT the fog oracle loss. The open
-question — set up below — is WHY fog's oracle falls while its zero-shot/naive rise:
+question, set up below, is WHY fog's oracle falls while its zero-shot/naive rise:
 if the per-scan normalization removes a part of the fog feature that the ORACLE
 re-estimation needs (a structure component), the fix is a condition-aware
 normalization (apply input-IN only where the shift is statistics-like); if instead
@@ -2618,7 +2618,7 @@ run on the existing micro checkpoints (no training):
    plain DGLSS++: if dir_retention rose toward ~1 (shift erased) or corr_tightness
    collapsed, the normalization removed exactly the structure the oracle needs.
 2. **Is the fog oracle drop real or a zero-shot artifact?** fog zs rose (0.068 ->
-   0.132) while oracle fell — a rising zero-shot with a falling oracle means the
+   0.132) while oracle fell, a rising zero-shot with a falling oracle means the
    re-estimation from CORRUPTED labeled points got worse, not that the features got
    worse. Compare the oracle-vs-zero-shot GAP: if the gap narrowed because zero-shot
    rose, the ceiling is actually fine and the drop is in the re-estimation operator;
@@ -2626,7 +2626,7 @@ run on the existing micro checkpoints (no training):
 3. **The condition-aware hypothesis (the actionable outcome):** if (1) shows the
    shift was erased for fog but not crosstalk, the design fix is to apply the
    normalization only where the corruption is statistics-like (crosstalk) and keep
-   fog's structure — e.g., per-channel normalization restricted to the channels
+   fog's structure, e.g., per-channel normalization restricted to the channels
    crosstalk shifts (range/remission) while leaving geometry channels for fog. This
    is micro-testable directly.
 
@@ -2638,7 +2638,7 @@ classes (car, road, og 14). The decision: if fog dir_retention rose toward 1 (sh
 erased), implement the condition-aware normalization; if the oracle gap narrowed with
 zero-shot (re-estimation artifact), promote the stack to medium-lite as-is.
 
-### 19.11.2 The fog-regression mechanism — and the fix
+### 19.11.2 The fog-regression mechanism, and the fix
 
 Per-class structure comparison (inputin / inputin_in vs plain DGLSS++, from the gate
 JSONs) reveals WHY the stack helps crosstalk but hurts fog:
@@ -2660,21 +2660,21 @@ JSONs) reveals WHY the stack helps crosstalk but hurts fog:
    (0.124->0.003 for car): the re-estimation has nothing left to recover.
 2. **Crosstalk's recoverable classes are PACKING-driven.** Its oracle rises
    (car 0.305->0.398, og 0.243->0.402, road 0.493->0.583) even though dir_ret also
-   rises toward 1 — because crosstalk's recoverable structure survives in the
+    rises toward 1, because crosstalk's recoverable structure survives in the
    packing (tightness stays 0.62-0.80) and the statistics normalization gives the
    classes cleaner separation. Crosstalk never needed the shift; fog does.
 
-**The fix — condition-aware normalization (micro-testable, no architecture change).**
+**The fix: condition-aware normalization (micro-testable, no architecture change).**
 The per-scan normalization should erase the statistics shift WITHOUT erasing fog's
 geometry-based shift. The concrete design: normalize ONLY the channels that carry
 crosstalk's statistics-shift (range, remission) and leave the GEOMETRY channels
-(xyz) untouched — because fog's recoverable direction lives in the geometry
+(xyz) untouched, because fog's recoverable direction lives in the geometry
 (deformation of the projected xyz), while crosstalk's failure is in the
 range/remission statistics. This is a per-channel mask in `_input_instancenorm`,
 fully micro-testable before any medium run. If it holds (fog oracle recovers,
 crosstalk stays up), it's the "covariate-shift-aware" fix without the fog loss.
 Fallback if the channel-split does not resolve it: the full architecture change
-(two-input-stream: one normalized, one not, combined at the bottleneck) — deferred
+(two-input-stream: one normalized, one not, combined at the bottleneck), deferred
 until the channel-split is measured.
 
 ### 19.11.3 The condition-aware fix implemented (channel-restricted input-IN)
@@ -2682,17 +2682,17 @@ until the channel-split is measured.
 The Iteration-19.11.2 mechanism said: fog's recoverable classes are shift-driven
 (per-scan normalization erases the direction they need), crosstalk's are
 packing-driven (normalization helps). The fix is a **channel-restricted per-scan
-normalization**: normalize only the RANGE and REMISSION channels (indices 0, 4) —
-the channels crosstalk's statistics-shift lives in — and leave the xyz GEOMETRY
+normalization**: normalize only the RANGE and REMISSION channels (indices 0, 4),
+the channels crosstalk's statistics-shift lives in, and leave the xyz GEOMETRY
 channels (1-3) in the parser's clean-stat normalization, so fog's shifted direction
 survives. Implemented as `supcon_vib_dglsspp_inputin_in_chan` (internal InstanceNorm
 + channel-restricted input-IN), verified: channels 0/4 per-scan normalized (mean ->
 0), channels 1-3 bit-unchanged. Micro-testable before any medium commitment.
 Fallback if the channel-split does not transfer fog: the full two-input-stream
-architecture (one normalized stream + one raw, combined at the bottleneck) — deferred
+architecture (one normalized stream + one raw, combined at the bottleneck), deferred
 until the channel-split is measured.
 
-## Iteration 19.12: the channel-restricted input-IN works — fog AND crosstalk both up
+## Iteration 19.12: the channel-restricted input-IN works. Fog AND crosstalk both up
 
 The Iteration-19.11.2 fix (per-scan input normalization restricted to the range +
 remission channels 0/4, xyz geometry channels 1-3 untouched, internal InstanceNorm)
@@ -2714,37 +2714,37 @@ was micro-gated vs plain DGLSS++:
 | inputin_in_chan | **0.344** | **0.154** | **0.305** | **0.404** | **0.807** |
 
 **The channel-restricted fix resolves the fog regression and improves everything:**
-1. **Fog oracle is now ABOVE plain DGLSS++** (+0.016, 0.175 vs 0.159) — the stack had
+1. **Fog oracle is now ABOVE plain DGLSS++** (+0.016, 0.175 vs 0.159), the stack had
    dropped it to 0.137, the channel-split recovered it and then some. Car recovers
    (0.217 -> 0.203, vs 0.094 for the unrestricted stack), and the big gains are
    vegetation (+0.116, 0.102 -> 0.219) and terrain (+0.086, 0.277 -> 0.363).
 2. **Crosstalk is the strongest in the family**: oracle 0.303 vs DGLSS++ 0.214
-   (+0.089) and vs the stack's 0.277 — car 0.305 -> 0.554, road 0.493 -> 0.666,
+    (+0.089) and vs the stack's 0.277: car 0.305 -> 0.554, road 0.493 -> 0.666,
    veg 0.337 -> 0.512, og 0.243 -> 0.361. The crosstalk HDC decode 0.305 is double
    anything measured before.
 3. **The mechanism confirmation is exact**: restricting normalization to the
    range/remission channels kept the crosstalk packing gain while preserving enough
-   of fog's geometry-based structure for its recoverability — the fog dir_retention
-   still rises (0.27 -> 0.86 car) but the fog oracle recovers because the geometry
+    of fog's geometry-based structure for its recoverability; the fog dir_retention
+    still rises (0.27 -> 0.86 car) but the fog oracle recovers because the geometry
    channels are normalized against clean statistics, so the shift isn't fully erased
    the way the unrestricted stack did (car 0.94).
 4. **The naive TTA rises too** (fog +0.067, crosstalk +0.165), so the variant
-   improves BOTH the ceiling and the label-free update — the first variant to do
-   both on both conditions.
+    improves BOTH the ceiling and the label-free update, the first variant to do
+    both on both conditions.
 
 **Verdict: this is the covariate-shift-aware DGLSS++ candidate.** It beats plain
 DGLSS++ on every condition (fog oracle 0.175 vs 0.159, crosstalk 0.303 vs 0.214), the
 first extractor variant to do so since the pivot. The paper's extractor contribution
 is now: per-scan input normalization restricted to the statistics-shifted channels
-(range/remission) + internal InstanceNorm — a principled, mechanism-grounded change
+(range/remission) + internal InstanceNorm, a principled, mechanism-grounded change
 that raises the ceiling on BOTH conditions without any geometry tradeoff. Promote to
-**medium-lite** (12 ep / 100%) to confirm the gains survive scale — this is the first
+**medium-lite** (12 ep / 100%) to confirm the gains survive scale. This is the first
 ceiling candidate worth the medium commitment since the dircons run.
 
 **Why it worked (the full mechanism):** crosstalk's corruption is a statistics shift
 in the range/remission channels, and fog's recoverable structure lives partly in the
 xyz geometry. Normalizing only channels 0/4 absorbs crosstalk's shift while leaving
-fog's geometry in the clean-stat normalization — so fog keeps its recoverable
+fog's geometry in the clean-stat normalization, so fog keeps its recoverable
 direction and crosstalk gains the packing separation. This is a clean example of the
 covariate-shift-vs-structure distinction: the right fix normalizes the shifted
 statistics, not the structure.
@@ -2756,7 +2756,7 @@ what erases fog's recoverable direction (all fog dir_retention -> ~1 under the f
 stack). The one principled knob left before committing the 10h run: **scale-only per-
 scan normalization** (divide by per-scan std, DO NOT subtract the mean) on ALL
 channels. This absorbs the magnitude statistics shift (crosstalk's need) while
-preserving the direction (fog's need) — the cleaner, more general version of the
+preserving the direction (fog's need), the cleaner, more general version of the
 channel-restricted fix, no channel selection required. Implemented as
 `supcon_vib_dglsspp_inputin_in_scale` and verified: scale-only keeps per-scan means
 non-zero (direction preserved) with stds ~1, vs full IN which erases the means.
@@ -2764,7 +2764,7 @@ Micro-gate it against the channel-restricted winner (19.12) before the medium ru
 if scale-only matches or beats inputin_in_chan on both conditions, it is the simpler
 and more general paper story; the medium run then commits whichever wins.
 
-### 19.12.2 The scale-only test is negative — chan is confirmed as the design
+### 19.12.2 The scale-only test is negative: chan is confirmed as the design
 
 The scale-only variant (divide by per-scan std, no mean subtraction, on ALL channels)
 was micro-gated vs plain DGLSS++:
@@ -2776,8 +2776,8 @@ was micro-gated vs plain DGLSS++:
 | fog naive | 0.089 | 0.065 | 0.157 |
 | crosstalk naive | 0.118 | 0.089 | 0.291 |
 
-**Scale-only is clearly negative.** Dividing ALL channels by per-scan std — including
-the xyz geometry — collapsed the class structure the clean-stat normalization
+**Scale-only is clearly negative.** Dividing ALL channels by per-scan std, including
+the xyz geometry, collapsed the class structure the clean-stat normalization
 provided (corr_tightness car fog 0.89->0.47, crosstalk 0.84->0.51; AL purity 0.435 /
 0.364 vs 0.560 / 0.506). The xyz channels' ABSOLUTE scale carries the near-vs-far
 class separation; per-scan std normalization erases it. This is a valuable negative:
@@ -2787,7 +2787,7 @@ one option among many but the necessary design. The Iteration-19.12 winner
 
 **Decision: commit `supcon_vib_dglsspp_inputin_in_chan` to the full medium run.**
 
-## Iteration 19.13: the cov-shift medium run — both ceilings and TTA improve
+## Iteration 19.13: the cov-shift medium run. Both ceilings and TTA improve
 
 The 21-ep / 100% medium run of `supcon_vib_dglsspp_inputin_in_chan` (per-scan
 input normalization on range/remission + internal InstanceNorm) completed cleanly
@@ -2820,25 +2820,25 @@ trajectory (extractor_diff vs plain DGLSS++, 50 frames / 50k pool).
 | motion_blur | 0.814 | 0.446 |
 | cross_sensor | 0.701 | 0.388 |
 
-**The verdict — we got BOTH:**
+**The verdict. We got BOTH:**
 
 1. **The fog ceiling is higher than DGLSS++ at every measured epoch and the fog
    decode nearly tripled.** Fog oracle peaked ~0.217 (ep 10) vs DGLSS++ 0.159, and
    the final HDC-zs 0.185 is ~2.7x plain DGLSS++'s 0.068. Fog LP 0.519 is the
    highest measured for any extractor. The trajectory peaks at ep 10-15 and holds
-   ~0.19-0.20 through 20 — the cov-shift win is stable, not a transient.
+    ~0.19-0.20 through 20; the cov-shift win is stable, not a transient.
 2. **Crosstalk is effectively FIXED, not just improved.** Final crosstalk HDC-zs
    0.419 (vs DGLSS++ ~0.10), LP 0.826, and the zs ~ oracle (0.417 vs 0.393) means
    crosstalk is now assignment-healthy at the frozen-prototype level. This is the
    "fog/crosstalk are not inherently broken" claim, achieved.
 3. **The TTA abilities are BETTER, not sacrificed.** The naive update tracks or
    exceeds zero-shot throughout (fog naive ~0.19-0.21, crosstalk naive ~0.40), and
-   crosstalk AL purity 0.720 vs DGLSS++ 0.506 — the AL framework gets a cleaner
-   feature space for free.
+    crosstalk AL purity 0.720 vs DGLSS++ 0.506, the AL framework gets a cleaner
+    feature space for free.
 
 **The paper extractor contribution is now concrete**: per-scan input normalization
 restricted to the statistics-shifted channels (range/remission) + internal
-InstanceNorm — a principled covariate-shift fix that raises the ceiling on BOTH
+InstanceNorm, a principled covariate-shift fix that raises the ceiling on BOTH
 conditions AND improves the label-free update, the first extractor variant to do
 both since the pivot. The next battery (full-scale extractor_diff vs DGLSS++ and
 Robust, tta_ceiling, frozen_ceiling) on the ep-10/15 checkpoint is the final
@@ -2846,7 +2846,7 @@ three-way confirmation.
 
 **One residual to note:** car fog oracle stayed below DGLSS++'s car (0.145 vs 0.216
 at ep 4; the geometry-heavy class where range/remission normalization helps least),
-but the aggregate fog is up and the final decode is strong — a per-class detail for
+but the aggregate fog is up and the final decode is strong, a per-class detail for
 the paper's honesty, not a blocker.
 
 ## Iteration 19.14: why does cov-shift hurt healthy-condition ceilings?
@@ -2887,9 +2887,9 @@ the fog/crosstalk loss -- the next cov-shift improvement.
 
 ### 19.14.1 The cov-shift dedicated doc
 
-The cov-shift extractor's full development — method, measured performance, the
+The cov-shift extractor's full development, method, measured performance, the
 healthy-condition ceiling-loss diagnostic (a packing/binarization loss, not a
-direction loss), and the open projection/binarization design questions — is tracked
+direction loss), and the open projection/binarization design questions, is tracked
 in its own dedicated doc: `docs/cov_shift/cov_shift_iterations.md` (Iterations
 C1-C6). The README Pillar-1 tables summarize the extractor comparison; the per-class
 diagnostic numbers are in that doc.

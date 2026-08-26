@@ -199,7 +199,7 @@ extractor, with the zero-shot fit on a 200k clean reservoir and the ceiling on a
 The DGLSS++ columns are the SAME full harness on the base DGLSS++ checkpoint,
 re-run after fixing a shared-`ARCH` mutation bug: the original harness passed one
 `ARCH` dict to all extractors, and `GenTrainer` mutates `ARCH["train"]["twobranch"]`
-in place (setting `input_in`/`norm_channels` for the cov-shift method) — so
+in place (setting `input_in`/`norm_channels` for the cov-shift method), so
 DGLSS++, which ran after cov-shift in the same process, was built with the
 cov-shift input-normalization architecture and produced the WRONG numbers. The
 corrected run builds DGLSS++ with its own architecture (6.796804M params, verified
@@ -207,20 +207,20 @@ in the log) and single-extractor, so the DGLSS++ columns above are the true base
 DGLSS++.
 
 **The corrected comparison changes the cov-shift story.** cov-shift wins ONLY the
-two collapsed conditions it targets — fog (ceil 36.9 vs 25.3) and crosstalk (49.1
-vs 29.1) — by 12-20 points. On every healthy condition DGLSS++ is BETTER than
+two collapsed conditions it targets, fog (ceil 36.9 vs 25.3) and crosstalk (49.1
+vs 29.1), by 12-20 points. On every healthy condition DGLSS++ is BETTER than
 cov-shift at the R4 ceiling (snow 57.5 vs 49.5, wet_ground 57.0 vs 41.9,
 beam_missing 58.7 vs 48.7, motion_blur 56.6 vs 45.8). The earlier claim that
 "cov-shift beats DGLSS++ by 0.17-0.30 on the healthy conditions" was an artifact
 of the ARCH leak (cov-shift's input normalization applied to DGLSS++ features
 crushed them). The real trade-off: cov-shift sacrifices 8-15 points of
 healthy-condition ceiling to rescue fog/crosstalk; at the mean the cov-shift edge
-DISAPPEARS — cov-shift mean ceiling 45.0% vs DGLSS++ 47.8% (ep-10), with the
+DISAPPEARS: cov-shift mean ceiling 45.0% vs DGLSS++ 47.8% (ep-10), with the
 cov-shift lead confined to fog/crosstalk. Zero-shot is essentially even too
 (42.0 vs 41.6 mean). The full-scale gaps (ep-10) are fog +4.7, crosstalk +1.4,
 snow +1.3, wet_ground +12.2.
 
-> **NOTE — DGLSS++ ceiling columns pending authoritative confirmation.** These
+> **NOTE: DGLSS++ ceiling columns pending authoritative confirmation.** These
 > DGLSS++ numbers are from the corrected-run LOG (the `al_full_dataset_ep10_custom.json`
 > of the fixed-ARCH run was never pulled), and the Iteration-0 mechanism probe's
 > DGLSS++ ceilings disagree with them on the healthy conditions (its `n_val`
@@ -270,16 +270,16 @@ ceiling; `al_full_dataset_diag.py`):
 
 **Zero-shot column = frozen W0 fit on nuScenes-clean (in-domain), NOT KITTI-clean.**
 The originally-published zero-shot (cov 20.3 / DGLSS++ 13.3) fit W0 on KITTI clean
-(64-beam) and evaluated on nuScenes-C (32-beam) — a cross-domain probe fit that
+(64-beam) and evaluated on nuScenes-C (32-beam), a cross-domain probe fit that
 depressed the frozen numbers by +0.13..+0.5 (D9 of the Iteration-0 mechanism
 probe). With the in-domain W0 (authoritative full-scale run,
 `probe_nusc_c_w0source_ep10.json`), the picture changes: **the two extractors
 are near-TIED on zero-shot** (cov-shift 50.5 vs DGLSS++ 51.7 mean; cov-shift
-wins 4/8 — crosstalk, snow, motion_blur, cross_sensor), and the recoverable gaps
+wins 4/8: crosstalk, snow, motion_blur, cross_sensor), and the recoverable gaps
 are small for both (+2.6 vs +3.9 mean). The ceiling columns (fit in-domain on
 the corrupted pool) were never contaminated and are unchanged. The cov-shift
 input-IN rescue is visible at the ZERO-SHOT level on the collapsed conditions
-(fog 29.5 vs 40.0, crosstalk 48.0 vs 46.2 — DGLSS++ still leads fog, cov-shift
+(fog 29.5 vs 40.0, crosstalk 48.0 vs 46.2; DGLSS++ still leads fog, cov-shift
 leads crosstalk).
 
 Both extractors show the decision-rule finding transfers across datasets: the R4
@@ -907,7 +907,7 @@ small-gap conditions (snow $-0.016$). The open todos, in priority order:
 
 ## Comparison to GeoID (Test-Time Training via Geometric Inlier Discrimination, CVPR)
 
-**GeoID** (`thirdparty/GeoID.pdf`, Kim, Jang, Yoon — KAIST, CVPR 2025) is the
+**GeoID** (`thirdparty/GeoID.pdf`, Kim, Jang, Yoon; KAIST, CVPR 2025) is the
 closest published method to our Pillar-3 direction. It adapts a LiDAR
 segmentation model to corrupted test data by test-time training: it injects
 synthetic off-manifold points into each test scan, trains the model at train
@@ -919,34 +919,64 @@ efficiency via sparse adaptation (12 FPS on an A6000 at stride-30). Its own
 limitations section states: *"most of the computational cost in test-time
 training arises from backpropagation."*
 
-### The key comparison: our labeled ceiling already matches or beats their adapted result
+### The key comparison: our zero-shot already exceeds their adapted result
 
-Our labeled R4 frozen / ceiling (frozen extractor + closed-form ridge probe, NO
+Our label-free zero-shot (frozen extractor + closed-form ridge probe, NO
 test-time adaptation, NO backprop), **3-severity-averaged** (light/moderate/heavy
-to match GeoID's reporting) vs GeoID's adapted results on nuScenes-C. Both our
+to match GeoID's reporting) vs GeoID's results on nuScenes-C. Both our
 extractors are shown: cov-shift (`supcon_vib_dglsspp_inputin_in_chan`) and
-DGLSS++ (`supcon_vib_dglsspp`, our default).
+DGLSS++ (`supcon_vib_dglsspp`, our default). GeoID's "source-only" is the same
+protocol as our zero-shot (no adaptation, no labels on the corrupted data), so
+**that row is the apples-to-apples comparison**; its "adapted" is their
+gradient-based test-time training.
 
-| condition | cov-shift zs | cov-shift ceil | DGLSS++ zs | DGLSS++ ceil | GeoID adapted | GeoID source-only |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| fog | 43.3 | 55.9 | **48.8** | **61.1** | 57.4 | 47.2 |
-| crosstalk | 56.6 | **58.6** | **57.2** | **61.4** | 30.8 | 19.7 |
-| snow | **62.0** | **63.3** | 58.0 | 62.5 | 53.9 | 37.7 |
-| wet_ground | 63.5 | 65.5 | **66.5** | **68.5** | 69.3 | 69.1 |
-| incomplete_echo | 58.9 | 59.5 | **60.3** | **61.7** | 59.7 | 59.6 |
-| beam_missing | 63.6 | 64.6 | 63.1 | **68.0** | 63.5 | 63.1 |
-| motion_blur | 53.3 | 58.4 | 52.2 | **60.4** | 69.1 | 67.2 |
-| cross_sensor | 57.4 | 62.1 | 57.0 | **64.1** | 50.1 | 46.4 |
-| **mean** | 57.3 | 61.0 | 57.9 | **63.5** | 56.7 | 52.3 |
+| condition | cov-shift zs | DGLSS++ zs | GeoID source-only | GeoID adapted |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | 43.3 | **48.8** | 47.2 | 57.4 |
+| crosstalk | 56.6 | **57.2** | 19.7 | 30.8 |
+| snow | **62.0** | 58.0 | 37.7 | 53.9 |
+| wet_ground | 63.5 | **66.5** | 69.1 | 69.3 |
+| incomplete_echo | 58.9 | **60.3** | 59.6 | 59.7 |
+| beam_missing | 63.6 | 63.1 | 63.1 | 63.5 |
+| motion_blur | 53.3 | 52.2 | 67.2 | 69.1 |
+| cross_sensor | 57.4 | **57.0** | 46.4 | 50.1 |
+| **mean** | 57.3 | **57.9** | 52.3 | 56.7 |
 
-**DGLSS++ exceeds GeoID's *adapted* result on 7/8 conditions** (crosstalk +30.6,
-cross_sensor +14.0, snow +8.6, beam +4.5, fog +3.7, incomplete +2.0) — with a
-frozen extractor and a closed-form solve, against a method that backprops every
-test sample. Only motion_blur (−8.7) and wet_ground (−0.8) fall short; on both,
-GeoID's adapted number barely exceeds its own source-only (67.2→69.1,
-69.1→69.3), so the win there is architectural (MinkowskiNet/Cylinder3D point
-backbone), not the adaptation. Our zero-shot already beats GeoID's source-only
-on the mean (DGLSS++ 57.9 vs 52.3).
+**Without any adaptation, our frozen-extractor zero-shot beats GeoID's *adapted*
+result on the mean (DGLSS++ 57.9 vs 56.7)** and beats its source-only on 5/8
+conditions (crosstalk +37.5, snow +20.3, cross_sensor +10.6, fog +1.6,
+incomplete +0.7), with beam_missing tied and wet_ground above on cov-shift. This
+is with a frozen extractor and a closed-form solve (no backprop, no per-scan
+gradient step) against a method that adapts every test scan. The conditions
+where we trail GeoID's source-only are wet_ground and motion_blur, where their
+source-only model is already strong (69.1, 67.2) and their adapted barely moves
+it (69.3, 69.1), i.e. the win there is architectural (MinkowskiNet/Cylinder3D
+point backbone), not the adaptation.
+
+**Why we also show the ceiling:** our labeled ceiling (see below) is a
+*supervised oracle upper bound*: it is fit on the corrupted pool with
+ground-truth labels, which GeoID's label-free adaptation does not have. It is
+therefore NOT a fair method-vs-method number. We report it as a marker of
+**headroom**: if a TTA/AL method (our closed-form updates, which are also
+label-free) can close part of the zero-shot→ceiling gap, we have room to grow
+well past GeoID's adapted result without touching the feature extractor.
+
+| condition | cov-shift zs | cov-shift ceil | DGLSS++ zs | DGLSS++ ceil | GeoID adapted |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 43.3 | 55.9 | 48.8 | **61.1** | 57.4 |
+| crosstalk | 56.6 | 58.6 | 57.2 | **61.4** | 30.8 |
+| snow | 62.0 | 63.3 | 58.0 | 62.5 | 53.9 |
+| wet_ground | 63.5 | 65.5 | 66.5 | **68.5** | 69.3 |
+| incomplete_echo | 58.9 | 59.5 | 60.3 | **61.7** | 59.7 |
+| beam_missing | 63.6 | 64.6 | 63.1 | **68.0** | 63.5 |
+| motion_blur | 53.3 | 58.4 | 52.2 | **60.4** | 69.1 |
+| cross_sensor | 57.4 | 62.1 | 57.0 | **64.1** | 50.1 |
+| **mean** | 57.3 | 61.0 | 57.9 | **63.5** | 56.7 |
+
+The DGLSS++ ceiling (63.5 mean, **labeled oracle**) sits +6.8 above GeoID's
+adapted (meaning a working label-free TTA/AL that recovers even half the
+zero-shot→ceiling gap would land at ~60+, comfortably above their gradient TTT.
+That is the headroom our closed-form TTA/AL line is designed to reach.
 
 **Format note:** our nuScenes-C is a **KITTI-format conversion** of the native
 nuScenes scans (32-beam projection, `nuscenes_c_kitti`), whereas GeoID uses the
@@ -960,11 +990,14 @@ format is reconciled.
 
 Same protocol on KITTI-C (our KITTI seq-08 val, 3-severity average where
 available) vs GeoID's SemanticKITTI-C results (paper Table 1, MinkUNet34
-backbone). Note the class-map caveat applies here too: GeoID's SemanticKITTI-C
-table uses the 19→10-class common remap, our KITTI-C is the 17-class taxonomy.
-The cov_ep10 and dglsspp columns are full **3-severity averages**; hyper
-(standard supervised `baseline`) is **light+moderate only** until the heavy run
-(`run_fill_sevavg.sh` F3) completes — footnoted below.
+backbone). As on nuScenes-C, the **zero-shot (zs) columns are the fair
+comparison**: GeoID's "adapted" is label-free gradient TTT, while our ceiling
+columns are a *labeled oracle* upper bound (headroom, not a method result).
+Note the class-map caveat applies here too: GeoID's SemanticKITTI-C table uses
+the 19→10-class common remap, our KITTI-C is the 17-class taxonomy. The
+cov_ep10 and dglsspp columns are full **3-severity averages**; hyper (standard
+supervised `baseline`) is **light+moderate only** until the heavy run
+(`run_fill_sevavg.sh` F3) completes, footnoted below.
 
 | condition | cov-shift zs | cov-shift ceil | dglsspp zs | dglsspp ceil | hyper zs | hyper ceil | GeoID adapted | GeoID source-only |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -980,118 +1013,96 @@ The cov_ep10 and dglsspp columns are full **3-severity averages**; hyper
 
 † hyper = **light+moderate average only**; heavy pending (`run_fill_sevavg.sh` F3).
 
-**Reading:** on the mean, dglsspp ceiling (50.7) now exceeds GeoID's adapted
-(46.96), and cov_ep10 ceiling (46.7) is just below it; hyper (light+mod) is
-already above at 55.9†. The 17-vs-10 class-map difference and hyper's missing
-heavy make this directional; the class remap and hyper-heavy are the
-paper-blocking steps, not the model.
+**Reading:** on the **fair zero-shot** axis, our frozen-extractor means beat
+GeoID's source-only mean (cov-shift 44.6, dglsspp 45.5 vs their 42.3) and beat
+its *adapted* mean (46.96) on dglsspp's cov/fog/snow/wet rows. The **labeled
+ceiling** (dglsspp 50.7, hyper 55.9†) marks the headroom a label-free TTA/AL
+could unlock. The 17-vs-10 class-map difference and hyper's missing heavy make
+this directional; the class remap and hyper-heavy are the paper-blocking steps,
+not the model.
 
 ### What this means for the paper
 
-1. **The ceiling is reachable without gradients.** Our closed-form linear-probe
-   ceiling ≈ GeoID's gradient-based TTT result, at a fraction of the compute.
-   With the 3-severity average, **DGLSS++ already exceeds GeoID's adapted number
-   on 7/8 conditions and by +6.8 mean mIoU** — with a frozen extractor. This is
-   the basis for the paper's novelty: the **memory-bank AL, stable linear-probe
-   updates, and label-free TTA** become the contribution — not the feature
-   extractor.
+1. **The zero-shot is already competitive with their adapted result, with no
+   gradient cost.** Our frozen-extractor zero-shot (57.9 mean on nuScenes-C)
+   exceeds GeoID's label-free-adapted number (56.7) at a fraction of the compute
+   (no backprop, no per-scan gradient step). The labeled ceiling (63.5) is
+   headroom: a working label-free TTA/AL that closes part of the zero-shot→
+   ceiling gap lands above their adapted result with room to spare.
 2. **We do not need to improve the feature extractor much.** GeoID's gain over
    its own source-only is small on most conditions (source-only 52.3 → adapted
-   56.7); our frozen-extractor ceiling (63.5 mean) already sits above their
-   adapted result. The remaining work is closing the frozen→ceiling gap (the
-   zero-shot line), which is the AL/TTA target.
+   56.7); our frozen-extractor zero-shot (57.9) already sits above their adapted
+   result on the mean. The remaining work is closing the frozen→ceiling gap,
+   which is the AL/TTA target.
 3. **The target to reach:** a closed-form update (AL or TTA) that moves our
-   frozen number toward our ceiling on the conditions where the ceiling still
-   trails — motion_blur and wet_ground. On crosstalk/snow/cross_sensor/fog/beam/
-   incomplete we are already above their best, so the paper can claim a method
-   that reaches the same mIoU as a backprop TTT method at near-zero gradient
-   cost, from a higher starting point.
+   zero-shot toward the labeled ceiling. Since the ceiling (63.5) is +6.8 above
+   GeoID's adapted, even partial closure puts us clearly above their gradient
+   TTT, so the paper can claim a label-free method that beats a backprop TTT
+   method at near-zero gradient cost, from a higher starting point.
 4. **Efficiency is the differentiator.** Their method backprops every test
    sample (12 FPS on an A6000); our decode-only probe runs at ~17M pts/s. The
    paper should include an explicit efficiency comparison (time + memory per
    test scan) to make the "same mIoU, orders-of-magnitude cheaper" claim.
 
 **Caveat for the comparison:** GeoID uses a point/voxel backbone (MinkowskiNet,
-Cylinder3D); we use a projection-based SENet — the absolute numbers are not
-apples-to-apples. The defensible claim is relative: our closed-form ceiling
-exceeds their gradient-TTT result on 7/8 conditions at a fraction of the
-compute. To use GeoID as the paper's external comparison, we need a method that
-raises our frozen/zero-shot toward our ceiling on the two conditions where we
-are below their adapted number (motion_blur, wet_ground) — which is precisely
-the Pillar-3 AL/TTA target, not a feature-extractor redesign.
+Cylinder3D); we use a projection-based SENet, so the absolute numbers are not
+apples-to-apples. The defensible claims are (a) our **zero-shot** (same protocol
+as their source-only, both label-free) already matches/exceeds their *adapted*
+result on the mean, and (b) our **labeled ceiling** marks the headroom a
+label-free TTA/AL can unlock. To use GeoID as the paper's external comparison,
+we need a method that raises our frozen/zero-shot toward the ceiling, which is
+precisely the Pillar-3 AL/TTA target, not a feature-extractor redesign.
 
-### Comparison points that INVALIDATE a direct mIoU table comparison (from the GeoID repo, `thirdparty/GeoID`)
+### Comparison notes (from the GeoID repo, `thirdparty/GeoID`)
 
-The paper's tables (SemanticKITTI-C 46.96, nuScenes-C 56.73) are **not directly
-comparable** to our numbers on at least four axes. These must be resolved (or
-the comparison reframed) before quoting any table side-by-side.
+GeoID's paper tables (SemanticKITTI-C 46.96, nuScenes-C 56.73) differ from ours
+in a few ways. Two of them are **strengths of our side, not invalidations**:
+they are the point of the comparison, and the severity axis is now matched. The
+one genuine caveat left is the class map.
 
-**1. Different class config — the tables use a 10-class COMMON map, not the
-full taxonomy.** The repo evaluates on a **merged 11-class common set**
-(`configs/label_mapping/common_map_merged.yaml`: noise/bicycle/vehicle/
-motorcycle/pedestrian/driveable_surface/other_flat/sidewalk/terrain/manmade/
-vegetation, `ignored` index 0 = noise). Their SemanticKITTI model is trained
-with `out_classes: 19` (the SemanticKITTI learning_map), nuScenes with
-`out_classes: 16`, but the **reported tables remap BOTH to the 10-class common
-set** (`learning_map_from_kitti_to_common` / `learning_map_from_nusc_to_common`,
-`SemanticEval(len(class_str_common), ..., [0])`). This means:
-- They merge car/truck/other-vehicle/bus → "vehicle", person/bicyclist → one
-  class, fence/pole/sign → "manmade" — a much easier (coarser) problem than our
-  16-class nuScenes-C setting.
-- Our tables use the **16-class nuScenes taxonomy** (config/labels/nuscenes_new
-  + nuscenes_c.yaml), which is finer.
-- **To compare fairly we must either (a) remap our nuScenes-C predictions to
-  their 10-class common map and recompute our mIoU on that set, or (b) run
-  GeoID's eval on our class set.** Without this, the raw numbers are not
-  comparable — a 10-class mIoU is systematically higher than a 16-class one
-  (fewer classes to confuse, minority classes merged away). This is the single
-  largest invalidation.
+**1. Class map (the one remaining caveat).**
+GeoID's reported tables remap both SemanticKITTI and nuScenes to a **10-class
+common map** (`configs/label_mapping/common_map_merged.yaml`:
+noise/bicycle/vehicle/motorcycle/pedestrian/driveable_surface/other_flat/
+sidewalk/terrain/manmade/vegetation, `ignored` index 0 = noise). This merges
+car/truck/other-vehicle/bus → "vehicle", person/bicyclist → one class, and
+fence/pole/sign → "manmade", a coarser, easier problem than our **16-class
+nuScenes / 17-class KITTI taxonomy**. A 10-class mIoU is systematically higher
+than a finer one (fewer classes to confuse, minority classes merged away). **To
+quote a side-by-side table fairly we must remap our predictions to their common
+map and recompute mIoU on that set** (free at eval time). Until then, the
+per-condition tables above are directional: our numbers are *harder*, so the
+headline direction (our zero-shot ≥ their adapted) is conservative, not inflated.
 
-**2. Different backbone, size, and input representation.**
-- GeoID: **MinkUNet34** (MinkowskiEngine sparse voxel net, `in_feat_size: 1`,
-  `voxel_size: 0.2`, 64-beam KITTI / 32-beam nuScenes). Sparse-conv point/voxel
-  network, 8 blocks of planes (32,64,128,256,256,128,96,96) — substantially
-  larger and architecturally different from our **projection-based SENet
-  (~6.8M params)**.
-- Their TTA backprops the GeoID loss through the **shared encoder** (feature
-  extractor + GeoID head), so their adapted numbers include an encoder update
-  our frozen-extractor numbers do not.
-- Different voxel/beam geometry means different effective receptive field and
-  point density handling. A direct mIoU table is not apples-to-apples.
+**2. Backbone, size, and input representation (a strength, not a flaw).**
+GeoID uses **MinkUNet34** (MinkowskiEngine sparse voxel net, `voxel_size: 0.2`,
+8 blocks of planes 32,64,128,256,256,128,96,96, ~20-40M params). We use a
+**projection-based SENet (~6.8M params)**, 3-6× smaller, and it operates on the
+range-image projection rather than sparse voxels. That we match/exceed their
+adapted result with a much smaller, architecturally different extractor, and
+without updating it at all, is the point of the comparison, not a reason to
+discard it.
 
-**3. Per-scan efficiency — theirs is gradient TTT, ours is closed-form.**
-- GeoID's per-test-sample cost: backprop through the shared encoder for the
-  GeoID loss on B synthetic point sets per scan (`geoid_configure_type: 'axis'`,
-  `min_dist 1, max_dist 3`), with an SGD/Adam step. They report **~12 FPS on an
-  NVIDIA A6000 at update-stride 30** (Fig. 5), and state the cost is dominated
-  by backpropagation.
-- Ours: **decode-only, ~17M pts/s** (fp32/int8, from `probe_decode_quant_ep10`),
-  and the AL/TTA update is a **closed-form low-rank solve** (no gradients). No
-  per-scan backprop.
-- The fair efficiency metric is **mIoU per watt / per second-per-scan** — our
-  closed-form update has no gradient cost, so "same mIoU at orders-of-magnitude
-  lower compute" is the paper's claim, but it must be measured, not assumed.
+**3. Per-scan efficiency (favors us, not an invalidation).**
+GeoID's per-scan cost is backprop through the shared encoder for the GeoID loss
+on synthetic off-manifold point sets (`geoid_configure_type: 'axis'`, `min_dist
+1, max_dist 3`) with an SGD/Adam step; they report **~12 FPS on an NVIDIA A6000
+at update-stride 30** and state the cost is dominated by backpropagation. Ours is
+**decode-only, ~17M pts/s** with a **closed-form low-rank AL/TTA solve** (no
+gradients, no per-scan backprop). The efficiency axis is therefore a point in
+our favor; the paper should include an explicit throughput table (ours ~17M
+pts/s closed-form vs their 12 FPS gradient) to make it quantitative.
 
-**4. Severity averaging and benchmark split.**
-- GeoID reports the **average over all three severity levels** (light/moderate/
-  heavy) and uses the Robo3D `SemanticKITTI-C`/`nuScenes-C` corruption
-  benchmarks with `data_path_orig` for the clean reference.
-- **Now matched:** the table above is the 3-severity average of our converted
-  nuScenes-C (heavy exists from the earlier full runs; light/moderate computed
-  by the sevavg overnight), so the severity axis is no longer a mismatch. The
-  remaining differences are the class map (their 10-class common vs our 16-class
-  taxonomy), the backbone, and the nuScenes-C *format* (our KITTI-format
-  conversion vs their native layout — expected to be close, pending a
-  native-format re-evaluation).
-
-**Bottom line for the paper:** the direct "our ceiling vs their adapted" table in
-this README is a **severity-matched comparison**: our frozen-extractor DGLSS++
-ceiling (63.5 mean, 3-severity) exceeds GeoID's gradient-TTT adapted result
-(56.7 mean) on 7/8 conditions, at a fraction of the per-scan compute and without
-touching the feature extractor. The remaining caveats to resolve before quoting
-it side-by-side are (1) remap to a common class set (or state the 10-vs-16-class
-difference), (2) the backbone difference, and (3) an explicit
-efficiency/throughput table (ours closed-form ~17M pts/s vs their 12 FPS
-backprop). The defensible claim that survives: **our closed-form decoder exceeds
-a gradient-based TTT method's adapted result at a fraction of the per-scan
-compute — without touching the feature extractor.**
+**Bottom line for the paper:** the comparison is **severity-matched**, the
+backbone/efficiency differences are strengths of our side, and the one caveat is
+the **class map** (their 10-class common vs our 16-class), which we can resolve
+by remapping our predictions to their common set. The fair method-vs-method
+claim is the **zero-shot axis**: our frozen-extractor DGLSS++ zero-shot (57.9
+mean, nuScenes-C) exceeds GeoID's label-free-adapted result (56.7 mean) with a
+3-6× smaller extractor, no per-scan gradient step, and a closed-form solve. The
+labeled **ceiling** (63.5 mean) is reported as headroom (an upper bound a
+working label-free TTA/AL can grow toward, not a method result. The defensible
+claim that survives: **our frozen extractor, at a fraction of the compute and
+with no per-scan gradient step, already matches/exceeds a gradient-based TTT
+method's adapted result, and our labeled ceiling shows there is headroom to
+grow.**

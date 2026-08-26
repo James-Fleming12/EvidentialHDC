@@ -111,7 +111,7 @@ that matter most for the comparison, so the TTA line can claim
 fix (input re-anchoring, late normalization, or a per-scan gate) that rescues
 fog/crosstalk without touching DGLSS++'s healthy-condition performance.
 
-### Diagnostic 1 (DONE): input-statistics calibration — fog/crosstalk collapse the remission channel (D3)
+### Diagnostic 1 (DONE): input-statistics calibration: fog/crosstalk collapse the remission channel (D3)
 
 Full-scale mechanism probe (`probe_covshift_mechanism_diag.py`,
 `probe_covshift_mechanism_ep10.json`), per-scan channel {0,4} stats
@@ -155,7 +155,7 @@ clean prototypes/W0:
 generators produce different input statistics (KITTI-C: remission var collapse;
 NuScenes-C: range var explosion). The collapse is a property of the KITTI-C
 fog/crosstalk *generator*, not the extractor or fog-in-general. cov_kitti on
-KITTI-C fog is NOT collapsed (0.513) — the input-IN rescues its home-domain
+KITTI-C fog is NOT collapsed (0.513): the input-IN rescues its home-domain
 generator.
 
 ### Diagnostic 3 (DONE): clean-capacity gap is the healthy cost (D1)
@@ -259,11 +259,11 @@ across clean/fog/crosstalk.
    (AUROC 1.000).** See Diagnostic 7.
 
 **Interpretation for the design.** The fix is NOT at the raw input (conv1 is
-healthy). It is at the **BN statistics** — the frozen running mean/var no longer
+healthy). It is at the **BN statistics**: the frozen running mean/var no longer
 match the corrupted stream by the time the signal reaches the bottleneck. Two
 levers fall out:
 - a **late re-normalization** (re-estimate / re-base the late-stage BN or the
-  bottleneck conv_1/conv_2 inputs) to realign the running stats on the fly — the
+  bottleneck conv_1/conv_2 inputs) to realign the running stats on the fly, the
   "tiny fog/crosstalk bump, full healthy" target, since healthy scans already sit
   at their calibrated operating point;
 - the existing **BN-statistic alignment TTA lever** (from the ResNet docstring:
@@ -283,7 +283,7 @@ late BN re-anchor would only act where the mismatch is large.
 **Status: PARKED (2026-08-24).** The micro stoch signals are weak in BOTH
 directions (OFF recovers +0.027 snow but loses −0.031 fog / −0.065 crosstalk),
 which is the WRONG tradeoff for the goal. We want a *tiny* fog/crosstalk bump
-with *full* healthy recovery — not a full-scale training run (~8h) to compromise
+with *full* healthy recovery, not a full-scale training run (~8h) to compromise
 both sides. Diagnostic 5's finding (late BN-stat mismatch, not input saturation)
 makes a targeted late re-normalization the preferred lever over retraining a
 conditional extractor. Revisit only if the late-BN fix fails.
@@ -318,7 +318,7 @@ knowledge, no labels, just the frozen running-stat deviation of one BN layer.
 
 **Finding.** A per-scan gate signal exists and is trivial to compute, and it
 perfectly flags collapsed scans (AUROC 1.000). **Caveat (Diagnostic 8):** the
-mismatch is a perfect *detector* but NOT a *recoverable lever* — re-anchoring
+mismatch is a perfect *detector* but NOT a *recoverable lever*: re-anchoring
 the BN stats that produce it is negative (a symptom of the input collapse, not
 the cause). As a gate it can still decide *when to engage an input-level
 intervention* (e.g., input-IN) or the AL pool, but not to correct the features
@@ -354,7 +354,7 @@ re-anchored features are WORSE for the W0 probe than the frozen ones.
 
 **Why (mechanism, from the combined evidence).** The Diagnostic-5 "BN mismatch"
 was a *symptom of the input collapse*, not the cause. The probe showed conv1 is
-healthy (no saturation) — the geometry dies because the *remission channel
+healthy (no saturation); the geometry dies because the *remission channel
 itself* is erased at the input (D3: var → 1.3e-5), so the information to name
 points is absent before the network ever sees it. Re-calibrating the frozen BN
 stats cannot create information that was destroyed at the input; it just moves
@@ -365,7 +365,7 @@ healthy on NuScenes-C fog where remission survives) and with D3.
 **Implication.** The recoverable gap on fog/crosstalk is **input-bound, not
 BN-bound**: no amount of late-network statistic realignment restores it. The
 only thing that rescues KITTI-C fog/crosstalk is re-anchoring the INPUT
-distribution (cov-shift's input-IN, which re-bases the collapsed remission) —
+distribution (cov-shift's input-IN, which re-bases the collapsed remission),
 and that costs healthy capacity (D1). The labeled ceiling remains reachable only
 through the corrupted pool (W*), which is the AL/TTA pool mechanism.
 
@@ -374,7 +374,7 @@ through the corrupted pool (W*), which is the AL/TTA pool mechanism.
 **Question.** Diagnostic 8 only re-estimated the BN running *stats* (label-free
 stat substitution). The stronger oracle: **with labels, fit the BN's affine
 (γ, β) per channel** so each class's corrupted pre-BN activation maps to its
-clean post-BN mean — the maximal expressivity a BN layer has. If even a
+clean post-BN mean, the maximal expressivity a BN layer has. If even a
 label-fitted affine cannot recover, BN is not the lever. The probe also measures
 pre-BN class *separability* to locate where the collapse happens.
 
@@ -394,8 +394,8 @@ pre-BN per-class separability (mean pairwise cosine distance of class means,
 
 **Finding 1: even the LABELED BN affine is NEGATIVE.** Fitting γ, β with
 per-class labels makes the W0 decode *worse* on both conditions (−0.06 fog,
-−0.10 crosstalk). The BN layer — even given labels and full freedom to scale +
-shift each channel — cannot recover the collapse. This is a negative for *this
+−0.10 crosstalk). The BN layer, even given labels and full freedom to scale +
+shift each channel, cannot recover the collapse. This is a negative for *this
 specific attempt at retraining the BN* (per-channel affine aligned to clean
 per-class means), not a blanket "the BN idea is dead for all metrics": a later
 iteration could switch the "correctness" metric (e.g. fit the affine to minimize
@@ -415,7 +415,7 @@ under fog/crosstalk:
 
 (fog ratio 0.14-0.45 across all 22 BNs; crosstalk ratio 0.19-0.56.) The classes
 are already merged *before* the BN ever operates on them. A BN (scale + shift
-per channel) cannot re-separate classes that arrive with near-identical means —
+per channel) cannot re-separate classes that arrive with near-identical means;
 it has no rotational/class-specific freedom. The information to separate classes
 is gone at the BN *input*.
 
@@ -425,7 +425,7 @@ probe: the collapse is not *in* the BN, it is *upstream* of it. Diagnostic 5
 (classes merged before BN) all say the same thing: **the input distribution
 collapse destroys class structure before any late network stage can be
 re-calibrated to fix it.** The only intervention that re-creates the structure
-is at the input (input-IN re-bases the collapsed remission) — everything after
+is at the input (input-IN re-bases the collapsed remission); everything after
 the input is downstream of a loss that already happened.
 
 ---
@@ -435,12 +435,12 @@ the input is downstream of a loss that already happened.
 Diagnostic 5 showed the collapse is NOT input saturation (conv1 healthy); the
 BN-mismatch signal (Diagnostic 7, AUROC 1.000) is a perfect *detector*; and
 Diagnostics 8 + 8b proved that NEITHER label-free stat re-estimation NOR a
-label-fitted BN affine recovers the collapse — both are negative.
+label-fitted BN affine recovers the collapse; both are negative.
 
 **The separable finding (8b) is the biggest point:** the pre-BN per-class
 separability is collapsed (conv_1.bn clean 0.704 → fog 0.101, crosstalk 0.137;
 ratio 0.14-0.45 across all late BNs). The classes are merged at the BN *input*,
-so no BN — which is only a per-channel scale + shift — can re-separate them. The
+so no BN, which is only a per-channel scale + shift, can re-separate them. The
 BN mismatch measured in Diagnostic 5 is a *symptom*, not the cause: the
 information to name classes is destroyed at the input (D3: remission var →
 1.3e-5), before any late stage. Caveat: the 8b negative is scoped to this affine
@@ -451,16 +451,16 @@ separability evidence locates the collapse upstream of BN regardless of metric.
 So the direction is **NOT a BN re-anchor**. The two things that DO work:
 
 1. **Input re-anchoring** (cov-shift's per-scan input-IN) rescues KITTI-C
-   fog/crosstalk (+12-20 ceiling) — it re-bases the collapsed remission channel
+   fog/crosstalk (+12-20 ceiling): it re-bases the collapsed remission channel
    at the input, where the information loss is (the only place the separability
    data says it can be recovered). Its cost is the 0.12 clean capacity gap (D1),
    which is why the conditional/stochastic-gate idea existed. The gate signal
    (Diagnostic 7) is a perfect detector, but Diagnostic 4/6 showed the
    stochastic model only weakly recovers healthy in OFF mode.
-2. **The labeled corrupted pool** (W* / AL) reaches the ceiling — this is the
+2. **The labeled corrupted pool** (W* / AL) reaches the ceiling; this is the
    existing AL/TTA mechanism and is unaffected by this result.
 
-For the GeoID comparison, the pool-based AL is the cleaner claim — it does not
+For the GeoID comparison, the pool-based AL is the cleaner claim: it does not
 touch the healthy conditions at all, and it is what the existing TTA/AL line
 already does. If DGLSS++ stays the default extractor (per the earlier decision:
 a feature-extractor compromise as bad as the current cov-shift is not worth it),

@@ -2148,7 +2148,7 @@ At full scale the closeable gaps are much smaller than the subsampled harness su
 **Next steps (two):**
 
 1. **Improve the gap closed by AL where there is a gap to close**: fog, wet_ground, cross_sensor, crosstalk, snow are the conditions with a measurable closeable gap; the current $56+500$ random bank only closes a fraction of it (fog $+0.005$ of $+0.047$, wet $+0.043$ of $+0.122$). The lever is the bank's $G$-quality and the $U$-basis estimation (C21-C22 showed oracle $U$ recovers the ceiling but estimated $U$ collapses), not the harness.
-2. **Get a method that tells whether there is something to close at all**: a label-free gauge of the closeable gap (e.g., residual norm $\|W^*-W_0\|$ or feature-shift strength vs frozen-cosine stability) so the AL budget is spent only on conditions where the gap is significant — beam_missing ($-0.001$) and motion_blur ($+0.006$) have nothing to close, and snow's $+0.013$ is borderline; labels should not be spent there.
+2. **Get a method that tells whether there is something to close at all**: a label-free gauge of the closeable gap (e.g., residual norm $\|W^*-W_0\|$ or feature-shift strength vs frozen-cosine stability) so the AL budget is spent only on conditions where the gap is significant, e.g. beam_missing ($-0.001$) and motion_blur ($+0.006$) have nothing to close, and snow's $+0.013$ is borderline; labels should not be spent there.
 
 ### FULL-DATASET per-class breakdown: the minority-class story (17-class setting, `al_per_class_diag.py`)
 

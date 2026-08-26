@@ -347,9 +347,9 @@ signal, 50k points per condition):
 3. **Margin is the one signal the Robust extractor newly strengthens** (fog 0.494,
    crosstalk 0.265 vs 0.13-0.17 for the rest of the family), consistent with the
    SupCon making the class structure more separable.
-4. **The confident-but-wrong points are the least recoverable on fog**
-   (rec_conf_wrong 0.157, lowest of the family) — the fog recoverability deficit
-   shows up directly in the gate structure.
+ 4. **The confident-but-wrong points are the least recoverable on fog**
+    (rec_conf_wrong 0.157, lowest of the family); the fog recoverability deficit
+    shows up directly in the gate structure.
 
 **9.2 Gated prototype update** (`ttagate_diag`, `norm_gate` as the update weight,
 vs the family references):
@@ -366,16 +366,16 @@ vs the family references):
 | **robust21 (norm_gate)** | crosstalk | 0.122 | 0.211 | 0.173 | **+0.57** |
 
 **Findings:**
-1. **The norm gate transfers cleanly to the Robust extractor: crosstalk gap +0.57 —
+ 1. **The norm gate transfers cleanly to the Robust extractor: crosstalk gap +0.57,
    the strongest of the family** (vs +0.36 dglsspp micro, +0.08 dglsspp med). The
-   gated update closes over half the crosstalk gap, matching the Iteration-8.3
-   naive-EMA result (+0.52) with a single gate.
-2. **Fog gap is weak (+0.11) and ceiling-bound:** the gate reaches 0.115 vs an oracle
-   of 0.177, but the fog zero-shot is already high (0.107) so the headroom is small —
-   the same "fog is ceiling-bound, not assignment-bound" story as Iterations 8.3 and 9
-   of the robust log.
+    gated update closes over half the crosstalk gap, matching the Iteration-8.3
+    naive-EMA result (+0.52) with a single gate.
+ 2. **Fog gap is weak (+0.11) and ceiling-bound:** the gate reaches 0.115 vs an oracle
+    of 0.177, but the fog zero-shot is already high (0.107) so the headroom is small;
+    this is the same "fog is ceiling-bound, not assignment-bound" story as Iterations 8.3 and 9
+    of the robust log.
 
-**9.3 Full TTA battery** (`tta_ceiling_diag`, 500k pool / 100k val) — the Robust
+**9.3 Full TTA battery** (`tta_ceiling_diag`, 500k pool / 100k val), the Robust
 extractor vs the family references from the same harness:
 
 | cond | extractor | zs | naive | conf | dist | bn | knn | oracle |
@@ -423,10 +423,10 @@ vs the medium-scale family references):
    supcon_vib 0.221, dglsspp 0.214). The SupCon's clean-anchoring costs exactly the
    recoverable shifted direction the oracle needs, reproducing the Iteration-9 robust
    log autopsy (fog oracle 0.157 vs dg_med 0.176).
-2. **The geometric conditions are fine or better:** snow (0.427, best), wet_ground,
-   beam_missing, motion_blur, cross_sensor all within 0.005 of dglsspp med and above
-   supcon_vib — the ceiling regression is specific to the assignment-collapsed
-   conditions (fog/crosstalk).
+ 2. **The geometric conditions are fine or better:** snow (0.427, best), wet_ground,
+    beam_missing, motion_blur, cross_sensor all within 0.005 of dglsspp med and above
+    supcon_vib; the ceiling regression is specific to the assignment-collapsed
+    conditions (fog/crosstalk).
 3. **Fog LP-accuracy is high (0.465) yet the fog LP-mIoU is lowest (0.052):** the
    continuous space separates classes on fog but with a rare-class starvation that a
    linear probe does not express; the HDC oracle (0.150) is the honest ceiling.
@@ -434,7 +434,7 @@ vs the medium-scale family references):
 **Verdict.** The run-through gives the complete same-suite picture of the Robust 21-ep
 extractor: a strong, correctly-placed gate signal (norm, not density), the best
 label-free crosstalk TTA of the family (naive +0.52-0.57 gap-closed), a healthy
-geometric-condition ceiling — and an unchanged fog/crosstalk labeled-ceiling deficit.
+ geometric-condition ceiling, and an unchanged fog/crosstalk labeled-ceiling deficit.
 For the TTA paper the method's claim is the label-free crosstalk update (norm-gated);
 for the ceiling/AL work the extractor is neutral-to-negative (the Iteration-15
 shortlist in `robust_iterations.md` targets this: decouple the anchor from the
