@@ -24,9 +24,24 @@ Usage:
   uv run python robust_diagnostic/probe_rep_robustness_diag.py \
     --max_frames 200 --out robust_diagnostic/logs/probe_rep_robustness.json
 """
-import os, sys, time, argparse, json, yaml, copy as _copy
+import os, sys, time, argparse, json, yaml, copy as _copy, signal, traceback
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np, torch, torch.nn.functional as F
+
+def _signal_handler(signum, frame):
+    """Log exactly what killed us: signal number + a stack trace of where we were."""
+    with open('logs/probe_rep_robustness_signal.txt', 'a') as fh:
+        fh.write(f"\n[{time.strftime('%H:%M:%S')}] CAUGHT signal {signum} "
+                 f"({signal.Signals(signum).name if signum in signal.Signals else '?'})\n")
+        traceback.print_stack(frame, file=fh)
+        fh.write("(handler returning -> default action: process will terminate)\n")
+    sys.exit(128 + signum)
+
+for _s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    try:
+        signal.signal(_s, _signal_handler)
+    except Exception:
+        pass
 from robust_diagnostic.al_full_dataset_diag import (
     build_parser, build_nuscenes_parser, stream_frames, hdc_codes, NUM_CLASSES)
 from robust_diagnostic.probe_fog_collapse_layer_diag import LayerStats
