@@ -962,31 +962,29 @@ Same protocol on KITTI-C (our KITTI seq-08 val, 3-severity average where
 available) vs GeoID's SemanticKITTI-C results (paper Table 1, MinkUNet34
 backbone). Note the class-map caveat applies here too: GeoID's SemanticKITTI-C
 table uses the 19→10-class common remap, our KITTI-C is the 17-class taxonomy.
-The cov_ep10 column is the full 3-severity average; dglsspp (authoritative) and
-hyper (standard supervised `baseline`) columns are **partial-severity** until
-the fill-in run (`run_fill_sevavg.sh`) completes — footnoted below.
+The cov_ep10 and dglsspp columns are full **3-severity averages**; hyper
+(standard supervised `baseline`) is **light+moderate only** until the heavy run
+(`run_fill_sevavg.sh` F3) completes — footnoted below.
 
 | condition | cov-shift zs | cov-shift ceil | dglsspp zs | dglsspp ceil | hyper zs | hyper ceil | GeoID adapted | GeoID source-only |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| fog | 40.7 | 43.6 | 9.7* | 25.3* | 28.7† | 42.5† | 40.1 | 33.2 |
-| crosstalk | 48.3 | 49.4 | 11.8* | 29.1* | 10.6† | 31.5† | 40.8 | 24.5 |
-| snow | 47.9 | 49.5 | 54.3* | 57.5* | 57.9† | 61.6† | 40.6 | 32.0 |
-| wet_ground | 35.0 | 42.9 | 49.2* | 57.0* | 61.0† | 64.1† | 47.7 | 45.5 |
-| incomplete_echo | 45.2 | 45.3 | 48.2* | 48.8* | 58.5† | 57.0† | 50.8 | 50.5 |
-| beam_missing | 50.3 | 50.3 | 58.3* | 58.7* | 64.1† | 64.6† | 52.1 | 51.1 |
-| motion_blur | 46.5 | 46.8 | 54.8* | 56.6* | 61.0† | 63.1† | 54.6 | 54.1 |
-| cross_sensor | 43.1 | 45.9 | 46.9* | 49.4* | 61.1† | 62.8† | 49.0 | 47.8 |
-| **mean** | 44.6 | 46.7 | 41.6* | 47.8* | 50.4† | 55.9† | 46.96 | 42.33 |
+| fog | 40.7 | 43.6 | 22.5 | 35.2 | 28.7† | 42.5† | 40.1 | 33.2 |
+| crosstalk | 48.3 | 49.4 | 11.9 | 29.4 | 10.6† | 31.5† | 40.8 | 24.5 |
+| snow | 47.9 | 49.5 | 53.2 | 56.6 | 57.9† | 61.6† | 40.6 | 32.0 |
+| wet_ground | 35.0 | 42.9 | 53.1 | 58.1 | 61.0† | 64.1† | 47.7 | 45.5 |
+| incomplete_echo | 45.2 | 45.3 | 52.7 | 51.8 | 58.5† | 57.0† | 50.8 | 50.5 |
+| beam_missing | 50.3 | 50.3 | 60.6 | 61.0 | 64.1† | 64.6† | 52.1 | 51.1 |
+| motion_blur | 46.5 | 46.8 | 56.8 | 57.9 | 61.0† | 63.1† | 54.6 | 54.1 |
+| cross_sensor | 43.1 | 45.9 | 53.4 | 55.4 | 61.1† | 62.8† | 49.0 | 47.8 |
+| **mean** | 44.6 | 46.7 | 45.5 | 50.7 | 50.4† | 55.9† | 46.96 | 42.33 |
 
-\* dglsspp = authoritative **heavy-severity only** (P1 rerun); light/moderate
-pending (`run_fill_sevavg.sh` F1/F2).
-† hyper = **light+moderate average only**; heavy pending (F3).
+† hyper = **light+moderate average only**; heavy pending (`run_fill_sevavg.sh` F3).
 
-**Reading:** on the mean, cov_ep10 ceiling (46.7) is just below GeoID's adapted
-(46.96), and hyper (light+mod) is already above it (55.9†) — but the partial
-severities and the 17-vs-10 class-map difference make this directional. The full
-3-severity table (after the fill-in) and the class remap are the paper-blocking
-steps, not the model.
+**Reading:** on the mean, dglsspp ceiling (50.7) now exceeds GeoID's adapted
+(46.96), and cov_ep10 ceiling (46.7) is just below it; hyper (light+mod) is
+already above at 55.9†. The 17-vs-10 class-map difference and hyper's missing
+heavy make this directional; the class remap and hyper-heavy are the
+paper-blocking steps, not the model.
 
 ### What this means for the paper
 
