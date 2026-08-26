@@ -52,8 +52,9 @@ if [ "$DRY_RUN" = "1" ]; then
   exit 0
 fi
 
-eval "$CMD" 2>&1 | tee "logs/probe_rep_robustness.log"
-RC=${PIPESTATUS[0]}
+eval "$CMD"
+RC=$?
+echo "  [exit code: $RC]"
 
 if [ $RC -eq 0 ]; then
   echo "=== REP-ROBUSTNESS OK ==="
