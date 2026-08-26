@@ -120,7 +120,7 @@ def decode_w_gated(model, parser, proj, device, W, tau, max_frames=0,
             for s in range(0, n, 100000):
                 e = min(s + 100000, n)
                 codes = torch.sign(zf[s:e].to(device) @ proj).float()
-                acc.update((codes @ W.to(device)).argmax(1).cpu(), labels[s:e])
+                acc.update((codes @ W.to(device)).argmax(1).cpu(), labels[s:e].cpu())
             del zf
     det.detach()
     return acc.miou(), acc.n
