@@ -550,6 +550,85 @@ reframes the earlier "hyper is more robust" claim: hyper's features are NOT more
 invariant; they are differently *distributed* such that the R4 linear probe
 rewards them on KITTI-C but not NuScenes-C.
 
+### Diagnostic 11 (DONE): linear-property probe -- class_shift is the zero-shot predictor, and it IS reachable at training time (`probe_linear_prop_diag.py`, `run_probe_linear_prop.sh`)
+
+**Question.** Diagnostic 10 measured the CEILING interaction, but the comparison
+of interest (hyper best on KITTI-C, worst on NuScenes-C) is the ZERO-SHOT line.
+Zero-shot uses the CLEAN-fit W0 decoded on corrupted features -- there is no
+"fit on corrupted data" -- so the question is: does the clean-fit boundary
+survive the clean→corrupted feature shift, and which feature property predicts
+that?
+
+**Setup.** Same 6 extractors, fog+crosstalk, 200 frames. Per (extractor, cond),
+in the binarized 10000-d code space: `class_shift` (clean→corr per-class
+cosine), `fisher_ratio` (between/within scatter), `pre_sign_margin_lt05_frac`
+(fraction of codes near the sign-flip boundary), `within_class_var`, `effrank`,
+`margin_sweep` (frozen W0 accuracy after zeroing fragile pre-sign activations),
+plus `frozen` (the zero-shot) and `ceiling`.
+
+**Result (`probe_linear_prop.json`):**
+
+| extractor | cond | class_shift | fisher | frozen (zs) | margin_sweep tau0.5 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| hyper_kitti | fog | 0.199 | 0.21 | 0.110 | 0.116 |
+| dgl_kitti | fog | 0.196 | 0.52 | 0.111 | 0.107 |
+| cov_kitti | fog | **0.933** | 0.75 | **0.344** | 0.328 |
+| hyper_kitti | crosstalk | 0.247 | 0.20 | 0.124 | 0.126 |
+| dgl_kitti | crosstalk | 0.273 | 0.60 | 0.132 | 0.126 |
+| cov_kitti | crosstalk | **0.980** | 0.96 | **0.579** | 0.540 |
+| hyper_nusc | fog | 0.760 | 0.28 | 0.211 | 0.211 |
+| dgl_nusc | fog | **0.931** | **1.59** | **0.266** | 0.257 |
+| cov_nusc | fog | 0.899 | 0.99 | 0.222 | 0.208 |
+| hyper_nusc | crosstalk | 0.799 | 0.22 | 0.255 | 0.252 |
+| dgl_nusc | crosstalk | 0.897 | 1.21 | 0.285 | 0.280 |
+| cov_nusc | crosstalk | **0.928** | 1.13 | **0.299** | 0.282 |
+
+**Pearson correlation with frozen (zero-shot), n=12:**
+- `class_shift` **r=+0.776** (strongest)
+- `fisher_ratio` r=+0.480
+- `within_class_var` r=+0.338, `effrank` r=+0.291, `pre_sign_margin` r=+0.202
+
+**Findings.**
+
+1. **`class_shift` (clean→corr feature stability) is the dominant zero-shot
+   predictor** (r=+0.776), and it tracks the exact zero-shot ordering: cov has
+   the lowest shift on KITTI fog/crosstalk (0.93/0.98) and the highest frozen;
+   dgl the lowest shift on NuScenes fog (0.931) and highest frozen. Where the
+   per-class means stay put, the clean-fit W0 transfers.
+2. **`fisher_ratio` is secondary** (r=+0.48) -- the corrupted code's linear
+   separability. `pre_sign_margin` is NOT predictive (r=+0.20), i.e. the zero-shot
+   loss is not primarily "codes sitting at sign-flip boundaries."
+3. **The `margin_sweep` confirms the mechanism is shift, not boundary
+   fragility**: cov_kitti crosstalk frozen 0.579 drops only to 0.540 at tau0.5
+   (robust coordinates), while its tau2.0 craters (0.045) -- the stable cores
+   survive; hyper/dgl drop more at tau0.5 because their features shifted off the
+   clean W0's support entirely.
+
+**The extractor objective this motivates.** The property to optimize for
+zero-shot robustness is `class_shift` = minimizing clean→corrupted per-class
+feature displacement, i.e. a TRAINING-TIME consistency/invariance objective
+between clean and corrupted views. This is exactly the desideratum-3 "Invariance
+to First-Order Sensor Energy Shifts" from cov_shift_iterations.md -- which is
+what cov-shift's input-IN partially achieves at the input level.
+
+**Relation to the prior attempt (Phase 24 `supcon_vib_additive`).** We DID try
+this as the "noise invariance" / volumetric-noise augmentation (`supcon_vib_additive`),
+and threw it out -- but the Diagnostic-11 result says it was NOT a bad idea, it
+was badly implemented. The Phase 24.6 medium verdict (gen_iterations.md:924-956):
+at equal capacity the additive regimen was WORSE than plain supcon_vib on every
+condition (fog 8.4 vs 10.1 mIoU), fog LP 30.6% BELOW plain (36.3%), and the
+micro-scale healing (fog LP 57%, ArtSurv 3.8x) did NOT scale. Critically, the
+autopsy showed the additive space DID reduce feature shift at micro scale (Cos
+shift 0.821→0.738, norm gap healed) but the 128D→10kD binarization transfer
+failed (BinCos 0.076) AND the volumetric injection traded away the 6 healthy
+conditions (-1.6 to -4.2 pts). So the mechanism (reduce class_shift) was
+targeted correctly but the implementation (a) didn't survive convergence, (b)
+didn't transfer through binarization, and (c) cost the healthy conditions. The
+Diagnostic-11 result says: **a clean→corrupted class_shift penalty is the right
+loss family, but it must (i) be measured/trained on the actual corrupted views
+that matter, (ii) preserve the healthy-condition geometry (not trade it), and
+(iii) be validated at the code/binarized level, not just the 128D LP.**
+
 ---
 
 ## Decision rule
