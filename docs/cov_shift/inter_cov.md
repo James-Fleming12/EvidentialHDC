@@ -430,6 +430,56 @@ the input is downstream of a loss that already happened.
 
 ---
 
+### Diagnostic 9 (DONE): gated input-IN TTA probe -- the gate works, recovery is small
+
+**Question.** The collapse is input-bound (remission erased at input, classes
+merged before BN), and the only rescue is per-scan input-IN on channels {0,4}.
+Always-on costs 0.12 clean capacity (D1). Can a **label-free per-scan gate**
+(apply input-IN only when the Diagnostic-7 detector fires) rescue fog/crosstalk
+while leaving healthy scans at raw?
+
+**Setup.** `probe_gated_inputin_diag.py` + `run_probe_gated_inputin.sh`:
+plain DGLSS++ (`supcon_vib_dglsspp`), fog + crosstalk + snow, 200-frame subset
+(100k clean fit / 200k pool). Gate threshold auto-calibrated on clean:
+`bn_mismatch_conv_1` mean+3σ → tau=0.262 (clean mean 0.158, sd 0.035).
+Per condition: raw (no input-IN), gated (input-IN when detector > tau),
+always_on (input-IN every scan), and the labeled ceiling W*.
+
+**Result (`probe_gated_inputin.json`, `probe_gated_inputin.log`):**
+
+| condition | raw | gated | always_on | ceiling | gated Δ | always_on Δ |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | 0.0147 | 0.0171 | 0.0175 | 0.0290 | **+0.0023** | +0.0028 |
+| crosstalk | 0.0311 | 0.0369 | 0.0374 | 0.0663 | **+0.0058** | +0.0063 |
+| snow | 0.0749 | 0.0755 | 0.0482 | 0.0768 | **+0.0006** | **−0.0267** |
+
+**Findings.**
+
+1. **The gate works as designed: it helps the collapsed conditions without the
+   always-on healthy penalty.** On snow (healthy), gated stays at raw (+0.0006,
+   i.e. no false-positive re-anchoring), while always_on HURTS snow (−0.0267) —
+   the 0.12 clean-capacity cost showing up at this subset scale. The gate
+   isolates the input-IN rescue to exactly the scans that need it.
+2. **But the recovery is SMALL (~16% of the ceiling gap):** gated closes
+   0.0023/0.0142 (fog) and 0.0058/0.0352 (crosstalk) of the raw→ceiling gap,
+   barely less than always_on (which closes ~20%). The gate correctly avoids
+   harming healthy, but the input-IN rescue on a plain DGLSS++ extractor only
+   recovers a fraction of the labeled headroom.
+
+**Interpretation.** The gated-input-IN TTA validates the *mechanism* (a
+label-free detector can route the input re-anchor to exactly the collapsed
+scans, with zero healthy cost) but shows the *recovery magnitude is small* at
+this scale. Two limits: (a) it is a 200-frame subset with a 100k clean fit, so
+absolute numbers are depressed; (b) the input-IN on a plain DGLSS++ model is a
+*train/eval mismatch* (the model never saw normalized inputs), so the rescue is
+weaker than it would be for a conditional-trained model. The full-scale run and
+a conditional (input_in_prob) variant would settle the magnitude. For the paper
+pivot (linear-classifier TTA/AL), this is the label-free detection signal that
+can gate *where* to spend AL/TTA effort, even if the input-IN itself is not the
+final lever.
+
+---
+
 ## Decision rule
 
 Diagnostic 5 showed the collapse is NOT input saturation (conv1 healthy); the
