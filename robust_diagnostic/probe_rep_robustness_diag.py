@@ -89,6 +89,18 @@ def feature_stream(model, parser, device, max_frames=0):
     return out
 
 
+def subsample_pairs(feats, lbls, cap=100000, seed=7):
+    """Randomly subsample (feats, lbls) to `cap` points for the heavy 10000-d
+    projection (hdc_codes). Keeps peak memory bounded: the full feature list is
+    128-d (cheap); only the projected code is subsampled to avoid the giant
+    10000-d tensor (the OOM that killed the 200-frame run)."""
+    if len(feats) <= cap:
+        return feats, lbls
+    g = torch.Generator().manual_seed(seed)
+    idx = torch.randperm(len(feats), generator=g)[:cap]
+    return feats[idx], lbls[idx]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--kitti_dir", type=str, default="/mnt/alpha/jmfleming/KITTI")
@@ -139,13 +151,14 @@ def main():
         cf = torch.cat(cf); cl = torch.cat(cl)
         clean_means = class_means_feats(cf, cl)
         clean_sep = per_class_sep(clean_means)
-        Xc = hdc_codes(cf, proj, device).float()
+        cf_s, cl_s = subsample_pairs(cf, cl, cap=100000)
+        Xc = hdc_codes(cf_s, proj, device).float()
         clean_code_var = float(torch.var(Xc).item())
         clean_rank = topk_evals(Xc, K=50, device=device)
         effrank_clean = clean_rank[0].item() / (clean_rank ** 2).sum().item() * clean_rank.sum().item()
-        print(f"  clean {dset}: {len(cf)} pts, sep={clean_sep:.3f}, "
+        print(f"  clean {dset}: {len(cf)} pts (proj on {len(cf_s)}), sep={clean_sep:.3f}, "
               f"code_var={clean_code_var:.4f}, effrank={effrank_clean:.1f} ({time.time()-t0:.0f}s)")
-        del cf, cl, Xc
+        del cf, cl, cf_s, cl_s, Xc
         torch.cuda.empty_cache()
 
         # clean BN mismatch baseline at conv_1.bn
@@ -177,11 +190,12 @@ def main():
             corr_means = class_means_feats(pf, pl)
             corr_sep = per_class_sep(corr_means)
             shift = class_shift(clean_means, corr_means)
-            Xp = hdc_codes(pf, proj, device).float()
+            pf_s, pl_s = subsample_pairs(pf, pl, cap=100000)
+            Xp = hdc_codes(pf_s, proj, device).float()
             corr_code_var = float(torch.var(Xp).item())
             corr_rank = topk_evals(Xp, K=50, device=device)
             effrank_corr = corr_rank[0].item() / (corr_rank ** 2).sum().item() * corr_rank.sum().item()
-            del pf, pl, Xp
+            del pf, pl, pf_s, pl_s, Xp
             torch.cuda.empty_cache()
 
             # corrupted BN mismatch at conv_1.bn
