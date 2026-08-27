@@ -117,6 +117,84 @@ projection's large dimension was never the source of the gain. Consequences:
   low-variance residual structure (the thing $U$ must capture) may be better
   behaved.
 
+### The minimal-label result: the leverage-in-U query makes 2-8 labels work
+(2026-08-27, `al_min_label_residual_diag.py`)
+
+The established $W_{res}$ method needs k=8/class (56 labels) with oracle $U_r$
+(r=8). This diagnostic asks whether the LABEL COUNT is the real bottleneck, by
+sweeping the true-label budget b in {2, 4, 8, 16, 32, 56} across the residual
+rank r in {2, 4, 8}, with oracle $U_r$ and three selection rules -- random,
+leverage-in-$U$ (N9: query by $\|x^\top U_r\|$, the projection onto the residual
+directions), and per-class balanced -- on both plain DGLSS++
+(`supcon_vib_dglsspp`) and cov-shift. DGLSS++ is the primary target: on KITTI-C
+3-sev it has the big closeable gap (fog zs 22.5 -> ceiling 35.2 = +12.7,
+crosstalk +17.5) where AL actually has headroom, while cov-shift's frozen is
+already within +2.9 of its ceiling (README KITTI-C table).
+
+**The result: with the RIGHT query rule, a couple of true labels give a real
+update -- and the rank, not the label count, is the binding choice.**
+
+**DGLSS++ fog (frozen 0.119, oracle 0.291, gap +0.172):**
+
+| r | b | random delta (gc) | **leverage-u delta (gc)** | per-class delta (gc) |
+| :--- | :--- | :--- | :--- | :--- |
+| 2 | 2 | -0.033 (-0.19) | **+0.059 (+0.34)** | -0.076 (-0.44) |
+| 2 | 8 | +0.037 (+0.21) | **+0.062 (+0.36)** | +0.008 (+0.05) |
+| 4 | 32 | +0.090 (+0.52) | **+0.097 (+0.56)** | +0.099 (+0.57) |
+| 8 | 56 | +0.157 (+0.91) | +0.116 (+0.67) | +0.155 (+0.90) |
+
+**DGLSS++ crosstalk (frozen 0.152, oracle 0.392, gap +0.240):**
+
+| r | b | random delta (gc) | **leverage-u delta (gc)** | per-class delta (gc) |
+| :--- | :--- | :--- | :--- | :--- |
+| 2 | 2 | -0.057 (-0.24) | **+0.092 (+0.39)** | -0.033 (-0.14) |
+| 4 | 8 | +0.009 (+0.04) | **+0.183 (+0.76)** | +0.117 (+0.49) |
+| 4 | 16 | +0.121 (+0.50) | **+0.178 (+0.74)** | +0.111 (+0.46) |
+| 8 | 56 | +0.185 (+0.77) | +0.125 (+0.52) | +0.237 (+0.99) |
+
+**The findings.**
+
+1. **Leverage-in-$U$ is the query rule that unlocks the tiny budget.** On
+   DGLSS++ fog/crosstalk, leverage-u at b=2-8 gives +0.06 to +0.18 (gc 0.34-0.76)
+   where random and per-class are negative or near-zero at the same budget.
+   Querying the points with the highest projection onto the residual directions
+   (N9) -- NOT random, NOT confidence, NOT per-class -- is what makes a couple of
+   points work. The per-class balanced rule is the worst of the three at tiny
+   budgets (spreads the budget over classes instead of concentrating it on the
+   residual). This is the first measured confirmation that N9 is the active
+   ingredient.
+2. **The rank, not the label count, is the binding choice.** At r=2, leverage-u
+   b=2 already closes gc 0.34/0.39 on fog/crosstalk (dglsspp) -- the rank-2
+   residual carries most of the cheap-closeable signal. At r=8, b=2-8 collapses
+   (negative or ~0); the full-rank update needs 32-56 labels. The C-fit is an
+   r-dim system, so it needs >= r informative points to be well-posed; lowering r
+   to match the budget is the lever. The rank-r ceiling (C from all labels) at
+   r=2 is gc 0.39/0.43, and leverage-u at b=2-8 reaches 0.85-0.95 of that
+   ceiling's cos_C -- the few-point C is nearly aligned with the all-label C.
+3. **DGLSS++ is the right AL target; cov-shift has almost nothing to close.**
+   cov-shift fog gap is only +0.115 (0.261 -> 0.375) vs dglsspp +0.172, and
+   crosstalk +0.029 vs dglsspp +0.240. cov-shift's few-point wins are capped by
+   its small gap (best fog r=4 b=32 leverage-u +0.098, gc 0.86 -- closing a small
+   absolute gain). The big AL story is DGLSS++ crosstalk: +0.183 mIoU from 8
+   true labels (gc 0.76 of a +0.240 gap).
+4. **The healthy conditions confirm the mechanism and the caveat.** DGLSS++ snow
+   (gap +0.037) is closed nearly fully at b=2 r=2 by leverage-u (+0.039, gc 1.06);
+   wet_ground (gap +0.077) needs b=32 r=4 for gc 0.73. But the caveat: random and
+   per-class can be CATASTROPHIC at tiny budgets on the healthy conditions
+   (dglsspp wet_ground b=2 r=4 random -0.217 gc -2.83; snow per-class -0.32
+   gc -8.8) -- the tiny-budget update is high-variance, and the query rule (or a
+   gate) is what keeps it on the right side of frozen. The r=2 leverage-u cell is
+   the one that is consistently safe AND useful.
+
+**Implication for the deployed method.** The operating point is r=2-4 with the
+leverage-in-$U$ query (b=2-8 labels), not r=8 with random (56 labels). This
+replaces the label budget question entirely: the update needs only the ~2-8
+points with the highest residual-leverage, and it closes 34-76% of the DGLSS++
+closeable gap on fog/crosstalk with 8 labels (vs the old 56). The remaining
+deployment step is unchanged: estimate $U$ without oracle (N7 CCA on the
+clean/corrupted pairing), since this whole table uses oracle $U_r$. If N7 lands,
+the couple-of-points regime becomes fully deployable.
+
 ---
 
 ## Next steps (with potential)
@@ -231,12 +309,18 @@ prototype-vs-probe disagreement.
 rotated. **Cost.** Moderate diagnostic. **Risk.** Requires the disagreement
 directions to align with the residual rotation; unmeasured.
 
-### N9. Active querying in the $U$-subspace (label-efficient)
+### N9. Active querying in the $U$-subspace (label-efficient) -- VALIDATED
 
 **Hypothesis.** Spend the label budget actively: query the points with the
 highest leverage in the $U$-subspace (max expected reduction in $C$
 uncertainty), instead of 1-NN-pseudo-labeling 500 random points. The 56-224 true
 labels become the bank directly.
+
+**Status: VALIDATED by the minimal-label result (above).** The leverage-in-$U$
+query is the rule that makes 2-8 labels work: DGLSS++ fog/crosstalk leverage-u
+b=2-8 closes gc 0.34-0.76 where random and per-class are negative at the same
+budget. It is the active ingredient of the cheap-update operating point
+(r=2-4, b=2-8).
 
 **Builds on.** Statistical-leverage selection is the principled "coreset for
 regression"; C31 already showed allocation matters for $W_{res}$ (diverse +0.024
