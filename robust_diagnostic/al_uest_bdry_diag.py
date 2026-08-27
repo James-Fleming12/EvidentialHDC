@@ -110,7 +110,10 @@ def cg_solve(X, T, lam, device, iters=8, x0=None):
 
 
 def ridge_fit_soft(X, Y, lam, iters, m, device):
-    X = X.to(device); torch.manual_seed(SKETCH_SEED); m = min(m, X.shape[1])
+    X = X.to(device); torch.manual_seed(SKETCH_SEED)
+    # cap the Nystrom sketch dim by the sample count so tiny provisional fits
+    # (e.g. 2-point windows) do not produce a singular Shat
+    m = min(m, X.shape[1], max(1, X.shape[0] - 1))
     P = (torch.rand(X.shape[1], m, device=device) > 0.5).float() * 2 - 1
     XP = X @ P; Yd = Y.float().to(device)
     Shat = XP.t() @ XP + lam * torch.eye(m, device=device); That = XP.t() @ Yd
@@ -150,12 +153,14 @@ def subspace_cos(U_hat, U_oracle, r):
     return float(S.mean().item())
 
 
-def rand_svd_gram(M_apply, d, r, device, oversample=5):
+def rand_svd_gram(M_apply, d, r, oversample=5):
     """Randomized SVD: top-r LEFT singulars of an implicit d x d symmetric
-    matrix M with M_apply(v) = M @ v (v is d x k). k = r + oversample."""
+    matrix M with M_apply(v) = M @ v (v is d x k). k = r + oversample.
+    Runs in float32 on CPU to bound memory (the d x k intermediates are cheap;
+    only the final k x k SVD is upcast). M_apply wraps CPU tensors (pool)."""
     k = r + oversample
     torch.manual_seed(0)
-    Om = torch.randn(d, k, device=device).double()
+    Om = torch.randn(d, k)
     Y = M_apply(Om)
     Q, _ = torch.linalg.qr(Y)
     B = Q.t() @ M_apply(Q)
@@ -187,7 +192,9 @@ def main():
     ap.add_argument("--pool_size", type=int, default=50000)
     ap.add_argument("--val_size", type=int, default=100000)
     ap.add_argument("--lam", type=float, default=1e-3)
-    ap.add_argument("--max_clean", type=int, default=200000)
+    ap.add_argument("--max_clean", type=int, default=100000,
+                    help="cap on clean points for the frozen probe fit (200k=8GB CPU; "
+                         "100k saturates the fit and halves memory)")
     ap.add_argument("--nystrom_m", type=int, default=1000)
     ap.add_argument("--cg_iters", type=int, default=8)
     ap.add_argument("--r_sweep", type=str, default="2,4")
@@ -229,6 +236,11 @@ def main():
         Xc = hdc_codes(fa[ci], proj, device).float()
         Xp = hdc_codes(pool, proj, device).float()
         Xv = hdc_codes(val, proj, device).float()
+        # free the raw 128-d feature tensors (keep the label tensors la/pl/vl and
+        # the codes Xc/Xp/Xv, which are used through the end of the condition)
+        del fa, pool, val, f, l
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         W0 = ridge_fit_soft(Xc, onehot(la[ci], NUM_CLASSES), args.lam, args.cg_iters, args.nystrom_m, device)
         Ws = ridge_fit_soft(Xp, onehot(pl, NUM_CLASSES), args.lam, args.cg_iters, args.nystrom_m, device)
@@ -269,23 +281,24 @@ def main():
 
         # bdry_outer: top-r of M = sum_i x_i (g_a - g_b)_i^T, g = W0 rows.
         # M_apply(v) = Xnb^T (Gnb @ v) where Gnb rows = W0[a_i] - W0[b_i].
-        Gnb = (W0[a_idx[nb_sorted]] - W0[b_idx[nb_sorted]]).float().cpu()   # n_b x d
+        W0_cpu = W0.detach().cpu()
+        Gnb = (W0_cpu[a_idx[nb_sorted]] - W0_cpu[b_idx[nb_sorted]]).float()   # n_b x d
         Gnb = Gnb[:len(Xnb)]
-        Xnb_d = Xnb.double(); Gnb_d = Gnb.double()
+        Xnb_f = Xnb.float(); Gnb_f = Gnb.float()
         def M_apply_outer(v):
-            return Xnb_d.t() @ (Gnb_d @ v)
+            return Xnb_f.t() @ (Gnb_f @ v)
         try:
-            Uo, _ = rand_svd_gram(M_apply_outer, Xnb.shape[1], rmax, device)
+            Uo, _ = rand_svd_gram(M_apply_outer, Xnb.shape[1], rmax)
             Uhat['bdry_outer'] = Uo
         except Exception as e:
             print(f"  [bdry_outer] failed: {e}")
 
         # bdry_margin_cov: top-r of M = sum_i x_i x_i^T / |margin_i| (near-boundary dominates)
-        w = (1.0 / (margin[nb_sorted].double() + 1e-6))
+        w = (1.0 / (margin[nb_sorted].float() + 1e-6))
         def M_apply_mcov(v):
-            return Xnb_d.t() @ (w.unsqueeze(1) * (Xnb_d @ v))
+            return Xnb_f.t() @ (w.unsqueeze(1) * (Xnb_f @ v))
         try:
-            Um, _ = rand_svd_gram(M_apply_mcov, Xnb.shape[1], rmax, device)
+            Um, _ = rand_svd_gram(M_apply_mcov, Xnb.shape[1], rmax)
             Uhat['bdry_margin_cov'] = Um
         except Exception as e:
             print(f"  [bdry_margin_cov] failed: {e}")
