@@ -195,6 +195,90 @@ deployment step is unchanged: estimate $U$ without oracle (N7 CCA on the
 clean/corrupted pairing), since this whole table uses oracle $U_r$. If N7 lands,
 the couple-of-points regime becomes fully deployable.
 
+### The U-estimation diagnostic: label-free U is ORTHOGONAL to the residual; only a
+few-label sub-fit captures it, and even that does not close the gap
+(2026-08-27, `al_uest_diag.py`)
+
+The minimal-label result showed 2-8 leverage-in-$U$ labels close 34-76% of the
+DGLSS++ gap -- but it used ORACLE $U_r$. This diagnostic estimates $U$ with and
+without labels, and evaluates the full chains for the two stated goals: GOAL A
+(label-free TTA that meaningfully improves fog/crosstalk) and GOAL B (few-label
+AL that approaches the ceiling). Runs on DGLSS++ (primary) and cov-shift.
+$U$-estimators: `oracle` (ref), `softshift` / `poolcov` / `ccameans` (label-free),
+`subfit_b` / `shiftsub_b` (b labels). Reports per-direction alignment, residual
+capture, a construction-vs-estimation decomposition, and the pseudo-vs-true
+projected signal that drives $C$.
+
+**Alignment and residual capture (DGLSS++, per condition; oracle captures ~1.0):**
+
+| cond | softshift | poolcov | ccameans | shiftsub_b8 | subfit_b8 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog align r8 / resid_cap r8 | 0.05 / 0.05 | 0.02 / 0.03 | 0.05 / 0.05 | 0.03 / 0.03 | **0.53 / 0.53** |
+| crosstalk align r8 / resid_cap r8 | 0.04 / 0.04 | 0.02 / 0.02 | -- | 0.03 / 0.04 | **0.38 / 0.37** |
+| snow align r8 / resid_cap r8 | 0.03 / 0.03 | 0.02 / 0.03 | 0.02 / 0.02 | 0.03 / 0.03 | **0.34 / 0.53** |
+| wet_ground align r8 / resid_cap r8 | 0.03 / 0.03 | 0.03 / 0.03 | -- | 0.02 / 0.03 | **0.23 / 0.36** |
+
+**Finding 1 -- NO label-free U estimator recovers the residual subspace.** All
+three label-free constructions (soft-shift of class means, pool covariance
+eigenvectors, class-mean CCA) land at cos(U, U_oracle) = 0.01-0.07 and capture
+only 0.02-0.08 of the oracle residual's norm, on every condition and extractor.
+The label-free U is essentially ORTHOGONAL to the residual -- the update it
+defines moves W in directions the true residual does not occupy. This is not a
+weak-update failure; the C fit has nothing correct to act on (the leverage-in-U
+query under a wrong U selects the wrong points, and the C projection is on a
+basis that misses R).
+
+**Finding 2 -- the construction is wrong, NOT the soft estimation.** The
+construction diagnostic splits the shift-family failure: `true_shift_vs_oracle`
+(shift->U built from TRUE corrupted means) is 0.01-0.12 -- even with perfect
+means, the shifted-class-mean construction does not span the oracle residual.
+But `est_shift_vs_true_shift` (soft-estimated shift vs true shift) is
+0.50-0.99, and `soft_mean_vs_true_mean` is 0.5-0.9 on fog/crosstalk: the soft
+means are fine, the shift->U construction is the wrong object. The residual
+$R = W^* - W_0$ is not a function of the class-mean shift; it lives in the
+decision-rule geometry (Iteration 12's spectral-overlap finding, now with the
+specific negative). Adding a different label-free construction (per-point
+covariance of the residual, higher-order statistics) is unlikely to fix this:
+the residual is not in any first-order shift statistic.
+
+**Finding 3 -- subfit (SVD of W_sub - W0) is the ONLY U that captures real
+residual, but it needs labels and still does not close the gap.** Fitting W_sub
+on b leverage-selected points and taking the SVD of (W_sub - W0) captures 0.36-0.53
+of the residual at r=8 (b=8), the only estimator to beat 0.1. But its AL chain
+reaches only gc 0.03-0.09 on fog/crosstalk (best dglsspp crosstalk r2_b32 +0.020,
+gc 0.09) -- FAR below the oracle-U reference (+0.183, gc 0.76). The subfit U is
+a partial residual but the few-point C fit in it still under-closes; the oracle-U
+leverage query is what made 2-8 labels work, and a wrong-U leverage query
+(selection under softshift leverage) selects the wrong points.
+
+**Finding 4 -- GOAL A (label-free TTA) is closed by U, not by C.** The TTA chain
+(label-free U + pseudo-label C) is ~0 or negative on every cell: best label-free
+TTA on fog/crosstalk is +0.011 (poolcov fog) with gc 0.06; most are negative.
+The projected-signal diagnostic shows the label source is a co-factor: under the
+oracle U the pseudo-vs-true residual signal cos is -0.54 (fog) to +0.32 -- the
+pseudo labels do NOT align with the true signal even in the RIGHT subspace, so
+the low-rank constraint does NOT rescue label-free supervision. The U being
+orthogonal (Finding 1) compounds it. Both the label source AND the U construction
+are wrong for label-free TTA; the Iterations 9-12 closure (pseudo labels are
+structurally poisoned) survives the low-rank reformulation.
+
+**Finding 5 -- cov-shift's few-label AL is similarly capped.** cov-shift's best
+few-label AL (subfit_b32 wet_ground r2_b8 +0.031, gc 0.17) is the largest few-label
+gain anywhere, but its fog/crosstalk gaps are small (+0.115/+0.030) so the absolute
+wins are tiny. The near-ceiling goal is not met on either extractor.
+
+**Verdict.** The minimal-label result stands (oracle U + 2-8 leverage labels close
+34-76% of the gap), but the deployment path through U estimation is NOT available
+by the constructions tried: (1) label-free U is orthogonal to the residual, and
+(2) the only label-consuming U (subfit) still under-closes because the C fit and
+the leverage query both need the true U. The next useful direction is not another
+U estimator but either (a) using the subfit-U as a coarse prior and refining C in
+a higher-rank space, or (b) accepting that the couple-of-points regime requires
+oracle-quality U and targeting the subfit route with MORE labels (b=100-1000)
+where W_sub approaches W*, which is the C30/C31 bank setting restated. The
+diagnostic also settles N7 (CCA): class-mean CCA does not recover U on this
+problem.
+
 ---
 
 ## Next steps (with potential)
@@ -278,7 +362,7 @@ code-10000, at prototype-class throughput; the dual form collapsed at 10000 only
 **Risk.** The projection change interacts with $U$ estimation (N7/N8) -- must be
 tested jointly, not in isolation.
 
-### N7. CCA between clean and corrupted code distributions ($U$ estimation)
+### N7. CCA between clean and corrupted code distributions ($U$ estimation) -- TESTED, CLOSED
 
 **Hypothesis.** The residual $W^* - W_0$ spans the directions where the clean and
 corrupted class-conditional code structure disagrees. Canonical correlation
@@ -286,14 +370,22 @@ analysis on paired clean/corrupted scans (seq-08 clean vs each KITTI-C variant)
 gives those directions directly -- and unlike everything tried (pool-cov SVD,
 $S^{-1}T$, $U_{shift}$), it uses BOTH sides of the shift, which we uniquely have.
 
+**Status: TESTED, CLOSED by the U-estimation diagnostic (above).** The class-mean
+CCA construction (`ccameans`, PCA-whitened CCA between the clean class-mean
+matrix and the soft corrupted matrix) lands at cos(U, U_oracle) = 0.01-0.05 and
+captures 0.02-0.05 of the residual -- the same orthogonal failure as every other
+label-free U. The construction-vs-estimation split shows WHY: even a shift->U
+built from TRUE corrupted means (`true_shift_vs_oracle`) is 0.01-0.12, so the
+residual is not a function of the class-mean shift in any first-order statistic,
+CCA included. The C22 hint was right: the residual is in directions that are not
+the top canonical modes either.
+
 **Builds on.** C21/C22/C25/C26 all used unlabeled statistics of the corrupted
 pool alone; none used the clean/corrupted pair. The clean/corrupted pairing is
 exact for KITTI-C (per-frame corruptions of seq-08). **Cost.** New diagnostic
 (PCA/CCA on clean-vs-corrupted per-class means or code covariance); moderate.
-**Risk.** If the residual is in directions that are NOT canonical-correlation
-modes (the C22 negative result hints the residual is in low-variance directions
-that may not be the top-CCA modes either), this closes quickly -- but it is the
-first U idea that uses the pairing, so it is the highest-value untried bet.
+**Risk.** Realized: the residual is in directions that are NOT canonical-correlation
+modes, exactly the C22-predicted closure.
 
 ### N8. Confusion-plane $U$ (label-free, from stream agreement)
 
