@@ -490,7 +490,8 @@ class GenTrainer(Trainer):
         x = in_vol.clone()
         valid = (x[:, 0:1, :, :] > 0).float()                 # (B,1,H,W)
         b, c, h, w = x.shape
-        geo_labels = torch.ones(b, 1, h, w, device=x.device)   # real = 1
+        geo_labels = torch.ones(b, 1, h, w, device=x.device)   # real inlier = 1
+        geo_labels[valid <= 0] = -1.0                          # empty = ignored
         if p <= 0:
             return x, geo_labels
         # select a random subset of valid pixels to displace
@@ -950,9 +951,6 @@ class GenTrainer(Trainer):
                     else:
                         output, z8, x4 = model(in_vol, return_stage4=True)
                         output_aug, z8_aug, x4_aug = model(in_vol_aug, return_stage4=True)
-                elif self.ARCH["train"]["aux_loss"] and self.method in GEOID_METHODS:
-                    output, aux_list, z8, geoid_logits = model(in_vol)
-                    output_aug, aux_list_aug, z8_aug, geoid_logits_aug = model(in_vol_aug)
                 elif self.ARCH["train"]["aux_loss"]:
                     output, aux_list, z8 = model(in_vol)
                     output_aug, aux_list_aug, z8_aug = model(in_vol_aug)
@@ -1415,10 +1413,13 @@ class GenTrainer(Trainer):
             # GeoID inlier-discrimination loss (port of exp_geoid.py): BCE between
             # the GeoID head's per-pixel inlier logit on the AUGMENTED view and the
             # real-vs-synthetic label (real=1, displaced=0). The synthetic points
-            # were injected in get_augmented_view (self._geo_labels). Weight lambda
-            # matches GeoID's unweighted sum (loss = seg + cls); here geo_w scales it.
+            # were injected in get_augmented_view (self._geo_labels); the head logits
+            # are stashed on the model during forward (self._geoid_logits). Weight
+            # lambda matches GeoID's unweighted sum (loss = seg + cls); geo_w scales it.
             if self.method in GEOID_METHODS:
                 geo_lbl = getattr(self, '_geo_labels', None)
+                geoid_logits_aug = getattr(model.module if hasattr(model, 'module') else model,
+                                           '_geoid_logits', None)
                 if geo_lbl is not None and geoid_logits_aug is not None:
                     lbl = geo_lbl.to(geoid_logits_aug.device)
                     # BCE over valid points (masked where range==0: no point, no label)

@@ -232,6 +232,7 @@ class ResNet_34(nn.Module):
         # the synthetic points are injected by GenTrainer's get_augmented_view for
         # the geo_inlier methods. Enabled via input_in-like flag (geoid_head).
         self.geoid_head = None
+        self._geoid_logits = None
         if geoid_head:
             self.geoid_head = nn.Conv2d(inv_dim, 1, 1)
 
@@ -355,17 +356,19 @@ class ResNet_34(nn.Module):
         logits = self.semantic_output(out)
         pred = F.softmax(logits, dim=1)
 
+        # GeoID: stash the inlier logits on the model (read by the trainer after the
+        # forward) WITHOUT changing the return arity -- every existing caller unpacks
+        # (pred, [aux], out). This avoids breaking ~30 probe files that assume the
+        # 3-tuple.
+        if self.geoid_head is not None:
+            self._geoid_logits = self.geoid_head(out)
+        elif hasattr(self, '_geoid_logits'):
+            self._geoid_logits = None
+
         if self.aux:
             aux2 = F.softmax(self.aux_head1(res_2), dim=1)
             aux3 = F.softmax(self.aux_head2(res_3), dim=1)
             aux4 = F.softmax(self.aux_head3(res_4), dim=1)
-            if self.geoid_head is not None:
-                geoid_logits = self.geoid_head(out)
-                if return_stage4:
-                    return pred, [aux2, aux3, aux4], out, x_4, geoid_logits
-                if return_enc:
-                    return pred, [aux2, aux3, aux4], out, feat_map, geoid_logits
-                return pred, [aux2, aux3, aux4], out, geoid_logits
             if return_stage4:
                 return pred, [aux2, aux3, aux4], out, x_4
             if return_enc:
