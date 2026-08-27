@@ -38,6 +38,7 @@ DRY_RUN="${DRY_RUN:-0}"
 SMOKE="${SMOKE:-0}"
 INCLUDE_COV="${INCLUDE_COV:-0}"
 CONDS="${CONDS:-fog,crosstalk,snow,wet_ground}"
+EXTRACTORS_OVERRIDE="${EXTRACTORS_OVERRIDE:-}"
 SM_FRAMES="${SM_FRAMES:-10}"
 echo "Label-free closure on other extractors | GPU $GPU | DRY_RUN=$DRY_RUN SMOKE=$SMOKE INCLUDE_COV=$INCLUDE_COV"
 echo "  conds=$CONDS"
@@ -53,6 +54,9 @@ COV="covshift_ep10|supcon_vib_dglsspp_inputin_in_chan|robust_diagnostic/logs/ep1
 EXTRACTORS="$HYPER,$GEOID"
 if [ "$INCLUDE_COV" = "1" ]; then
   EXTRACTORS="$EXTRACTORS,$COV"
+fi
+if [ -n "$EXTRACTORS_OVERRIDE" ]; then
+  EXTRACTORS="$EXTRACTORS_OVERRIDE"
 fi
 
 # extra args for SMOKE (tiny frames/pool so each run is seconds)
