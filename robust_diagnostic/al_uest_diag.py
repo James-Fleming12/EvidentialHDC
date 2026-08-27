@@ -266,11 +266,12 @@ def main():
         # oracle (reference)
         Uhat['oracle'] = U_oracle
 
-        # softshift (label-free): corrupted soft means - clean means, via geometry
-        M_shift = torch.zeros(NUM_CLASSES, Xp.shape[1])
+        # softshift (label-free): corrupted soft means - clean means, via geometry.
+        # M_shift is d x C (the RHS T of (S+lI)W = T): col c = (soft_mean_c - clean_mean_c).
+        M_shift = torch.zeros(Xp.shape[1], NUM_CLASSES)
         for i, c in enumerate(classes):
             if c in clean_means:
-                M_shift[c] = sm_means[i] - clean_means[c]
+                M_shift[:, c] = sm_means[i] - clean_means[c]
         R_soft = cg_solve(Xp, M_shift, args.lam, device, args.cg_iters)   # (S+lI)^-1 shift
         Uhat['softshift'], _ = topk_svd(R_soft.detach().cpu(), max(r_sweep))
 
@@ -311,11 +312,11 @@ def main():
             W_sub = ridge_fit_soft(Xp[sel], onehot(pl[sel], NUM_CLASSES), args.lam, args.cg_iters, args.nystrom_m, device)
             Uhat[f'subfit_b{b}'], _ = topk_svd((W_sub - W0).detach().cpu(), max(r_sweep))
             # shiftsub: corrupted class means from the labeled subset
-            M_sub = torch.zeros(NUM_CLASSES, Xp.shape[1])
+            M_sub = torch.zeros(Xp.shape[1], NUM_CLASSES)
             for c in classes:
                 m = (pl[sel] == c)
                 if int(m.sum().item()) > 0 and c in clean_means:
-                    M_sub[c] = Xp[sel][m].mean(dim=0) - clean_means[c]
+                    M_sub[:, c] = Xp[sel][m].mean(dim=0) - clean_means[c]
             R_sub = cg_solve(Xp, M_sub, args.lam, device, args.cg_iters)
             Uhat[f'shiftsub_b{b}'], _ = topk_svd(R_sub.detach().cpu(), max(r_sweep))
 
@@ -401,10 +402,10 @@ def main():
         # Does the CONSTRUCTION (shift -> U) recover the residual at all, given TRUE means?
         # Build the true-shift U (oracle shift directions) as the "what it would have needed"
         # upper bound for the shift family, then compare est-shift-U vs true-shift-U vs oracle-U.
-        M_true_shift = torch.zeros(NUM_CLASSES, Xp.shape[1])
+        M_true_shift = torch.zeros(Xp.shape[1], NUM_CLASSES)
         for c in classes:
             if c in clean_means and c in true_means:
-                M_true_shift[c] = true_means[c] - clean_means[c]
+                M_true_shift[:, c] = true_means[c] - clean_means[c]
         R_true_shift = cg_solve(Xp, M_true_shift, args.lam, device, args.cg_iters)
         U_true_shift, _ = topk_svd(R_true_shift.detach().cpu(), max(r_sweep))
         est['softshift']['construction_diag'] = {
