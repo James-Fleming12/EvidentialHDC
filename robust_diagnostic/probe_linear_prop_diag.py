@@ -179,7 +179,13 @@ def main():
         arch = _copy.deepcopy(ARCH)
         trainer = GenTrainer(arch, DATA, args.kitti_dir, path, path=path, method=method)
         model = trainer.model
-        dset = 'kitti' if lab.endswith('_kitti') else 'nusc'
+        # dataset keyed by a "_kitti"/"_nusc" label suffix; default to KITTI so a
+        # bare label (e.g. "geoid") is NOT silently treated as NuScenes (a cross-
+        # domain clean/W0 mismatch that produced bogus class_shift/frozen/ceiling).
+        if lab.endswith('_nusc'):
+            dset = 'nusc'
+        else:
+            dset = 'kitti'
         clean_parser = (build_parser(args.kitti_dir, DATA, ARCH)
                         if dset == 'kitti'
                         else build_nuscenes_parser(args.nusc_dir, nusc_data, ARCH))

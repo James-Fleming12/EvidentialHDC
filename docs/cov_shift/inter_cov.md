@@ -675,10 +675,56 @@ shift." Diagnostic 11 says class_shift is the lever, and Diagnostic 12 shows the
 previous attempt never actually pulled it (shift unchanged). A re-do must use a
 **much stronger displacement** than volumetric empty-space injection at density
 0.05: e.g. GeoID-style on-manifold displacement of valid points (the
-`supcon_vib_geoid` port), or an explicit clean→corrupted class-shift penalty in
-the loss, trained to actually reduce the measured shift. This directly
-motivates the `run_train_geoid.sh` port (GeoID's inlier-discrimination loss)
-currently running.
+ `supcon_vib_geoid` port), or an explicit clean→corrupted class-shift penalty in
+ the loss, trained to actually reduce the measured shift. This directly
+ motivates the `run_train_geoid.sh` port (GeoID's inlier-discrimination loss)
+ currently running.
+
+### Diagnostic 13 (DONE): GeoID-loss port result -- NO performance win, and a probe-bug correction (`run_train_geoid.sh`, `probe_code_shift.json`)
+
+**What was tested.** GeoID's feature-extractor loss (`supcon_vib_geoid`: seg CE +
+BCE inlier-discrimination on synthetic displaced points, ported to our SENet)
+trained 21 ep on KITTI, then evaluated in our R4 setup.
+
+**CRITICAL probe-bug correction.** The first evaluation (`probe_geoid.json`)
+used `probe_linear_prop_diag.py`, which keyed the dataset on a `_kitti` label
+suffix (`lab.endswith('_kitti')`); the bare `geoid` label was silently treated as
+NuScenes, fitting the clean W0 on nuScenes-clean (32-beam) and evaluating on
+KITTI-C (64-beam) -- a cross-domain mismatch. That produced the bogus
+`raw_shift=0.907/0.921` (the "GeoID matched cov's invariance" claim). The
+correct numbers come from `probe_code_shift_diag.py` (which hardcodes KITTI for
+all extractors) and the recheck. The probe was fixed to default bare labels to
+KITTI.
+
+**Correct result (KITTI-C fog/crosstalk, `probe_code_shift.json`, 200 frames):**
+
+| extractor | fog raw_shift | fog frozen | fog ceiling | crosstalk raw_shift | crosstalk frozen | crosstalk ceiling |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| hyper | 0.199 | 0.110 | 0.490 | 0.247 | 0.124 | 0.542 |
+| cov | 0.929 | 0.352 | 0.637 | 0.980 | 0.579 | 0.698 |
+| **geoid** | **0.153** | **0.084** | **0.421** | **0.160** | **0.109** | **0.455** |
+
+**Findings.**
+
+1. **GeoID's loss did NOT reduce class_shift** (raw_shift 0.153/0.160 -- LOW, like
+   hyper/dgl 0.199/0.247, far below cov 0.929/0.980). The earlier claim that GeoID
+   "matched cov's invariance" was the probe bug; it does not. The inlier-
+   discrimination loss made the features no more stable than plain training.
+2. **No zero-shot or ceiling win** (frozen 0.084/0.109 and ceiling 0.421/0.455 --
+   both below hyper/dgl/cov on most cells). GeoID's loss does not beat our
+   extractors in the R4 setup.
+3. **cov-shift remains the only extractor that achieves low code/raw shift AND
+   high zero-shot/ceiling** on fog/crosstalk. Its input-IN is the load-bearing
+   mechanism; neither the additive noise-injection (D12) nor GeoID's inlier loss
+   (D13) reproduces it.
+
+**Implication.** Two candidate "feature-stability" losses (additive volumetric
+noise, GeoID inlier discrimination) both fail to reproduce cov-shift's fog/
+crosstalk behavior on our backbone. The distinguishing feature of cov-shift is
+its **input normalization (channels {0,4}) applied at train AND eval**, which
+restructures how the code sits relative to W0 -- not merely making features
+"stable." This points to input-IN (or a loss that induces equivalent input-
+invariance) as the concrete lever, not generic noise-invariance.
 
 ---
 
