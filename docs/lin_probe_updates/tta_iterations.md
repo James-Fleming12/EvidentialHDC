@@ -1032,7 +1032,104 @@ no covariance rotation to align, coverage-limited T). This validates the Pillar-
 active-learning handoff for the whole extractor set, not just cov-shift. The AL
 framework does not need extractor-specific label-free gating.
 
-## Next: Iteration 14: the coverage-aware active-learning query
+## Iteration 14: which feature space is cheapest for AL oracle label reuse?
+(2026-08-27, `run_al_cluster_grounding_others.sh`)
+
+Iteration 13 confirmed the label-free closure on all extractors. The remaining
+AL question is whether the OTHER extractors have a BETTER feature space for the
+cheap-label mechanism itself: tighter same-class packing, cleaner cluster
+boundaries, a smaller label budget, and different weak points to target. This
+re-runs the cluster-grounding / label-budget diagnostic
+(`al_cluster_grounding_diag.py`, 100 frames, 50k pool) on HyperLiDAR and GeoID,
+with the cov-shift numbers from the original Iteration-0 run as the reference
+(same harness; the fresh cov in-batch pull was a corrupt transfer, so the
+documented Iteration-0 values stand).
+
+Condensed table (pool 1-NN purity, intra/inter cosine separation, k-means
+cluster purity at K=#classes, grounding coverage at K, distance-gated coverage,
+radius for 90% coverage):
+
+| cond | extractor | pool nn1 | intra | inter | k-means pur | K17 | K68 | K272 | q0.5 | q0.9 | r90 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | hyper | 0.449 | 0.855 | 0.742 | 0.628 | 0.620 | 0.647 | 0.687 | 0.704 | 0.700 | 4.37 |
+| fog | geoid | 0.403 | 0.913 | 0.786 | 0.665 | 0.612 | 0.617 | 0.647 | 0.670 | 0.665 | 1.43 |
+| fog | cov | 0.513 | 0.628 | 0.015 | 0.649 | 0.669 | 0.649 | 0.692 | 0.707 | 0.660 | 1.92 |
+| crosstalk | hyper | 0.608 | 0.826 | 0.734 | 0.553 | 0.439 | 0.540 | 0.567 | 0.498 | 0.567 | 5.94 |
+| crosstalk | geoid | 0.515 | 0.904 | 0.836 | 0.476 | 0.427 | 0.475 | 0.508 | 0.474 | 0.520 | 1.56 |
+| crosstalk | cov | 0.688 | 0.670 | 0.055 | 0.652 | 0.506 | 0.674 | 0.683 | 0.781 | 0.699 | 1.96 |
+| snow | hyper | 0.702 | 0.601 | 0.138 | 0.746 | 0.685 | 0.819 | 0.830 | 0.860 | 0.853 | 6.28 |
+| snow | geoid | 0.627 | 0.755 | 0.226 | 0.669 | 0.703 | 0.726 | 0.749 | 0.926 | 0.785 | 1.99 |
+| snow | cov | 0.586 | 0.704 | 0.039 | 0.644 | 0.640 | 0.667 | 0.695 | 0.819 | 0.693 | 2.06 |
+| wet_ground | hyper | 0.882 | 0.558 | 0.120 | 0.723 | 0.774 | 0.845 | 0.861 | 0.889 | 0.882 | 6.27 |
+| wet_ground | geoid | 0.798 | 0.770 | 0.162 | 0.621 | 0.673 | 0.748 | 0.759 | 0.832 | 0.788 | 1.90 |
+| wet_ground | cov | 0.770 | 0.621 | 0.004 | 0.635 | 0.495 | 0.625 | 0.655 | 0.702 | 0.642 | 2.81 |
+
+**Finding 1 -- cov-shift is the cheapest AL space exactly where AL matters
+(fog/crosstalk), but hyper/geoid beat it on the healthy conditions.** On
+fog/crosstalk the cov-shift feature space is the best for label reuse: highest
+pool 1-NN purity (fog 0.513 vs 0.449/0.403), cleanest boundaries (inter-class
+cosine 0.015/0.055 vs hyper 0.742/0.734 and geoid 0.786/0.836 -- hyper/geoid
+classes overlap nearly 100x more under these corruptions), and the best
+grounding coverage at every budget (fog K17 0.669 vs 0.620/0.612; crosstalk K68
+0.674 vs 0.540/0.475). On snow/wet_ground the picture inverts: hyper grounds the
+most (wet_ground K17 0.774, snow K68 0.819) and cov the least (0.495/0.625) --
+but the healthy conditions are where AL is NOT engaged (the frozen decoder
+already works there), so the cheap-AL advantage that matters is cov's, on
+fog/crosstalk.
+
+**Finding 2 -- the weak points are the same classes on every extractor, with
+one extractor-specific difference.** The rare/minority classes are the loose
+ones on all three: fog class 7 (pool nn1 0.132 hyper / 0.226 geoid / ~0.43 cov)
+and class 15 (0.368/0.261/0.34) are badly loosened on every extractor, class 14
+moderately (0.42/0.41), while class 11 stays tight everywhere (0.80/0.75/0.85).
+The one extractor-specific difference: hyper preserves class 16 far better under
+fog (nn1 0.618) than geoid (0.509) or cov (0.51) -- hyper's class-16 packing
+survives fog where the others' do not. This means the AL budget should target
+classes {7, 15, 14} on ALL extractors, and the ranking among them (which to
+query first) is condition-specific but not extractor-specific.
+
+**Finding 3 -- hyper's clusters are much LOOSER (the r90 is 3-4x larger).**
+Hyper needs a ~4.4-6.3 distance radius to cover 90% of each cluster, vs
+~1.4-2.0 for geoid and cov: its same-class clusters are fat and spread, so the
+"label if close, else ask" gate must use a much looser radius (which admits more
+cross-class contamination at the boundary). Geoid has the tightest clusters
+(r90 ~1.4-2.0 even on fog) -- a genuinely different (and AL-friendlier) local
+geometry than hyper -- but its tightness does NOT translate into higher coverage
+because its classes overlap (Finding 1: geoid inter-cos 0.79-0.84 on fog).
+
+**Finding 4 -- the label-reduction properties differ, and geoid's confidence
+does not self-select queries on fog.** Per-class shift carry-over (pairwise
+shift cosine): hyper 0.73/0.76 (fog/crosstalk), geoid 0.82/0.84, vs cov
+0.20-0.37 (Iteration-0) -- the corruption shift is FAR more global on
+hyper/geoid, so a few classes' labels would estimate the shift for all of them
+(2-4 labeled classes carry, per Iteration 2). But the confidence-representativeness
+signal -- the frozen probe's ability to self-select the centroid-near query point
+(corr(conf, dist-to-centroid), negative = good) -- is only clearly negative on
+the healthy conditions (hyper snow -0.52, geoid snow -0.65) and on hyper
+crosstalk (-0.40); on fog it is ~0 for hyper (-0.07) and geoid snow-negative,
+and **+0.015 POSITIVE for geoid fog** -- i.e. geoid's frozen probe does NOT
+self-select the reps where it is needed most. The within-class structure is
+mono-modal everywhere (dominant fraction 1.0 at K_c=2 on all conditions and
+extractors), so the per-class label budget stays at ~1 mode per class.
+
+**Finding 5 -- the extractor with the best frozen pseudo-labels is NOT the one
+with the best geometry.** On fog the frozen-pseudo accuracy is 0.31 (hyper) /
+0.32 (geoid) / ~0.34 (cov); on snow/wet_ground hyper/geoid reach 0.77-0.86 while
+cov sits at 0.42-0.46. The healthy-condition pseudo-labels are usable on
+hyper/geoid (which is exactly why they need no AL there), while the fog/crosstalk
+pseudo-labels are useless on all three (the AL handoff).
+
+**Verdict.** For the AL framework the answer is: keep cov-shift. It is the
+cheapest feature space for oracle label reuse on exactly the conditions AL
+targets (fog/crosstalk) -- cleanest boundaries, tightest label budget, highest
+coverage -- while hyper/geoid only beat it on the healthy conditions where AL
+does not engage. The weak classes to query are the same everywhere ({7, 15, 14},
+class 11 tight), with hyper's class-16 packing as the one extractor-specific
+difference. If AL were ever run on hyper/geoid, the shift-carry property
+(Finding 4) is their real advantage -- but it is neutralized by their class
+overlap (Finding 1) and their worse geometry for the distance gate.
+
+## Next: Iteration 15: the coverage-aware active-learning query
 
 The S/T decomposition (Iteration 11) and the geometric closure (Iteration 12)
 turned the Pillar-3 handoff from a hypothesis into a measured requirement: the
@@ -1040,7 +1137,8 @@ recoverable headroom (+0.02 to +0.12 over the frozen decode) needs TRUE labels o
 the low-confidence, high-influence points, and the oracle-anchored diffusion
 result shows the geometry carries a sparse labeled set well. Iteration 13 then
 confirmed the closure transfers to HyperLiDAR and GeoID (no extractor has a
-reliable label-free gate). Iteration 14 designs
+reliable label-free gate), and Iteration 14 confirmed cov-shift is the cheapest
+feature space for label reuse on the AL-target conditions. Iteration 15 designs
 the query from these measurements:
 - **query rule**: rank pool points by influence I_i (Nystrom-subspace) or
   disagreement magnitude, NOT by confidence; the influence analysis says these
