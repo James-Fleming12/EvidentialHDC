@@ -70,7 +70,8 @@ def w0_align_cos(corr_code_means, W0, num_classes=NUM_CLASSES):
     sims = []
     for c in range(1, num_classes):
         if corr_code_means[c].norm() > 0:
-            sims.append(F.cosine_similarity(corr_code_means[c], W0[:, c], dim=0).item())
+            sims.append(F.cosine_similarity(corr_code_means[c].to(W0.device),
+                                            W0[:, c], dim=0).item())
     return float(np.mean(sims)) if sims else float('nan')
 
 
