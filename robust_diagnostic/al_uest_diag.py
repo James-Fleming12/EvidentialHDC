@@ -385,7 +385,7 @@ def main():
                                           uh.flatten(), uo.flatten(), dim=0).item())}
             # how much of the ORACLE residual R does this U actually capture?
             for r in r_sweep:
-                ur = Uh[:, :r]
+                ur = Uh[:, :r].double()
                 cap = (ur.t() @ R.double()).norm().item() / (R.double().norm().item() + 1e-12)
                 e['residual_capture'][str(r)] = float(cap)
             # GOAL A: TTA chain -- C from frozen PSEUDO-labels in the U-subspace
