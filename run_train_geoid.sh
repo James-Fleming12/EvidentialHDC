@@ -54,8 +54,8 @@ run_phase() {
   fi
   local logf="logs/geoid_${name}.log"
   if [ "$SMOKE" = "1" ]; then
-    echo "  [SMOKE] executing..."
-    if eval "$env_pre $*" > "$logf" 2>&1; then
+    echo "  [SMOKE] executing (streaming to terminal + $logf)..."
+    if eval "$env_pre $*" 2>&1 | tee "$logf"; then
       echo "  [SMOKE] $name OK"
     else
       echo "  [SMOKE] $name FAILED -- tail of $logf:"
@@ -63,9 +63,9 @@ run_phase() {
       return 1
     fi
   else
-    echo "  [RUN] full phase, logging to $logf"
-    eval "unset MAX_FRAMES CONDS; $env_pre $*" > "$logf" 2>&1
-    local c=$?
+    echo "  [RUN] full phase, streaming to terminal + $logf"
+    eval "unset MAX_FRAMES CONDS; $env_pre $*" 2>&1 | tee "$logf"
+    local c=${PIPESTATUS[0]}
     echo "  [$name] exit=$c"
     if [ $c -ne 0 ]; then
       echo "  WARNING: $name failed, tail of $logf:"

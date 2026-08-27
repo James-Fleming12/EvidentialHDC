@@ -1429,6 +1429,10 @@ class GenTrainer(Trainer):
                             geoid_logits_aug[valid_pts],
                             lbl[valid_pts].float(), reduction='mean')
                         loss_total = loss_total + self.geo_w * bce
+                        if i % 500 == 0:
+                            print(f"  [geoid] step {i} bce={bce.item():.4f} "
+                                  f"n_valid={int(valid_pts.sum().item())} "
+                                  f"n_outlier={int((lbl == 0).sum().item())}", flush=True)
 
             optimizer.zero_grad()
             scaler.scale(loss_total).backward()
