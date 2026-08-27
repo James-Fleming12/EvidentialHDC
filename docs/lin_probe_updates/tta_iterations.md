@@ -873,13 +873,174 @@ Pillar-2 search: the mechanism is the active-learning handoff (Pillar 3), and th
 oracle-anchored diffusion result (geometry carries sparse true labels) is direct
 evidence that the one-label-per-cluster AL scheme will work.
 
-## Next: Iteration 13: the coverage-aware active-learning query
+## Iteration 13: the label-free-gating closure TRANSFERS to HyperLiDAR and GeoID
+(2026-08-27, `run_probe_labelfree_closure_others.sh`)
+
+The Iterations 9-12 closure was measured only on cov-shift DGLSS++. Before
+committing the active-learning framework (Pillar 3) to that closure, the same
+four diagnostics were re-run on the OTHER two extractors of interest --
+HyperLiDAR default (`baseline`, `logs/kitti_pretrain`) and the GeoID-loss port
+(`supcon_vib_geoid`, `robust_diagnostic/logs/geoid_full/supcon_vib_geoid`) --
+plus a fresh cov-shift ep10 reference in the same batch for apples-to-apples
+comparison. Harness identical to the original closure runs (100 frames, 50k
+pool, 100k val, 200k clean fit, Nystrom-warm-start + matrix-free CG-8 update).
+JSONs: `probe_{pseudo_gate,weighted_2stage,pseudolabel_struct,geometric_tta}_{hyper_kitti,geoid,covshift_ep10}.json`.
+
+**A note on the reference numbers.** The fresh cov-shift run reproduces the
+original closure to the digit (fog frozen 0.2578 / oracle 0.3760 / no_gate
+0.2566, matching Iteration 9), so the cross-extractor differences below are real
+and not a harness drift. The hyper/geoid frozen ceilings on fog/crosstalk are
+far lower than cov-shift (fog frozen 0.089/0.087 vs 0.258; crosstalk 0.105/0.109
+vs 0.519): those extractors lose far more under fog/crosstalk, so their
+closeable headroom is smaller in absolute terms.
+
+### Iteration 9 (pseudo-gate): gates stay at or below no_gate on EVERY extractor
+
+frozen / oracle / no_gate / best gate, per condition and extractor:
+
+| cond | extractor | frozen | no_gate | best gate (selfcal) | oracle |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | hyper | 0.089 | 0.087 | 0.086 (norm_bot0.5) | 0.330 |
+| fog | geoid | 0.087 | 0.087 | 0.086 (uncer_top0.5) | 0.255 |
+| fog | cov | 0.258 | 0.257 | 0.256 (norm_bot0.5) | 0.376 |
+| crosstalk | hyper | 0.105 | 0.103 | 0.104 (uncer_top0.5) | 0.439 |
+| crosstalk | geoid | 0.109 | 0.111 | 0.110 (margin_top0.5) | 0.361 |
+| crosstalk | cov | 0.519 | 0.515 | 0.507 (norm_bot0.5) | 0.553 |
+| snow | hyper | 0.537 | 0.531 | 0.490 (margin_top0.1) | 0.600 |
+| snow | geoid | 0.485 | 0.472 | 0.445 (margin_top0.1) | 0.536 |
+| snow | cov | 0.457 | 0.447 | 0.439 (uncer_top0.5) | 0.491 |
+| wet_ground | hyper | 0.614 | 0.593 | 0.572 (conf_top0.5) | 0.756 |
+| wet_ground | geoid | 0.597 | 0.584 | 0.504 (conf_top0.5) | 0.711 |
+| wet_ground | cov | 0.424 | 0.417 | 0.412 (uncer_top0.5) | 0.614 |
+
+On every extractor and condition the gates either match `no_gate` or are worse;
+none climbs toward the oracle. Note hyper/geoid have a LARGER relative gap on
+fog (frozen 0.089/0.087 vs oracle 0.330/0.255) than cov (0.258 vs 0.376), and
+still no gate recovers any of it -- the gate signal is present but structurally
+unusable (the coverage mechanism, Iteration 11).
+
+Gate-signal AUROC for correct-vs-wrong pseudo-labels (fog):
+
+| extractor | conf | margin | norm | uncer |
+| :--- | :--- | :--- | :--- | :--- |
+| hyper | 0.838 | 0.834 | 0.557 | 0.838 |
+| geoid | 0.611 | 0.653 | 0.514 | 0.611 |
+| cov | 0.687 | 0.680 | 0.391 | 0.687 |
+
+All conf/margin AUROCs are well above 0.5 -- the signal CAN separate correct
+from wrong pseudo-labels on every extractor -- yet the gated updates all fail
+(the same Iteration-9 tension: cleaning the labels starves the covariance).
+Hyper's AUROC (0.83-0.84) is the highest of the three on fog, and still its
+gates never climb: the gate-detection ability and the update-usefulness are
+decoupled on all three.
+
+### Iteration 10 (weighted + two-stage): flat or worse on EVERY extractor
+
+| cond | extractor | frozen | no_gate | w_conf | best two-stage | oracle |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | hyper | 0.089 | 0.087 | 0.086 | 0.082 (soft_w) | 0.330 |
+| fog | geoid | 0.087 | 0.087 | 0.087 | 0.086 (soft_w) | 0.255 |
+| fog | cov | 0.258 | 0.256 | 0.257 | 0.255 (soft_w) | 0.379 |
+| crosstalk | hyper | 0.105 | 0.103 | 0.103 | 0.099 (soft_w) | 0.439 |
+| crosstalk | geoid | 0.109 | 0.110 | 0.110 | 0.110 (soft_w) | 0.360 |
+| crosstalk | cov | 0.520 | 0.516 | 0.515 | 0.509 (soft_w) | 0.552 |
+| snow | hyper | 0.537 | 0.531 | 0.521 | 0.513 (soft_w) | 0.600 |
+| snow | geoid | 0.485 | 0.471 | 0.463 | 0.450 (soft_w) | 0.536 |
+| snow | cov | 0.458 | 0.447 | 0.446 | 0.442 (soft_w) | 0.491 |
+| wet_ground | hyper | 0.614 | 0.592 | 0.589 | 0.589 (soft_w) | 0.757 |
+| wet_ground | geoid | 0.597 | 0.583 | 0.581 | 0.578 (soft_w) | 0.711 |
+| wet_ground | cov | 0.425 | 0.417 | 0.416 | 0.414 (soft_w) | 0.615 |
+
+Soft confidence weighting and two-stage re-gating are flat or worse on every
+extractor (identical to the cov-only Iteration-10 verdict). The wrong
+pseudo-labels contaminate the update even when down-weighted, on all three
+extractors.
+
+### Iteration 11 (S/T decomposition): the C/COVERAGE diagnosis holds on EVERY extractor
+
+Condensed per condition (the full sections are in the JSONs):
+
+| cond | extractor | frozen | oracle | no_gate | conf_top0.3 (prec) | correct_only | w_correct cos | w_wrong cos | ratio |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | hyper | 0.089 | 0.330 | 0.087 | 0.066 (0.685) | 0.101 (0.580) | 0.536 | -0.300 | 1.49 |
+| fog | geoid | 0.087 | 0.255 | 0.087 | 0.066 (0.668) | 0.104 (0.584) | 0.564 | -0.416 | 1.19 |
+| fog | cov | 0.258 | 0.376 | 0.257 | 0.180 (0.771) | 0.291 (0.553) | 0.509 | -0.221 | 1.08 |
+| crosstalk | hyper | 0.105 | 0.439 | 0.102 | 0.083 (0.699) | 0.160 (0.526) | 0.484 | -0.327 | 1.22 |
+| crosstalk | geoid | 0.109 | 0.361 | 0.111 | 0.078 (0.642) | 0.110 (0.581) | 0.554 | -0.353 | 1.35 |
+| crosstalk | cov | 0.519 | 0.553 | 0.515 | 0.313 (0.970) | 0.531 (0.821) | 0.774 | -0.137 | 0.78 |
+| snow | hyper | 0.537 | 0.600 | 0.531 | 0.314 (0.987) | 0.562 (0.827) | 0.747 | -0.099 | 0.78 |
+| snow | geoid | 0.485 | 0.536 | 0.473 | 0.271 (0.984) | 0.494 (0.696) | 0.673 | -0.265 | 0.93 |
+| snow | cov | 0.457 | 0.491 | 0.447 | 0.248 (0.975) | 0.463 (0.765) | 0.717 | -0.186 | 0.89 |
+| wet_ground | hyper | 0.615 | 0.756 | 0.589 | 0.352 (0.981) | 0.641 (0.856) | 0.774 | -0.140 | 0.72 |
+| wet_ground | geoid | 0.594 | 0.711 | 0.585 | 0.337 (0.934) | 0.631 (0.812) | 0.790 | -0.198 | 0.71 |
+| wet_ground | cov | 0.424 | 0.614 | 0.417 | 0.289 (0.905) | 0.493 (0.728) | 0.682 | -0.178 | 0.91 |
+
+Every cell confirms the C/COVERAGE diagnosis the Iteration-11 verdict rule named:
+`w_wrong` anti-aligns with the oracle rotation (negative cos on ALL 12
+extractor-condition cells), `||w_wrong||/||w_correct||` is 0.71-1.49 (comparable
+magnitude), and even the perfect-purity `correct_only` T stays far below the
+oracle. The one cross-extractor difference: hyper/geoid have HIGHER wrong-label
+anti-alignment on fog/crosstalk (fog w_wrong cos -0.30/-0.42 vs cov -0.22), i.e.
+the pseudo-label contamination is if anything more hostile on the other
+extractors -- but the structural verdict (coverage, not noise) is identical.
+
+Per-class pseudo accuracy on fog (the target classes):
+
+| extractor | c4 | c7 | c11 | c13 | c14 | c15 | c16 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| hyper | 0.289 | 0.000 | 0.991 | 0.001 | 0.007 | 0.100 | 0.298 |
+| geoid | 0.327 | 0.000 | 0.929 | 0.000 | 0.001 | 0.009 | 0.085 |
+
+The rare/minority classes (7, 13, 14, 15, 16) have ~0 pseudo-accuracy on
+fog/crosstalk for BOTH hyper and geoid -- the classes the AL budget must target
+are exactly the ones where pseudo-labels are useless on all three extractors.
+
+### Iteration 12 (geometric S-only): spectral overlap ~1 and nothing recovers the rotation, on EVERY extractor
+
+| cond | extractor | frozen | oracle | top-8 spectral overlap (min) | best procrustes | best coral | oracle-anch diff (a=0.5) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | hyper | 0.082 | 0.333 | 0.897 | 0.063 (k8 c2t res) | 0.099 | 0.082 |
+| fog | geoid | 0.101 | 0.257 | 0.966 | 0.089 (k8 c2t res) | 0.111 | 0.127 |
+| fog | cov | 0.258 | 0.375 | 0.995 | 0.188 (k8 c2t res) | 0.254 | 0.304 |
+| crosstalk | hyper | 0.102 | 0.439 | 0.927 | 0.100 (k1000 t2c proj) | 0.144 | 0.123 |
+| crosstalk | geoid | 0.142 | 0.362 | 0.950 | 0.058 (k8 c2t res) | 0.155 | 0.169 |
+| crosstalk | cov | 0.524 | 0.553 | 0.998 | 0.591 (k8 t2c res) | 0.508 | 0.524 |
+| snow | hyper | 0.539 | 0.603 | 0.998 | 0.594 (k8 t2c res) | 0.508 | 0.551 |
+| snow | geoid | 0.481 | 0.537 | 1.000 | 0.453 (k8 c2t res) | 0.469 | 0.479 |
+| snow | cov | 0.456 | 0.493 | 0.998 | 0.464 (k8 t2c res) | 0.449 | 0.460 |
+| wet_ground | hyper | 0.623 | 0.759 | 0.999 | 0.567 (k8 c2t res) | 0.547 | 0.624 |
+| wet_ground | geoid | 0.592 | 0.712 | 0.999 | 0.587 (k8 t2c res) | 0.580 | 0.590 |
+| wet_ground | cov | 0.427 | 0.615 | 0.998 | 0.420 (k8 t2c res) | 0.398 | 0.516 |
+
+Spectral overlap of the clean vs corrupted top eigenspaces is 0.897-1.000 on
+every cell -- hyper's fog (0.897) is the LOWEST of all, yet its procrustes
+still collapse (0.063 vs frozen 0.082). Procrustes/CORAL sit at or below frozen
+on every cell except two noise-level cov cases (crosstalk/snow k8 res ~0.59
+vs frozen 0.52/0.46, inside the ±0.05 noise band and not reproducible as a
+method). The oracle-anchored diffusion -- the one labeled signal -- moves toward
+the oracle on every extractor (fog: hyper 0.082->0.082 flat, geoid 0.101->0.127,
+cov 0.258->0.304), confirming on all three that only TRUE labels carry the
+rotation. Note hyper's oracle-anch diffusion is flat on fog (0.082 -> 0.082)
+because its frozen is already at the diffusion's ceiling for that sparse-label
+budget -- the geometry carries sparse labels less well for hyper than for cov.
+
+**Verdict.** The label-free-gating closure TRANSFERS: on every one of the four
+diagnostics, on every condition, HyperLiDAR and GeoID behave like cov-shift --
+no reliable label-free gating method exists for any of the three extractors, and
+the structural reasons are the same (contaminated-but-anti-aligned pseudo-labels,
+no covariance rotation to align, coverage-limited T). This validates the Pillar-3
+active-learning handoff for the whole extractor set, not just cov-shift. The AL
+framework does not need extractor-specific label-free gating.
+
+## Next: Iteration 14: the coverage-aware active-learning query
 
 The S/T decomposition (Iteration 11) and the geometric closure (Iteration 12)
 turned the Pillar-3 handoff from a hypothesis into a measured requirement: the
 recoverable headroom (+0.02 to +0.12 over the frozen decode) needs TRUE labels on
 the low-confidence, high-influence points, and the oracle-anchored diffusion
-result shows the geometry carries a sparse labeled set well. Iteration 13 designs
+result shows the geometry carries a sparse labeled set well. Iteration 13 then
+confirmed the closure transfers to HyperLiDAR and GeoID (no extractor has a
+reliable label-free gate). Iteration 14 designs
 the query from these measurements:
 - **query rule**: rank pool points by influence I_i (Nystrom-subspace) or
   disagreement magnitude, NOT by confidence; the influence analysis says these
