@@ -279,14 +279,15 @@ def main():
         Uc_b, Sc_b, Vc_b = torch.linalg.svd(Xnb.double(), full_matrices=False)
         Uhat['bdry_pca'] = Vc_b[:, :rmax].float()
 
-        # bdry_outer: top-r of M = sum_i x_i (g_a - g_b)_i^T, g = W0 rows.
-        # M_apply(v) = Xnb^T (Gnb @ v) where Gnb rows = W0[a_i] - W0[b_i].
+        # bdry_outer: top-r of M = sum_i x_i (g_a - g_b)_i^T. W0 is d x C, so the
+        # boundary normal for pair (a,b) is the COLUMN W0[:, a] - W0[:, b]
+        # (a 10000-d code-space direction). Gnb rows = those normals (n_b x d).
         W0_cpu = W0.detach().cpu()
-        Gnb = (W0_cpu[a_idx[nb_sorted]] - W0_cpu[b_idx[nb_sorted]]).float()   # n_b x d
+        Gnb = (W0_cpu[:, a_idx[nb_sorted]] - W0_cpu[:, b_idx[nb_sorted]]).t().float()
         Gnb = Gnb[:len(Xnb)]
         Xnb_f = Xnb.float(); Gnb_f = Gnb.float()
         def M_apply_outer(v):
-            return Xnb_f.t() @ (Gnb_f @ v)
+            return Xnb_f.t() @ (Gnb_f @ v.float())
         try:
             Uo, _ = rand_svd_gram(M_apply_outer, Xnb.shape[1], rmax)
             Uhat['bdry_outer'] = Uo
@@ -296,7 +297,7 @@ def main():
         # bdry_margin_cov: top-r of M = sum_i x_i x_i^T / |margin_i| (near-boundary dominates)
         w = (1.0 / (margin[nb_sorted].float() + 1e-6))
         def M_apply_mcov(v):
-            return Xnb_f.t() @ (w.unsqueeze(1) * (Xnb_f @ v))
+            return Xnb_f.t() @ (w.unsqueeze(1) * (Xnb_f @ v.float()))
         try:
             Um, _ = rand_svd_gram(M_apply_mcov, Xnb.shape[1], rmax)
             Uhat['bdry_margin_cov'] = Um
@@ -328,12 +329,12 @@ def main():
             for wi in wins:
                 si = sel[wi]
                 W_t = ridge_fit_soft(Xp[si], onehot(pl[si], NUM_CLASSES), args.lam, args.cg_iters, args.nystrom_m, device)
-                dW_stack.append((W_t - W0).detach().cpu())
+                dW_stack.append((W_t - W0).detach().cpu().t())   # C x d (code-space rows)
             D = torch.cat([dw for dw in dW_stack], dim=0)          # (n_windows*C) x d
             U_tan, _ = right_topk_svd(D, rmax)
             Uhat[f'tangent_b{b}'] = U_tan
 
-        # ensemble: stack structurally different weak classifiers' dW
+        # ensemble: stack structurally different weak classifiers' dW (all C x d)
         dW_ens = []
         # prototype (class-mean code)
         proto = torch.zeros(NUM_CLASSES, Xp.shape[1])
@@ -341,15 +342,15 @@ def main():
             m = (pl == c)
             if int(m.sum().item()) > 100:
                 proto[c] = Xp[m].mean(dim=0)
-        dW_ens.append((proto - W0.cpu()).float())
+        dW_ens.append((proto - W0.cpu().t()).float())
         # boundary-fit: ridge on near-boundary points (true labels, small set)
         bnd_lab = pl[nb][:min(5000, len(nb))]
         if len(bnd_lab) > 100:
             W_bnd = ridge_fit_soft(Xp[nb][:min(5000, len(nb))], onehot(bnd_lab, NUM_CLASSES), args.lam, args.cg_iters, args.nystrom_m, device)
-            dW_ens.append((W_bnd - W0).detach().cpu())
+            dW_ens.append((W_bnd - W0).detach().cpu().t())
         # high-ridge (aggressive regularization)
         W_hr = ridge_fit_soft(Xp, onehot(pl, NUM_CLASSES), 1e-1, args.cg_iters, args.nystrom_m, device)
-        dW_ens.append((W_hr - W0).detach().cpu())
+        dW_ens.append((W_hr - W0).detach().cpu().t())
         D_ens = torch.cat(dW_ens, dim=0)
         U_ens, _ = right_topk_svd(D_ens, rmax)
         Uhat['ensemble'] = U_ens
