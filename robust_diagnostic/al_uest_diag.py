@@ -275,11 +275,16 @@ def main():
         R_soft = cg_solve(Xp, M_shift, args.lam, device, args.cg_iters)   # (S+lI)^-1 shift
         Uhat['softshift'], _ = topk_svd(R_soft.detach().cpu(), max(r_sweep))
 
-        # poolcov (label-free): top eigenvectors of corrupted pool covariance
-        Uc, Sc, _ = torch.linalg.svd(Xp.double(), full_matrices=False)
-        Uhat['poolcov'] = Uc[:, :max(r_sweep)].float()
+        # poolcov (label-free): top eigenvectors of corrupted pool covariance.
+        # Eigenvectors of Xp^T Xp = RIGHT singular vectors of Xp (d x d); the left
+        # singular vectors live in the n-sample space and are the wrong orientation.
+        Uc, Sc, Vc = torch.linalg.svd(Xp.double(), full_matrices=False)
+        Uhat['poolcov'] = Vc[:, :max(r_sweep)].float()
 
-        # ccameans (label-free, N7): PCA-whitened CCA clean vs soft-corr class means
+        # ccameans (label-free, N7): CCA clean vs soft-corr class means. Both are
+        # n_c x d (rows = classes, cols = 10000-d code). Whiten each with its RIGHT
+        # singular vectors (the code-space directions) then CCA on the whitened
+        # cross-cov; the corrupted-side canonical directions in the code space are U.
         try:
             A = torch.stack([clean_means[c] for c in classes]).double()   # n_c x d
             B = sm_means.double()                                         # n_c x d
@@ -287,13 +292,19 @@ def main():
             Ac = Ac / (Ac.norm(dim=1, keepdim=True) + 1e-8)
             Bc = Bc / (Bc.norm(dim=1, keepdim=True) + 1e-8)
             k = min(args.cca_pca_k, len(classes) - 1, Ac.shape[1])
-            Ua, Sa, _ = torch.linalg.svd(Ac, full_matrices=False)
-            Ub, Sb, _ = torch.linalg.svd(Bc, full_matrices=False)
-            Pa = Ua[:, :k] @ torch.diag(1.0 / (Sa[:k] + 1e-6))
-            Pb = Ub[:, :k] @ torch.diag(1.0 / (Sb[:k] + 1e-6))
-            Ccc = Pa.t() @ Ac.t() @ Bc @ Pb
-            _, _, V = torch.linalg.svd(Ccc, full_matrices=False)
-            Ucca = (Pb @ V.t()).float()
+            # NOTE: torch.linalg.svd returns Vh (= V^T) of shape (min(m,n), n). The
+            # right singular vectors (code-space directions, d x n_c) are Va.t().
+            Ua, Sa, Va = torch.linalg.svd(Ac, full_matrices=False)   # Va is Vh: (n_c, d)
+            Ub, Sb, Vb = torch.linalg.svd(Bc, full_matrices=False)
+            Wa = Va.t()[:, :k] @ torch.diag(1.0 / (Sa[:k] + 1e-6))   # d x k whitening (code space)
+            Wb = Vb.t()[:, :k] @ torch.diag(1.0 / (Sb[:k] + 1e-6))
+            Aw = Ac @ Wa                                              # n_c x k whitened classes
+            Bw = Bc @ Wb
+            Ccc = Aw.t() @ Bw                                         # k x k cross-cov
+            _, _, Vh = torch.linalg.svd(Ccc, full_matrices=False)
+            Ucca = (Wb @ Vh.t()).float()                              # corrupted-side canonical dirs (d x k)
+            # orthonormalize in the code space so it is a proper U basis
+            Ucca, _ = torch.linalg.qr(Ucca)
             if Ucca.shape[1] >= max(r_sweep):
                 Uhat['ccameans'] = Ucca[:, :max(r_sweep)]
         except Exception as e:
