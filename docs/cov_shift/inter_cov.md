@@ -629,6 +629,57 @@ loss family, but it must (i) be measured/trained on the actual corrupted views
 that matter, (ii) preserve the healthy-condition geometry (not trade it), and
 (iii) be validated at the code/binarized level, not just the 128D LP.**
 
+### Diagnostic 12 (DONE): why the Phase-24 noise-invariance attempt failed -- the mechanism WORKED, the implementation was too weak (`run_overnight_noiseinv.sh`, `probe_noiseinv.json`)
+
+**Question.** Diagnostic 11 identified `class_shift` (clean→corrupted per-class
+feature cosine) as the dominant zero-shot predictor (r=+0.776), and the Phase-24
+`supcon_vib_additive` (volumetric noise injection) was the prior attempt at
+exactly this "sensor-noise invariance". It was thrown out at medium scale (lost
+on every condition). This diagnostic re-tests it CAPACITY-MATCHED (plain vs
+additive, both 8 ep / 10%) and measures whether the additive training actually
+reduced the class_shift Diagnostic 11 says drives zero-shot.
+
+**Setup.** Train `supcon_vib` (plain) and `supcon_vib_additive` at identical micro
+scale (8 ep / 10%), then evaluate both with the linear-property probe
+(class_shift, fisher, frozen, ceiling, margin_sweep) on fog+crosstalk.
+
+**Result (`probe_noiseinv.json`):**
+
+| extractor | cond | class_shift | fisher | frozen (zs) | ceiling | ms0.5 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| plain | fog | 0.815 | 0.23 | 0.072 | 0.268 | 0.054 |
+| additive | fog | 0.841 | 0.27 | 0.086 | 0.271 | 0.076 |
+| plain | crosstalk | 0.878 | 0.38 | 0.120 | 0.320 | 0.076 |
+| additive | crosstalk | 0.875 | 0.43 | 0.135 | 0.334 | 0.103 |
+
+**Findings (the mechanism did NOT reduce class_shift -- the augmentation was too
+weak to matter):**
+
+1. **Additive barely moved `class_shift`** (fog 0.815→0.841, crosstalk 0.878→0.875
+   -- essentially unchanged). The volumetric-noise injection did NOT reduce the
+   clean→corrupted feature shift, which Diagnostic 11 says is the zero-shot
+   driver. So the mechanism was not "wrong" -- it was **not actuated**: the
+   augmentation was too weak (density 0.05 into empty space) to change the
+   per-class feature geometry.
+2. **The small frozen gains are noise-level** (fog +0.014, crosstalk +0.015) and
+   track the tiny fisher gain (+0.04/+0.05), not a class_shift change. The
+   additive training slightly improved code separability (fisher) but did not
+   address the shift that actually limits zero-shot.
+3. **No healthy trade observed** (the Phase-24 concern) -- because the additive
+   change was so weak it affected nothing negatively either. Ceiling is flat
+   (0.268→0.271 fog, 0.320→0.334 crosstalk).
+
+**Interpretation.** The Phase-24 additive failure was NOT "noise invariance is a
+bad idea" -- it was "the noise invariance was too weak to change the feature
+shift." Diagnostic 11 says class_shift is the lever, and Diagnostic 12 shows the
+previous attempt never actually pulled it (shift unchanged). A re-do must use a
+**much stronger displacement** than volumetric empty-space injection at density
+0.05: e.g. GeoID-style on-manifold displacement of valid points (the
+`supcon_vib_geoid` port), or an explicit clean→corrupted class-shift penalty in
+the loss, trained to actually reduce the measured shift. This directly
+motivates the `run_train_geoid.sh` port (GeoID's inlier-discrimination loss)
+currently running.
+
 ---
 
 ## Decision rule
