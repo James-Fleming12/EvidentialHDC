@@ -148,7 +148,7 @@ def topk_svd(M, r):
 def subspace_cos(U_hat, U_oracle, r):
     """cos of the r-dim subspaces: mean singular value of U_hat^T U_oracle."""
     uh = U_hat[:, :r]; uo = U_oracle[:, :r]
-    S = torch.linalg.svd((uh.t() @ uo).double(), compute_uv=False)
+    S = torch.linalg.svdvals((uh.t() @ uo).double())
     return float(S.mean().item())
 
 
@@ -378,7 +378,7 @@ def main():
             # alignment vs oracle at each r: per-direction cos (which r-dirs are right)
             for r in r_sweep:
                 uh = Uh[:, :r]; uo = U_oracle[:, :r]
-                sv = torch.linalg.svd((uh.t() @ uo).double(), compute_uv=False)
+                sv = torch.linalg.svdvals((uh.t() @ uo).double())
                 e['align'][str(r)] = {'mean': float(sv.mean().item()),
                                       'per_dir': [float(x) for x in sv.tolist()],
                                       'cos_span': float(F.cosine_similarity(
@@ -435,7 +435,7 @@ def main():
         pseudo_acc = float((ppred == pl).float().mean().item())
         est['softshift']['construction_diag']['pseudo_acc'] = pseudo_acc
         est['softshift']['construction_diag']['true_shift_singular'] = [
-            float(x) for x in torch.linalg.svd(R_true_shift.double(), compute_uv=False)[:max(r_sweep)].tolist()]
+            float(x) for x in torch.linalg.svdvals(R_true_shift.double())[:max(r_sweep)].tolist()]
 
         results['conds'][cond] = {'refs': refs, 'gap': float(gap), 'U_estimators': est,
                                   'proj_signal': proj_sig,
