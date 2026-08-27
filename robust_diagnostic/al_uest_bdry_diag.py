@@ -165,7 +165,7 @@ def rand_svd_gram(M_apply, d, r, oversample=5):
     Q, _ = torch.linalg.qr(Y)
     B = Q.t() @ M_apply(Q)
     UB, S, _ = torch.linalg.svd(B.double())
-    U = (Q @ UB[:, :r]).float()
+    U = (Q.double() @ UB[:, :r]).float()
     return U, S[:r].float()
 
 
@@ -236,9 +236,9 @@ def main():
         Xc = hdc_codes(fa[ci], proj, device).float()
         Xp = hdc_codes(pool, proj, device).float()
         Xv = hdc_codes(val, proj, device).float()
-        # free the raw 128-d feature tensors (keep the label tensors la/pl/vl and
-        # the codes Xc/Xp/Xv, which are used through the end of the condition)
-        del fa, pool, val, f, l
+        # free the raw 128-d corrupted feature tensors (keep fa/la (clean) and the
+        # labels pl/vl, which are reused across the condition loop)
+        del pool, val, f, l
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
