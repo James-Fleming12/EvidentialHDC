@@ -106,8 +106,8 @@ def extract_paired_feats(model, clean_parser, corr_parser, device, num_frames, m
             zd = z_d.permute(0, 2, 3, 1).reshape(-1, z_d.shape[1])[inter.view(-1)][keep]
             lbl = bc[2].to(device).view(-1)[inter.view(-1)][keep]
             # pairing sanity: range channel (input channel 0) at the SAME pixels
-            rc = bc[0][0].view(-1)[inter.view(-1)][keep].float().cpu()
-            rd = bd[0][0].view(-1)[inter.view(-1)][keep].float().cpu()
+            rc = bc[0][0].to(device).view(-1)[inter.view(-1)][keep].float().cpu()
+            rd = bd[0][0].to(device).view(-1)[inter.view(-1)][keep].float().cpu()
             rc_ = rc - rc.mean(); rd_ = rd - rd.mean()
             denom = (rc_.norm() * rd_.norm())
             range_corr = float((rc_ * rd_).sum().item() / (denom + 1e-8)) if denom > 0 else 0.0
