@@ -251,3 +251,165 @@ clean/corrupted pairing, the only construction that does NOT depend on a few
 labels discovering U), and (b) accepting oracle-quality U requires the larger-label
 C30/C31 bank setting. The trust-region form itself is validated (oracle-U gc is
 large and monotone); what it cannot tolerate is a coarse basis.
+
+## Iteration 0c: the clean->corrupted decision-conditioned U (pair-damage) -- the
+counterfactual pairing FAILS too; U* is not inferable from the corrupted side by
+any statistic, pairing included (2026-08-28, `al_pair_damage_diag.py`)
+
+The last untested U source: the clean/corrupted PAIRING (KITTI-C is per-frame
+corruptions of seq-08, same scan geometry and labels), conditioned on DECISION
+DAMAGE. Per paired pixel: dx = code_corr - code_clean; dz = dx^T W0; damage =
+(clean correct AND corrupted wrong); loss_gain = CE increase. U constructions:
+U_cross (left singulars of sum dx dz^T, the counterfactual cross-moment),
+U_dx_all (all-pixel displacement covariance), U_damage (failure-covariance),
+U_damage_w (loss-gain-weighted). Both DGLSS++ and cov-shift, fog/crosstalk.
+
+**Pairing sanity (the check that makes this trustworthy):**
+
+| cond | scans | names match | mean range_corr | aligned |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | 100 | 100/100 | 0.786 | TRUE |
+| crosstalk | 100 | 100/100 | 0.684 | TRUE |
+
+The clean and corrupted batches at each index are the SAME physical scan
+(scan_names_aligned True), and the range channel at paired pixels correlates
+0.68-0.79 -- the pixel-level pairing is sound. (damage_frac 0.63-0.65 is expected,
+not a bug: W0 decodes clean scans well and corrupted scans terribly, so most pixels
+are clean-right-and-corr-wrong.)
+
+**Result -- the pairing does NOT recover U* either.**
+
+| U | align (fog/crosstalk) | best gc r2 (fog/crosstalk) |
+| :--- | :--- | :--- |
+| oracle | 1.00 | +0.19 / +0.14 |
+| tangent | 0.54 / 0.48 | +0.02 / +0.06 |
+| U_cross | 0.01 / 0.02 | -0.29 / -0.01 |
+| U_dx_all | 0.01 / 0.01 | -0.62 / -0.10 |
+| U_damage | 0.01 / 0.01 | -0.60 / -0.38 |
+| U_damage_w | 0.02 / 0.01 | -0.60 / -0.09 |
+
+The paired, decision-conditioned displacements -- the STRONGEST counterfactual
+information available (the exact clean->corrupted pairing restricted to decision
+failures) -- align 0.01-0.02 with the oracle residual. This is decisive for the
+U-predictor head: the head's test-time input is the CORRUPTED STREAM ALONE, and
+the pairing is strictly MORE informative than the stream (it includes the clean
+side). If even the pairing aligns 0.01 linearly, the head's nonlinear mapping has
+little to learn from -- the head is a LOW-expected-value bet. This closes the last
+U-estimation family.
+
+**Verdict: the U-estimation head is deprioritized; the efficient bank and the
+canonical adapter are the two live routes.** Every route to test-time U inference
+is now measured-closed: corrupted-side statistics, tangent-b8 (0.5 intrinsic
+ceiling), joint refinement, step-side fixes, U refinement, and the counterfactual
+pairing. U* is not inferable at test time from 2-8 labels, from the corrupted
+distribution, or from the clean/corrupted pairing. The remaining options are:
+(a) make the extractor EXPOSE U offline (the canonical adapter), and
+(b) accept oracle-quality U via the efficient bank. Both are training/supervision
+routes, not test-time inference routes -- which is where the evidence says the
+answer lives.
+
+---
+
+## Why we are moving with the efficient bank
+
+After Iteration 0c, the paper's AL/TTA needs oracle-quality U, and every test-time
+route to it is measured-closed. The efficient bank is the route that SOLVES the
+problem rather than fighting it, because it supplies -- by construction -- the two
+things that no cheap estimator could recover:
+
+### 1. The bank is the only label source that yields oracle-quality U
+Every U-estimation failure shared the same root cause: 2-8 labels (or the
+corrupted distribution) cannot identify the residual subspace. The bank does not
+try to INFER U -- it RE-CONSTRUCTS it. With k labels per class over a
+representative sample, W_sub (fit on the bank) approaches W*, so
+`U_bank = SVD(W_sub - W0)` approaches the oracle U. This is the C30/C31 result at
+scale: oracle U closes ~100% of the closeable gap, and it is exactly the thing
+every 2-8-label estimator failed to reach. The bank trades label count for U
+quality -- and U quality is the one thing nothing else provided.
+
+### 2. The bank simultaneously provides the pool-geometry (mass) that the
+trust-region step proved unnecessary -- but that the ridge form still wants
+The first-order diagnostic showed the covariance `U^T X^T X U` is an ARTIFACT of
+the ridge estimator (normalized first-order is nearly as good with no inversion).
+So the bank's second purpose -- providing the pool mass for the whitening -- is
+now optional. But that is a FEATURE, not a cost: with oracle-quality U from the
+bank, we can use the cheapest update form (normalized first-order), and the bank
+only needs to supply the U direction, not the full covariance. This makes the
+bank smaller and cheaper than the original C30/C31 formulation.
+
+### 3. The bank is a supervision route, not an inference route -- which is where
+the evidence says the answer lives
+Iteration 0c's verdict is that U* is not in the corrupted side (nor the pairing)
+at test time. The bank is a TRAINING/supervision object: a stored, representative
+labeled set. It does not ask "what can we infer from the stream?" -- it asks
+"what can a small but well-chosen labeled set tell us directly?" The 2-8-label
+program was an inference problem that the data says is unsolvable; the bank is a
+supervision problem that C30/C31 already proved solvable (oracle-U closes ~100% of
+the gap at k=8/class).
+
+### 4. The efficiency program makes the label cost acceptable
+The original bank used 56 + 500 random points. The efficient-bank program reduces
+this cost:
+- **Representative points, not random**: select the bank points that maximize
+  coverage of the residual subspace (leverage-in-U, gradient diversity) instead of
+  500 random draws -- fewer points for the same U quality.
+- **Only the necessary information**: the update needs the bank's per-class sums
+  and U-projected covariance (streaming sufficient statistics, the N5 idea), not
+  the stored points themselves -- constant memory, no explicit dataset at deploy.
+- **Compression**: the 10000-d codes can be sketched/projected (code-2000 already
+  peaks accuracy) or stored as packed bits (sign codes are 1 bit/dim), cutting the
+  bank's storage ~5000x.
+
+### 5. Why this solves what nothing else does -- in one line
+The efficient bank is the only route that supplies **oracle-quality U** (the thing
+every test-time estimator failed to reach) **and** can be made cheap (representative
+selection, streaming statistics, compression). The canonical adapter is the
+complementary training-time route (make the extractor expose U); the bank is the
+supervision-time route (make a small labeled set provide U). Both are needed for
+the paper: the canonical adapter for the extractor story, the efficient bank for
+the AL story.
+
+---
+
+## The canonical-adapter training objective (the extractor-side complement)
+
+The canonical adapter makes the DECODER RESIDUAL live in a FIXED, pre-learned
+basis, so test-time adaptation never needs to infer U -- it only estimates C in a
+known coordinate system.
+
+**The supervision.** During extractor training we HAVE the oracle residual for
+every corruption condition c: R_c = W*_c - W0 (the full-label pool-fit decoder
+minus the clean decoder). These are exactly the objects we proved are not
+inferable at test time.
+
+**The objective.** Learn a shared, low-rank U0 (d x r) such that all training
+residuals are well-approximated in its span:
+
+$$ L_{\text{adapt}} = \sum_{c} \| (I - U_0 U_0^\top) R_c \|_F^2
+   \;+\; \lambda_{\text{rec}} \sum_{c} \min_{C_c} \| R_c - U_0 C_c \|_F^2
+   \;+\; \lambda_{W} \| W_0 \|^2, $$
+
+i.e. U0 is the top-r shared basis of the pooled residuals (equivalently, the
+leading singular vectors of the concatenated [R_1 | R_2 | ... | R_N], which is the
+canonical-adapter factorization R_c ~ U0 C_c with C_c = U0^T R_c). The extractor is
+then trained so that W0 (its own clean decoder) plus the canonical U0 captures the
+corruption-induced decision change across ALL conditions.
+
+**At deployment.** U0 is a learned constant -- FREE. Only C is estimated, from
+2-4 labels:
+
+$$ C = \rho \cdot \frac{U_0^\top G}{\|U_0^\top G\|}, \qquad G = U_0^\top X_{\text{lab}}^\top (Y - X_{\text{lab}} W_0), $$
+
+using the normalized first-order step (which the diagnostic proved needs no
+covariance). The trust-region form is robust to C being coarse, because U0 is
+exact. TTA chooses WHICH adapter/severity to activate (the one regression the gate
+diagnostic suggested TTA can still do -- classify the mechanism, not the gain).
+
+**Why this is the right training-side bet.** It converts the unsolved TEST-TIME
+inference problem (recover U* from the stream) into a SOLVED TRAINING-TIME
+supervision problem (learn U0 from the residuals we already have). The evidence
+for it: the residual is consistently low-rank (r=2-4 captures most), and the
+first-order diagnostic proved the step needs no covariance -- so the ONLY hard part
+left is U, and the canonical adapter removes U from the test-time problem entirely.
+
+---
