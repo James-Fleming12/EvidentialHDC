@@ -197,7 +197,9 @@ def main():
     ap.add_argument("--pool_size", type=int, default=50000)
     ap.add_argument("--val_size", type=int, default=100000)
     ap.add_argument("--lam", type=float, default=1e-3)
-    ap.add_argument("--max_clean", type=int, default=100000)
+    ap.add_argument("--max_clean", type=int, default=50000,
+                    help="cap on clean points for the frozen probe fit (50k=2GB GPU "
+                         "copy; the clean fit saturates well before this)")
     ap.add_argument("--nystrom_m", type=int, default=1000)
     ap.add_argument("--cg_iters", type=int, default=8)
     ap.add_argument("--r_sweep", type=str, default="2,4")
@@ -264,7 +266,7 @@ def main():
             # --- tangent-U init from the b labels (provisional tiny fits) ---
             D_tan = tangent_U(Xp, pl, W0, sel, args.n_windows, args.lam, device)
 
-            b_res = {'U_align_init': {}, 'baseline': {}, 'joint': {}}
+            b_res = {'U_align_init': {}, 'baseline': {}, 'joint': {}, 'oracle_ref': {}}
             for r in r_sweep:
                 # tangent U at this rank
                 U_tan, _ = right_topk_svd(D_tan, r)
