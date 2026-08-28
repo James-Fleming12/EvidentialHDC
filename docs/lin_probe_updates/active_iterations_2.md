@@ -349,6 +349,60 @@ leverage-in-U-then-C pipeline. The tangent-b8 result also reframes the "2-8
 labels" finding: the labels' value may be in DISCOVERING U (provisional updates),
 not just in fitting C inside an oracle U.
 
+### The joint U,C refinement: the C-fit is NOT the bottleneck -- refinement cannot
+recover the couple-of-points AL from the tangent-U (2026-08-28, `al_uest_joint_diag.py`)
+
+Tests the synthesis directly: instead of "discover U, then fit C separately", run
+the alternating scheme (C-solve / U-gradient / QR) on the labeled points starting
+from the tangent-U init, so the same labels that discovered U also push it toward
+the oracle while fitting C. Per (b, r, T in {1,5,20}): baseline (C-solve in fixed
+U), joint (after T alternations, with align_U_final + loss trajectory), and the
+oracle-ref ceiling at the same budget. Both DGLSS++ and cov-shift, all 4 conds.
+
+**Finding 1 -- the alternation converges but does NOT pull U toward the oracle.**
+The loss descends cleanly on every cell (e.g. dglsspp fog b8 r4: 3.4 -> 0.7; snow
+0.3 -> 0.0), so the scheme works mechanically. But `align_U_final` stays flat or
+DROPS from the tangent init (dglsspp fog b8 r2: 0.37 -> 0.34; r4: 0.57 -> 0.51;
+covshift fog b8 r2: 0.33 -> 0.32). The U-gradient overfits to the 8-32 labeled
+points' idiosyncratic residual instead of the true residual: with so few labels,
+the refinement moves U away from the oracle, not toward it.
+
+**Finding 2 -- the joint AL chain stays at or below the baseline, far below the
+oracle-ref.** On fog/crosstalk the joint gc is negative or ~0 while oracle-ref is
++0.18 to +0.84 (dglsspp fog b8 r2 joint gc -0.19 vs or-ref +0.20; crosstalk b32 r4
+joint +0.25 vs or-ref +0.81). The refinement cannot convert the discovered U into
+a gain because it is fitting the labels' residual, which is a small and biased
+sample of the true residual.
+
+**Finding 3 -- the b=32 tangent init is broken, confirming tiny windows are
+load-bearing.** At b=32 the U_init_align collapses to 0.02-0.06 (vs b=8's
+0.17-0.57) on every condition, exactly as the boundary/tangent diagnostic showed.
+The b=32 "joint" gains (+0.02 to +0.25 gc) are just the oracle-ref at a larger
+budget leaking through a near-random U -- they do not scale from the tangent
+mechanism.
+
+**Finding 4 -- the healthy conditions are noise-level.** wet_ground joint gc
+reaches +0.07 to +0.15 at b=8 (dglsspp r2 T5 +0.07, covshift r4 T20 +0.09) -- the
+only positive cells, on the condition with the loosest residual structure
+(align init 0.17-0.43). But these are inside the noise band and do not beat
+oracle-ref's 0.34-0.56.
+
+**Verdict: the joint U,C direction is CLOSED as a couple-of-points AL fix.** The
+measured negative is specific: the alternation works (loss descends), but with 8-32
+labels the U-gradient cannot recover the true residual -- it overfits the labels,
+align stays flat/drops, and gc stays far below the oracle-ref. The labels genuinely
+cannot DISCOVER the residual better than the tangent-b8 PCA already does, and no
+U-refinement on so few points adds signal. This closes the research-plan direction
+#3 (joint U,C factorized fit).
+
+**What remains.** The couple-of-points AL needs U quality that only more labels
+(oracle) provide -- the C30/C31 bank setting restated. The two live leads that do
+not depend on few labels discovering U: (a) the U-predictor head (dglss_imp.md D4:
+an auxiliary head supervised by the clean/corrupted pairing to output the residual
+basis at deployment), and (b) accepting that the cheap-label route requires
+oracle-quality U and targeting the larger-label bank. The label-free and
+decision-rule U-estimation families are all now closed with measured negatives.
+
 ---
 
 ## Next steps (with potential)
