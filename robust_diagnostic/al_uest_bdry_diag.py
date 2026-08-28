@@ -117,14 +117,25 @@ def ridge_fit_soft(X, Y, lam, iters, m, device):
     P = (torch.rand(X.shape[1], m, device=device) > 0.5).float() * 2 - 1
     XP = X @ P; Yd = Y.float().to(device)
     Shat = XP.t() @ XP + lam * torch.eye(m, device=device); That = XP.t() @ Yd
-    x = P @ torch.linalg.solve(Shat, That); b = X.t() @ Yd
+    x0 = P @ torch.linalg.solve(Shat, That)
+    if X.shape[0] <= 8:
+        # too few points for a meaningful CG refinement on a rank-(n-1) system;
+        # return the Nystrom start (stable) rather than risk CG divergence
+        return x0.float()
+    x = x0; b = X.t() @ Yd
     def A(v):
         return X.t() @ (X @ v)
     r = b - A(x); p = r.clone(); rs = (r * r).sum(0)
     for _ in range(iters):
-        Ap = A(p); a = rs / ((p * Ap).sum(0) + 1e-30); x = x + a.unsqueeze(0) * p
+        Ap = A(p)
+        d = (p * Ap).sum(0)
+        if not torch.isfinite(d).all() or d.abs().max().item() < 1e-20:
+            break
+        a = rs / (d + 1e-30); x = x + a.unsqueeze(0) * p
         r = r - a.unsqueeze(0) * Ap; rsn = (r * r).sum(0); be = rsn / (rs + 1e-30)
         p = r + be.unsqueeze(0) * p; rs = rsn
+        if not torch.isfinite(x).all():
+            return x0.float()
     return x.float()
 
 
@@ -142,8 +153,13 @@ def topk_svd(M, r):
 
 
 def right_topk_svd(M, r):
-    """Right singular vectors (code-space directions) of a C x d matrix M."""
+    """Right singular vectors (code-space directions) of a rows x d matrix M.
+    torch.linalg.svd returns Vh of shape (min(rows,d), d); the top-r right
+    singular vectors as COLUMNS are Vh[:r].t() (d x r), valid for any rows."""
     _, S, Vh = torch.linalg.svd(M.double(), full_matrices=False)
+    if not torch.isfinite(S).all():
+        S = torch.where(torch.isfinite(S), S, torch.zeros_like(S))
+        Vh = torch.where(torch.isfinite(Vh), Vh, torch.zeros_like(Vh))
     return Vh[:r].t().float(), S.float()
 
 
@@ -277,7 +293,7 @@ def main():
 
         # bdry_pca: PCA of near-boundary points (code-space right singulars)
         Uc_b, Sc_b, Vc_b = torch.linalg.svd(Xnb.double(), full_matrices=False)
-        Uhat['bdry_pca'] = Vc_b[:, :rmax].float()
+        Uhat['bdry_pca'] = Vc_b[:rmax].t().float()
 
         # bdry_outer: top-r of M = sum_i x_i (g_a - g_b)_i^T. W0 is d x C, so the
         # boundary normal for pair (a,b) is the COLUMN W0[:, a] - W0[:, b]
@@ -313,7 +329,7 @@ def main():
         if int(sel_p.sum().item()) > 100:
             Xpp = Xp[sel_p][:20000]
             Upc, Spc, Vpc = torch.linalg.svd(Xpp.double(), full_matrices=False)
-            Uhat['pair_ab'] = Vpc[:, :rmax].float()
+            Uhat['pair_ab'] = Vpc[:rmax].t().float()
             print(f"  [pair_ab] confused pair ({pa},{pb}), n={int(sel_p.sum().item())}")
 
         # ---- FAMILY 2: few-label adaptation-tangent-space U ----
