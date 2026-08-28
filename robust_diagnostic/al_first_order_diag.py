@@ -308,7 +308,7 @@ def main():
                 b_res['methods'][f'boundary_pair_s{s}'] = {
                     'delta': float(d_bp),
                     'gap_closed': float(d_bp / gap) if gap > 1e-9 else None,
-                    'n_pairs': int((pred0 != pl[sel]) & (pred0 != 0) & (pl[sel] != 0)).sum().item(),
+                    'n_pairs': int(((pred0 != pl[sel]) & (pred0 != 0) & (pl[sel] != 0)).sum().item()),
                 }
 
             # tta_trust: oracle_norm with rho gated by conf_drop (0 -> no move)
