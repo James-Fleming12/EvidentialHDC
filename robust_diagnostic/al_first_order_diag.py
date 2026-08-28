@@ -339,7 +339,7 @@ def main():
         print(f"\n=== {cond} ({toc(t0):.0f}s) frozen {refs['frozen']:.3f} / oracle {refs['oracle']:.3f} gap {gap:+.3f} conf_drop {conf_drop:.3f} ===")
         for b, br in cond_res['budgets'].items():
             for mk, mv in br['methods'].items():
-                if 'oracle_ridge' in mk:
+                if 'oracle_ridge_delta' in mv:
                     print(f"  b={b:>2} {mk:18s} ridge {mv['oracle_ridge_gc']:+.2f} | first {mv['oracle_first_gc']:+.2f} | norm {mv['oracle_norm_gc']:+.2f}")
                 elif 'gradspan' in mk:
                     print(f"  b={b:>2} {mk:18s} delta {mv['delta']:+.3f} gc {mv['gap_closed']:+.2f} alignU {mv['align_U_oracle']:.2f}")
