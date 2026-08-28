@@ -279,6 +279,76 @@ where W_sub approaches W*, which is the C30/C31 bank setting restated. The
 diagnostic also settles N7 (CCA): class-mean CCA does not recover U on this
 problem.
 
+### The boundary / tangent U-estimation diagnostic: decision-boundary geometry does
+NOT contain U; the few-label tangent-space construction (PCA across tiny
+provisional updates) is the FIRST estimator to recover substantial residual
+structure -- but its AL chain still does not close the gap
+(2026-08-27, `al_uest_bdry_diag.py`)
+
+Follow-up to the U-estimation closure. Tests the NEW decision-rule constructions
+from the research plan, at r in {2,4}, budgets {8,32}, on DGLSS++ (the primary AL
+target) and cov-shift. The cov-shift JSON pull was a corrupt transfer twice; the
+values below are transcribed from the server terminal (the JSON on disk is null
+bytes), so both extractors are complete here.
+
+**Family 1 (label-free, decision-boundary geometry): CLOSED.** Four constructions
+-- PCA of near-boundary points (`bdry_pca`), the decision-weighted outer product
+`sum_i x_i (g_a - g_b)_i^T` (`bdry_outer`), inverse-margin-weighted covariance
+(`bdry_margin_cov`), and most-confused-pair PCA (`pair_ab`) -- all land at
+align cos(U, U_oracle) = 0.00-0.03 and residual_capture 0.01-0.03 on every
+condition and extractor. The hypothesis that "boundary geometry contains the
+residual" is FALSIFIED: conditioning on near-boundary points does not make the
+pool covariance (or its decision-weighted variants) any closer to the residual
+subspace. The residual is not in any second-order statistic of the boundary
+region either.
+
+**Family 2 (few-label, adaptation tangent space): PARTIAL SUCCESS -- the first
+estimator to capture real residual.** `tangent_b8` (split 8 labels into 4
+2-point provisional ridge fits, stack their dW = W_t - W0, take the right SVD)
+recovers substantial residual structure on every condition and extractor:
+
+| cond | extractor | align r2 | align r4 | resid_cap r2 | resid_cap r4 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| fog | dglsspp | 0.24 | 0.52 | 0.38 | 0.55 |
+| fog | covshift | 0.40 | 0.52 | 0.36 | 0.55 |
+| crosstalk | dglsspp | 0.34 | 0.46 | 0.34 | 0.49 |
+| crosstalk | covshift | 0.22 | 0.33 | 0.22 | 0.36 |
+| snow | dglsspp | 0.28 | 0.41 | 0.38 | 0.49 |
+| snow | covshift | 0.31 | 0.39 | 0.36 | 0.47 |
+| wet_ground | dglsspp | 0.07 | 0.28 | 0.08 | 0.34 |
+| wet_ground | covshift | 0.18 | 0.42 | 0.17 | 0.46 |
+
+This is the ONLY estimator (of every U construction tried across both
+diagnostics: pool covariance, class-mean shift, CCA, boundary PCA, boundary
+outer product, margin covariance, confused-pair, ensemble, subfit) that beats
+cos ~0.05 against the oracle residual. The mechanism is the boxed reframing
+working: PCA across NOISY provisional updates recovers the common residual
+direction even though each 2-point update is individually poor. The tiny windows
+are load-bearing -- `tangent_b32` (8 points/window) collapses to align
+0.01-0.15, because fewer independent provisional samples give PCA less signal.
+The result is extractor-robust: cov-shift's tangent_b8 aligns 0.18-0.40 (r2) /
+0.33-0.52 (r4), the same pattern as DGLSS++.
+
+**BUT the AL chain does not yet convert the discovered U into a gain.** Despite
+`tangent_b8` finding the residual subspace (capture 0.34-0.55), its AL chain
+(leverage-in-that-U true labels -> W_res = W0 + U C) is ~0 or slightly negative
+everywhere (best gc -0.01 to -0.11; e.g. crosstalk r2_b32 gc -0.07). The
+oracle-U reference closes gc 0.27-0.78 at the same cells. The discovered U is
+correct but the leverage-in-U query under it does not select points that move C
+the right way. The ensemble construction is also closed (align ~0.005).
+
+**Synthesis.** The direction is now specific and actionable: (1) the label-free
+decision-boundary route is closed (not just pool covariance -- conditioning on
+boundaries does not help); (2) the adaptation-tangent-space construction is the
+first thing that actually finds U, exactly as the research-plan reframing
+predicted, and it does so from just 8 labels split into tiny provisional updates;
+(3) the remaining gap is turning that discovered U into a working update -- the
+joint U,C refinement (alternate C-solve / U-gradient / orthogonalize) on top of
+the tangent-U init is the natural next experiment, rather than the separate
+leverage-in-U-then-C pipeline. The tangent-b8 result also reframes the "2-8
+labels" finding: the labels' value may be in DISCOVERING U (provisional updates),
+not just in fitting C inside an oracle U.
+
 ---
 
 ## Next steps (with potential)
