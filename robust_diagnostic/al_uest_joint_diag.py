@@ -243,7 +243,9 @@ def main():
         Xc = hdc_codes(fa[ci], proj, device).float()
         Xp = hdc_codes(pool, proj, device).float()
         Xv = hdc_codes(val, proj, device).float()
-        del fa, pool, val, f, l
+        # free the raw 128-d corrupted feature tensors (keep fa/la clean features,
+        # which are reused across the condition loop, and the labels pl/vl)
+        del pool, val, f, l
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
