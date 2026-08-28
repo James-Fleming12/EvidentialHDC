@@ -79,12 +79,13 @@ def extract_clean(model, parser, device, num_frames=100):
     return torch.cat(feats), torch.cat(lbls)
 
 
-def extract_paired_codes(model, clean_parser, corr_parser, device, proj, num_frames, max_pixels):
-    """Pair clean/corrupted codes at the SAME (row, col) pixels of each scan's
-    projection grid. Both parsers iterate seq-08 in the same order, so scan i is
-    the same physical scan; the corruption changes VALUES not geometry, so valid
-    pixels are a subset of the clean grid. We extract the full HxW feature map,
-    take the intersection of valid pixels, and index both by (row, col)."""
+def extract_paired_feats(model, clean_parser, corr_parser, device, num_frames, max_pixels):
+    """Pair clean/corrupted 128-d features at the SAME (row, col) pixels of each
+    scan's projection grid (KITTI-C preserves geometry, changes values). Yields
+    per scan: (zc, zd, lbl, name_c, name_d, range_corr) where index k of zc/zd is
+    the same (row, col). name_c/name_d are the scan identifiers; range_corr is the
+    Pearson correlation of the RANGE channel at the paired pixels (a pairing
+    sanity signal: aligned scans share geometry -> range_corr >> 0)."""
     with torch.no_grad():
         for i, (bc, bd) in enumerate(zip(clean_parser.get_train_set(), corr_parser.get_train_set())):
             if i >= num_frames:
@@ -101,13 +102,20 @@ def extract_paired_codes(model, clean_parser, corr_parser, device, proj, num_fra
                 keep = torch.randperm(n)[:max_pixels]
             else:
                 keep = torch.arange(n)
-            # flatten the grid; inter gives the valid (row, col) in the SAME order
-            zc = z_c.permute(0, 2, 3, 1).reshape(-1, z_c.shape[1])[inter.view(-1)]
-            zd = z_d.permute(0, 2, 3, 1).reshape(-1, z_d.shape[1])[inter.view(-1)]
-            lbl = bc[2].to(device).view(-1)[inter.view(-1)]
-            cc = torch.sign(zc[keep].to(device) @ proj).cpu().float()
-            cd = torch.sign(zd[keep].to(device) @ proj).cpu().float()
-            yield cc, cd, lbl[keep].cpu()
+            zc = z_c.permute(0, 2, 3, 1).reshape(-1, z_c.shape[1])[inter.view(-1)][keep]
+            zd = z_d.permute(0, 2, 3, 1).reshape(-1, z_d.shape[1])[inter.view(-1)][keep]
+            lbl = bc[2].to(device).view(-1)[inter.view(-1)][keep]
+            # pairing sanity: range channel (input channel 0) at the SAME pixels
+            rc = bc[0][0].view(-1)[inter.view(-1)][keep].float().cpu()
+            rd = bd[0][0].view(-1)[inter.view(-1)][keep].float().cpu()
+            rc_ = rc - rc.mean(); rd_ = rd - rd.mean()
+            denom = (rc_.norm() * rd_.norm())
+            range_corr = float((rc_ * rd_).sum().item() / (denom + 1e-8)) if denom > 0 else 0.0
+            name_c = bc[5] if len(bc) > 5 else None
+            name_d = bd[5] if len(bd) > 5 else None
+            if (i % 20) == 0:
+                print(f"    [paired] scan {i}: {len(zc)} pix, range_corr {range_corr:.3f}", flush=True)
+            yield zc.cpu(), zd.cpu(), lbl.cpu(), name_c, name_d, range_corr
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -197,7 +205,9 @@ def main():
     ap.add_argument("--rho_sweep", type=str, default="0.05,0.1,0.2,0.4,0.8")
     ap.add_argument("--b", type=int, default=8, help="labeled points for the trust-region direction")
     ap.add_argument("--max_pixels", type=int, default=40000, help="per-scan paired pixels")
-    ap.add_argument("--damage_sample", type=int, default=300000, help="bounded paired-pixel sample for damage SVDs")
+    ap.add_argument("--damage_sample", type=int, default=60000,
+                    help="bounded paired-pixel sample for damage SVDs (60k = ~7GB "
+                         "peak for the CC/CD/DX codes; enough for stable SVDs)")
     ap.add_argument("--conds", type=str, default="fog,crosstalk")
     ap.add_argument("--path_b", type=str, required=True)
     ap.add_argument("--method_b", type=str, required=True)
@@ -250,24 +260,58 @@ def main():
         W0c = W0.detach().cpu()
 
         # ---- accumulate the paired damage statistics ----
+        # Encode 128-d -> code PER SCAN for M_cross (codes discarded immediately);
+        # keep only the cheap 128-d features for the bounded damage sample, encoded
+        # ONCE at the end (avoids holding N x 10000 codes in memory).
         M_cross = torch.zeros(10000, NUM_CLASSES)     # sum dx dz^T  (d x C)
-        sample_cc, sample_cd, sample_lbl = [], [], []
+        sample_fc, sample_fd, sample_lbl = [], [], []
         n_total = 0
-        for cc, cd, lbl in extract_paired_codes(model, clean_parser, corr_parser, device,
-                                                proj, args.frames, args.max_pixels):
+        n_name_match = 0
+        n_scans = 0
+        range_corrs = []
+        for zc, zd, lbl, name_c, name_d, rcorr in extract_paired_feats(
+                model, clean_parser, corr_parser, device, args.frames, args.max_pixels):
+            n_scans += 1
+            if name_c is not None and name_d is not None and name_c == name_d:
+                n_name_match += 1
+            range_corrs.append(rcorr)
+            cc = torch.sign(zc.to(device) @ proj).cpu().float()
+            cd = torch.sign(zd.to(device) @ proj).cpu().float()
             dx = cd - cc
             dz = dx.float() @ W0c                       # n x C
             M_cross += dx.float().t() @ dz
-            # bounded sample for the damage covariances
+            del cc, cd, dx, dz
+            # bounded sample: keep the CHEAP 128-d features (not codes)
             if n_total < args.damage_sample:
-                sample_cc.append(cc); sample_cd.append(cd); sample_lbl.append(lbl)
-                n_total += len(cc)
-        M_cross = M_cross  # d x C
+                take = min(len(zc), args.damage_sample - n_total)
+                sample_fc.append(zc[:take]); sample_fd.append(zd[:take])
+                sample_lbl.append(lbl[:take])
+                n_total += take
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        pairing_check = {
+            'scans_paired': n_scans,
+            'scan_names_match': n_name_match,
+            'scan_names_aligned': bool(n_scans > 0 and n_name_match == n_scans),
+            'mean_range_corr': float(np.mean(range_corrs)) if range_corrs else None,
+            'min_range_corr': float(np.min(range_corrs)) if range_corrs else None,
+        }
+        print(f"    [pairing sanity] scans {n_scans} | names match {n_name_match}/{n_scans} "
+              f"| mean range_corr {pairing_check['mean_range_corr']:.3f}", flush=True)
 
-        # bounded sample: real decision-damage flags and loss-gain weights
-        CC = torch.cat(sample_cc, dim=0)
-        CD = torch.cat(sample_cd, dim=0)
+        # bounded sample: encode 128-d -> code ONCE (N x d at the end)
+        FC = torch.cat(sample_fc, dim=0)
+        FD = torch.cat(sample_fd, dim=0)
         LL = torch.cat(sample_lbl, dim=0)
+        del sample_fc, sample_fd, sample_lbl
+        N = len(FC)
+        CC = torch.zeros(N, 10000)
+        CD = torch.zeros(N, 10000)
+        for s in range(0, N, 50000):
+            e = min(s + 50000, N)
+            CC[s:e] = torch.sign(FC[s:e].to(device) @ proj).cpu().float()
+            CD[s:e] = torch.sign(FD[s:e].to(device) @ proj).cpu().float()
+        del FC, FD
         DX = (CD - CC).float()
         pred_c = decode(W0, CC); pred_d = decode(W0, CD)
         correct_c = (pred_c == LL)
@@ -324,12 +368,14 @@ def main():
 
         results['conds'][cond] = {'refs': refs, 'gap': float(gap), 'curves': curves,
                                   'damage_frac': float(damage.float().mean().item()),
-                                  'n_damage_pix': int(damage.sum().item())}
+                                  'n_damage_pix': int(damage.sum().item()),
+                                  'pairing_check': pairing_check}
         del Xc, Xp, Xv, W0, Ws, R, U_oracle, CC, CD, DX
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
         print(f"\n=== {cond} ({toc(t0):.0f}s) frozen {refs['frozen']:.3f} / oracle {refs['oracle']:.3f} gap {gap:+.3f} ===")
+        print(f"    pairing: {pairing_check}")
         print(f"    damage_frac {results['conds'][cond]['damage_frac']:.3f} ({results['conds'][cond]['n_damage_pix']} pix)")
         for uname, cv in curves.items():
             print(f"    {uname:12s} alignU {cv['align_U_oracle']:.2f} | best r2 {cv.get('best_gc_r2'):+.2f} r4 {cv.get('best_gc_r4'):+.2f}")
