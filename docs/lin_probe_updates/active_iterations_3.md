@@ -187,3 +187,67 @@ iterative U sharpening) since the tangent-b8 U is the bottleneck. Option (a) is
 preferred: the trust-region form is otherwise sound (oracle-U gc is large and
 monotone in rho on the corrupted conditions), so making the STEP robust to the
 coarse basis is a smaller change than re-solving U estimation.
+
+## Iteration 0b: the refinement sweep -- neither step-side fixes nor U-refinement
+help; the coarse U is fundamentally insufficient for the trust-region step
+(2026-08-28, `al_trust_refine_diag.py`)
+
+Sweeps the two redirect families with explicit efficiency costs (units R =
+provisional fit, SVD = svd of rows x 10000, G = label gradient; DEC = val decode
+dominates all). Step-side fixes: `A_grad` (full label gradient, no U),
+`A_fix` (label gradient projected onto the tangent span), `A_hybrid` (projected +
+orthogonal residual). U-refinement: `U_avg` (average 8 tangent draws, 544-row
+stack), `U_windows` (16 windows, 136-row stack), `U_sharpen` (3 iterative rounds).
+Both DGLSS++ and cov-shift, all 4 conds, r in {2,4}.
+
+**The result is uniformly negative -- every fix fails, and the reason is visible
+in the align data.**
+
+**Finding 1 -- U-refinement does NOT improve U: align is flat at the tangent
+level.** All three refinement variants land at the SAME align as the baseline
+tangent (dglsspp fog: tangent/U_avg/U_windows/U_sharpen = 0.53/0.53/0.55/0.57;
+covshift: 0.54 everywhere). More provisional windows, averaged draws, and
+iterative leverage-re-selection all add ZERO alignment. The 0.5 align is not a
+sampling artifact (more samples don't fix it) -- it is the intrinsic ceiling of
+the tangent construction on this problem. Their gc is consequently unchanged
+(~0.00-0.06, same as tangent).
+
+**Finding 2 -- the step-side fixes also fail.** `A_grad` (the labels' own full
+gradient, no U) is strongly NEGATIVE everywhere (dglsspp fog -0.15, covshift
+crosstalk -4.51, snow -3.61): the raw label gradient direction on 8 points is
+not a usable update. `A_fix` (project onto tangent span) is ~0, no better than
+tangent. `A_hybrid` is ~0, with two weak positives (dglsspp wet_ground r4 +0.14,
+covshift wet_ground r2 +0.19 -- inside the noise band).
+
+**Finding 3 -- the oracle gap is not shrinking with any cheap fix.** Oracle-U
+gc is 10-30x the best fix on every condition (dglsspp fog oracle +0.18/0.25 vs
+best fix +0.02; covshift fog +0.36 vs +0.01). No combination of a few labels,
+the tangent U, and the label gradient reaches the oracle.
+
+**Efficiency (the ledger, same on both extractors):**
+
+| method | R | SVD | G | SVD rows |
+| :--- | :--- | :--- | :--- | :--- |
+| oracle / random | 0 | 0/1 | 0 | -- |
+| tangent (baseline) | 4 | 1 | 0 | 68 |
+| A_grad | 0 | 0 | 1 | -- |
+| A_fix | 4 | 1 | 1 | 68 |
+| A_hybrid | 4 | 1 | 2 | 68 |
+| U_avg | 32 | 1 | 0 | 544 |
+| U_windows | 16 | 1 | 0 | 136 |
+| U_sharpen | 16 | 4 | 0 | 68-272 |
+
+Efficiency is NOT the issue: even the most expensive refinement (U_sharpen: 16 R +
+4 SVD) is a tiny fraction of one val decode, and it does not help anyway. The
+blocker is purely U quality, and it is not fixable by more provisional sampling.
+
+**Verdict.** The trust-region step needs oracle-quality U; every cheap route to U
+(step-side fixes, U averaging, more windows, iterative sharpening) is closed with
+a measured negative. The align ceiling of 0.5 (tangent) is intrinsic, and a 0.5-
+aligned basis is insufficient for the trust-region step regardless of the update
+form. This closes the Iteration-0 redirect options. The remaining live leads are:
+(a) the U-predictor head (dglss_imp.md D4: an auxiliary head supervised by the
+clean/corrupted pairing, the only construction that does NOT depend on a few
+labels discovering U), and (b) accepting oracle-quality U requires the larger-label
+C30/C31 bank setting. The trust-region form itself is validated (oracle-U gc is
+large and monotone); what it cannot tolerate is a coarse basis.
