@@ -117,3 +117,73 @@ the healthy ones, for BOTH oracle-U and tangent-U, with the gate either on or of
 fog/crosstalk and is ~0 on snow/wet_ground), the trust-region AL is deployable.
 If H1 fails (tangent-U collapses), the U basis is the remaining bottleneck and the
 next iteration targets U refinement.
+
+## Iteration 0: assumption validation -- the coarse tangent-U FAILS in the
+trust-region step (2026-08-28, `al_trust_iter0_diag.py`)
+
+Before building the deployable pipeline, validate the three assumptions the method
+silently depends on (A1 coarse-U robustness, A2 gate validity, A3 accept/reject),
+on both DGLSS++ and cov-shift, all 4 conditions, r=2, b=8, rho sweep
+{0.01..0.8}. The trust-region step is `W1 = W0 + rho * U * G/||G||` with
+G = U^T X^T (Y - X W0), U in {oracle, tangent-b8, random}.
+
+**A1 -- COARSE-U ROBUSTNESS FAILS: the tangent-b8 U does NOT work in the
+trust-region step, despite align 0.3-0.4.**
+
+gc-vs-rho (best gc over the sweep):
+
+| cond | extractor | oracle | tangent | random |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | dglsspp | +0.18 | **+0.02** | -0.02 |
+| fog | covshift | +0.36 | **-0.11** | -0.16 |
+| crosstalk | dglsspp | +0.14 | **+0.06** | -0.07 |
+| crosstalk | covshift | +0.30 | **-0.57** | -2.11 |
+| snow | dglsspp | +0.67 | **-0.07** | -0.12 |
+| snow | covshift | +0.37 | **-0.84** | -0.54 |
+| wet_ground | dglsspp | +0.41 | **-0.24** | -0.06 |
+| wet_ground | covshift | +0.41 | **-0.14** | -0.06 |
+
+The tangent-U (align 0.32-0.39, the ONLY few-label U) produces gc ~0 on
+fog/crosstalk and NEGATIVE on snow/wet_ground -- essentially operating at the
+random-U level, far below the oracle-U trust-region (fog +0.18 vs tangent +0.02,
+covshift fog +0.36 vs -0.11). With r=2, a 0.3-0.4 subspace cosine means the top-2
+step directions are only partially aligned, so normalization splits the step
+between correct and incorrect directions and most of it goes wrong. **The
+trust-region step is NOT robust to a coarse U: it needs oracle-quality U.**
+Hypothesis H1 is REJECTED.
+
+**A2 -- GATE VALIDITY IS WEAK/INCONCLUSIVE (n=4).** The gauge rank-correlations
+with oracle-best-gc across the 4 conditions are small and sign-inconsistent:
+conf_drop -0.80 (dglsspp) vs +0.40 (covshift); mean_shift_cos +0.20 vs -0.40;
+r4_r1_disagree -0.80 vs 0.0. The reason is visible in the data: snow has LOW
+conf_drop (0.006) yet HIGH oracle-U gain (+0.67) -- the oracle headroom and the
+corruption severity are DIFFERENT things. A gauge that ranks "how corrupted is
+this stream" does not rank "how much can a correct step recover". H2 is NOT
+established.
+
+**A3 -- ACCEPT/REJECT FAILS: the label-free scores do not separate sign(gc).**
+The d_conf / d_disagree / comb scores show no consistent relationship to gc. E.g.
+dglsspp fog tangent gc +0.02 has comb +0.054, but snow tangent gc -0.09 has comb
++0.026 -- both positive comb despite opposite gc signs. covshift fog tangent gc
+-0.11 has comb -0.136, snow tangent gc -0.84 has comb -0.097 -- both negative comb
+for negative gc. There is no monotone score that identifies "this update is good".
+H3 is REJECTED.
+
+**Verdict.** The deployable trust-region pipeline (Iteration 1 as planned) is NOT
+supported. The decisive blocker is A1: the trust-region step is direction-sensitive
+and the tangent-b8 U (align 0.3-0.4) is too coarse -- its gc is at the random-U
+level. This is consistent with the earlier finding that only oracle-quality U
+closes real gap, and it means the "coarse U is enough" hope from the first-order
+result does not transfer to the trust-region step. The gate (A2) and accept/reject
+(A3) are also not validated, but they are secondary: even a perfect gate and
+reject cannot help if the step direction is wrong.
+
+**What this redirects.** The blocking assumption is U quality, again. The next
+iteration should either (a) make the trust-region step robust to a coarse U (e.g.
+use the tangent-U only to SELECT the step's active coordinates but take the
+direction from the labels' own gradient, or combine multiple tangent draws to
+average the U), or (b) target U refinement directly (more provisional windows /
+iterative U sharpening) since the tangent-b8 U is the bottleneck. Option (a) is
+preferred: the trust-region form is otherwise sound (oracle-U gc is large and
+monotone in rho on the corrupted conditions), so making the STEP robust to the
+coarse basis is a smaller change than re-solving U estimation.
