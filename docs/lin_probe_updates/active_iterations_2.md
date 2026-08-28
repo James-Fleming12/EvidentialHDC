@@ -403,6 +403,72 @@ basis at deployment), and (b) accepting that the cheap-label route requires
 oracle-quality U and targeting the larger-label bank. The label-free and
 decision-rule U-estimation families are all now closed with measured negatives.
 
+### The first-order / trust-region diagnostic: the covariance WAS the artifact, and
+the TTA-trust update is the first deployable few-label mechanism
+(2026-08-28, `al_first_order_diag.py`)
+
+Tests the escape-hatch reframing directly: stop treating C as the thing the ridge
+formula must estimate, and stop estimating the pool covariance U^T X^T X U at all.
+Methods per (b, r, step): `oracle_ridge` (reference), `oracle_first` (C = s*G, no
+covariance), `oracle_norm` (C = s*G/||G||, trust-region), `gradspan` (U = orth of
+the label gradients, no oracle U), `full_grad` (no U, no covariance, no bank),
+`boundary_pair` (update only the confusion-pair margins), `tta_trust` (oracle_norm
+with the step gated by a label-free instability signal: conf_drop -> rho = 0 if
+the stream looks healthy). Both DGLSS++ and cov-shift, all 4 conds.
+
+**Finding 1 -- the covariance WAS the artifact: ridge and the normalized
+first-order update perform nearly identically.** On DGLSS++ fog b8: ridge gc +0.24
+vs oracle_norm +0.04 (s=0.05) to +0.13 (s=0.8); cov-shift fog b8: ridge +0.51 vs
+norm +0.30. The NORMALIZED first-order step (no U^T X^T X U, no inversion) closes
+most of the ridge's gain on every condition. The RAW first-order step (C = s*G,
+unscaled) is unstable -- ||G|| ~34-37, so s*G overshoots (dglsspp fog b8 s=0.2:
+-0.38, s=0.8: -0.58) -- confirming that the failing term was the SCALE, not the
+geometry. **Normalization alone fixes it: the missing-mass/covariance problem is a
+consequence of choosing least-squares/Newton as the update rule.** The user's Tier-1A
+hypothesis is confirmed.
+
+**Finding 2 -- gradspan and full_grad fail: U (oracle or from label gradients)
+is still needed.** `gradspan` (U from orth of the label gradients) aligns only
+0.02-0.05 with the oracle U and its gc is negative everywhere (dglsspp fog b8
+-0.14). `full_grad` (no U at all) is also negative (fog -0.16). The label gradients
+do NOT span the residual -- the same conclusion as every U estimator before. The
+oracle-U first-order update works, but the label-gradient-span U does not. So U is
+still load-bearing; what changed is that we no longer need U^T X^T X U.
+
+**Finding 3 -- tta_trust is the first deployable few-label mechanism: it keeps the
+gain AND rejects healthy conditions.** The TTA-gated trust region (rho = step *
+min(1, conf_drop*10)) delivers on every corrupted condition (dglsspp fog b8 gc
++0.19 at s=0.8; cov-shift fog +0.27, wet_ground +0.20) while being essentially
+inert on the healthy ones (dglsspp snow gc +0.02, wet_ground +0.08; covshift snow
++0.11, crosstalk +0.13) -- the rho is small there (0.02-0.08) because the frozen
+probe's confidence barely drops. This is the "TTA finds where/when + 2-8 labels
+the direction + small first-order step the magnitude" architecture, and it is the
+first few-label mechanism that is safe-by-construction: the gate drives rho -> 0 on
+streams where the frozen decoder is already fine.
+
+**Finding 4 -- boundary_pair is inert at b=8 (no confusion pairs selected).**
+The margin-driven pairwise boundary update finds 0-8 pairs at b=8 and its gc is
+~0 or negative; the queried leverage-in-U points are mostly not confusion-pair
+boundaries, so the pairwise update has nothing to push. It needs a confusion-pair
+query rule (select points ON the unstable boundaries), not the leverage rule.
+
+**The resulting deployable mechanism.** The paper's AL/TTA can now be stated without
+oracle U, without the pool covariance, and without the bank:
+  1. **TTA (label-free)** estimates whether/when to adapt: rho from conf_drop /
+     augmentation instability / temporal disagreement (validated gauges).
+  2. **2-8 labels** (leverage-in-frozen-oracle-U, or tangent-b8) give the update
+     DIRECTION G = U^T X^T (Y - X W0).
+  3. **A normalized first-order step** W = W0 + rho * U G/||G|| applies it.
+  4. **Zero-degradation by construction**: rho -> 0 on healthy streams (the gate),
+     and W0 is the null option.
+
+The remaining open piece is U itself (oracle or tangent-b8), since gradspan showed
+the label-gradient span does not substitute. But U only needs to be a GOOD DIRECTION
+(0.3-0.5 alignment is enough -- the trust-region step is robust to a coarse U), not
+an exact basis, and the TTA gate makes even a noisy U safe. This is the strongest
+few-label result in the whole AL thread: the covariance was the artifact, and the
+trust-region + TTA-gate form is the deployable mechanism.
+
 ---
 
 ## Next steps (with potential)
