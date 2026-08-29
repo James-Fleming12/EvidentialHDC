@@ -228,8 +228,9 @@ def main():
         for c in conds:
             R_c = residuals[c]
             U_c, _ = right_topk_svd(R_c.t(), r)        # R_c is d x C -> rows x d
-            capture_pool = (U_pool.t() @ R_c.double()).norm().item() / (R_c.double().norm().item() + 1e-12)
-            capture_own = (U_c.t() @ R_c.double()).norm().item() / (R_c.double().norm().item() + 1e-12)
+            U_pool_d = U_pool.double(); U_c_d = U_c.double(); R_c_d = R_c.double()
+            capture_pool = (U_pool_d.t() @ R_c_d).norm().item() / (R_c_d.norm().item() + 1e-12)
+            capture_own = (U_c_d.t() @ R_c_d).norm().item() / (R_c_d.norm().item() + 1e-12)
             entry['capture_pool'][c] = float(capture_pool)
             entry['capture_own'][c] = float(capture_own)
             entry['ratio'][c] = float(capture_pool / (capture_own + 1e-12))
