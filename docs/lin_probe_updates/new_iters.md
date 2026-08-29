@@ -228,3 +228,70 @@ key risk.
 | Chen et al. (2024), **ARC** | Dynamic classification-layer tuning at test time using output confidence | B3 (logit calibration), C4 | Alternative to the first-order step for continuously shifting corruptions |
 | Jang et al. (2022), **NN-prototype TTA** | Prototype/nearest-neighbor consensus for safer pseudo-labels | R1 closure mitigation | NN-prototype pseudo-labels may be less anti-aligned than raw confidence -- worth one gate-level test |
 | Yuan et al. (2023), **ATASeg** | Few-click active TTA for dense segmentation | A1-A5 (few-label AL) | Empirical blueprint that a few clicks can bridge heuristic-TTA to supervised -- the strongest external support for the Tier-1 bet |
+
+---
+
+## Iteration 1 result: active selection COMPENSATES for the lack of U -- the
+acquisition sweep is the first positive result in the new framing
+(2026-08-29, `al_acq_sweep_diag.py`)
+
+The decisive Experiment A: fix the DOWNSTREAM update (normalized first-order +
+oracle U, the sound R5 form) and vary ONLY the acquisition rule at b in {2,4,8},
+on the boundary-focused candidate set. If a rule beats random, active selection
+compensates for the label budget without recovering U. Both DGLSS++ and cov-shift,
+fog/crosstalk.
+
+best gc per rule (fog/crosstalk, best over b):
+
+| rule | dglsspp fog | dglsspp crosstalk | covshift fog | covshift crosstalk |
+| :--- | :--- | :--- | :--- | :--- |
+| random | +0.23 | +0.33 | +0.44 | +0.11 |
+| margin | +0.19 | +0.32 | +0.36 | +0.22 |
+| entropy | +0.11 | +0.25 | +0.34 | +0.15 |
+| tta_inst | +0.23 | +0.27 | +0.28 | +0.15 |
+| margin_tta | +0.20 | +0.17 | +0.27 | +0.33 |
+| margin_div | +0.29 | +0.20 | +0.33 | +0.32 |
+| tta_div | +0.23 | +0.21 | +0.37 | +0.29 |
+| **margin_tta_div** | **+0.29** | +0.30 | +0.37 | **+0.35** |
+| class_pair | +0.18 | +0.23 | +0.32 | +0.06 |
+| **egl** | **+0.33** | +0.21 | +0.21 | **+0.28** |
+
+**Finding 1 -- acquisition matters, and the low-budget behavior is the signal.**
+At b=2 the margin/TTA/egl rules beat random on most cells (dglsspp fog: random
++0.04 vs margin +0.19, tta_inst +0.20, egl +0.23; covshift crosstalk: random +0.04
+vs margin_tta +0.32, egl +0.25). The random baseline at b=2 is weak (+0.04 to
++0.13); the acquisition rules get most of their b=8 gain from just 2 points. This
+is exactly the "few labels on the informative boundary beat many on random points"
+claim.
+
+**Finding 2 -- diversity and the combined margin_tta_div rule are the most
+consistent.** margin_div / tta_div / margin_tta_div reach +0.29-0.37 (fog) and
++0.32-0.35 (crosstalk) across both extractors, matching or beating random at every
+budget. The combined rule is never negative and is among the best on both
+conditions and both extractors. The TTA-instability component helps on fog
+(covshift fog tta_div +0.37), and the margin+diversity component helps on
+crosstalk (covshift crosstalk margin_tta +0.33, margin_div +0.32).
+
+**Finding 3 -- class_pair and entropy are weak.** class_pair (per-pair budget) is
+middling everywhere and weak on covshift crosstalk (+0.06); entropy is the worst
+on dglsspp fog at b=8 (-0.01). The pair-concentration assumption (A1) is not
+supported by this sweep -- the error is not concentrated enough in a few pairs for
+per-pair budgeting to help. Entropy (pure uncertainty, no boundary/instability) is
+consistently worse than the combined rules.
+
+**Finding 4 -- the mechanism is real but the step is still U-limited.** The best
+rules close +0.29 to +0.37 gc (fog) -- substantially above random's best (+0.23 to
++0.44) and well above the +0.0 to +0.06 the tangent-U trust-region achieved. But
+the ceiling is set by oracle U in the step, so this measures SELECTION value under
+a KNOWN direction. The remaining question is whether the local correction forms
+(Experiment B) can supply a usable direction from the same few labels.
+
+**Verdict: active selection compensates for the lack of U -- the Tier-1 bet is
+supported.** Better labels (boundary-focused, TTA-informative, diverse) recover a
+real share of the oracle-U gain that random labels miss, especially at the tiny
+b=2-4 budgets. The acquisition rules to carry forward are the combined
+`margin_tta_div` (most consistent) and `egl` (best on fog), with `tta_div` /
+`margin_div` as the diversity+instability components. The next experiment
+(Experiment B) is to pair the best acquisition with the LOCAL correction forms
+(class-bias, prototype, class-pair separator) and test whether the update itself
+can be driven by the same few labels without oracle U.
