@@ -576,3 +576,64 @@ residual basis, which is the correct object.
 condition-specific (which the data says is required), and (c) whose cost can be
 reduced by the efficiency program (representative selection, streaming sufficient
 statistics, compression). Iteration 2 measures the floor for (c).
+
+## Iteration 2 result: the bank CANNOT discover U from a small labeled subset --
+the efficient-bank U-source premise is REJECTED (2026-08-29, `al_bank_floor_diag.py`)
+
+Swept bank size {28, 56, 106, 156, 356, 556} x selection {random, per_class,
+leverage_oracle, margin_frozen}, fit W_sub on each bank, U_bk = SVD(W_sub - W0),
+and measured (a) align to oracle U and (b) the trust-region step's gc. Both
+DGLSS++ and cov-shift, fog/crosstalk.
+
+**The result is a hard negative: NO bank size or selection reaches a working U.**
+
+Best align / best gc per selection (over all N):
+
+| cond | extractor | selection | best align (N) | best gc |
+| :--- | :--- | :--- | :--- | :--- |
+| fog | dglsspp | leverage_oracle | 0.17 (56) | +0.09 |
+| fog | dglsspp | random/margin/per | 0.03-0.12 | +0.01-0.04 |
+| fog | covshift | leverage_oracle | 0.55 (56) | +0.04 |
+| fog | covshift | other | 0.03-0.08 | +0.01-0.04 |
+| crosstalk | dglsspp | leverage_oracle | 0.26 (28) | +0.07 |
+| crosstalk | covshift | leverage_oracle | 0.38 (28) | +0.02 |
+
+vs the oracle-U references: fog +0.20-0.26 (dglsspp) / +0.30 (covshift), crosstalk
++0.15 (dglsspp) / +0.28 (covshift).
+
+1. **align never exceeds 0.55** anywhere, and the curve is FLAT in N (dglsspp fog
+   leverage r2: 0.09 at N=56 -> 0.02 at N=556; gc stays ~0.01). Going 28->556
+   points does not improve the bank's U.
+2. **gc is ~0.00-0.04 everywhere** vs oracle-U's +0.15-0.30. The bank-learned U
+   never enables a working trust-region step at any size tested.
+3. **leverage_oracle (the UPPER-BOUND selection, which uses oracle U to choose
+   points) is the best but still fails** -- its align caps at 0.26-0.55 and its gc
+   stays ~0.02-0.09. Even with oracle-informed selection, the bank cannot reach
+   oracle U.
+
+**The reconciliation: C30/C31 never used the bank as a U-source.** C30/C31's
+"oracle U" came from SVD(W* - W0) where W* is the FULL-pool labeled fit; the
+56+500 bank was used only to fit C given that oracle U. This test proves the bank
+cannot substitute for the full-pool fit in producing U -- it is a C-source, not a
+U-source.
+
+**Verdict: the efficient-bank-as-U-source route is REJECTED.** Combined with
+Iteration 1 (no shared basis) and Iteration 0c (no pairing signal), the evidence
+is now: oracle-quality U requires the FULL labeled pool fit. There is no small-
+supervision route to U -- not 2-8 labels, not a 56-556 bank, not the pairing.
+
+**What this means for the roadmap.** The "efficient bank" as originally framed
+(fewer points -> same U) is closed. The remaining honest options are:
+(a) the bank ONLY as a C-source given oracle U -- which requires the full-pool
+labels anyway, so it is not cheap AL, and
+(b) a U that does not come from supervision at all -- i.e. TRAINING the extractor
+so the residual is canonical/exposed (the per-condition canonical adapter, or a
+U-predictor head), which is the only route left that does not need full-pool labels.
+Given Iteration 1 showed residuals are condition-specific, the training route must
+be per-condition (train the extractor so a GIVEN condition's residual is more
+structured), or accept the full-pool-label cost.
+
+This is the honest state of the search: the residual U is not obtainable from
+limited supervision under any estimator tried. The paper's AL story, if it needs
+oracle-quality U, requires either the full labeled pool (not cheap) or a
+training-time canonicalization (the remaining live bet).
