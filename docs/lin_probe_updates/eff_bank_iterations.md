@@ -522,3 +522,57 @@ a cheap floor, the method is "learn U0 once (canonical adapter) or from a small 
 (many structures), Iterations 2-3 must be condition-specific, and the whole design
 changes. So Iteration 1 is the first test to run, and the roadmap is deliberately
 ordered so each category's answer re-frames the next.
+
+## Iteration 1 result: the residuals do NOT share a usable structure -- the
+shared-U0 assumption is REJECTED (2026-08-28, `al_shared_basis_diag.py`)
+
+Per condition, measured the top-r subspace of each residual R_c, the top-r of the
+POOLED residual [R_fog|R_crosstalk|R_snow|R_wet], and (a) how much of each
+condition's own residual the pooled basis captures (ratio vs its own-top-r ceiling)
+and (b) pairwise subspace agreement. Both DGLSS++ and cov-shift.
+
+**The three convergent signals:**
+
+1. **The pooled residual is NOT low-rank.** effective_rank(90%) of the pooled
+   residual is 16-17 (out of 68 columns = 4 conds x 17 classes): it needs ~4
+   directions per condition. Each condition is individually low-rank (own-top-r
+   captures 0.92-0.99 at r=4), but the pooled one is effectively full-rank -- the
+   conditions' directions do not collapse onto a common few.
+2. **Pairwise subspace agreement is low everywhere.** fog~crosstalk cos
+   0.37-0.53, and every other pair is 0.21-0.45 (both extractors, all r). No pair
+   of conditions shares a strong common subspace.
+3. **A clear "left-out" condition.** wet_ground's pooled-ratio is 0.46-0.50
+   (dglsspp r=2/4) and 0.66-0.74 (covshift) -- a large fraction of its residual
+   is NOT in the shared basis. Even the best pair (fog/crosstalk) leaves ~10-20%
+   condition-specific.
+
+**Verdict: the canonical adapter (one U0 for all conditions) is structurally
+impossible.** The conditions' residuals live in largely DIFFERENT subspaces, so a
+single shared low-rank basis cannot serve them. The canonical-adapter objective
+(L_adapt with one U0) is not well-posed and is dropped as a shared-basis idea.
+
+**What survives -- the efficient bank is condition-specific by construction.** The
+bank learns U from the TARGET condition's OWN corrupted-pool labels (fit W_sub on
+the target stream's labeled points, U = SVD(W_sub - W0)); it never assumed
+cross-condition sharing. So this negative does NOT affect the bank route -- in
+fact the data now says condition-specific U is exactly what is needed, which is
+what the bank provides by design. The bank's U is the target condition's own
+residual basis, which is the correct object.
+
+**What changes in the roadmap.** Iteration 1's answer re-frames Iterations 2-3:
+- Iteration 2 (the bank floor) is now the PRIMARY route and is well-posed
+  unchanged: how much of the target condition's own labeled supervision reaches a
+  working U.
+- Iteration 3 (can the stream identify the condition) is now LESS critical for the
+  bank route, because the bank's labels come from the target stream itself -- there
+  is no cross-condition adapter to select. TTA still sets rho (trust), but no longer
+  needs to classify WHICH corruption is present.
+- The canonical adapter is reduced to a per-condition idea at most (train the
+  extractor so ONE CONDITION's residual is more structured), which is a much weaker
+  claim and not needed for the bank.
+
+**The efficient bank is now the single live route.** It is the one method that
+(a) supplies oracle-quality U by construction (C30/C31), (b) is inherently
+condition-specific (which the data says is required), and (c) whose cost can be
+reduced by the efficiency program (representative selection, streaming sufficient
+statistics, compression). Iteration 2 measures the floor for (c).
