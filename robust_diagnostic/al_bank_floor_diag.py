@@ -326,7 +326,7 @@ def main():
             e = cond_res['banks'][str(N)]
             for sname, s in e['selections'].items():
                 al = " ".join(f"r{r}:{v:.2f}" for r, v in s['align'].items())
-                gc = " ".join(f"r{r}:" + str(max((v['gap_closed'] or -9) for v in s['gc'][r].values()) if s['gc'][r] else None)
+                gc = " ".join(f"r{r}:" + str(max((v['gap_closed'] or -9) for v in s['gc'][str(r)].values()) if s['gc'][str(r)] else None)
                               for r in r_sweep)
                 print(f"    N={N:4d} {sname:15s} align({al}) | best gc({gc})")
 
