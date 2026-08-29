@@ -304,15 +304,16 @@ def main():
 
             # tikhonov: A = X_L^T X_L + lam*I  ->  min ||X_L dW - resid||^2 + lam||dW||^2
             A_tik = lambda v: Xd.t() @ (Xd @ v) + args.reg_lambda * v
-            dW_t = cg_solve_apply(A_tik, bL, d, C, device)
+            dW_t = cg_solve_apply(A_tik, bL, d, C, device).cpu()
             dt = mw(W0c + dW_t, Xv, vl) - refs['frozen']
             res['tikhonov'] = {'delta': float(dt), 'gap_closed': float(dt / gap) if gap > 1e-9 else None}
 
             # pool_span: penalize the COMPLEMENT of span(Upool)
             # A = X_L^T X_L + lam*(I - P_pool), P_pool = Upool Upool^T
-            Pv = lambda v: Upool.double().to(device) @ (Upool.double().to(device).t() @ v)
+            Upd = Upool.double().to(device)
+            Pv = lambda v: Upd @ (Upd.t() @ v)
             A_span = lambda v: Xd.t() @ (Xd @ v) + args.reg_lambda * (v - Pv(v))
-            dW_s = cg_solve_apply(A_span, bL, d, C, device)
+            dW_s = cg_solve_apply(A_span, bL, d, C, device).cpu()
             ds = mw(W0c + dW_s, Xv, vl) - refs['frozen']
             res['pool_span'] = {'delta': float(ds), 'gap_closed': float(ds / gap) if gap > 1e-9 else None}
 
@@ -320,7 +321,7 @@ def main():
             # S_pool v = X_pool^T (X_pool v)
             Xpd = Xp.double().to(device)
             A_pen = lambda v: Xd.t() @ (Xd @ v) + args.reg_lambda * (Xpd.t() @ (Xpd @ v))
-            dW_p = cg_solve_apply(A_pen, bL, d, C, device)
+            dW_p = cg_solve_apply(A_pen, bL, d, C, device).cpu()
             dp = mw(W0c + dW_p, Xv, vl) - refs['frozen']
             res['pool_penalty'] = {'delta': float(dp), 'gap_closed': float(dp / gap) if gap > 1e-9 else None}
 
