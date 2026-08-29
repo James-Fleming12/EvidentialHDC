@@ -166,10 +166,13 @@ def main():
     ap.add_argument("--config", type=str, default="config/labels/semantic-kitti-all.yaml")
     ap.add_argument("--arch", type=str, default="config/arch/senet-2048p.yml")
     ap.add_argument("--frames", type=int, default=100)
-    ap.add_argument("--pool_size", type=int, default=50000)
+    ap.add_argument("--pool_size", type=int, default=20000,
+                    help="corrupted pool for the probe + acquisition (20k keeps GPU "
+                         "footprint ~2GB; the sweep only selects b<=8 points from it)")
     ap.add_argument("--val_size", type=int, default=100000)
     ap.add_argument("--lam", type=float, default=1e-3)
-    ap.add_argument("--max_clean", type=int, default=50000)
+    ap.add_argument("--max_clean", type=int, default=30000,
+                    help="clean points for the frozen probe fit (30k=1.2GB GPU copy)")
     ap.add_argument("--nystrom_m", type=int, default=1000)
     ap.add_argument("--cg_iters", type=int, default=8)
     ap.add_argument("--r", type=int, default=2, help="single rank for the first-order step")
@@ -224,7 +227,8 @@ def main():
         val_f, vl = fd[perm[-args.val_size:]], ld[perm[-args.val_size:]]
         Xp = hdc_codes(pool_f, proj, device).float()
         Xv = hdc_codes(val_f, proj, device).float()
-        del pool_f, val_f, fd, ld
+        # keep pool_f (128-d, ~25MB) for the diversity acquisition; delete the rest
+        del val_f, fd, ld
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
