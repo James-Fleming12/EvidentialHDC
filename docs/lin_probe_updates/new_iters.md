@@ -295,3 +295,69 @@ b=2-4 budgets. The acquisition rules to carry forward are the combined
 (Experiment B) is to pair the best acquisition with the LOCAL correction forms
 (class-bias, prototype, class-pair separator) and test whether the update itself
 can be driven by the same few labels without oracle U.
+
+## Iteration 2 result: the U-free residual is CLOSED -- the pool geometry does not
+substitute for U, and the local forms are not viable as-implemented
+(2026-08-29, `al_local_update_diag.py` + `al_ufree_diag.py`)
+
+Two experiments closed the "move away from the residual" branches:
+
+**Experiment B (local forms).** class_bias / prototype / class_pair / local_topK,
+driven by the same margin_tta_div / egl labels, WITHOUT oracle U. Result: all
+negative or catastrophic. class_bias is a known-dead baseline (bias-only closes
+0-4% of the gap, Iteration 0); prototype sits below the probe (R1 < R4);
+class_pair's step size was uncalibrated (its -13 gc on snow/wet_ground is the
+signature of overstepping, not necessarily the idea). The healthy conditions
+were also hurt (P3 violated).
+
+**Iteration 1-UFree (pool-prior regularizer).** Directly optimize dW with the
+unlabeled pool geometry as a prior: min_dW L_L(W0+dW) + lam*R(dW; X_pool), never
+estimating U. Variants: tikhonov (plain ridge on few labels), pool_span (force dW
+into the top-r pool-eigen span), pool_penalty (penalize high-variance directions),
+hybrid_first (pool-regularized gradient). Result:
+
+| variant | dglsspp fog | covshift fog | crosstalk (best) |
+| :--- | :--- | :--- | :--- |
+| oracle_U (bound) | +0.10 | +0.24 | +0.07-0.26 |
+| tikhonov | +0.04 | -0.12 | +0.02 to -1.53 |
+| pool_span | -0.09 | -0.68 | -0.16 to -2.74 |
+| pool_penalty | +0.00 | +0.00 | +0.00-0.02 |
+| a_grad / hybrid | -0.45 | -1.54 | -0.27 to -12.5 |
+
+The pool-prior does NOT substitute for U. pool_penalty is exactly zero (the
+regularizer pushes dW into the lowest-variance directions where the label signal
+is dead); pool_span is negative (reconfirming pool-covariance directions are NOT
+the residual, Iteration 1 / R3); tikhonov reproduces the R2 collapse; a_grad and
+hybrid are the known failures. Combined with Experiment B, the U-free residual
+route is CLOSED with a measured negative.
+
+**What this means.** The update itself cannot be driven by few labels -- neither
+through a local correction form nor through a pool-geometry regularized dW. The
+only few-label update that works is the first-order step with oracle U, and U is
+not obtainable. This confirms the decision-tree verdict: Iteration 1 is closed as
+a few-label method, and the remaining candidates are the U-free entries in the
+next-steps table that do NOT require a parameter update at all (logit calibration,
+prototype selection, error-correction loops, sequential AL).
+
+---
+
+## Next: the U-free next-steps (from the candidate table)
+
+The candidates that do not require estimating U or a global parameter update, in
+the order the evidence supports:
+
+1. **Error-correction AL loop (A5)** -- labels reveal recurring (pred,true) error
+   pairs; subsequent queries focus on those pairs; repair only the demonstrated
+   errors. This is the natural next test: it uses labels to FIND the problem, not
+   to estimate a parameter. The Iteration-1 acquisition sweep showed the labels
+   carry real selection signal; this extends it to a loop.
+2. **Sequential AL (A3)** -- x1 -> y1 -> x2(y1) -> ... where each label sharpens
+   the next query. Directly tests "labels reveal the structure of the next query."
+3. **Logit calibration (B3)** -- z' = a_c z_c + b_c. The known-weak baseline
+   (bias-only = 0-4%) but zero-cost and a clean control.
+4. **Prototype selection (B4)** -- which prototypes are wrong, using TTA
+   instability, rather than a global residual.
+
+These are the Tier-1 U-free bets. They share the property that failed nothing so
+far: they use labels to make DECISIONS about where to look, not to estimate a
+parameter update.
