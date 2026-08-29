@@ -283,7 +283,7 @@ def main():
                 egl[i] = p[a].item() * (ea - p).norm().item() + p[b].item() * (eb - p).norm().item()
 
         # ---- acquisition selectors (return POOL indices) ----
-        cand_feats = pool_f[perm[:args.pool_size]]      # raw 128-d features (for diversity)
+        cand_feats = pool_f      # raw 128-d features of the pool (for diversity)
 
         def select(rule, b):
             if rule == 'random':
