@@ -413,3 +413,112 @@ first-order diagnostic proved the step needs no covariance -- so the ONLY hard p
 left is U, and the canonical adapter removes U from the test-time problem entirely.
 
 ---
+
+## The Iteration 1-3 roadmap: the problems each category must solve
+
+The two routes (efficient bank, canonical adapter) both depend on the SAME open
+questions. Rather than design implementations first, this roadmap isolates the
+PROBLEM each category must solve -- the property we need to be true for the method
+to work at all -- and tests that property directly. Each category will contain
+several concrete iterations; the categories are the organizing ideas.
+
+These are written as "what has to be true," not "how we think we can make it true."
+
+### Iteration 1: do the residuals across conditions share a usable structure?
+
+**The problem.** The canonical adapter assumes ONE low-rank basis U0 serves ALL
+corruption conditions: R_c ~ U0 C_c for fog, crosstalk, snow, wet_ground, etc.
+The efficient bank similarly assumes that what we learn from labeled points is
+transferable across conditions. But we have only ever measured that each condition's
+residual is individually low-rank (rank 4-5). We have NOT measured whether the
+FOG residual and the CROSSTALK residual live in the SAME directions or in different
+ones.
+
+**What has to be true for the method to work.** There is a single low-dimensional
+subspace that captures most of the recoverable residual on every condition. If the
+conditions share a basis, one learned U0 (or one bank-learned U) serves them all and
+the adaptation is a single structure. If each condition's residual is in a
+different subspace, then a single adapter cannot work -- we would need
+condition-specific structures, which reintroduces the "which one at test time?"
+problem before we even get to the bank.
+
+**Why this is the gating test.** If Iteration 1 fails (no shared basis), the
+canonical adapter is structurally impossible and the efficient bank must be
+re-thought as condition-specific. If it passes, the rest of the roadmap is well-
+posed. This is the cheapest test (eval-only on the residuals we already compute)
+and the highest-leverage decision.
+
+**The test.** Measure, per condition, how much of R_c lies in the top-r subspace of
+the POOLED residuals (concatenate [R_fog | R_crosstalk | R_snow | R_wet], take its
+top-r, measure per-condition capture ||U0^T R_c||/||R_c||). Also measure pairwise
+subspace agreement (cos of each condition's top-r against each other's). A single
+number answers the question: does one low-rank structure explain all conditions, or
+does each condition need its own?
+
+### Iteration 2: how much supervision is actually needed to reach a working U?
+
+**The problem.** Every cheap U estimator (2-8 labels, corrupted statistics, the
+pairing) failed. The only thing that works is oracle-quality U -- which currently
+requires fitting W_sub on a large labeled bank (C30/C31: 56+500 points). The
+efficient-bank program claims we can get that U quality with FEWER, better-chosen
+points. But we have never measured the curve: at what bank size (and selection
+rule) does the bank-learned U become good enough that the trust-region step closes
+real gap? We know the 500-point bank works; we do not know the floor.
+
+**What has to be true for the method to work.** There is a bank size, well below the
+current 56+500, at which the learned U is good enough to make the trust-region step
+close most of the closeable gap (align to oracle > ~0.7, or equivalently gc reaching
+most of the oracle-U gc). If the floor is ~500 points, the bank is not cheap and the
+"efficient" claim fails; if it is ~50-100 points, the method is viable.
+
+**Why this matters before implementation.** The bank's design (how many points, how
+selected, what statistics to keep) is entirely determined by this floor. Building
+compression/streaming machinery before knowing the floor risks optimizing the wrong
+thing. This is the measurement that turns the bank from "a workaround we know works
+at 500 points" into "a mechanism we know works at N points."
+
+**The test.** Sweep bank size (56 + {20, 50, 100, 300, 500}) and selection rule
+(random vs leverage-in-U vs gradient-diversity), fit W_sub on each, take U = SVD
+(W_sub - W0), and measure (a) align to oracle U and (b) the trust-region step's gc
+on fog/crosstalk. The curve answers: what is the cheapest supervision that reaches a
+working U?
+
+### Iteration 3: can the stream tell us which adaptation to use?
+
+**The problem.** If Iteration 1 shows conditions need different structures (or even
+if a single U0 exists but the stream is a mix), the method must know AT TEST TIME
+which adaptation applies. The gate diagnostic showed that a label-free gauge can
+say "this stream is corrupted" but NOT "this stream is worth adapting" (snow has
+low conf_drop yet huge oracle headroom). We have never checked the weaker, more
+useful claim: can the gauge tell WHICH corruption/adaptation is present (fog vs
+crosstalk vs snow), even if it cannot predict the gain?
+
+**What has to be true for the method to work.** The unlabeled stream's statistics
+(confidence drop, mean shift, prototype-vs-probe disagreement, feature norm shift)
+form a separable signature per condition -- enough to classify the active
+corruption/adapter without labels. If the signatures overlap, TTA cannot choose the
+mechanism and we must either use one universal adapter (needs Iteration 1 to pass)
+or query for the mechanism (a label cost we were trying to avoid).
+
+**Why this matters.** This is the difference between "TTA is a useful controller"
+(chooses which adapter) and "TTA is decorative" (cannot choose). It determines
+whether the deployable method has a free selection step or must spend labels on
+mechanism identification.
+
+**The test.** Compute the gauge vector (conf_drop, mean_shift_cos, r4_r1_disagree,
+norm_ratio) per condition, and check whether the conditions form separable clusters
+in gauge space (e.g. pairwise separability, or a simple classifier's accuracy at
+distinguishing fog from crosstalk from snow from wet_ground label-free).
+
+### How the three categories compose
+
+- Iteration 1 decides whether the adaptation is ONE structure or MANY.
+- Iteration 2 decides how cheaply we can obtain the structure's U (the bank floor).
+- Iteration 3 decides whether the stream can tell us which structure to use.
+
+The composition: if Iteration 1 passes (one shared structure) and Iteration 2 finds
+a cheap floor, the method is "learn U0 once (canonical adapter) or from a small bank
+(efficient bank), then 2-4 labels estimate C, TTA sets rho." If Iteration 1 fails
+(many structures), Iterations 2-3 must be condition-specific, and the whole design
+changes. So Iteration 1 is the first test to run, and the roadmap is deliberately
+ordered so each category's answer re-frames the next.
