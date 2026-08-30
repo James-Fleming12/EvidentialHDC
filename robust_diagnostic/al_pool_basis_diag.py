@@ -178,8 +178,12 @@ def span_capture(D, R_flat):
 
 
 def orthonormal(D, device):
-    """Orthonormalize the d x K dictionary (QR on columns)."""
-    D = D.float().to(device)
+    """Orthonormalize the d x K dictionary (QR on columns). Accepts a 1-D
+    direction (d,) as a single-column dictionary."""
+    D = D.float()
+    if D.dim() == 1:
+        D = D.unsqueeze(1)
+    D = D.to(device)
     Q, _ = torch.linalg.qr(D)
     keep = Q.norm(dim=0) > 1e-8
     return Q[:, keep]
@@ -302,7 +306,7 @@ def main():
         if 'bdry_disp' in dict_names:
             bnd = torch.argsort(margin)[:int(0.05 * n)]
             disp = Xp[bnd].mean(dim=0) - pool_mean
-            dict_elems['bdry_disp'] = disp / (disp.norm() + 1e-8)
+            dict_elems['bdry_disp'] = (disp / (disp.norm() + 1e-8)).unsqueeze(1)
 
         if 'conf_pair' in dict_names:
             # top-N confused pairs by count of (top1, top2) among the pool
@@ -343,7 +347,7 @@ def main():
             tta_var = torch.stack(draws).var(dim=0).mean(dim=1)
             hi = cand[torch.argsort(tta_var, descending=True)[:int(0.02 * n_cand)]]
             dvec = Xp[hi].mean(dim=0) - pool_mean
-            dict_elems['tta_disp'] = dvec / (dvec.norm() + 1e-8)
+            dict_elems['tta_disp'] = (dvec / (dvec.norm() + 1e-8)).unsqueeze(1)
 
         # ---- orthonormalize each element + the full dictionary ----
         elem_q = {k: orthonormal(D, device).cpu() for k, D in dict_elems.items()}
