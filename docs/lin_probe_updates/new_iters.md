@@ -205,7 +205,7 @@ re-estimate W.
 | A1 | **Class-pair boundary sampling** | Query by min top-2 logit margin (of the R4 probe), with a SEPARATE budget per (a,b) class pair | The residual is decision-rule structured; ~5 pairs may carry ~80% of recoverable error (R3). 8 pair-targeted labels > 8 global labels | P1, P2 | Needs the top-2 class competition to be stable; if error is not pair-concentrated this caps out |
 | A2 | **TTA-instability x boundary acquisition** | A(x) = Var[p(y|aug_k(x))] + alpha/|margin| + beta*disagreement(proto,probe) -- the disagreement term is a GAUGE SIGNAL, not a decoder to adapt | TTA's validated strength is instability detection (A2); combine with boundary proximity = query the unstable boundary, not the uncertain bulk | P1, P2 | If instability and recoverable error decouple (as conf_drop did for gain), the acquisition may select wrong-but-stable points |
 | A3 | **Sequential AL (labels reveal the next query)** | Query 1 -> see the error pair -> focus next query on that boundary -> different region -> next pair | Avoids inferring the whole structure before enough labels; each label sharpens the next (the adaptive loop) | P1, P2 | Slow (sequential), needs the confusion structure to be discoverable in a few steps |
-| A5 | **Error-correction AL loop (the recommended next test)** | 8 labels -> identify recurring (pred,true) errors -> accumulate confusion -> query the uncertain points of those pairs -> re-rank / re-gate those pairs at DECODE time (NOT a W update) | Directly targets the demonstrated failures; matches the "decision-rule object" finding; the "repair" is a decode-time correction of the identified pairs, consistent with the closed-update constraint | P1, P2 | Same pair-concentration assumption as A1 |
+| A5 | ~~Error-correction AL loop~~ | ~~labels reveal recurring (pred,true) errors; query those pairs; re-rank/gate at DECODE time~~ | ~~"labels find the problem, not the parameter"~~ | ~~P1, P2~~ | **CLOSED (Iteration 5): labels do not reliably identify the pairs (recall <= 0.25), AND the decode-time pair repair is ~0/negative even with oracle pairs (pair_bias, pair_gate). The pair is not the right atomic repair unit** |
 
 ### Tier 1.5 -- CLOSED: pool-derived basis + few-label coefficient selection (Iteration 4)
 
@@ -436,53 +436,55 @@ step.
 
 **Level 2 -- Local decision correction (still no global W).** Labels learn
 class-pair corrections, prototype/neighborhood rules, spatial/temporal
-corrections, TTA-consistency overrides applied at decode. This is the A5
-error-correction loop (decode-time re-ranking of identified pairs) and the
-A1 class-pair boundary work. Closest to the "decision-rule object" finding
-(R3), still no global update.
+corrections, TTA-consistency overrides applied at decode. **CLOSED in its pair
+form by Iteration 5 (A5): the labels do not reliably identify the pairs, and the
+decode-time pair repair is ~0/negative even with oracle pairs.** The pair is not
+the right atomic repair unit; this also closes A1's class-pair repair (same
+mechanism). No remaining Level-2 candidate.
 
 **Level 3 -- Fully acquisition-driven TTA.** Labels determine WHERE/WHEN the
 frozen classifier is unreliable; TTA provides the actual adaptation signal. This
 is A2/A3: acquisition rules (margin + TTA-instability + diversity) driving where
 TTA is trusted. Matches TTA's validated role as an instability detector.
 
-**Where the effort goes now:** Level 3 (acquisition-driven TTA) is the strongest
-fit to the measured evidence -- labels for selection/instability, TTA for the
-signal, no parameter reconstruction. Levels 1-2 are the conservative floor and
-the decode-time repair candidates.
+**Where the effort goes now:** Level 3 (acquisition-driven TTA, A3 sequential AL
+and A2 TTA-instability x boundary acquisition) is the strongest fit to the
+measured evidence -- labels for selection/instability, TTA for the signal, no
+parameter reconstruction and no pair-rule repair. Level 1 (B3 logit calibration)
+is the conservative floor and the only remaining decode-only candidate.
 
 ---
 
 ## Next: the U-free next-steps (from the candidate table)
 
-Ranked by what the measured evidence supports after Iterations 3b and 4, organized
-by the decision levels above. **All hold for the R4 linear probe** (no prototype
-decoder; labels make decisions about where to look or how to re-rank at decode
-time -- every W-update family is now closed, including the pool-basis branch, P1,
-Iteration 4; the planned "final sanity check" (pool basis + label coefficients)
-was that branch and has already been run):
+Ranked by what the measured evidence supports after Iterations 3b, 4 and 5,
+organized by the decision levels above. **All hold for the R4 linear probe** (no
+prototype decoder; labels make decisions about where to look or how to re-rank at
+decode time -- every W-update family is now closed, including the pool-basis
+branch, P1/Iteration 4, and the pair-repair branch, A5/Iteration 5):
 
-1. **Error-correction AL loop (A5)** -- labels reveal recurring (pred,true) error
-   pairs; subsequent queries focus on those pairs; "repair" is a decode-time
-   re-ranking/gating of the identified pairs, NOT a W update. This is the natural
-   next test: it uses labels to FIND the problem, not to estimate a parameter. The
-   Iteration-1 acquisition sweep showed the labels carry real selection signal;
-   this extends it to a loop.
-2. **Sequential AL (A3)** -- x1 -> y1 -> x2(y1) -> ... where each label sharpens
-   the next query. Directly tests "labels reveal the structure of the next query."
-3. **Logit calibration (B3)** -- z' = a_c z_c + b_c on the probe's logits. The
+1. **Logit calibration (B3)** -- z' = a_c z_c + b_c on the probe's logits. The
    known-weak baseline (bias-only = 0-4%) but zero-cost and a clean control, and
    the only parameter change that holds for the linear classifier (it is the
-   probe's bias, not U).
+   probe's bias, not U). The one remaining Level-1 (decode-only) candidate.
+2. **Sequential AL (A3)** -- x1 -> y1 -> x2(y1) -> ... where each label sharpens
+   the next query. Directly tests "labels reveal the structure of the next query."
+   Now the primary Level-3 acquisition candidate, alongside A2 (TTA-instability x
+   boundary acquisition, the validated detector).
+3. **Error-correction AL loop (A5) is CLOSED (Iteration 5)** -- the labels do not
+   reliably identify the error pairs (recall <= 0.25), AND the decode-time pair
+   repair does not close the gap even with oracle pairs (pair_bias ~ 0/-2, pair
+   _gate negative everywhere). The pair is not the right atomic repair unit.
 4. **Prototype selection (B4) is REMOVED** -- it assumes the R1 prototype decoder,
    which is closed (R1 < R4). It does not hold for the linear classifier.
 
-These are the Tier-1 U-free bets. They share the property that failed nothing so
+These are the surviving U-free bets. They share the property that failed nothing so
 far: they use labels to make DECISIONS about where to look or how to re-rank,
 not to estimate a parameter update. The last parameter-update branch (P1, pool
-basis + label selection) is CLOSED by Iteration 4 -- the pivot to
-acquisition-only / decode-time decision rules is now final, with a measured
-negative rather than an assumption. The effort now concentrates on Level 3
+basis + label selection) is CLOSED by Iteration 4, and the pair-repair branch
+(A5) is CLOSED by Iteration 5 -- the pivot to acquisition-only / decode-time
+decision rules is now final, with a measured negative rather than an assumption.
+The effort now concentrates on Level 3
 (acquisition-driven TTA: labels for instability/selection, TTA for the signal),
 with Levels 1-2 (decode-only calibration, local decision correction) as the
 conservative floor.
@@ -663,3 +665,56 @@ The positive residue to carry forward: the coefficient half IS easy given a righ
 basis (Iteration 1, confirmed here with same-labels oracle U), but no label-free
 or few-label route produces one. Remaining candidates: A5 (error-correction AL
 loop), A3 (sequential AL), B3 (logit calibration).
+
+## Iteration 5 result: A5 -- the error-correction AL loop is CLOSED, at BOTH
+stages (2026-08-30, `al_error_loop_diag.py`)
+
+A5 = labels reveal recurring (pred,true) error pairs, subsequent queries focus on
+those pairs' boundaries (the sequential loop), and the repair is a DECODE-TIME
+re-ranking/gating of the identified pairs (NOT a W update). The diagnostic
+separates the two stages: pair DISCOVERY (confusion counts from labels vs
+val-truth error pairs) and the decode repair (pair_bias = per-pair logit offset,
+pair_gate = margin-threshold flip), each with label-pair vs oracle-pair arms.
+Both DGLSS++ and cov-shift, all 4 conds, budgets 2/4/8.
+
+**Stage 1 (discovery) is weak -- the labels do NOT reliably find the error
+pairs.** The few labels identify only 1-3 pairs, and recall is <= 0.25 on every
+cell (best hit: dglsspp wet_ground b8 2/4; covshift fog/snow/wet_ground b2 1/4
+at precision 1.0 but that is one lucky pair). On most cells the discovered pair
+is NOT in the val-truth set (dglsspp fog/crosstalk prec 0.00 at b2/b4; covshift
+crosstalk finds nothing until b4). The "labels reveal the problem" claim is not
+supported at this budget: the confusion structure of a handful of points does not
+replicate the pool-level confusion.
+
+**Stage 2 (decode re-ranking) is the DECISIVE negative -- the repair does not
+close the gap even under ORACLE pairs.**
+
+| arm | dglsspp fog/crosstalk | covshift fog/crosstalk | snow/wet_ground |
+| :--- | :--- | :--- | :--- |
+| pair_bias label | -0.03 / -0.03 (b8) | +0.00 / -0.41 | -1.46 / -6.03 (wg b8) |
+| pair_bias oracle | +0.00 / +0.00 | **-2.15** / +0.00 | -0.41 / -0.10 |
+| pair_bias random | +0.00 / +0.00 | +0.00 / +0.00 | +0.00 / +0.00 |
+| pair_gate label | +0.00 / +0.00 | -0.00 / +0.00 | +0.00 / +0.00 |
+| pair_gate oracle | **-0.20** / **-0.10** | **-0.26** / **-3.36** | **-1.86** / **-0.91** |
+
+- **pair_bias ORACLE (true pairs, pool-label offsets) is ~0 or NEGATIVE on every
+  cell** (covshift fog -2.15, snow -0.41, wet_ground -0.10). Even with the CORRECT
+  pairs and pool-fit offsets, per-pair logit offsets do not move mIoU -- they
+  cannot represent the global residual (the pair structure of R is not a small
+  set of scalar logit shifts; this is the same global-object result as Iterations
+  3b/4, at the decision-rule level).
+- **pair_gate oracle is negative EVERYWHERE** (-0.10 to -3.36). The margin-threshold
+  flip over-corrects: it flips more correct low-margin points than it fixes,
+  because the label-observed misclassification threshold is not a clean separator.
+- **random == +0.00 consistently** -- the control confirms the pair-bias mechanism
+  is a no-op at best, and the label arms are occasionally catastrophic when a
+  wrong pair gets a large offset (dglsspp wet_ground b8 -6.03, snow b8 -1.46).
+
+**Verdict: A5 is CLOSED with a measured negative at BOTH stages.** The few labels
+do not reliably identify the error pairs (stage 1), AND the decode-time pair
+re-ranking does not repair the gap even with oracle pairs (stage 2). The pair is
+not the right atomic repair unit: the recoverable error is a GLOBAL rotation of
+the probe, not a set of per-pair scalar decisions. This closes the Level-2 "local
+decision correction" candidate (A5, and by the same mechanism A1's class-pair
+repair). Remaining: B3 (logit calibration, Level 1) and A3/A2 (sequential AL +
+acquisition-driven TTA, Level 3).
