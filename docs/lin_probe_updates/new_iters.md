@@ -204,6 +204,23 @@ survivor uses labels to SELECT/re-rank, not to re-estimate W.
 | A3 | **Sequential AL (labels reveal the next query)** | Query 1 -> see the error pair -> focus next query on that boundary -> different region -> next pair | Avoids inferring the whole structure before enough labels; each label sharpens the next (the adaptive loop) | P1, P2 | Slow (sequential), needs the confusion structure to be discoverable in a few steps |
 | A5 | **Error-correction AL loop (the recommended next test)** | 8 labels -> identify recurring (pred,true) errors -> accumulate confusion -> query the uncertain points of those pairs -> re-rank / re-gate those pairs at DECODE time (NOT a W update) | Directly targets the demonstrated failures; matches the "decision-rule object" finding; the "repair" is a decode-time correction of the identified pairs, consistent with the closed-update constraint | P1, P2 | Same pair-concentration assumption as A1 |
 
+### Tier 1.5 -- the last parameter-update branch: POOL-DERIVED BASIS + FEW-LABEL COEFFICIENT SELECTION
+
+This is the one surviving parameter-update family, distinct from everything closed
+so far. It reframes the update from
+
+> few labels -> span(x_i) -> Delta W            (CLOSED by Iteration 3b)
+
+to
+
+> unlabeled pool provides a basis, few labels SELECT/WEIGHT which combination -> Delta W.
+
+| # | Direction | What it is | Why it could work | Property | Risk |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| P1 | **Pool-basis + label selection** | Build a RICH dictionary of candidate update directions v_1..v_K from the UNLABELED pool (not the top-r covariance -- boundary directions, per-class shifts, disagreement directions, confusion-pair margins); few labels select/weight the combination Delta W = sum_j c_j v_j | Iteration 1 showed the COEFFICIENT problem is EASY given oracle U (oracle-U + few labels closed +0.29-0.37); the missing piece is the basis itself. A rich pool dictionary (K >> 2 directions, unlike pool_span's top-2) may contain the residual even if no single pool statistic is aligned | P1, P2, P5 | The pool covariance top directions were NOT the residual (pool_span failed); a richer dictionary needs the residual to be a SPARSE combination of pool directions, which is untested |
+| P2 | **Oracle-U reference as a diagnostic** | Keep U_oracle -> C_few-label frozen: is coefficient-selection easy once the basis is right? | Iteration 1's acquisition sweep already answered YES (+0.29-0.37 at rho=0.8): given oracle U, few labels drive the step well. This tells us P1's only hard part is the BASIS | P1 | Diagnostic only, not a method |
+| P3 | **Label as constraint, not direction** | A label (x_i, y_i) provides x_i x_i^T, a class prototype, a class-pair constraint (w_{y_i}-w_j)^T x_i, or a correction to a pre-existing UNLABELED boundary estimate -- none of which lie in span{x_i(e_{y_i}-p_i)^T} | Escapes the 3b closure: the label's information content is NOT limited to its CE-gradient direction; it can correct a pool-derived structure the label never spans | P1, P2 | Requires a pool-derived structure to correct (the same basis question as P1) |
+
 ### Tier 2 -- conservative / decode-time corrections (no W update)
 
 | # | Direction | What it is | Why it could work | Property | Risk |
@@ -374,6 +391,17 @@ These are the Tier-1 U-free bets. They share the property that failed nothing so
 far: they use labels to make DECISIONS about where to look or how to re-rank,
 not to estimate a parameter update.
 
+**Before fully pivoting to acquisition-only, one parameter-update branch remains
+(Tier 1.5: pool-basis + label selection, P1/P3).** Iteration 1 established the
+COEFFICIENT half is easy: given oracle U, few labels drive the step well
+(+0.29-0.37 at rho=0.8). The 3b closure says the label-DERIVED basis is not the
+residual (span ~0). So the one open question is whether a RICH POOL-DERIVED
+dictionary (K >> 2 directions: boundary, per-class shift, disagreement, confusion
+margin) contains the residual as a sparse combination that few labels can select.
+This is the "unlabeled pool provides the basis, labels select/weight" branch --
+the last genuinely interesting parameter-update idea before the full pivot to
+acquisition-only / TTA decision rules.
+
 ## Iteration 3 result: the rank-1-per-label diagnostic is INCONCLUSIVE -- the
 negative is confounded by metric choice and step scale, NOT a verdict on the
 decomposition idea (2026-08-29, `al_rank1_diag.py`)
@@ -423,3 +451,68 @@ follow-up is a rerun with (a) normalized u_i and a per-label trust radius, and
 whether the idea fails because "labels don't span the residual" (real) or because
 "the step was too big" (artifact). Do NOT discard the decomposition concept on
 this result.
+
+## Iteration 3b result: the corrected rerun CLOSES the rank-1 decomposition -- the
+labels genuinely do NOT span the residual (2026-08-29, `al_rank1b_diag.py`)
+
+The two confounds from Iteration 3 were fixed and the diagnostic rerun: (a)
+NORMALIZED per-label directions (u_i/||u_i||, so eta is a bounded trust radius,
+not a raw 4.8 overstep), and (b) SPAN-CAPTURE -- does the span of the b labels
+contain R? (||P_span R||/||R||), which is the correct question (a single label is
+never the whole residual, but the span can be). Both DGLSS++ and cov-shift, all 4
+conds.
+
+**SPAN-CAPTURE is the decisive number, and it is ~0 everywhere:**
+
+| cond | dglsspp capture (b2/b4/b8) | covshift capture (b2/b4/b8) |
+| :--- | :--- | :--- |
+| fog | 0.008 / 0.011 / 0.017 | 0.009 / 0.014 / 0.020 |
+| crosstalk | 0.009 / 0.009 / 0.011 | 0.004 / 0.016 / 0.017 |
+| snow | 0.001 / 0.003 / 0.016 | 0.005 / 0.011 / 0.018 |
+| wet_ground | 0.009 / 0.011 / 0.012 | 0.002 / 0.011 / 0.016 |
+
+**The 8 labels' span captures 0.4-2.0% of the oracle residual** -- even with
+NORMALIZED directions (removing the scale confound), the label span does not
+contain R. This is the REAL, method-independent conclusion the corrected test was
+designed to isolate: it is NOT "the step was too big" (that confound is gone); it
+is that "few labels cannot span the residual." The decomposition idea is closed at
+the fundamental level.
+
+**The update confirms it.** With the bounded trust radius, the normalized
+aggregate is still negative (dglsspp fog b8 -0.47; covshift fog b8 -1.05) and
+0/8 per-label updates are positive on every condition, both extractors (so
+keep_oracle_good is +0.00 -- there is nothing good to keep). The oracle-U
+reference is only +0.00 to +0.06 (small at eta=0.5), confirming the bounded step
+is not the issue. The failure is structural: the few labels' rank-1 directions do
+not live in the residual subspace, so no combination of them -- aggregate,
+per-label, or keep-good -- can move the probe correctly.
+
+**Verdict: the rank-1-per-label CE-gradient decomposition is CLOSED, with the
+confounds resolved -- but the claim must be stated NARROWLY.** The corrected rerun
+cleanly separates the two hypotheses from Iteration 3: it is NOT a scale artifact
+(normalized steps still fail) and NOT a metric artifact (span-capture is the right
+metric and it is ~0). The precise, supported conclusion is:
+
+> **Few labeled points' per-point CE-gradient rank-1 directions do not span the
+> oracle residual** -- for b <= 8, across DGLSS++/cov-shift and all 4 conditions.
+
+This is a strong, useful negative, but it is NOT the broader claim that "no
+few-label parameter update works under any formulation." What is closed is the
+specific update family Delta W in span{ x_i(e_{y_i}-p_i)^T : i in L }, not the
+span of all information obtainable from the labels. A label (x_i, y_i) also
+provides x_i x_i^T, a class prototype, a class-pair constraint
+(w_{y_i}-w_j)^T x_i, or a correction to a pre-existing unlabeled boundary estimate
+-- none of which lie in the CE-gradient span (see P1/P3 in the next-steps table).
+
+**The deeper structural reason (why it's fundamental for this family).** u_i =
+x_i r_i^T, so the feature-side reach of b labels is contained in span{x_1..x_b} --
+a tiny subspace of the 10000-d feature space. 3b is telling us: a handful of
+observed feature vectors do not span the feature directions the global probe
+correction needs. This makes the point-gradient family closed regardless of
+scaling, aggregation, sequential application, or better C-estimation inside the
+span.
+
+**What is now closed (do not re-test):** raw u_i, normalized u_i, different eta,
+sequential vs aggregate, keep-good, per-label trust regions, and more
+sophisticated weighting or C-estimation of the same u_i -- all remain inside
+span{u_i}, whose projection onto R is ~0.
