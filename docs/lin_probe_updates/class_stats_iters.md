@@ -18,19 +18,22 @@ rather than treating the method as a blackbox.
 | Naive pseudo-mean + high-dim label bias correction | Closed |
 | Generic whitening regularization (lam_w) | Closed (no effect at these scales) |
 | Arbitrary raw W-update | Closed / deprioritized |
-| Label-free pool pseudo-mean (hard) | Real but weak positive (+0.05-0.11) |
-| Soft / TTA pseudo-mean | Open, untested |
-| Pool basis + scalar/class coefficients (labels estimate alpha in R^K) | Open, untested |
-| Pseudo-label confusion-matrix correction (Q, C x C) | Open, untested |
-| Class-prior correction (P* vs P0, label-free) | Open, untested |
-| Robust / core-set mean acquisition | Open, untested |
-| Whitened / residual-relevant mean-error diagnostic | Open, must run |
+| Label-free pool pseudo-mean (hard) | Real but weak positive (+0.05-0.12) |
+| Pool directions v_c point at the true shift | Validated (align +0.83-0.92) |
+| Mean direction robust to ~50% corruption | Validated (corruption control) |
+| Confusion-matrix correction (Q, C x C) | Works, SATURATES at +0.05 (Iteration 4) |
+| Soft / TTA pseudo-mean | Closed (worse than hard) |
+| Pool basis + scalar coefficients (labels estimate alpha in R^K) | FAILS -- scalar gamma from 2-8 labels is wrong (align right, scalar wrong) |
+| Class-prior correction (P* vs P0) | Closed (negligible, same-scan P*~P0) |
+| Scalar/coefficient estimation (the remaining bottleneck) | OPEN -- Iteration 5 |
+| Whitened / residual-relevant mean-error diagnostic | Ran in Iteration 3 (we, rr reported) |
 
-The headline: a good low-dimensional-ish target (M*) exists, but the naive
-few-label estimator of it is terrible. The open formulations all use the labels
-to estimate a LOW-DIMENSIONAL object (scalars, a confusion matrix) on top of
-pool-derived class statistics -- not a 10000-d vector. (See Iteration 2 verdict
-for the precise closure and the three-arm Iteration-3 plan.)
+The headline: a good low-dimensional-ish target (M*) exists, the pool DIRECTIONS
+point at it (align 0.9), and the direction is robust to ~50% noise -- but the
+few-label SCALAR/coefficient estimator is the single remaining bottleneck (a
+noisy gamma, mis-scaled, then whitening-amplified). The open problem is a good
+step-size/coefficient estimator on the known-good direction. (See Iteration 4
+verdict and the Iteration-5 plan.)
 
 ## Background: why a reformulation, and what we are reformulating
 
@@ -403,3 +406,73 @@ Iteration 4 (planned): refine Arm C (confusion correction with pool-regularized 
 and iteration) + Arm B with the alternative pool-derived directions. The
 corruption control gives the clearest green light: the estimator problem is a
 precision problem, not an impossibility.
+
+## Iteration 4 result: the direction is RIGHT (align 0.9) but the SCALAR is wrong
+-- the failure is localized to the coefficient, and confusion-correction
+saturates at +0.05 (2026-08-30, `al_class_stats_iter4_diag.py`)
+
+Verified against run output (the pulled JSONs arrived as null-byte files -- the
+known sftp corruption; the run output was complete).
+
+**PART 1 -- confusion correction SATURATES; the 8-label Q noise was NOT the
+limiter.** C0 (base) is the best form and stays at +0.03 to +0.05 on fog: dglsspp
+fog +0.04 to +0.05, covshift fog +0.03 to +0.05. C1 (pool-regularized Q) at
+alpha=2 roughly matches C0; larger alpha hurts (alpha=32 -> -0.10 to -0.46). C2
+(iterated self-training) does not beat C0. Neither refinement moves +0.05 --
+**+0.05 appears to be the confusion-correction ceiling.** (Q_err vs the full-pool
+oracle Q was captured in the JSON but the null-byte corruption lost it.)
+
+**PART 2 -- THE KEY FINDING: the pool direction is RIGHT, the label-estimated
+scalar is WRONG.** Oracle direction alignment cos(v_c, M*_c - M0_c):
+
+| | dglsspp fog | dglsspp crosstalk | covshift fog |
+| :--- | :--- | :--- | :--- |
+| pseudo | **+0.92** | +0.83 | **+0.90** |
+| density | +0.91 | +0.80 | +0.67 |
+| highconf | NA | NA | NA |
+
+The pool-derived directions point almost exactly at the true class shift. Yet
+EVERY Arm-B variant is negative: dglsspp fog/crosstalk -0.32 to -0.34 (all three
+directions), covshift fog -1.1 to -1.5, covshift crosstalk -8 to -9. Since the
+direction is aligned ~0.9 and the corruption control (Iteration 3) showed a 50%
+noisy direction retains 70-88% gc, the failure is the label-estimated gamma
+scalar: gamma_c = <M_lab_c - M0_c, v_c>/||v_c||^2 is itself a noisy 2-8-label
+estimate, and the whitening amplifies the resulting mis-scaled step. The
+bottleneck is now FULLY localized to the coefficient, not the direction.
+(highconf was NA because the confidence threshold 0.5 left too few points per
+class; that direction is untested.)
+
+**PART 3 -- the class-prior term is negligible (confirmed).** P_pseudo and
+P_oracle both give -0.01 to -0.03 on dglsspp fog: same-scan corruptions barely
+change the class priors, so the prior correction is not a mechanism here (as
+expected from the algebra -- P* ~ P0 when the scan is the same).
+
+### Verdict
+
+The class-statistics reformulation now has a fully localized failure:
+- the DECOMPOSITION is right (W_mean_oracle +0.73-1.15),
+- the pool DIRECTIONS are right (align 0.9),
+- the DIRECTION is robust to noise (corruption control, Iteration 3),
+- the CONFUSION correction works but saturates at +0.05,
+- the failure is the SCALAR/COEFFICIENT estimation from 2-8 labels -- a noisy
+  gamma, mis-scaled, then whitening-amplified.
+
+This means the remaining lever is a GOOD step-size/coefficient estimator: given a
+known-good pool direction v_c (align 0.9), estimate the single scalar gamma_c
+without the 35x whitening amplification. The corruption control says the direction
+tolerates ~50% noise -- so the scalar estimator must get within that tolerance.
+Candidate coefficient estimators (none yet tested):
+1. gamma from the label-vs-pseudo-margin at the boundary (not the raw mean):
+   use the few labels to place the a-b boundary shift directly.
+2. pool-regularized gamma: shrink the label gamma toward 1 (the pseudo-mean
+   default) -- C1-style regularization on the SCALAR instead of on Q.
+3. gamma constrained to keep the update norm at ~1x R (the corruption control's
+   operating point) -- explicit step-size calibration on the direction.
+4. gamma estimated on the CONFIDENT pseudo subset only (highconf direction with a
+   lower threshold so it is non-NA).
+
+Iteration 5 (planned): a coefficient-estimation diagnostic -- sweep gamma_hat
+estimators (raw projection, shrunk-toward-1, boundary-margin, update-norm-
+constrained) on the known-good direction, and report the gc(gamma_hat) curve vs
+the gamma* oracle optimum. If a practical estimator lands near gamma*, the
+reformulation has its mechanism.
