@@ -374,9 +374,9 @@ def main():
                 else:
                     raise ValueError(arm)
                 sel = cand[sel_c.long()]
-                X_lab = Xp[sel]; Y_lab = onehot(pl[sel], NUM_CLASSES)
-                resid = (Y_lab.float() - X_lab.float() @ W0c)
-                G = (X_lab.float() @ U_or_g).t() @ resid.to(device)
+                X_lab = Xp[sel].float().to(device); Y_lab = onehot(pl[sel], NUM_CLASSES).float().to(device)
+                resid = (Y_lab - X_lab @ W0c.to(device))
+                G = (X_lab @ U_or_g).t() @ resid
                 gcs = {}
                 for rho in rho_sweep:
                     Gn = G / (G.norm() + 1e-8)
