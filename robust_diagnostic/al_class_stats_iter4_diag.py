@@ -363,8 +363,8 @@ def main():
                         M_c[c] = sum(row[j] * M_hard[j] for j in range(1, NUM_CLASSES))
                     W_c = solve_whitened(Xp, (M_c * C0.unsqueeze(1)).t().contiguous(),
                                          args.lam, args.cg_iters, args.nystrom_m, device)
-                    cond_res['part1'].setdefault('C1', {}).setdefault(str(b), {})[str(K)][str(alpha)] = {
-                        'gc': gc(mw(W_c, Xv, vl))}
+                    cond_res['part1'].setdefault('C1', {}).setdefault(str(b), {}) \
+                        .setdefault(str(K), {})[str(alpha)] = {'gc': gc(mw(W_c, Xv, vl))}
                 # C2 iterated (self-training: re-pseudo-label with corrected W)
                 # uses LOCAL copies so later b/K/parts are not contaminated.
                 M_cur = M_hard.clone()
