@@ -907,3 +907,75 @@ additionally supports label propagation from a few labeled points to their kNN
 neighbors. This is the concrete "reformat what we store/update" direction: the
 failure of W-updates (3b, 4, 7) was that R is a global object, but its
 class-mean component is local and label-estimable.
+
+## Iteration 9 result: the CLASS-STATISTICS decoder -- the DECOMPOSITION is
+correct (whitened class-means capture the residual), but the few-label MEAN
+ESTIMATOR is the bottleneck (2026-08-30, `al_class_stats_diag.py`)
+
+White-box test of the reformulated decoder W = Sigma^-1 P M (the linear probe IS
+the whitened class means). The construction is split into measured pieces: the R
+decomposition (mean-shift vs covariance), the decoder ladder (W0 / proto_oracle /
+W_mean_oracle / W*), few-label mean re-estimation (b x shrinkage alpha x
+selection, with per-class mean error), selection ablation, and update details
+(temperature, top-K scope).
+
+**A. THE DECOMPOSITION IS CORRECT -- the class-mean shift, WHITENED, is the
+residual.** The decoder ladder (gc):
+
+| | dglsspp fog | dglsspp crosstalk | covshift crosstalk | covshift snow |
+| :--- | :--- | :--- | :--- | :--- |
+| W0 (frozen) | +0.00 | +0.00 | +0.00 | +0.00 |
+| proto_oracle (cosine, NO whitening) | +0.47 | +0.41 | -1.75 | -0.90 |
+| **W_mean_oracle (WHITENED, oracle means)** | **+0.72** | **+0.99** | **+1.04** | **+1.15** |
+| W* (full oracle) | +1.00 | +1.00 | +1.00 | +1.00 |
+
+The whitened mean decoder with ORACLE means closes +0.72 to +1.15 gc -- matching
+or even EXCEEDING W* on crosstalk/snow. This confirms the reformulation's
+ceiling is the full residual, and that **whitening is essential**: proto_oracle
+(no whitening) is far weaker or negative. This is exactly why the R1 prototype
+decoder closed (R1 < R4 without whitening) but the whitened class-mean decoder
+need not. (R_mean_frac > 1 is a measurement artifact of mixing clean-counts with
+pool-whitening -- the ladder is the reliable number.)
+
+**B. THE FEW-LABEL MEAN ESTIMATOR IS THE BOTTLENECK -- a catastrophic negative
+that localizes the failure.** W_est = Sigma0^-1 P0 M_hat with M_hat = shrunk
+sample mean of b labeled points per class is NEGATIVE at every operating point:
+
+| est arm | dglsspp fog best gc | dglsspp crosstalk best gc | covshift fog best gc |
+| :--- | :--- | :--- | :--- |
+| random (best over alpha) | -0.19 | -0.23 | -1.32 |
+| proto_dist (best over alpha) | -0.29 | -0.32 | -1.47 |
+
+- The mean estimation error ||M_hat - M*||/||M*|| is 0.46-0.65 even at b=8/class
+  with alpha=2 -- 8 labels cannot estimate a 10000-d class mean. The whitening
+  Sigma^-1 then AMPLIFIES this high-dim noise into a catastrophic step.
+- **proto_dist selection is WORSE than random for mean estimation** (error
+  0.87-1.25 vs 0.46-0.65): the Iteration-8 error *predictor* (points far from
+  the clean mean) selects class OUTLIERS, which are exactly the wrong points for
+  estimating a *mean*. Error-prediction points and mean-estimation points are
+  DIFFERENT objects.
+- Shrinkage helps (alpha=8 -0.30 vs alpha=0 -0.62 on dglsspp fog) but cannot
+  rescue it: the estimate is noise-dominated before whitening.
+
+**C. UPDATE DETAILS.** Temperature is a no-op on argmax (T0.5/1/2 identical, as
+expected). Top-K scope: updating only the K=4 most-moved classes hurts LESS than
+all (dglsspp snow K4 -8.56 vs K17 -13.06; covshift wet_ground K4 -1.64 vs K17
+-1.92) -- confirming the shift is concentrated in a few classes (top_moved:
+c14/c13/c4/c7/c16 on fog) but still negative because those few mean estimates
+are also noise.
+
+**Verdict: the reformulation is VIABLE in structure but the estimator is broken.
+The ceiling is real (W_mean_oracle ~ W*), so the fix is not the decoder -- it is
+HOW the shifted means are obtained.** The raw few-label sample mean fails because
+a 10000-d mean needs far more than 8 points and the whitening amplifies the
+variance. The concrete fix paths that this diagnostic isolates:
+  1. Estimate the shifted means from the UNLABELED POOL via pseudo-labels
+     (low-variance, biased) and use the few labels to correct the BIAS (the mean
+     SHIFT, a more concentrated low-rank object) rather than estimate the mean
+     from scratch.
+  2. Estimate only the mean SHIFT Delta_mu_c = M*_c - M0_c (concentrated in a
+     few classes per top_moved) under the CLEAN whitening, with strong shrinkage
+     -- not the absolute mean.
+  3. Stronger regularization of the whitening (do not amplify the noise floor).
+This is a genuinely white-box result: it shows the decoder structure is right and
+points to the estimator as what must be fixed next.
