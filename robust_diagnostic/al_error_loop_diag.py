@@ -443,8 +443,10 @@ def main():
         for b in budgets:
             e = cond_res['budgets'][str(b)]
             d = e['discovery']
+            prec = 'NA' if d['precision'] is None else f"{d['precision']:.2f}"
+            rec = 'NA' if d['recall'] is None else f"{d['recall']:.2f}"
             print(f"    b{b}: pairs found {d['pairs_found']} hit {d['hit']}/{d['pairs_true']} "
-                  f"(prec {d['precision']:.2f} rec {d['recall']:.2f}) | "
+                  f"(prec {prec} rec {rec}) | "
                   f"bias label {e['pair_bias_label']['gc']:+.2f} oracle {e['pair_bias_oracle_pairs']['gc']:+.2f} "
                   f"random {e['pair_bias_random']['gc']:+.2f} | "
                   f"gate label {e['pair_gate_label']['gc']:+.2f} oracle {e['pair_gate_oracle_pairs']['gc']:+.2f}")
