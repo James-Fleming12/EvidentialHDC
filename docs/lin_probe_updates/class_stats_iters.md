@@ -6,6 +6,32 @@ W-update and acquisition closures. It is written WHITE-BOX: each test splits the
 construction into measured pieces so we can see what works and what needs fixing,
 rather than treating the method as a blackbox.
 
+## Component status (current)
+
+| Component | Status |
+| :--- | :--- |
+| W = Sigma^-1 M^T P reformulation (the probe IS the whitened class means) | Strongly validated |
+| Whitening is essential (proto_oracle << W_mean_oracle) | Strongly validated |
+| Mean-shift M* contains the oracle signal (W_mean_oracle +0.72 to +1.15 gc) | Strongly validated |
+| Raw 2-8 label sample-mean -> whiten | Closed |
+| Raw few-label shift estimate -> whiten | Closed |
+| Naive pseudo-mean + high-dim label bias correction | Closed |
+| Generic whitening regularization (lam_w) | Closed (no effect at these scales) |
+| Arbitrary raw W-update | Closed / deprioritized |
+| Label-free pool pseudo-mean (hard) | Real but weak positive (+0.05-0.11) |
+| Soft / TTA pseudo-mean | Open, untested |
+| Pool basis + scalar/class coefficients (labels estimate alpha in R^K) | Open, untested |
+| Pseudo-label confusion-matrix correction (Q, C x C) | Open, untested |
+| Class-prior correction (P* vs P0, label-free) | Open, untested |
+| Robust / core-set mean acquisition | Open, untested |
+| Whitened / residual-relevant mean-error diagnostic | Open, must run |
+
+The headline: a good low-dimensional-ish target (M*) exists, but the naive
+few-label estimator of it is terrible. The open formulations all use the labels
+to estimate a LOW-DIMENSIONAL object (scalars, a confusion matrix) on top of
+pool-derived class statistics -- not a 10000-d vector. (See Iteration 2 verdict
+for the precise closure and the three-arm Iteration-3 plan.)
+
 ## Background: why a reformulation, and what we are reformulating
 
 **The closure that motivated it.** Iterations 3b-7 of `new_iters.md` closed the
@@ -26,19 +52,34 @@ means move away from their clean positions, and points far from their clean clas
 mean are the errors. This is the class-MEAN-SHIFT story.
 
 **The reformulation.** The linear probe is not an arbitrary matrix: for the ridge
-fit, w_c = (X^T X + lam I)^-1 X^T y_c, and X^T y_c / n_c = mu_c (the class mean of
-class c's codes). So the probe decomposes EXACTLY as
+fit with a one-hot target Y (columns = classes), w_c = (X^T X + lam I)^-1 X^T y_c,
+and the c-th column of X^T Y is sum over points of class c of x_i = n_c mu_c.
+Writing M as the C x d matrix with rows mu_c (class means) and
+P = diag(n_c / N), this is EXACTLY
 
-    W = Sigma^-1 P M
+    W = Sigma^-1 M^T P          (M is C x d, rows = mu_c; M^T is d x C)
 
 - M = the class-mean matrix (rows mu_c) -- "where each class sits"
 - Sigma^-1 = the inverse code covariance (whitening) -- "the shape of the data"
 - P = diag(n_c / N) -- class priors
 
-(LDA form; exact for the ridge fit up to the sketch/CG approximation.) The
-residual R then splits into a mean-shift term and a covariance term:
+(LDA form; exact for the ridge fit up to the sketch/CG approximation. The doc
+used the shorthand W = Sigma^-1 P M, which only reads correctly if M is taken as
+d x C with columns = mu_c; the orientation above is the one the code computes.)
 
-    R = Sigma^-1 P (M* - M0)  +  (Sigma*^-1 - Sigma0^-1) P M*
+The residual R then splits. HOLDING the priors fixed at P = P0 (as the
+diagnostics do -- both W0 and W_mean_oracle use the clean counts C0), the
+two-term expansion is
+
+    R = W* - W0
+      = Sigma0^-1 M*^T (P* - P0)              (prior term, ZERO when P = P0)
+      + Sigma0^-1 (M*^T - M0^T) P0            (mean-shift term)
+      + (Sigma*^-1 - Sigma0^-1) M*^T P*       (covariance term)
+
+The diagnostics hold P = P0, so the prior term is absent BY CONSTRUCTION; the
+mean-shift vs covariance split is then exact. The class-prior correction (P*
+vs P0) is itself an untested cheap mechanism (the corrupted class counts are
+directly observable from the unlabeled pool, so P* needs no labels).
 
 The bet: the mean-shift term is LOCAL and LABEL-ESTIMABLE (the mean of a few
 labeled points of class c directly estimates mu_c), unlike the full residual R
@@ -47,8 +88,8 @@ block; the pool supplies the Sigma^-1 geometry (unlabeled, abundant).
 
 Two honest caveats that every diagnostic must check:
 - This is NOT reopening R1 (the prototype decoder). The pure prototype drops the
-  whitening and was R1 < R4. Here we keep the full Sigma^-1 P M form -- it IS W --
-  and only re-estimate the M block.
+  whitening and was R1 < R4. Here we keep the full Sigma^-1 M^T P form -- it IS W
+  -- and only re-estimate the M block.
 - The covariance term may be large; if so, mean-only updates cap out. The first
   thing to measure is how much of R the mean-shift term accounts for.
 
@@ -190,32 +231,93 @@ means (b=4, alpha=2) and varying ONLY the whitening:
 **The decisive diagnostic: update_norm = ||W_est - W0|| / ||R||.** The whitened
 few-label mean estimate produces a step ~35x the residual norm (and 800-2200x
 when rank-truncated to 128-2048). This is the same overstepping signature as
-Iteration 1, now quantified: the problem is NOT the decoder and NOT the whitening
-scale -- it is that a 10000-d class mean CANNOT be estimated from 2-8 labels to
-the precision the whitening requires. Every arm that injects few-label means into
-the whitening is a ~30x-step disaster.
+Iteration 1, now quantified.
 
-### Verdict
+**IMPORTANT -- what this does and does NOT establish.** It establishes that the
+ESTIMATOR "few-label raw sample mean, then whitened" is catastrophically noisy. It
+does NOT establish that "few labels cannot estimate M*". Two things were never
+measured and must be, before closing the estimator family:
+- the WHITENED mean error ||Sigma^-1 (M_hat - M*)|| / ||Sigma^-1 M*|| -- a 46-65%
+  raw mean error could be much less damaging if most of it lies in directions the
+  decoder suppresses (and conversely a 10% error could be disastrous in high-gain
+  directions of Sigma^-1);
+- the oracle-relevant projection <Sigma^-1 (M_hat - M0), R> / ||R||^2 -- whether
+  the noise is along R (damaging) or orthogonal to it (benign).
 
-All three fix paths fail to reach the ceiling. The single positive is the
-LABEL-FREE pool pseudo-mean decoder (+0.05 to +0.11 gc on dglsspp) -- the first
-positive that needs no oracle U and no labels at all, but far below the +0.72 to
-+1.15 W_mean_oracle ceiling. The reformulation's bottleneck is now fully
-localized: a few labels CANNOT estimate a 10000-d class mean to whitening
-precision (update_norm ~35x). The paths that might still close the gap, in the
-order the evidence supports:
+### Verdict: close the raw mean estimator, NOT the class-statistics program
 
-1. **Refine the label-free pool pseudo-mean decoder (the +0.05-0.11 positive)**
-   -- improve the pseudo-labels (TTA-averaged, iterated/self-training) rather
-   than adding noisy label-estimated means. The pool IS the estimator; labels so
-   far only add noise.
-2. **Estimate the mean-shift in a LOW-RANK subspace** (top_moved showed 3-4
-   classes concentrate the shift) using points whose pseudo-class is CONFIDENT
-   (high margin), not 2-8 random points -- the shift is a bias, and confident-
-   pseudo points may estimate it with lower variance.
-3. **Calibrate the whitening step size directly** (shrink the update norm toward
-   ~1x R, e.g. rescale W_est - W0) -- the rank-truncated +0.12 on crosstalk shows
-   the direction can be right; the 35x magnitude is the killer.
+The decomposition is strongly validated (W_mean_oracle +0.72 to +1.15 gc -- the
+particular statistic M* really contains most/all of the information the linear
+probe needs). The reformulation is therefore not "another prototype heuristic."
+The narrow, well-supported closure is:
 
-Iteration 3 (planned): the label-free pool pseudo-mean decoder + step-size
-calibration -- it is the only arm with a positive, and it needs no labels.
+> "2-8 RAW LABELED samples cannot estimate a 10000-d class mean accurately enough
+> for the subsequent whitening" -- under the current class-code distributions and
+> the raw-sample-mean-then-whiten estimator.
+
+The wider statement "the few-label class-mean program is a no-go" is NOT yet
+supported. The pool provides low-variance class statistics (M_pseudo, +0.05 to
++0.11 label-free positive); the labels have only been asked to do the ONE thing
+they cannot (estimate a 10000-d vector). The genuinely open formulations all use
+the labels to estimate a LOW-DIMENSIONAL object, not the mean:
+
+1. **Pool estimates the class statistics; few labels estimate a small correction
+   to them** -- the "labels select a correction, not supply its 10000-d
+   direction" idea. Forms: (a) pseudo-label CONFUSION matrix Q (C x C, not
+   C x 10000): M_tilde_c ~= sum_j Q_cj mu*_j, labels estimate Q; (b) scalar
+   coefficients on pool-derived shift directions: mu*_c ~= M_tilde_c + alpha_c
+   v_c, where v_c is pool-derived (pseudo-vs-clean mean, high-confidence subset
+   mean, TTA displacement, density-core displacement) and labels estimate only
+   alpha in R^K with K = 3-5 suspicious classes. This is the class-statistics
+   analogue of the pool-basis idea, but at the M level (K scalars, not the
+   full residual) -- fundamentally different from the closed rank-1-per-label
+   construction (which used label CE-gradient directions).
+2. **Improve the label-free pool pseudo-mean decoder** (the +0.05-0.11 positive):
+   SOFT pseudo-means (weight by p_i(c), TTA-averaged, sharpen only when
+   justified) instead of hard argmax pseudo-labels -- tests whether the positive
+   is limited by hard-label contamination.
+3. **Robust/active mean estimation** (cheap, untested): coordinatewise median /
+   trimmed / Huber / distance-trimmed / nearest-to-CLEAN-prototype (note: proto_
+   dist SELECTED far points was bad for means; the OPPOSITE selection -- points
+   NEAR the clean class core -- is the untested direction), and k-center among
+   high-confidence class-c points (multi-modal classes).
+4. **Measure pseudo-mean quality independently of decoder gc**: per-class
+   ||M_tilde_c - mu*_c||, the whitened error, and the residual-relevant error
+   e_c^R = |<Sigma^-1 (M_tilde_c - mu*_c), R_c>| -- which classes account for the
+   +0.05-0.11 to +0.72-1.15 gap (probably NOT all 17).
+5. **The class-prior correction** (from the corrected residual expansion): P* vs
+   P0 is directly observable from the UNLABELED pool (class counts need no
+   labels) -- a zero-label mechanism never tested.
+
+### Iteration 3 (planned): a three-arm decisive test, not "one more then close"
+
+The final test should answer three different hypotheses, NOT just step-size
+calibration (which is an ORACLE diagnostic, not a deployable fix -- scaling a
+35x noise vector down turns a big wrong step into a small wrong step; run it
+only as the oracle-scale control, separated from any data-driven scale):
+
+- **Arm A -- pure pool baseline (label-free ceiling of the construction):**
+  W_pseudo = Sigma0^-1 M_pseudo^T P0 with HARD / SOFT / TTA pseudo labels. If
+  soft/TTA pushes +0.05-0.11 toward +0.72-1.15, the label-free route is the
+  strong one.
+- **Arm B -- pool basis + scalar/class calibration:** identify the 3-5 shifted
+  classes (pool evidence), estimate only alpha in R^K on pool-derived shift
+  directions. Labels estimate K scalars, not a 10000-d vector.
+- **Arm C -- pseudo-label confusion correction:** few labels estimate a small
+  class-confusion/calibration matrix Q (C x C, restricted to the K x K
+  suspicious-class block -- pair-concentration evidence supports this), correct
+  M_pseudo with it.
+
+Read: Arm A > B,C  -> the label-free route dominates (labels not needed); B or C
+> A -> the labels ARE useful for low-dimensional correction, which is the
+reformulation's actual claim. Also run the corruption control (corrupt D_oracle =
+W_mean_oracle - W0 with additive noise D_rho = sqrt(1-rho^2) D + rho N, measure
+gc(rho)) to translate "35x noise" into the required estimation precision: if
+even 80% directional corruption retains performance, the estimator problem is
+solvable; if 5% destroys it, the route is brittle.
+
+Standing caution (from Iteration 7): the permutation result showed the labels'
+content barely mattered for the ONLY working first-order mechanism -- the gain
+was geometric (U-leverage of selected points). That is a risk for B/C specifically
+(the label CONTENT is what drives the class correction there) and is exactly what
+this three-arm test decides.
