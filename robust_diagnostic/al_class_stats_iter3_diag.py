@@ -377,6 +377,7 @@ def main():
 
         # ---- CORRUPTION CONTROL: how precise must the mean direction be? ----
         D_oracle = (W_mean_oracle - W0).detach().cpu().float()
+        W0_cpu = W0.detach().cpu()
         dn = D_oracle.norm().item() + 1e-12
         torch.manual_seed(21)
         N = torch.randn_like(D_oracle)
@@ -384,7 +385,7 @@ def main():
         corr = {}
         for rho in rho_sweep:
             D_r = (1 - rho ** 2) ** 0.5 * D_oracle + rho * N
-            W_r = (W0 + D_r).cpu()
+            W_r = W0_cpu + D_r
             corr[str(rho)] = gc(mw(W_r, Xv, vl))
 
         # ---- per-class diagnostics: which classes drive the gap? ----
