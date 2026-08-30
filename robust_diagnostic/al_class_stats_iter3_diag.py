@@ -315,7 +315,7 @@ def main():
 
         # ---- suspicious classes (pool evidence: pseudo-vs-clean shift) ----
         shift_norm = torch.norm(M_hard - M0, p=2, dim=1)
-        suspicious = [int(c) for c in torch.argsort(shift_norm, descending=True)]
+        suspicious = [int(c) for c in torch.argsort(shift_norm, descending=True) if c != 0]
 
         # per-class labeled indices
         class_idx = {c: torch.nonzero(pl == c).squeeze(1) for c in range(1, NUM_CLASSES)}
@@ -336,7 +336,7 @@ def main():
             gammas = {}
             for K in k_sweep:
                 M_corr = M0.clone()
-                for c in suspicious[1:K + 1]:          # skip unlabeled class 0
+                for c in suspicious[:K]:          # top-K shifted real classes
                     v_c = M_hard[c] - M0[c]
                     vn = v_c.norm().item() ** 2 + 1e-12
                     # labels estimate the SCALAR gamma_c = how much to move along v_c
@@ -356,7 +356,7 @@ def main():
             # Q_cj = P(pseudo = j | true = c), estimated from the b labeled points
             # of true class c. Restrict to the K x K suspicious block.
             for K in k_sweep:
-                sus = suspicious[1:K + 1]
+                sus = suspicious[:K]
                 M_corr = M_hard.clone()
                 for c in sus:
                     idx = class_idx[c]
