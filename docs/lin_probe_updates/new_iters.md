@@ -373,3 +373,53 @@ how to re-rank at decode time):
 These are the Tier-1 U-free bets. They share the property that failed nothing so
 far: they use labels to make DECISIONS about where to look or how to re-rank,
 not to estimate a parameter update.
+
+## Iteration 3 result: the rank-1-per-label diagnostic is INCONCLUSIVE -- the
+negative is confounded by metric choice and step scale, NOT a verdict on the
+decomposition idea (2026-08-29, `al_rank1_diag.py`)
+
+Tested whether each queried label can be its own rank-1 update direction
+u_i = x_i r_i^T (r_i = e_{y_i} - p_0(x_i)), applied separately instead of the
+aggregate sum. Central linearity fact confirmed: sequential-with-fixed-eta ==
+aggregate, so only per-label scale / rejection / adaptive-query matter. Both
+DGLSS++ and cov-shift, all 4 conds.
+
+The raw result (D1/D2): per-label align(u_i, R) ~ 0.001-0.016 and all individual
+deltas negative (0/8 positive on every condition, both extractors). D4
+(oracle-scaled) still negative. D5 corr(d_conf, delta) inconsistent.
+
+**BUT the negative is confounded in two ways, so it does NOT throw away the
+decomposition idea:**
+
+1. **D1's metric is a concentration-of-measure trap.** align = cos of the
+   FLATTENED 170000-d u_i vs the FLATTENED 170000-d R. In 170k-dimensions, ANY
+   two generic vectors have cos ~ 0 by concentration of measure. align ~ 0.01 does
+   not mean "the direction is wrong" -- it means "one label is not the whole
+   residual", which is trivially true (the residual is a sum of many
+   contributions, not any single one). The correct D1 would measure whether the
+   SPAN of the b labels captures R (||P_span R||/||R||), not whether each
+   individually equals R.
+2. **D2/D4's step size is massively oversized.** ||u_i|| ~ ||x_i|| * ||r_i|| =
+   100 * 0.96 = 96, so eta * u_i = 0.05 * 96 = 4.8 magnitude applied across all
+   of W0. The oracle residual R = W* - W0 has each W-column at ~O(1-10) norm; a
+   single 4.8-magnitude step over the whole probe is pure overstepping. D2's
+   all-negative delta may be entirely a scale artifact (the update is far too
+   large), not wrong direction.
+
+**What this means.** The diagnostic's D1/D2 instantiated the decomposition as
+"per-point cross-entropy gradient at a fixed raw scale, measured by flattened
+cosine to the total residual" -- and that INSTANTIATION shows no signal. It does
+NOT rule out:
+- normalized per-label directions (u_i/||u_i||, so the step is a bounded trust
+  radius, not a raw magnitude),
+- a span-based alignment (does the label span capture R, not each label = R),
+- a different rank-1 form (e.g. class-pair margin direction, not the CE gradient).
+
+**The honest verdict rule.** The decomposition idea is NOT dead. The diagnostic
+shows the CE-gradient-at-raw-scale instantiation fails, but the confounds (D1
+metric, D2 scale) prevent a conclusion about the idea itself. The correct
+follow-up is a rerun with (a) normalized u_i and a per-label trust radius, and
+(b) span-capture instead of per-label flattened cosine -- which would tell us
+whether the idea fails because "labels don't span the residual" (real) or because
+"the step was too big" (artifact). Do NOT discard the decomposition concept on
+this result.
