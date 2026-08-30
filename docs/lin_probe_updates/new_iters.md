@@ -462,17 +462,23 @@ negatives.
 
 ## Next: the U-free next-steps (from the candidate table)
 
-Ranked by what the measured evidence supports after Iterations 3b, 4, 5 and 6,
+Ranked by what the measured evidence supports after Iterations 3b, 4, 5, 6 and 7,
 organized by the decision levels above. **All hold for the R4 linear probe** (no
 prototype decoder; labels make decisions about where to look or how to re-rank at
 decode time -- every W-update family is now closed (P1, Iteration 4), the
-pair-repair branch (A5, Iteration 5) is closed, and the sequential acquisition
-loop (A3, Iteration 6) is closed):
+pair-repair branch (A5, Iteration 5) is closed, the sequential acquisition loop
+(A3, Iteration 6) is closed, and the oracle acquisition curve (Iteration 7)
+shows the label budget is NOT the binding constraint and acquisition is NOT the
+lever):
 
 1. **Logit calibration (B3)** -- z' = a_c z_c + b_c on the probe's logits. The
    known-weak baseline (bias-only = 0-4%) but zero-cost and a clean control, and
    the only parameter change that holds for the linear classifier (it is the
    probe's bias, not U). The one remaining Level-1 (decode-only) candidate.
+   Iteration 7 makes this the ONLY untested mechanism left: acquisition (A3/A5),
+   updates (P1/3b/4) and the label budget itself (Iteration 7) are all closed,
+   so a decode-time correction that does not depend on the first-order step is
+   the only surviving direction.
 2. **Sequential AL (A3) is CLOSED (Iteration 6)** -- the adaptive loop does not
    beat one-shot acquisition: the pair-focus mechanism (the defining feature) is
    worse than plain low-margin ordering, and the only arm that ever leads
@@ -488,8 +494,9 @@ loop (A3, Iteration 6) is closed):
 These are the surviving U-free bets. They share the property that failed nothing so
 far: they use labels to make DECISIONS about where to look or how to re-rank,
 not to estimate a parameter update. The parameter-update branch (P1) is CLOSED by
-Iteration 4, the pair-repair branch (A5) by Iteration 5, and the sequential
-acquisition loop (A3) by Iteration 6 -- the pivot to acquisition-only / decode-time
+Iteration 4, the pair-repair branch (A5) by Iteration 5, the sequential
+acquisition loop (A3) by Iteration 6, and the budget/acquisition question by
+Iteration 7 -- the pivot to acquisition-only / decode-time
 decision rules is now final, with measured negatives rather than assumptions. The
 only candidates that survive with positive evidence are the STATIC acquisition
 rules from Iteration 1 (margin_tta_div / egl, validated to beat random at
@@ -774,3 +781,66 @@ sequential ordering itself (seq_margin) is just a re-derivation of the static
 margin rule. Together with Iteration 5 this closes the acquisition side of
 Level 3 except for the static scores already validated in Iteration 1.
 Remaining candidate: B3 (logit calibration, Level 1).
+
+## Iteration 7 result: the ORACLE ACQUISITION CURVE -- the label budget is NOT the
+binding constraint, and the labels' content barely matters (2026-08-30,
+`al_oracle_curve_diag.py`)
+
+The phase-transition sweep: fixed downstream (oracle-U first-order step, the only
+few-label mechanism that works), only POINT SELECTION varies -- random,
+margin_tta_div (realistic AL), oracle_error (query the frozen probe's own
+errors), oracle_pair (query the val-truth top error pairs), margin_perm (same
+points, PERMUTED labels). Budgets 2,4,8,16,32,64. Plus the gain-concentration
+number: the fraction of val predictions the oracle decoder changes vs frozen.
+
+**Finding 1 -- the oracle correction is GLOBAL, not concentrated: the
+gain-concentration kills the "identify the 2%" hypothesis.**
+
+| cond | dglsspp gain_conc | covshift gain_conc |
+| :--- | :--- | :--- |
+| fog | 0.526 | 0.408 |
+| crosstalk | 0.516 | 0.114 |
+| snow | 0.170 | 0.164 |
+| wet_ground | 0.109 | 0.269 |
+
+On the healthy-capacity conditions (dglsspp fog/crosstalk) the oracle changes
+~half of ALL predictions. The residual is a real, distributed rotation -- NOT a
+small set of changed points. Global W-adaptation was the right abstraction; the
+problem was never "find the 2%."
+
+**Finding 2 -- the budget curve is FLAT, and oracle selection does not pull away.
+The wall is the DOWNSTREAM, not the budget (a "Story C" that is mechanism-limited,
+not label-starved).**
+
+dglsspp fog (gap +0.178): every arm ~+0.22 to +0.33 at EVERY budget, random
++0.26 at b=2 AND b=64. oracle_error does NOT beat random (b8 +0.23 vs +0.25;
+b16 +0.22 vs +0.26). oracle_pair is no better. The gc saturates at ~0.3 by b=2
+and never grows to 64. The same holds on crosstalk (oracle_error +0.29-0.34 vs
+random +0.20-0.31, a tiny consistent edge but nowhere near the random->oracle
+gap that would make acquisition the lever). covshift fog: margin_tta_div +0.41-0.48
+is best but static; random grows to +0.45 at b8 then flat. The label budget is not
+the binding constraint: the first-order step with oracle U caps gc at ~0.3-0.5
+regardless of how many labels you add.
+
+**Finding 3 -- the PERMUTATION CONTROL is the deepest result: the labels'
+content barely matters; the gain is geometric.**
+
+margin_perm (same margin_tta_div points, labels SHUFFLED) gives the SAME gc as
+true labels on several cells: dglsspp fog b4 +0.35 vs true +0.24; b2 +0.22 vs
++0.22; covshift fog b2 +0.41 vs +0.41. The first-order step's gain is dominated
+by WHICH points are selected (their projection onto U -- leverage), not by WHAT
+their labels say. This is why every acquisition rule, sequential loop, and even
+oracle-error selection was ~random: the label content was never the lever driving
+the surviving mechanism. It retroactively explains Iterations 1-6: the gc the
+first-order step delivers comes from the U-geometry of the selected points, and
+the specific labels contribute only noise-level signal at these budgets.
+
+**Verdict: the few-label landscape is now fully mapped.** The label budget is not
+the binding constraint (saturates at b=2), acquisition is not the lever (random ~
+oracle ~ permuted), and the gain concentration is global (oracle changes ~50% of
+predictions on the healthy-capacity conditions). The surviving mechanism
+(first-order + oracle U) delivers a FIXED ~0.3-0.5 gc that no acquisition scheme
+improves and no budget extension grows, because its ceiling is set by the update
+form (r=2) and by needing oracle U. The remaining candidates are therefore
+reduced to decode-time corrections that do NOT depend on this mechanism: B3
+(logit calibration, Level 1) is the last untested one.
