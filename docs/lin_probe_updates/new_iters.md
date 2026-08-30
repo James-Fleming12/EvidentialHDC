@@ -377,14 +377,90 @@ a few-label method, and the remaining candidates are the U-free entries in the
 next-steps table that do NOT require a parameter update at all (logit calibration,
 prototype selection, error-correction loops, sequential AL).
 
+## The decision: pivot to acquisition-only / decode-time correction (the rationale)
+
+**The claim, stated precisely.** The evidence supports stopping the search for a
+GENERIC few-label mechanism that directly estimates the full R = W* - W0. It does
+NOT support "no W-update is ever possible" -- the narrower, actionable statement
+is:
+
+> With the available label budget (b ~ 8), the information needed to reconstruct
+> the global optimal linear probe is not accessible through the parameter-update
+> directions tested (labels' own span, all U-estimators, local forms, pool
+> geometry).
+
+A different regime -- hundreds of representative labels, a pretrained pool-derived
+basis, extra supervision -- could change that, but it is not this setting.
+
+**Why the pivot is justified (the measured facts converge on one bottleneck):**
+- direct few-label fitting: insufficient representative feature mass (R2, U-free);
+- U-based update: oracle U works, few-label U does not (R3, uest);
+- rank-1-per-label: after fixing the confounds, the label span captures ~0.4-2% of
+  R (Iteration 3b);
+- local / pool parameterizations: the useful oracle correction depends on info
+  distributed through the unlabeled pool, and the pool does not contain R in any
+  label-free structure (bank R4, shared basis R6, P1 Iteration 4);
+- TTA/gauge signals: reliable for instability DETECTION, not for how much of the
+  global residual to apply (A2).
+
+**The key asymmetry.** N_pool >> b: lots of unlabeled data, a few labels. The
+oracle residual R = W* - W0 depends on statistics accumulated over the ENTIRE
+pool. Asking b labels for R is asking the labels to provide information they do
+not contain (span(u_1..u_b) is nearly orthogonal to R). Any further
+W' = W0 + f(few labels) fights the information geometry.
+
+**The "one final sanity check" has already been run.** The proposal
+"unlabeled pool builds the basis V, labels choose the coefficients (Delta W =
+V alpha)" is exactly Iteration 4/P1 -- V built from six label-free pool
+structures, alpha by firstorder/lsq/oracle-coef. It closed: span_capture(full)
+0.04-0.08, oracle_coef negative on half the cells. Both branches are now tested:
+labels-provide-directions (3b) AND pool-provides-directions-labels-select (P1).
+The stopping rule stated for this branch ("if that also fails, stop") has been
+met.
+
+**What labels ARE good for (the positive residue).** Not "what should W be", but
+"which predictions/boundaries are wrong". That is an easier information problem:
+estimate P(y | predicted class, class pair, region, TTA pattern) from a few labels
+and alter the DECISION RULE, e.g. a nonparametric correction
+y_hat = g(y_hat0, p0, TTA disagreement, local neighbors, class pair), without
+reconstructing W*.
+
+**Keep as diagnostics/references:** W0, W*_oracle, U_oracle.
+
+## The remaining search, organized by how non-parametric the correction is
+
+**Level 1 -- Decode-only (W0 frozen).** Labels learn class biases, class-pair
+thresholds, confidence calibration, rejection rules, TTA-dependent relabeling.
+This is B3 (logit calibration) plus rejection; the least aggressive, zero-risk
+step.
+
+**Level 2 -- Local decision correction (still no global W).** Labels learn
+class-pair corrections, prototype/neighborhood rules, spatial/temporal
+corrections, TTA-consistency overrides applied at decode. This is the A5
+error-correction loop (decode-time re-ranking of identified pairs) and the
+A1 class-pair boundary work. Closest to the "decision-rule object" finding
+(R3), still no global update.
+
+**Level 3 -- Fully acquisition-driven TTA.** Labels determine WHERE/WHEN the
+frozen classifier is unreliable; TTA provides the actual adaptation signal. This
+is A2/A3: acquisition rules (margin + TTA-instability + diversity) driving where
+TTA is trusted. Matches TTA's validated role as an instability detector.
+
+**Where the effort goes now:** Level 3 (acquisition-driven TTA) is the strongest
+fit to the measured evidence -- labels for selection/instability, TTA for the
+signal, no parameter reconstruction. Levels 1-2 are the conservative floor and
+the decode-time repair candidates.
+
 ---
 
 ## Next: the U-free next-steps (from the candidate table)
 
-Ranked by what the measured evidence supports after Iterations 3b and 4. **All hold
-for the R4 linear probe** (no prototype decoder; labels make decisions about where
-to look or how to re-rank at decode time -- every W-update family is now closed,
-including the pool-basis branch, P1, Iteration 4):
+Ranked by what the measured evidence supports after Iterations 3b and 4, organized
+by the decision levels above. **All hold for the R4 linear probe** (no prototype
+decoder; labels make decisions about where to look or how to re-rank at decode
+time -- every W-update family is now closed, including the pool-basis branch, P1,
+Iteration 4; the planned "final sanity check" (pool basis + label coefficients)
+was that branch and has already been run):
 
 1. **Error-correction AL loop (A5)** -- labels reveal recurring (pred,true) error
    pairs; subsequent queries focus on those pairs; "repair" is a decode-time
@@ -406,7 +482,10 @@ far: they use labels to make DECISIONS about where to look or how to re-rank,
 not to estimate a parameter update. The last parameter-update branch (P1, pool
 basis + label selection) is CLOSED by Iteration 4 -- the pivot to
 acquisition-only / decode-time decision rules is now final, with a measured
-negative rather than an assumption.
+negative rather than an assumption. The effort now concentrates on Level 3
+(acquisition-driven TTA: labels for instability/selection, TTA for the signal),
+with Levels 1-2 (decode-only calibration, local decision correction) as the
+conservative floor.
 
 ## Iteration 3 result: the rank-1-per-label diagnostic is INCONCLUSIVE -- the
 negative is confounded by metric choice and step scale, NOT a verdict on the
