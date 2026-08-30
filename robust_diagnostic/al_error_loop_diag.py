@@ -340,30 +340,30 @@ def main():
             # --- arm: label-pair bias (the full A5 method) ---
             Lv_c = Lv.clone()
             last_d = 0.0
-            for (a, b, _) in final_pairs:
-                sel_ab = torch.nonzero((pred_lab == a) | (pred_lab == b)).squeeze(1)
+            for (pa, pb, _) in final_pairs:
+                sel_ab = torch.nonzero((pred_lab == pa) | (pred_lab == pb)).squeeze(1)
                 if len(sel_ab) == 0:
                     continue
-                z_ab = Lp[sel_ab][:, [a, b]]
-                y_ab = (y_lab[sel_ab] == b).long()
-                d_best, _ = find_bias_offset(z_ab, y_ab, a, b, d_sweep)
+                z_ab = Lp[sel_ab][:, [pa, pb]]
+                y_ab = (y_lab[sel_ab] == pb).long()
+                d_best, _ = find_bias_offset(z_ab, y_ab, pa, pb, d_sweep)
                 last_d = d_best
-                Lv_c[:, a] -= d_best
-                Lv_c[:, b] += d_best
+                Lv_c[:, pa] -= d_best
+                Lv_c[:, pb] += d_best
             entry['pair_bias_label'] = {'gc': gc(miou_from_pred(Lv_c.argmax(1), vl)),
                                         'd': last_d}
 
             # --- arm: oracle-pair bias (ceiling: the RIGHT pairs, label offsets) ---
             Lv_o = Lv.clone()
-            for (a, b, _) in true_pairs:
-                sel_ab = torch.nonzero((pred_p == a) | (pred_p == b)).squeeze(1)
+            for (pa, pb, _) in true_pairs:
+                sel_ab = torch.nonzero((pred_p == pa) | (pred_p == pb)).squeeze(1)
                 if len(sel_ab) == 0:
                     continue
-                z_ab = Lp[sel_ab][:, [a, b]]
-                y_ab = (pl[sel_ab] == b).long()
-                d_best, _ = find_bias_offset(z_ab, y_ab, a, b, d_sweep)
-                Lv_o[:, a] -= d_best
-                Lv_o[:, b] += d_best
+                z_ab = Lp[sel_ab][:, [pa, pb]]
+                y_ab = (pl[sel_ab] == pb).long()
+                d_best, _ = find_bias_offset(z_ab, y_ab, pa, pb, d_sweep)
+                Lv_o[:, pa] -= d_best
+                Lv_o[:, pb] += d_best
             entry['pair_bias_oracle_pairs'] = {'gc': gc(miou_from_pred(Lv_o.argmax(1), vl))}
 
             # --- arm: random-pair bias (control: is the correction just noise?) ---
@@ -391,34 +391,34 @@ def main():
             Lv_g = Lv.clone()
             lab_margin = margin_p[sel]
             lab_pred = pred_p[sel]
-            for (a, b, _) in final_pairs:
-                is_a_lab = (lab_pred == a)                       # probe says a (labeled)
+            for (pa, pb, _) in final_pairs:
+                is_a_lab = (lab_pred == pa)                      # probe says a (labeled)
                 if int(is_a_lab.sum().item()) == 0:
                     continue
                 m_a = lab_margin[is_a_lab]
-                is_err_a = (y_lab[is_a_lab] != a) | (y_lab[is_a_lab] == b)
+                is_err_a = (y_lab[is_a_lab] != pa) | (y_lab[is_a_lab] == pb)
                 tau = find_gate_threshold(m_a, is_err_a)
                 if tau is None:
                     continue
-                is_a_pred = (pred_v == a) & (b_v == b)
+                is_a_pred = (pred_v == pa) & (b_v == pb)
                 flip = is_a_pred & (margin_v <= tau)
-                Lv_g[flip, a] = Lv_g[flip, b] - 1.0
+                Lv_g[flip, pa] = Lv_g[flip, pb] - 1.0
             entry['pair_gate_label'] = {'gc': gc(miou_from_pred(Lv_g.argmax(1), vl))}
 
             # --- arm: oracle-pair gate (ceiling: true pairs, POOL-label thresholds) ---
             Lv_go = Lv.clone()
-            for (a, b, _) in true_pairs:
-                is_a_pool = (pred_p == a)
+            for (pa, pb, _) in true_pairs:
+                is_a_pool = (pred_p == pa)
                 if int(is_a_pool.sum().item()) == 0:
                     continue
                 m_a = margin_p[is_a_pool]
-                is_err_a = (pl[is_a_pool] != a) | (pl[is_a_pool] == b)
+                is_err_a = (pl[is_a_pool] != pa) | (pl[is_a_pool] == pb)
                 tau = find_gate_threshold(m_a, is_err_a)
                 if tau is None:
                     continue
-                is_a_pred = (pred_v == a) & (b_v == b)
+                is_a_pred = (pred_v == pa) & (b_v == pb)
                 flip = is_a_pred & (margin_v <= tau)
-                Lv_go[flip, a] = Lv_go[flip, b] - 1.0
+                Lv_go[flip, pa] = Lv_go[flip, pb] - 1.0
             entry['pair_gate_oracle_pairs'] = {'gc': gc(miou_from_pred(Lv_go.argmax(1), vl))}
 
             # --- pair-discovery quality vs val truth ---
