@@ -309,16 +309,21 @@ def main():
             dict_elems['bdry_disp'] = (disp / (disp.norm() + 1e-8)).unsqueeze(1)
 
         if 'conf_pair' in dict_names:
-            # top-N confused pairs by count of (top1, top2) among the pool
+            # top-N confused pairs by count of (top1, top2) among the pool.
+            # Code-space direction for a pair: the pseudo-label mean shift
+            # mean(X|pseudo=a) - mean(X|pseudo=b) (a 10000-d direction, not the
+            # 17-d class row difference -- the dictionary lives in code space).
             pairs = a_idx * NUM_CLASSES + b_idx
             uniq, cnt = torch.unique(pairs, return_counts=True)
             order = torch.argsort(cnt, descending=True)
             dirs = []
             for k in order[:args.n_pairs]:
                 a = int(uniq[k].item()) // NUM_CLASSES; b = int(uniq[k].item()) % NUM_CLASSES
-                dvec = (W0c[a] - W0c[b])
-                if dvec.norm().item() > 1e-8:
-                    dirs.append(dvec / (dvec.norm() + 1e-8))
+                ma = (pseudo == a); mb = (pseudo == b)
+                if int(ma.sum().item()) > 100 and int(mb.sum().item()) > 100:
+                    dvec = Xp[ma].mean(dim=0) - Xp[mb].mean(dim=0)
+                    if dvec.norm().item() > 1e-8:
+                        dirs.append(dvec / (dvec.norm() + 1e-8))
             if len(dirs) > 0:
                 dict_elems['conf_pair'] = torch.stack(dirs, dim=0).t().float()
 
