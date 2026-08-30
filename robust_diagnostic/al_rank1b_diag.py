@@ -278,10 +278,12 @@ def main():
         # ---- B. NORMALIZED step: bounded trust radius, no overstepping ----
         cond_res = {'refs': refs, 'gap': float(gap),
                     'span_capture': capture, 'budgets': {}}
-        # oracle-U reference (the R5 bound)
-        G = (X_lab.float() @ right_topk_svd(R.t(), 2)[0]).t() @ (onehot(y_lab, NUM_CLASSES).float() - p0)
+        # oracle-U reference (the R5 bound): W1 = W0 + rho * U_or * G/||G||
+        U_or, _ = right_topk_svd(R.t(), 2)          # d x r (code-space directions)
+        resid_l = (onehot(y_lab, NUM_CLASSES).float() - p0)
+        G = (X_lab.float() @ U_or).t() @ resid_l    # r x C
         Gn = G / (G.norm() + 1e-8)
-        W_or = W0c + (args.eta * Gn.reshape(10000, NUM_CLASSES))
+        W_or = W0c + (U_or @ (args.eta * Gn))
         d_or = mw(W_or, Xv, vl) - refs['frozen']
         cond_res['oracle_U_delta'] = float(d_or)
 
