@@ -321,3 +321,85 @@ content barely mattered for the ONLY working first-order mechanism -- the gain
 was geometric (U-leverage of selected points). That is a risk for B/C specifically
 (the label CONTENT is what drives the class correction there) and is exactly what
 this three-arm test decides.
+
+## Iteration 3 result: the three-arm decisive test -- Arm C (confusion correction)
+is the first few-label signal that works, and the corruption control shows the
+direction is robust, NOT brittle (2026-08-30, `al_class_stats_iter3_diag.py`)
+
+Verified against clean JSONs (`al_class_stats_iter3_{dglsspp,covshift_ep10}.json`).
+
+**ARM A -- hard pseudo-means are the only label-free positive; soft/TTA are WORSE.**
+
+| | dglsspp fog | dglsspp crosstalk | covshift fog |
+| :--- | :--- | :--- | :--- |
+| hard | **+0.05** (we 3.63) | **+0.12** (we 1.56) | **+0.02** (we 1.17) |
+| soft | -0.34 (we 1.00) | -0.34 (we 1.00) | -1.11 (we 1.00) |
+| tta | -0.35 (we 1.00) | -0.37 (we 1.00) | -1.13 (we 1.00) |
+
+The softer estimators are CLOSER to M* in raw whitened norm (we ~1.00) yet give
+worse gc. The label-free ceiling of the construction remains the HARD pseudo-mean
+decoder at +0.05 to +0.12 (reproducing Iteration 2's positive). Soft/TTA
+averaging does not push it toward the +0.73-0.99 ceiling.
+
+**ARM C -- confusion correction is the WINNER among few-label arms.** The only
+positive few-label arm, on the primary AL target:
+- dglsspp fog K3 +0.04, K5 +0.01 (at ALL budgets 2/4/8); covshift fog K5 +0.04.
+- And it is the ONLY arm that is not catastrophic on snow/wet_ground (-0.6 to
+  -3.4 vs Arm B's -9 to -15 and Arm A's -5 to -7).
+Labels estimating a C x C class-confusion matrix (NOT a 10000-d vector) is the
+first few-label mechanism with a positive signal in this reformulation.
+
+**ARM B -- scalar gamma on pool directions FAILS.** All negative (-0.32 to -0.36
+on dglsspp fog/crosstalk, -9 on covshift crosstalk) despite sensible gamma values
+(~1.0: "move class c about one v_c"). The pool-derived direction v_c =
+M_pseudo_c - M0_c is itself too noisy to be a reliable axis; a scalar on a noisy
+axis is still a noisy step.
+
+**CORRUPTION CONTROL -- the mean direction is ROBUST, not brittle.** gc(rho) on
+the oracle mean direction corrupted with additive noise D_rho:
+
+| rho | dglsspp fog | dglsspp crosstalk | covshift fog | covshift crosstalk |
+| :--- | :--- | :--- | :--- | :--- |
+| 0.0 | +0.73 | +0.99 | +0.50 | +1.04 |
+| 0.3 | +0.71 | +0.91 | +0.54 | +0.96 |
+| 0.5 | **+0.70** | **+0.80** | +0.45 | +0.88 |
+| 0.8 | +0.48 | +0.34 | +0.33 | +0.51 |
+| 1.0 | -0.13 | -0.31 | -0.54 | -1.19 |
+
+Even a 50%-corrupted direction retains 70-88% of its value, and 80% corruption
+still keeps +0.33 to +0.51. This REFRAMES the entire line: the estimator problem
+is not brittle in principle -- a direction estimated to within ~50% noise would
+deliver ~0.7-0.8 gc. The raw few-label estimators are simply 30-70x worse than
+that tolerance (the 35x update_norm of Iteration 2), so the gap is a precision
+gap, not a structural one.
+
+### Verdict
+
+The reformulation is NOT dead. Three things are now established:
+1. The direction is robust (corruption control) -- the required estimation
+   precision is achievable-in-principle (~50% noise tolerance).
+2. Arm C (confusion correction, C x C) is the first few-label signal that works
+   (+0.01 to +0.04, the only non-catastrophic few-label arm).
+3. The label-free ceiling stays at the hard pseudo-mean (+0.05 to +0.12); soft/
+   TTA do not help.
+
+The path forward, in the order the evidence supports:
+1. **Push Arm C further** -- it is the only positive few-label mechanism. Refine
+   the confusion-correction: pool-regularized Q (shrink the C x C rows toward the
+   pool pseudo-label prior to fight the 8-label sample noise), iterated
+   (self-training: correct M, re-pseudo-label, re-estimate Q), and soft-weighted
+   Q. The +0.04 is small but it is the first label signal and the corruption
+   control says the direction can tolerate the noise.
+2. **Arm B needs a BETTER direction v_c**, not a better scalar: the failure was
+   the noisy v_c = M_pseudo - M0. Test the other pool-derived directions (high-
+   confidence pseudo subset, TTA displacement, density-core) -- the corruption
+   control says a good direction tolerates a bad scalar.
+3. **The class-prior correction (P* vs P0)** -- untested, label-free, directly
+   observable from the pool.
+4. **Iterated self-training on the hard pseudo-mean** (the +0.05-0.12 label-free
+   positive): re-pseudo-label with the corrected decoder.
+
+Iteration 4 (planned): refine Arm C (confusion correction with pool-regularized Q
+and iteration) + Arm B with the alternative pool-derived directions. The
+corruption control gives the clearest green light: the estimator problem is a
+precision problem, not an impossibility.
