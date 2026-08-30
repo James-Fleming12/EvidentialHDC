@@ -19,23 +19,26 @@ rather than treating the method as a blackbox.
 | Generic whitening regularization (lam_w) | Closed (no effect at these scales) |
 | Arbitrary raw W-update | Closed / deprioritized |
 | Label-free pool pseudo-mean (hard) | Real but weak positive (+0.05-0.12) |
-| Pool directions v_c point at the true shift (raw-space) | Validated but MISLEADING (align +0.83-0.92 raw; useless after whitening) |
-| Mean direction robust to ~50% corruption | MISLEADING artifact (corrupted the whitened difference, not a raw direction) |
+| Pool directions v_c point at the true shift (raw-space) | Validated (align +0.83-0.92 raw) |
+| Pool direction SURVIVES decoder geometry | Validated (Iteration 6: per-class align ~0.9-1.0; H1 rejected) |
+| Mean direction robust to ~50% corruption | Partially misleading (corrupted whitened diff) but direction IS robust per-class |
 | Confusion-matrix correction (Q, C x C) | Works, SATURATES at +0.05 (Iteration 4) |
-| Soft / TTA pseudo-mean | Closed (worse than hard) |
-| Pool basis + scalar coefficients (labels estimate alpha in R^K) | CLOSED (Iteration 5): oracle gamma* is negative -- the direction is not sufficient after whitening |
+| Soft / TTA pseudo-mean | Same alignment as hard (Iteration 6); scheme not the issue |
+| Pool basis + scalar coefficients (labels estimate alpha in R^K) | FAILS but NOT because the direction is wrong -- the per-class mean shift is 2-117x too large and orthogonal to the class's OWN residual column (Iteration 6 G) |
 | Class-prior correction (P* vs P0) | Closed (negligible, same-scan P*~P0) |
-| Scalar/coefficient estimation (the remaining bottleneck) | CLOSED (Iteration 5) -- no gamma recovers anything positive |
-| Whitened / residual-relevant mean-error diagnostic | Ran in Iteration 3 (we, rr reported) |
+| Scalar/coefficient estimation | Closed as an object for the PER-CLASS mean shift; the mean shift is not the decision-relevant object |
+| Whitening at any rank/fractional power | Not the culprit (Iteration 6 D/E: alignment high, gc negative at all ranks) |
+| Pairwise / covariance-change direction (w_a-w_b, R_cov) | OPEN -- Iteration 7 (the per-class residual is covariance-dominated, G) |
+| Full-class (not top-K) mean correction | OPEN -- H shows the correction must cover all classes, not the 3-5 largest raw shifts |
 
-The headline: the decomposition W = Sigma^-1 M^T P and the WHITENED oracle decoder
-are right (W_mean_oracle +0.72-1.15), but the ONLY estimator reaching that ceiling
-is the oracle M* (full pool labels). Every label-free/few-label route to M* fails
-once the whitening is applied -- raw means, shift-only, confusion correction
-(saturates +0.05), and the pool direction v_c even with ORACLE scalars (Iteration
-5). The surviving small positives are the label-free hard pseudo-mean decoder
-(+0.05 to +0.12) and the confusion correction (+0.01 to +0.05). The line is CLOSED
-pending a genuinely new information source.
+The headline: the direction IS correct and survives whitening (Iteration 6), but
+the per-class MEAN SHIFT is not the class's decision-relevant object -- it is
+2-117x too large and orthogonal to the class's own residual column (which is
+covariance-dominated), and the decision-relevant correction is distributed across
+ALL classes and lives in the pairwise differences. H1 rejected, H2 confirmed, H3
+rejected. The line is NOT closed: the next step is the pairwise / covariance-
+change direction (d_ab = Sigma^-1(v_a - v_b) and R_cov), not another per-class
+mean estimator.
 
 ## Background: why a reformulation, and what we are reformulating
 
@@ -534,3 +537,106 @@ These are small but real; no further estimator is supported by the evidence. Thi
 doc's line is CLOSED pending a genuinely new information source (e.g. hundreds of
 labels, a pretrained pool-derived whitening, or a decoder that does not require
 Sigma^-1).
+
+**UPDATE (Iteration 6): the Iteration-5 "direction is dead" conclusion was a
+METRIC MISMATCH, not a real closure -- the direction DOES survive decoder
+geometry, but the per-class mean shift is not the decision-relevant object.** See
+the Iteration 6 section below. The line is NOT closed; the failure is now
+localized to a different place.
+
+## Iteration 6 result: H2 confirmed -- the direction survives whitening (per-class
+align ~1.0), but the per-class mean shift is 2-117x too large and nearly
+orthogonal to the class's OWN residual column, and the decision-relevant
+correction is distributed across ALL classes (2026-08-30,
+`al_class_stats_iter6_diag.py`)
+
+Verified against clean JSONs. The covariance-space localization resolved the
+three hypotheses and directly answered "did the +0.92 direction survive?"
+
+**A. PER-CLASS DECODER ALIGNMENT ~ 1.0 -- the direction GENUINELY survives
+decoder geometry (H2 confirmed).** cos(Sigma^-1 v_c, Sigma^-1 Delta_mu_c):
+
+| cond | per-class align (5 classes) |
+| :--- | :--- |
+| dglsspp fog | 1.00 / 0.89 / 1.00 / 0.98 / 0.98 |
+| dglsspp crosstalk | 0.94 / 1.00 / 1.00 / 0.97 / 0.99 |
+| covshift fog | 1.00 / 0.84 / 0.99 / 1.00 / 0.99 |
+| covshift crosstalk | 0.79 / 0.67 / 1.00 / 0.98 / 0.88 |
+
+The pool direction v_c = M_pseudo - M0 is essentially the ORACLE mean shift even
+after whitening. The Iteration-5 negative (gamma*_perclass < 0) was NOT "the
+whitening destroys the direction" -- it was the global-flattened-residual metric
+mismatch (resid_rel ~ 0.001 compared a class direction against the aggregate R).
+**The user's reframing was correct: H1 (whitening destroys each useful class
+direction) is REJECTED.**
+
+**But the direction being right does NOT make it decision-relevant:**
+
+**G. The mean-shift term is 2-117x LARGER than the class's own residual column,
+and nearly orthogonal to it.** frac_mean_norm = ||Sigma^-1 Delta_mu_c|| / ||R_c||
+is 2-117; align_Rc = cos(Sigma^-1 Delta_mu_c, R_c) is 0.02-0.50 (mostly 0.05-0.4).
+The whitening amplifies Delta_mu_c enormously, and the true per-class residual
+column R_c is dominated by COVARIANCE effects, not the mean shift. So even the
+oracle-correct direction, added at any scale to class c, does not move W_c toward
+W*_c -- this is WHY the gamma*_perclass scalar test was negative despite the
+direction being right.
+
+**B. PAIRWISE decoder alignment is LOW (0.01-0.51).** The decision-relevant
+object is w_a - w_b (class competition), and the pairwise differences
+Sigma^-1 (v_a - v_b) are NOT aligned with the oracle pairwise shifts -- only the
+per-class directions are. This matches the earlier confusion-pair results.
+
+**H. Even ORACLE means restricted to the top-5 suspicious classes give gc ~ 0**
+(rho=0: dglsspp fog -0.02, crosstalk -0.15; covshift fog -0.87), while W_mean_
+oracle (oracle means for ALL 17 classes) is +0.72. **The decision-relevant mean
+correction is DISTRIBUTED across all classes, not concentrated in the 3-5
+largest raw-shift classes.** The Iteration-1 "top_moved concentration" was an
+artifact of raw mean-norm, not decision relevance.
+
+**D/E. Whitening is NOT the culprit at any fractional power or rank.** Fractional
+alignment is 0.81-0.96 at beta=1 (and 0.40-0.92 at beta=0); rank-truncated gc is
+negative at every r (8-512). H3 (whitening amplifies irrelevant eigendirections)
+is also REJECTED at the level that matters -- no rank/fractional whitening
+recovers a positive gc.
+
+**I. All pseudo-mean schemes (hard/soft/tta) align ~0.9-1.0 per-class; core
+~0.7-0.8; highconf NA (too few confident points at tau=0.5).** The direction is
+robust to the pseudo-label scheme; scheme choice is not the issue.
+
+### Verdict
+
+The Iteration-5 closure was WRONG in its reasoning (a metric mismatch, exactly as
+the user suspected) and the line is NOT closed at the "direction level". The
+direction DOES survive decoder geometry (A ~ 1.0). But Iteration 6 localizes the
+real failure to two precise places:
+
+1. **The per-class mean shift is not the class's decision-relevant residual.**
+   The whitened mean-shift term is 2-117x the class's own residual column and
+   mostly orthogonal to it (G) -- the residual column is covariance-dominated.
+   This explains why gamma*_perclass was negative despite align ~1.0: the scalar
+   was applied to the wrong object (the mean shift) relative to what the decoder
+   needs per class.
+2. **The decision-relevant mean correction is distributed across all classes
+   (H) and lives in the PAIRWISE differences (B), not the per-class columns.**
+
+What this DOES settle, cleanly:
+- H1 rejected: whitening does not destroy the per-class direction.
+- H2 confirmed: the +0.92 raw direction genuinely survives; the global residual
+  metric was misleading.
+- H3 rejected at the level that matters: no rank/fractional whitening rescues gc.
+
+What remains OPEN (the direction is alive but the OBJECT is wrong):
+- **Pairwise-boundary corrections** (B): the low pairwise alignment suggests the
+  pool directions don't capture w_a - w_b -- but the decision object IS pairwise,
+  so a pairwise (not per-class) pool direction / correction is the untested form
+  (the user's d_ab = Sigma^-1(v_a - v_b) idea).
+- **Covariance-aware direction**: since R_c is covariance-dominated (G), a
+  direction built from the COVARIANCE change (not the mean shift) may be the
+  right object -- this connects to the never-measured R_cov term.
+- **Full-class (not top-K) corrections**: H says the correction must cover all
+  classes; the top-K concentration was an artifact.
+
+Iteration 7 (planned): test the PAIRWISE covariance-space direction
+d_ab = Sigma^-1(v_a - v_b) against the oracle pairwise shift, and the
+covariance-change direction R_cov, since G shows the per-class residual is
+covariance-dominated rather than mean-dominated.
