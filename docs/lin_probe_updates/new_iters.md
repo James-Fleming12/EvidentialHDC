@@ -187,33 +187,40 @@ Organized by the tier the evidence suggests. Each entry states what it is, why i
 could work (the measured fact it builds on), which property it targets, and the
 key risk.
 
-### Tier 1 -- decision-boundary AL + local corrections (the primary bet)
+**Constraint: every candidate must hold for the LINEAR-CLASSIFIER decoder (the R4
+probe on the HDC code).** The prototype (R1) decoder is closed (R1 < R4 on every
+condition, tta Iteration 0) and is NOT a candidate decoder. Any "prototype"
+reference below is a label-free GAUGE SIGNAL (R4-vs-R1 disagreement is a validated
+instability signal, not a decoder to adapt). A W-update (any few-label parameter
+change to the probe) is also closed by the U-free and local-form results, so every
+survivor uses labels to SELECT/re-rank, not to re-estimate W.
+
+### Tier 1 -- decision-boundary AL (labels make decisions, not parameter updates)
 
 | # | Direction | What it is | Why it could work | Property | Risk |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| A1 | **Class-pair boundary sampling** | Query by min top-2 logit margin, with a SEPARATE budget per (a,b) class pair | The residual is decision-rule structured; ~5 pairs may carry ~80% of recoverable error (R3). 8 pair-targeted labels > 8 global labels | P1, P2 | Needs the top-2 class competition to be stable; if error is not pair-concentrated this caps out |
-| A2 | **TTA-instability x boundary acquisition** | A(x) = Var[p(y|aug_k(x))] + alpha/|margin| + beta*disagreement(proto,probe) | TTA's validated strength is instability detection (A2); combine with boundary proximity = query the unstable boundary, not the uncertain bulk | P1, P2 | If instability and recoverable error decouple (as conf_drop did for gain), the acquisition may select wrong-but-stable points |
+| A1 | **Class-pair boundary sampling** | Query by min top-2 logit margin (of the R4 probe), with a SEPARATE budget per (a,b) class pair | The residual is decision-rule structured; ~5 pairs may carry ~80% of recoverable error (R3). 8 pair-targeted labels > 8 global labels | P1, P2 | Needs the top-2 class competition to be stable; if error is not pair-concentrated this caps out |
+| A2 | **TTA-instability x boundary acquisition** | A(x) = Var[p(y|aug_k(x))] + alpha/|margin| + beta*disagreement(proto,probe) -- the disagreement term is a GAUGE SIGNAL, not a decoder to adapt | TTA's validated strength is instability detection (A2); combine with boundary proximity = query the unstable boundary, not the uncertain bulk | P1, P2 | If instability and recoverable error decouple (as conf_drop did for gain), the acquisition may select wrong-but-stable points |
 | A3 | **Sequential AL (labels reveal the next query)** | Query 1 -> see the error pair -> focus next query on that boundary -> different region -> next pair | Avoids inferring the whole structure before enough labels; each label sharpens the next (the adaptive loop) | P1, P2 | Slow (sequential), needs the confusion structure to be discoverable in a few steps |
-| A4 | **Local class-pair separator updates** | Only update (w_a - w_b) for the implicated pairs, not the full W | A label saying (y=a, pred=b) identifies the relevant margin directly; never asks 8 labels to explain a 17-class residual | P1, P2 | If the needed correction is not a pair-margin (e.g. a shared shift), local updates miss it |
-| A5 | **Error-correction AL loop** | 8 labels -> identify recurring (pred,true) errors -> accumulate confusion -> query the uncertain points of those pairs -> repair | Directly targets the demonstrated failures; matches the "decision-rule object" finding | P1, P2 | Same pair-concentration assumption as A1 |
+| A5 | **Error-correction AL loop (the recommended next test)** | 8 labels -> identify recurring (pred,true) errors -> accumulate confusion -> query the uncertain points of those pairs -> re-rank / re-gate those pairs at DECODE time (NOT a W update) | Directly targets the demonstrated failures; matches the "decision-rule object" finding; the "repair" is a decode-time correction of the identified pairs, consistent with the closed-update constraint | P1, P2 | Same pair-concentration assumption as A1 |
 
-### Tier 2 -- conservative / cheap corrections
+### Tier 2 -- conservative / decode-time corrections (no W update)
 
 | # | Direction | What it is | Why it could work | Property | Risk |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| B1 | **Margin / entropy / uncertainty + diversity** | Cluster the top-M uncertain points, query cluster reps (or farthest-point) | Avoids re-querying near-identical points; uncertainty+diversity is strictly stronger than uncertainty alone | P1, P2 | Diversity in feature space may not span the decision-rule structure |
-| B2 | **Expected gradient length (local)** | EGL(x) = sum_y p(y|x) ||g(x,y)||, restricted to the top-2 pair | The raw gradient failed as an UPDATE (R5), but is valid as an ACQUISITION score ("how much could this label change the classifier") | P2 | EGL needs the softmax to be meaningful under corruption (weak) |
-| B3 | **Class-bias / logit calibration update** | z' = a_c z_c + b_c (per-class temperature/bias) instead of W' = W + dW | A few labels estimate 2C scalars far more easily than a 10000-d residual; zero-cost baseline that may fix confidence/ranking distortion | P1, P3, P5 | Does not fix geometric boundary rotations; may only move confidence, not decisions |
-| B4 | **Local prototype correction** | mu_c -> mu_c + (1/|L_c|) sum_{x_i in L_c}(x_i - mu_c), only for classes with evidence + high TTA instability | Very conservative; the earlier prototype failure was a different mechanism, and active prototype correction is untested | P1, P3 | The prototype decoder was below the probe before (R1), so the ceiling is low |
+| B1 | **Margin / entropy / uncertainty + diversity** | Cluster the top-M uncertain points (by the R4 probe's softmax), query cluster reps (or farthest-point) | Avoids re-querying near-identical points; uncertainty+diversity is strictly stronger than uncertainty alone | P1, P2 | Diversity in feature space may not span the decision-rule structure |
+| B2 | **Expected gradient length (local)** | EGL(x) = sum_y p(y|x) ||g(x,y)||, restricted to the top-2 pair -- used ONLY as an acquisition score | The raw gradient failed as an UPDATE (R5), but is valid as an ACQUISITION score ("how much could this label change the classifier") | P2 | EGL needs the softmax to be meaningful under corruption (weak) |
+| B3 | **Class-bias / logit calibration** | z' = a_c z_c + b_c (per-class temperature/bias) on the R4 probe's LOGITS | A few labels estimate 2C scalars far more easily than a 10000-d residual; the only parameter change that holds for the linear classifier (it is the probe's bias, not U); zero-cost baseline that may fix confidence/ranking distortion | P1, P3, P5 | Does not fix geometric boundary rotations; may only move confidence, not decisions |
 
-### Tier 3 -- methods to revisit only if Tier 1-2 fail
+### Tier 3 -- closed / revisit only with a new information source
 
 | # | Direction | What it is | Why it could work | Risk |
 | :--- | :--- | :--- | :--- | :--- |
 | C1 | More clever U estimators | CCA on class pairs, per-condition basis, etc. | The residual is condition-specific (Iteration 1), so per-condition estimators are the only U-route left | Closed 3x already (R3, R4, R6); low prior |
 | C2 | More bank-selection schemes | Conformal scores, entropy-balancing, domain-aware querying | Rigorous selection MIGHT beat leverage/random (which failed) | The bank U-source is closed (R4); selection cannot fix a missing signal |
-| C3 | More sophisticated trust-region gating | Richer TTA consistency for rollback | R5's gate is the sound part; better rollback could make aggressive updates safe | A3 showed no score separates good/bad updates; consistency-rollback is a weaker (unproven) claim |
-| C4 | Online TTA + micro-updates with rollback | W_{t+1} = W_t + eta_t * Delta_t, keep W_best only if prediction-consistency improves | The only online form; conservative against catastrophic updates | Needs the consistency score to be reliable (A3 caution) |
+| C3 | More sophisticated trust-region gating | Richer TTA consistency for rollback on the probe's first-order step | R5's gate is the sound part; better rollback could make aggressive updates safe | A3 showed no score separates good/bad updates; consistency-rollback is a weaker (unproven) claim |
+| C4 | Online TTA + micro-updates with rollback | W_{t+1} = W_t + eta_t * Delta_t (probe rows), keep W_best only if prediction-consistency improves | The only online form; conservative against catastrophic updates | Needs the consistency score to be reliable (A3 caution) |
+| C5 | ~~Prototype correction~~ | ~~Update class means mu_c~~ | ~~Active prototype selection~~ | **REMOVED: uses the R1 prototype decoder, which is closed (R1 < R4). Does not hold for the linear classifier.** |
 
 ---
 
@@ -344,20 +351,25 @@ prototype selection, error-correction loops, sequential AL).
 ## Next: the U-free next-steps (from the candidate table)
 
 The candidates that do not require estimating U or a global parameter update, in
-the order the evidence supports:
+the order the evidence supports. **All hold for the R4 linear probe** (no
+prototype decoder, no W update -- labels make decisions about where to look or
+how to re-rank at decode time):
 
 1. **Error-correction AL loop (A5)** -- labels reveal recurring (pred,true) error
-   pairs; subsequent queries focus on those pairs; repair only the demonstrated
-   errors. This is the natural next test: it uses labels to FIND the problem, not
-   to estimate a parameter. The Iteration-1 acquisition sweep showed the labels
-   carry real selection signal; this extends it to a loop.
+   pairs; subsequent queries focus on those pairs; "repair" is a decode-time
+   re-ranking/gating of the identified pairs, NOT a W update. This is the natural
+   next test: it uses labels to FIND the problem, not to estimate a parameter. The
+   Iteration-1 acquisition sweep showed the labels carry real selection signal;
+   this extends it to a loop.
 2. **Sequential AL (A3)** -- x1 -> y1 -> x2(y1) -> ... where each label sharpens
    the next query. Directly tests "labels reveal the structure of the next query."
-3. **Logit calibration (B3)** -- z' = a_c z_c + b_c. The known-weak baseline
-   (bias-only = 0-4%) but zero-cost and a clean control.
-4. **Prototype selection (B4)** -- which prototypes are wrong, using TTA
-   instability, rather than a global residual.
+3. **Logit calibration (B3)** -- z' = a_c z_c + b_c on the probe's logits. The
+   known-weak baseline (bias-only = 0-4%) but zero-cost and a clean control, and
+   the only parameter change that holds for the linear classifier (it is the
+   probe's bias, not U).
+4. **Prototype selection (B4) is REMOVED** -- it assumes the R1 prototype decoder,
+   which is closed (R1 < R4). It does not hold for the linear classifier.
 
 These are the Tier-1 U-free bets. They share the property that failed nothing so
-far: they use labels to make DECISIONS about where to look, not to estimate a
-parameter update.
+far: they use labels to make DECISIONS about where to look or how to re-rank,
+not to estimate a parameter update.
