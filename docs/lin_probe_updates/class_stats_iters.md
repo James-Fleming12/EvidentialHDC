@@ -19,21 +19,23 @@ rather than treating the method as a blackbox.
 | Generic whitening regularization (lam_w) | Closed (no effect at these scales) |
 | Arbitrary raw W-update | Closed / deprioritized |
 | Label-free pool pseudo-mean (hard) | Real but weak positive (+0.05-0.12) |
-| Pool directions v_c point at the true shift | Validated (align +0.83-0.92) |
-| Mean direction robust to ~50% corruption | Validated (corruption control) |
+| Pool directions v_c point at the true shift (raw-space) | Validated but MISLEADING (align +0.83-0.92 raw; useless after whitening) |
+| Mean direction robust to ~50% corruption | MISLEADING artifact (corrupted the whitened difference, not a raw direction) |
 | Confusion-matrix correction (Q, C x C) | Works, SATURATES at +0.05 (Iteration 4) |
 | Soft / TTA pseudo-mean | Closed (worse than hard) |
-| Pool basis + scalar coefficients (labels estimate alpha in R^K) | FAILS -- scalar gamma from 2-8 labels is wrong (align right, scalar wrong) |
+| Pool basis + scalar coefficients (labels estimate alpha in R^K) | CLOSED (Iteration 5): oracle gamma* is negative -- the direction is not sufficient after whitening |
 | Class-prior correction (P* vs P0) | Closed (negligible, same-scan P*~P0) |
-| Scalar/coefficient estimation (the remaining bottleneck) | OPEN -- Iteration 5 |
+| Scalar/coefficient estimation (the remaining bottleneck) | CLOSED (Iteration 5) -- no gamma recovers anything positive |
 | Whitened / residual-relevant mean-error diagnostic | Ran in Iteration 3 (we, rr reported) |
 
-The headline: a good low-dimensional-ish target (M*) exists, the pool DIRECTIONS
-point at it (align 0.9), and the direction is robust to ~50% noise -- but the
-few-label SCALAR/coefficient estimator is the single remaining bottleneck (a
-noisy gamma, mis-scaled, then whitening-amplified). The open problem is a good
-step-size/coefficient estimator on the known-good direction. (See Iteration 4
-verdict and the Iteration-5 plan.)
+The headline: the decomposition W = Sigma^-1 M^T P and the WHITENED oracle decoder
+are right (W_mean_oracle +0.72-1.15), but the ONLY estimator reaching that ceiling
+is the oracle M* (full pool labels). Every label-free/few-label route to M* fails
+once the whitening is applied -- raw means, shift-only, confusion correction
+(saturates +0.05), and the pool direction v_c even with ORACLE scalars (Iteration
+5). The surviving small positives are the label-free hard pseudo-mean decoder
+(+0.05 to +0.12) and the confusion correction (+0.01 to +0.05). The line is CLOSED
+pending a genuinely new information source.
 
 ## Background: why a reformulation, and what we are reformulating
 
@@ -476,3 +478,59 @@ estimators (raw projection, shrunk-toward-1, boundary-margin, update-norm-
 constrained) on the known-good direction, and report the gc(gamma_hat) curve vs
 the gamma* oracle optimum. If a practical estimator lands near gamma*, the
 reformulation has its mechanism.
+
+## Iteration 5 result: ORACLE scalars on the "good" direction are NEGATIVE -- the
+direction family is NOT sufficient after whitening (2026-08-30,
+`al_class_stats_iter5_diag.py`)
+
+Verified against clean JSONs. The coefficient-estimation diagnostic measured the
+gc(gamma) curve on the Iteration-4 "known-good" direction v_c = M_pseudo_c - M0_c,
+the per-class ORACLE scalars gamma*_c = <M*_c - M0_c, v_c>/||v_c||^2, and practical
+estimators (raw, shrink1, gamma1, normscale, oracle).
+
+**The decisive number: gc(gamma*_perclass) is NEGATIVE on every cell -- far below
+W_mean_oracle.** Scalar estimation is NOT the whole problem; the direction family
+itself is insufficient after whitening.
+
+| | dglsspp fog | dglsspp crosstalk | covshift fog | covshift crosstalk |
+| :--- | :--- | :--- | :--- | :--- |
+| W_mean_oracle | +0.72 | +0.99 | +0.50 | +1.04 |
+| **gamma\*_perclass** | **-0.31** | **-0.34** | **-1.17** | **-5.79** |
+| curve peak (best over gamma sweep) | -0.30 | -0.32 | -0.97 | -5.24 |
+
+Even with PERFECT per-class oracle scalars (the projection of the TRUE shift onto
+v_c), the update is negative. The gc(gamma) curve is flat-negative across the
+whole gamma sweep (0 to 2.0). The oracle gamma values themselves are sensible
+(0.8-1.3 on the suspicious classes) -- the problem is not the scalar.
+
+**Why this reconciles with Iteration 4's "+0.92 direction alignment".** The
+Iteration-4 alignment cos(v_c, M*_c - M0_c) ~ 0.9 was measured in RAW code space.
+But the decoder applies the non-orthogonal whitening Sigma^-1, which rotates and
+re-weights directions. The quantity that matters is whether v_c aligns with
+Sigma^-1 (M* - M0) (the WHITENED mean shift) -- and it does not. upd_norm@gamma1
+= 33.7xR (dglsspp fog) confirms: the v-direction, once whitened, is dominated by
+amplified noise directions, not the residual. The Iteration-3 corruption control
+was equally misleading in the same way: it corrupted D_oracle = W_mean_oracle - W0
+which is ALREADY the whitened difference -- it never tested whether a RAW mean
+direction survives the whitening.
+
+**Caveat on the gamma=0 reference.** At gamma=0 build_W uses the POOL whitening
+while W0 uses the CLEAN whitening, so gamma=0 (-0.31) is not W0 (0) -- it already
+includes a ~-0.31 pool-vs-clean whitening gap. But the flat negative curve means
+no gamma recovers anything positive regardless.
+
+**Verdict: the class-statistics reformulation is effectively CLOSED at the
+direction level.** The decoder structure is right (W_mean_oracle works), but the
+ONLY estimator that reaches the ceiling is the oracle M* (full pool labels). Every
+label-free/few-label route to M* -- raw means, shift-only, confusion correction
+(saturates +0.05), and now the pool pseudo-mean direction v_c with ORACLE scalars
+-- fails once the whitening is applied. The corruption control's "green light"
+was an artifact of testing whitened differences rather than raw directions. The
+reformulation's residual value is:
+- W_mean_oracle as a diagnostic reference (the labeled ceiling),
+- the label-free hard pseudo-mean decoder (+0.05 to +0.12, no labels, no oracle),
+- the confusion correction (+0.01 to +0.05, few labels, no oracle).
+These are small but real; no further estimator is supported by the evidence. This
+doc's line is CLOSED pending a genuinely new information source (e.g. hundreds of
+labels, a pretrained pool-derived whitening, or a decoder that does not require
+Sigma^-1).
