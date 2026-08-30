@@ -371,18 +371,18 @@ def main():
             torch.manual_seed(11)
             n_pairs_r = len(true_pairs)
             for k in range(n_pairs_r):
-                a = int(torch.randint(NUM_CLASSES, (1,)).item())
-                b = int(torch.randint(NUM_CLASSES, (1,)).item())
-                if a == b:
-                    b = (b + 1) % NUM_CLASSES
-                sel_ab = torch.nonzero((pred_p == a) | (pred_p == b)).squeeze(1)
+                ra = int(torch.randint(NUM_CLASSES, (1,)).item())
+                rb = int(torch.randint(NUM_CLASSES, (1,)).item())
+                if ra == rb:
+                    rb = (rb + 1) % NUM_CLASSES
+                sel_ab = torch.nonzero((pred_p == ra) | (pred_p == rb)).squeeze(1)
                 if len(sel_ab) == 0:
                     continue
-                z_ab = Lp[sel_ab][:, [a, b]]
-                y_ab = (pl[sel_ab] == b).long()
-                d_best, _ = find_bias_offset(z_ab, y_ab, a, b, d_sweep)
-                Lv_r[:, a] -= d_best
-                Lv_r[:, b] += d_best
+                z_ab = Lp[sel_ab][:, [ra, rb]]
+                y_ab = (pl[sel_ab] == rb).long()
+                d_best, _ = find_bias_offset(z_ab, y_ab, ra, rb, d_sweep)
+                Lv_r[:, ra] -= d_best
+                Lv_r[:, rb] += d_best
             entry['pair_bias_random'] = {'gc': gc(miou_from_pred(Lv_r.argmax(1), vl))}
 
             # --- arm: label-pair gate (margin-threshold flip) ---
