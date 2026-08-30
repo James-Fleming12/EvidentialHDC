@@ -844,3 +844,66 @@ improves and no budget extension grows, because its ceiling is set by the update
 form (r=2) and by needing oracle U. The remaining candidates are therefore
 reduced to decode-time corrections that do NOT depend on this mechanism: B3
 (logit calibration, Level 1) is the last untested one.
+
+## Iteration 8 result: the ERROR-PREDICTABILITY diagnostic -- the frozen
+representation DOES expose the errors, and the strongest statistics point to a
+reformulated class-statistics decoder (2026-08-30, `al_error_predict_diag.py`)
+
+The measurement that selects the next update mechanism (not a stop signal): does
+ANY cheap label-free statistic predict the frozen probe's oracle errors? Twelve
+statistics (margin, entropy, p1/p2, TTA var/ent/agree, prototype dist/disagree,
+density, local_disagree, classifier_div) plus a 4-feature logistic ceiling, each
+reported as AUROC and error-enrichment@top1/5/10% vs the val-truth errors.
+(NOTE: the pulled JSONs arrived as null-byte files -- the sftp corruption; the
+numbers below are transcribed from the run output, which was complete.)
+
+**Finding 1 -- errors ARE predictable; this is NOT a flat diagnostic.** On the
+target conditions (dglsspp fog/crosstalk), several label-free statistics enrich
+errors by 1.2-1.7x in the top 1% with AUROC 0.59-0.70. On covshift (higher frozen
+accuracy), the signal is stronger: crosstalk entropy enrich 2.99, local_disagree
+2.77, classifier_div 2.93, logistic ceiling 3.24.
+
+| feature | dglsspp fog AUROC / enrich1 | dglsspp crosstalk AUROC / enrich1 | covshift crosstalk AUROC / enrich1 |
+| :--- | :--- | :--- | :--- |
+| **proto_dist** | 0.64 / **1.70** | 0.66 / **1.49** | 0.69 / 1.93 |
+| **local_disagree** | 0.59 / 1.33 | 0.76 / **1.45** | 0.81 / 2.77 |
+| entropy | 0.69 / 1.39 | 0.64 / 1.27 | 0.79 / **2.99** |
+| classifier_div | 0.62 / 1.18 | 0.72 / 1.29 | 0.76 / 2.93 |
+| tta_ent | 0.68 / 1.32 | 0.64 / 1.22 | 0.79 / 2.88 |
+| logistic_4feat | 0.70 / 1.31 | 0.66 / 1.36 | 0.80 / **3.24** |
+| margin | 0.31 / 0.19 | 0.34 / 0.50 | 0.20 / 0.11 |
+| tta_var | 0.51 / 0.76 | 0.51 / 1.02 | 0.50 / 0.76 |
+
+**Finding 2 -- proto_dist is the strongest single statistic on the primary AL
+target (dglsspp fog/crosstalk).** The distance from a point to its nearest CLEAN
+class-mean prototype predicts error best (enrich 1.70 fog, 1.49 crosstalk). This
+is the class-MEAN-SHIFT story: the corrupted class means move away from their
+clean positions, and points far from their clean class mean are the errors. This
+directly supports REFORMULATING the decoder: store per-class code statistics
+(means, covariances) and let a few labels re-estimate the shifted class means
+directly -- no U, no W-update, the residual's class-mean component is estimable
+from labels.
+
+**Finding 3 -- local_disagree and classifier_div are consistently strong across
+conditions** (enrich 1.3-2.9x): a point whose kNN pool neighbors predict a
+different class, or where reasonable decoders (W0, clean prototype, TTA-mean)
+disagree, is error-rich. These support a label-propagation / mixture-of-decoders
+/ disagreement-gate mechanism.
+
+**Finding 4 -- margin and TTA-variance are confirmed dead as error predictors.**
+margin anti-predicts (low margin points are NOT preferentially errors on these
+corruptions -- the boundary is not where the damage is), and tta_var is ~random
+(AUROC ~0.5, enrich ~0.8-1.0). This closes the "TTA-instability as an acquisition
+oracle" idea definitively (consistent with Iteration 7's permutation result and
+A2's conf_drop anti-correlation).
+
+**Verdict: the errors are findable, and the strongest signal on the primary AL
+target is the class-mean shift (proto_dist).** This is a POSITIVE result that
+selects the next update mechanism: a reformulated decoder that STORES AND UPDATES
+PER-CLASS CODE STATISTICS (means + covariances), where a few labels directly
+re-estimate the shifted class means -- the class-mean component of the residual
+is estimable from labels (unlike the full residual R). Local disagreement
+additionally supports label propagation from a few labeled points to their kNN
+neighbors. This is the concrete "reformat what we store/update" direction: the
+failure of W-updates (3b, 4, 7) was that R is a global object, but its
+class-mean component is local and label-estimable.
