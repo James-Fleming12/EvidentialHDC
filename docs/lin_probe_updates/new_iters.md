@@ -191,12 +191,12 @@ key risk.
 probe on the HDC code).** The prototype (R1) decoder is closed (R1 < R4 on every
 condition, tta Iteration 0) and is NOT a candidate decoder. Any "prototype"
 reference below is a label-free GAUGE SIGNAL (R4-vs-R1 disagreement is a validated
-instability signal, not a decoder to adapt). A W-update driven by the LABELS' OWN
-reach is closed (U-free, local forms, rank-1: the label span does not contain the
-residual, Iteration 3b). The ONE remaining parameter-update family is Tier 1.5
-below: a POOL-DERIVED basis with few-label coefficient selection (P1/P3) -- the
-update direction comes from the unlabeled pool, the labels only select/weight it.
-Everything else survives by using labels to SELECT/re-rank, not to re-estimate W.
+instability signal, not a decoder to adapt). **ALL W-update families are now
+closed**: the labels' own reach (U-free, local forms, rank-1 span ~0, Iteration
+3b) AND the pool-derived-basis branch (P1, Iteration 4: the unlabeled pool's
+dictionary captures only 0.04-0.08 of R, and even perfect coefficients are
+negative on half the cells). Every survivor uses labels to SELECT/re-rank, not to
+re-estimate W.
 
 ### Tier 1 -- decision-boundary AL (labels make decisions, not parameter updates)
 
@@ -207,10 +207,9 @@ Everything else survives by using labels to SELECT/re-rank, not to re-estimate W
 | A3 | **Sequential AL (labels reveal the next query)** | Query 1 -> see the error pair -> focus next query on that boundary -> different region -> next pair | Avoids inferring the whole structure before enough labels; each label sharpens the next (the adaptive loop) | P1, P2 | Slow (sequential), needs the confusion structure to be discoverable in a few steps |
 | A5 | **Error-correction AL loop (the recommended next test)** | 8 labels -> identify recurring (pred,true) errors -> accumulate confusion -> query the uncertain points of those pairs -> re-rank / re-gate those pairs at DECODE time (NOT a W update) | Directly targets the demonstrated failures; matches the "decision-rule object" finding; the "repair" is a decode-time correction of the identified pairs, consistent with the closed-update constraint | P1, P2 | Same pair-concentration assumption as A1 |
 
-### Tier 1.5 -- the last parameter-update branch: POOL-DERIVED BASIS + FEW-LABEL COEFFICIENT SELECTION
+### Tier 1.5 -- CLOSED: pool-derived basis + few-label coefficient selection (Iteration 4)
 
-This is the one surviving parameter-update family, distinct from everything closed
-so far. It reframes the update from
+This was the last surviving parameter-update family. It reframes the update from
 
 > few labels -> span(x_i) -> Delta W            (CLOSED by Iteration 3b)
 
@@ -218,11 +217,23 @@ to
 
 > unlabeled pool provides a basis, few labels SELECT/WEIGHT which combination -> Delta W.
 
+**CLOSED at the basis by Iteration 4 (al_pool_basis_diag.py):** the rich
+label-free pool dictionary (pool_cov, bdry_pca, bdry_disp, conf_pair,
+class_disp, tta_disp; K ~ 30 orthonormal directions) captures only 0.036-0.076
+of R across all 8 cells (both extractors, 4 conds) -- the same ~0 verdict as the
+label span. Even with PERFECT coefficients (oracle_coef = W0 + P_span(D) R) the
+gc is negative on half the cells, so the bottleneck is the dictionary itself,
+not the selection. Selection (firstorder, lsq) is all-negative and catastrophic
+(-1 to -13 gc) because it drives a step along directions that are not R. The
+labels DO carry the signal (same few labels + oracle U close +0.2 to +0.46), so
+the coefficient half remains easy given a right basis -- but no label-free pool
+structure provides one.
+
 | # | Direction | What it is | Why it could work | Property | Risk |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| P1 | **Pool-basis + label selection** | Build a RICH dictionary of candidate update directions v_1..v_K from the UNLABELED pool (not the top-r covariance -- boundary directions, per-class shifts, disagreement directions, confusion-pair margins); few labels select/weight the combination Delta W = sum_j c_j v_j | Iteration 1 showed the COEFFICIENT problem is EASY given oracle U (oracle-U + few labels closed +0.29-0.37); the missing piece is the basis itself. AND the tangent_b8 estimator (tangent-space PCA from the unlabeled pool, one window) recovered align 0.24-0.52 / rescap 0.34-0.55 -- the ONLY non-oracle basis that captured substantial residual, proving a pool-derived dictionary CAN contain R if built from the right (non-covariance) structure | P1, P2, P5 | The pool covariance top directions were NOT the residual (pool_span failed); tangent_b8's downstream AL chain was ~0 despite the alignment (coarse-basis fragility, trust-region form), so selection-vs-basis must be separated; a rich dictionary needs R to be a SPARSE combination of pool directions, which is untested |
+| P1 | **Pool-basis + label selection** | Build a RICH dictionary of candidate update directions v_1..v_K from the UNLABELED pool (not the top-r covariance -- boundary directions, per-class shifts, disagreement directions, confusion-pair margins); few labels select/weight the combination Delta W = sum_j c_j v_j | Iteration 1 showed the COEFFICIENT problem is EASY given oracle U (oracle-U + few labels closed +0.29-0.37); the missing piece is the basis itself. tangent_b8 (a FEW-LABEL construction: ridge fits on tiny labeled windows, PCA'd) recovered align 0.24-0.52 -- but it is NOT label-free; the label-free pool structures here all fail | P1, P2, P5 | **CLOSED (Iteration 4): span_capture(full) 0.036-0.076, oracle_coef negative on half the cells. The pool dictionary does not contain R; no label-free pool statistic is the residual** |
 | P2 | **Oracle-U reference as a diagnostic** | Keep U_oracle -> C_few-label frozen: is coefficient-selection easy once the basis is right? | Iteration 1's acquisition sweep already answered YES (+0.29-0.37 at rho=0.8): given oracle U, few labels drive the step well. This tells us P1's only hard part is the BASIS | P1 | Diagnostic only, not a method |
-| P3 | **Label as constraint, not direction** | A label (x_i, y_i) provides x_i x_i^T, a class prototype, a class-pair constraint (w_{y_i}-w_j)^T x_i, or a correction to a pre-existing UNLABELED boundary estimate -- none of which lie in span{x_i(e_{y_i}-p_i)^T} | Escapes the 3b closure: the label's information content is NOT limited to its CE-gradient direction; it can correct a pool-derived structure the label never spans | P1, P2 | Requires a pool-derived structure to correct (the same basis question as P1) |
+| P3 | **Label as constraint, not direction** | A label (x_i, y_i) provides x_i x_i^T, a class prototype, a class-pair constraint (w_{y_i}-w_j)^T x_i, or a correction to a pre-existing UNLABELED boundary estimate -- none of which lie in span{x_i(e_{y_i}-p_i)^T} | Escapes the 3b closure: the label's information content is NOT limited to its CE-gradient direction; it can correct a pool-derived structure the label never spans | P1, P2 | **Same basis question as P1, which is now closed: there is no label-free pool structure to correct (P1 measured span ~0.04-0.08)** |
 
 ### Tier 2 -- conservative / decode-time corrections (no W update)
 
@@ -370,19 +381,11 @@ prototype selection, error-correction loops, sequential AL).
 
 ## Next: the U-free next-steps (from the candidate table)
 
-Ranked by what the measured evidence supports after Iteration 3b. **All hold for
-the R4 linear probe** (no prototype decoder; labels make decisions about where to
-look or how to re-rank at decode time, except P1 which is the one surviving
-parameter-update branch):
+Ranked by what the measured evidence supports after Iterations 3b and 4. **All hold
+for the R4 linear probe** (no prototype decoder; labels make decisions about where
+to look or how to re-rank at decode time -- every W-update family is now closed,
+including the pool-basis branch, P1, Iteration 4):
 
-0. **Pool-basis + label selection (P1)** -- the LAST open W-update family. Two
-   measured facts make it the strongest open bet: (a) the coefficient half is easy
-   given oracle U (+0.29-0.37, Iteration 1), and (b) tangent_b8 proved a pool-derived
-   dictionary CAN capture R (align 0.24-0.52), so the basis is not fundamentally
-   unavailable -- it was built from the wrong (covariance) structure before. This is
-   the "unlabeled pool provides the basis, few labels select/weight" branch. If it
-   fails, the parameter-update direction is fully closed and the pivot to
-   acquisition-only is final.
 1. **Error-correction AL loop (A5)** -- labels reveal recurring (pred,true) error
    pairs; subsequent queries focus on those pairs; "repair" is a decode-time
    re-ranking/gating of the identified pairs, NOT a W update. This is the natural
@@ -400,11 +403,10 @@ parameter-update branch):
 
 These are the Tier-1 U-free bets. They share the property that failed nothing so
 far: they use labels to make DECISIONS about where to look or how to re-rank,
-not to estimate a parameter update. The one surviving parameter-update branch
-(P1, pool-basis + label selection) is ranked #0 in the list above -- its two
-measured supports are the easy coefficient problem given oracle U (+0.29-0.37,
-Iteration 1) and tangent_b8's proof that a pool-derived dictionary CAN contain R
-(align 0.24-0.52).
+not to estimate a parameter update. The last parameter-update branch (P1, pool
+basis + label selection) is CLOSED by Iteration 4 -- the pivot to
+acquisition-only / decode-time decision rules is now final, with a measured
+negative rather than an assumption.
 
 ## Iteration 3 result: the rank-1-per-label diagnostic is INCONCLUSIVE -- the
 negative is confounded by metric choice and step scale, NOT a verdict on the
@@ -520,3 +522,65 @@ span.
 sequential vs aggregate, keep-good, per-label trust regions, and more
 sophisticated weighting or C-estimation of the same u_i -- all remain inside
 span{u_i}, whose projection onto R is ~0.
+
+## Iteration 4 result: P1 -- the POOL-DERIVED BASIS does not contain the residual,
+and the pool-basis + label-selection branch is CLOSED (2026-08-30,
+`al_pool_basis_diag.py`)
+
+The last parameter-update branch: build a RICH label-free dictionary from the
+unlabeled pool, then let few labels select/weight the combination. The diagnostic
+separates the basis half from the selection half. Both DGLSS++ and cov-shift, all
+4 conds, budgets 2/4/8.
+
+**A. BASIS half (the decisive number) -- the pool dictionary does NOT contain R.**
+
+span_capture(full) of the K ~ 30 orthonormal dictionary directions (pool_cov,
+bdry_pca, bdry_disp, conf_pair, class_disp, tta_disp):
+
+| cond | dglsspp span | covshift span | best element (both) |
+| :--- | :--- | :--- | :--- |
+| fog | 0.061 | 0.076 | conf_pair 0.042, class_disp 0.044 |
+| crosstalk | 0.047 | 0.036 | conf_pair 0.029 |
+| snow | 0.054 | 0.056 | conf_pair 0.037, class_disp 0.037 |
+| wet_ground | 0.036 | 0.052 | conf_pair 0.023, class_disp 0.020 |
+
+The full dictionary captures only **3.6-7.6% of R** across all 8 cells -- the same
+~0 verdict as the label span (3b), despite ~30 directions instead of 8. The best
+single elements (conf_pair, class_disp = pseudo-label class/pair mean shifts) reach
+only 0.02-0.04. No label-free pool statistic is the residual.
+
+**Even PERFECT coefficients fail -- the bottleneck is the dictionary, not the
+selection.** oracle_coef = W0 + P_span(D) R (the best classifier with W1-W0 in
+span(D)) is negative on HALF the cells: dglsspp snow -0.384, covshift fog -0.207,
+covshift crosstalk -0.006, covshift snow -0.043. A 4-8%-span dictionary that
+contains an ANTI-aligned component cannot help regardless of how well the few
+labels choose coefficients.
+
+**B. SELECTION half -- the labels carry the signal, the basis does not.** With the
+SAME few labels (margin_tta_div acquisition):
+
+| | oracle_U (same labels, true basis) | firstorder (pool dict) | lsq (pool dict) |
+| :--- | :--- | :--- | :--- |
+| dglsspp fog b8 | +0.206 | -0.443 | -0.154 |
+| dglsspp crosstalk b8 | +0.323 | -0.314 | -0.041 |
+| covshift crosstalk b8 | +0.355 | -11.2 | -2.9 |
+| covshift wet_ground b8 | +0.461 | -1.6 | -0.8 |
+
+The oracle-U reference (with the SAME labels) closes +0.2 to +0.46 on every
+healthy-capacity cell -- the coefficient half is easy, confirming Iteration 1.
+But firstorder drives a step along the pool dictionary's directions, which are NOT
+R: all-negative, often catastrophic (-1 to -13 gc, the overstepping signature of a
+wrong basis). lsq is less violent but still negative everywhere except two ~0
+cells (dglsspp crosstalk b2/b4).
+
+**Verdict: P1 is CLOSED at the basis.** The unlabeled pool, under any of the six
+label-free structures tried, does not contain the oracle residual (span 0.04-0.08).
+The tangent_b8 align-0.24-0.52 result that motivated this test was a FEW-LABEL
+construction (ridge fits on tiny labeled windows) -- it does NOT generalize to
+label-free pool statistics, and its own downstream AL chain was ~0. This closes
+the last parameter-update branch: **the pivot to acquisition-only / decode-time
+decision rules is now final, with a measured negative rather than an assumption.**
+The positive residue to carry forward: the coefficient half IS easy given a right
+basis (Iteration 1, confirmed here with same-labels oracle U), but no label-free
+or few-label route produces one. Remaining candidates: A5 (error-correction AL
+loop), A3 (sequential AL), B3 (logit calibration).
