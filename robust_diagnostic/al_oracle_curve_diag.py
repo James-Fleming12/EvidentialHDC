@@ -245,7 +245,7 @@ def main():
 
         # ---- gain concentration: fraction of val predictions changed by oracle ----
         pred_v_frozen = (Xv.float() @ W0c).argmax(1)
-        pred_v_oracle = (Xv.float() @ Ws).argmax(1)
+        pred_v_oracle = (Xv.float() @ Ws.cpu()).argmax(1)
         gain_conc = float((pred_v_frozen != pred_v_oracle).float().mean().item())
 
         # ---- frozen probe stats on the pool ----
