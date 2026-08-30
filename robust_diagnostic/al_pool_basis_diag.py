@@ -367,8 +367,8 @@ def main():
 
         # oracle coefficients: W1 = W0 + P_span(D) R (the best classifier in span)
         R_b = R_flat.view(-1, NUM_CLASSES)
-        coef_oracle = D_full_q.t() @ R_b
-        W_or = W0c + (D_full_q @ coef_oracle).float()
+        coef_oracle = D_full_q.double().t() @ R_b
+        W_or = W0c + (D_full_q @ coef_oracle.float()).float()
         gc_oracle_coef = (mw(W_or, Xv, vl) - refs['frozen']) / gap if gap > 1e-9 else None
 
         # ---- B. SELECTION (dictionary fixed, only label->coefficient varies) ----
