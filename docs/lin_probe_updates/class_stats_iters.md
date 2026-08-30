@@ -149,3 +149,73 @@ concrete fix paths this diagnostic isolates:
 
 Iteration 2 (planned): path 1 -- pseudo-label the pool for low-variance shifted
 means, use the few labels to correct the class-mean bias.
+
+## Iteration 2 result: all three fix paths FAIL to rescue the few-label estimator
+-- the pool-pseudo-means alone are the only positive, and the update-norm
+diagnostic shows the whitening amplifies the few-label noise 35x
+(2026-08-30, `al_class_stats_fix_diag.py`)
+
+Validated the three fix paths independently, all against the same references
+(W0 = 0, W_mean_oracle = the ceiling, W* = 1). JSONs verified clean
+(`al_class_stats_fix_{dglsspp,covshift_ep10}.json`).
+
+**FIX 1 (pool pseudo-means + bias correction) -- the pool-pseudo-means ALONE are
+positive, the bias correction HURTS.** M_pseudo_c = mean of the pool codes the
+frozen probe pseudo-labels as class c. At alpha_d = 0 (no bias correction -- the
+pure label-free pool pseudo-mean decoder) the gc is the ONLY positive in the
+whole test: dglsspp fog +0.05, crosstalk +0.11. But adding the few-label bias
+correction (alpha_d > 0) drives it negative (dglsspp fog -0.26, crosstalk -0.26):
+the bias estimate M_lab_c from 2-8 points is itself noisy, so correcting a
+low-variance pool estimate with a high-variance label estimate makes it worse.
+The pool provides low-variance means (+0.05 to +0.11, label-free); the labels
+cannot improve them.
+
+**FIX 2 (shift-only + strong shrinkage) -- fails, all negative.** M_shift_c =
+M0_c + s*(M_lab_c - M0_c) with s in {0.1, 0.3, 1.0}: best is s=0.1 at -0.31
+(dglsspp fog/crosstalk). The shift M_lab_c - M0_c is estimated from the SAME
+2-8 noisy points, so it is exactly as noisy as the absolute mean. Shrinking the
+step does not fix a wrong direction.
+
+**FIX 3 (regularized whitening) -- the lambda_w sweep has NO effect, rank
+truncation gives a small positive on crosstalk.** Using the same noisy estimated
+means (b=4, alpha=2) and varying ONLY the whitening:
+- lambda_whitening {0.001..1.0}: update_norm IDENTICAL (35.73) at every value,
+  gc identical (-0.216 fog, -0.249 crosstalk). The ridge values are negligible
+  against the +-1-code covariance scale (~N ~ 20000), so they cannot damp the
+  noise directions.
+- rank truncation {128, 512, 2048}: dglsspp crosstalk rk128 +0.12, fog +0.01;
+  covshift negative (-0.15 to -0.17). A small positive on the primary AL target
+  but far below the +0.99 ceiling.
+
+**The decisive diagnostic: update_norm = ||W_est - W0|| / ||R||.** The whitened
+few-label mean estimate produces a step ~35x the residual norm (and 800-2200x
+when rank-truncated to 128-2048). This is the same overstepping signature as
+Iteration 1, now quantified: the problem is NOT the decoder and NOT the whitening
+scale -- it is that a 10000-d class mean CANNOT be estimated from 2-8 labels to
+the precision the whitening requires. Every arm that injects few-label means into
+the whitening is a ~30x-step disaster.
+
+### Verdict
+
+All three fix paths fail to reach the ceiling. The single positive is the
+LABEL-FREE pool pseudo-mean decoder (+0.05 to +0.11 gc on dglsspp) -- the first
+positive that needs no oracle U and no labels at all, but far below the +0.72 to
++1.15 W_mean_oracle ceiling. The reformulation's bottleneck is now fully
+localized: a few labels CANNOT estimate a 10000-d class mean to whitening
+precision (update_norm ~35x). The paths that might still close the gap, in the
+order the evidence supports:
+
+1. **Refine the label-free pool pseudo-mean decoder (the +0.05-0.11 positive)**
+   -- improve the pseudo-labels (TTA-averaged, iterated/self-training) rather
+   than adding noisy label-estimated means. The pool IS the estimator; labels so
+   far only add noise.
+2. **Estimate the mean-shift in a LOW-RANK subspace** (top_moved showed 3-4
+   classes concentrate the shift) using points whose pseudo-class is CONFIDENT
+   (high margin), not 2-8 random points -- the shift is a bias, and confident-
+   pseudo points may estimate it with lower variance.
+3. **Calibrate the whitening step size directly** (shrink the update norm toward
+   ~1x R, e.g. rescale W_est - W0) -- the rank-truncated +0.12 on crosstalk shows
+   the direction can be right; the 35x magnitude is the killer.
+
+Iteration 3 (planned): the label-free pool pseudo-mean decoder + step-size
+calibration -- it is the only arm with a positive, and it needs no labels.
