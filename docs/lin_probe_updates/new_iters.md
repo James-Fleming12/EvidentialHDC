@@ -204,7 +204,7 @@ re-estimate W.
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | A1 | **Class-pair boundary sampling** | Query by min top-2 logit margin (of the R4 probe), with a SEPARATE budget per (a,b) class pair | The residual is decision-rule structured; ~5 pairs may carry ~80% of recoverable error (R3). 8 pair-targeted labels > 8 global labels | P1, P2 | Needs the top-2 class competition to be stable; if error is not pair-concentrated this caps out |
 | A2 | **TTA-instability x boundary acquisition** | A(x) = Var[p(y|aug_k(x))] + alpha/|margin| + beta*disagreement(proto,probe) -- the disagreement term is a GAUGE SIGNAL, not a decoder to adapt | TTA's validated strength is instability detection (A2); combine with boundary proximity = query the unstable boundary, not the uncertain bulk | P1, P2 | If instability and recoverable error decouple (as conf_drop did for gain), the acquisition may select wrong-but-stable points |
-| A3 | **Sequential AL (labels reveal the next query)** | Query 1 -> see the error pair -> focus next query on that boundary -> different region -> next pair | Avoids inferring the whole structure before enough labels; each label sharpens the next (the adaptive loop) | P1, P2 | Slow (sequential), needs the confusion structure to be discoverable in a few steps |
+| A3 | ~~Sequential AL (labels reveal the next query)~~ | ~~Query 1 -> see the error pair -> focus next query on that boundary -> different region -> next pair~~ | ~~Avoids inferring the whole structure before enough labels; each label sharpens the next~~ | ~~P1, P2~~ | **CLOSED (Iteration 6): the adaptive loop does not beat one-shot acquisition. Pair-focus is worse than plain low-margin ordering, and the only arm that ever leads (seq_margin) is just the static margin rule. "Labels reveal the structure of the next query" is not supported** |
 | A5 | ~~Error-correction AL loop~~ | ~~labels reveal recurring (pred,true) errors; query those pairs; re-rank/gate at DECODE time~~ | ~~"labels find the problem, not the parameter"~~ | ~~P1, P2~~ | **CLOSED (Iteration 5): labels do not reliably identify the pairs (recall <= 0.25), AND the decode-time pair repair is ~0/negative even with oracle pairs (pair_bias, pair_gate). The pair is not the right atomic repair unit** |
 
 ### Tier 1.5 -- CLOSED: pool-derived basis + few-label coefficient selection (Iteration 4)
@@ -446,31 +446,38 @@ mechanism). No remaining Level-2 candidate.
 frozen classifier is unreliable; TTA provides the actual adaptation signal. This
 is A2/A3: acquisition rules (margin + TTA-instability + diversity) driving where
 TTA is trusted. Matches TTA's validated role as an instability detector.
+**The SEQUENTIAL form (A3) is CLOSED by Iteration 6** -- the adaptive loop adds
+no value over a good one-shot rule, and pair-focus is actively worse. The
+surviving Level-3 evidence is the STATIC acquisition rules from Iteration 1
+(margin_tta_div / egl beat random at rho=0.8), which remain the validated
+selection mechanism.
 
-**Where the effort goes now:** Level 3 (acquisition-driven TTA, A3 sequential AL
-and A2 TTA-instability x boundary acquisition) is the strongest fit to the
-measured evidence -- labels for selection/instability, TTA for the signal, no
-parameter reconstruction and no pair-rule repair. Level 1 (B3 logit calibration)
-is the conservative floor and the only remaining decode-only candidate.
+**Where the effort goes now:** the remaining candidate with positive evidence is
+Level 1 (B3 logit calibration, the conservative decode-only floor) plus the
+static acquisition rules (margin_tta_div / egl) already validated in Iteration 1.
+Levels 2-3's dynamic forms (A3 sequential, A5 pair loop) are closed by measured
+negatives.
 
 ---
 
 ## Next: the U-free next-steps (from the candidate table)
 
-Ranked by what the measured evidence supports after Iterations 3b, 4 and 5,
+Ranked by what the measured evidence supports after Iterations 3b, 4, 5 and 6,
 organized by the decision levels above. **All hold for the R4 linear probe** (no
 prototype decoder; labels make decisions about where to look or how to re-rank at
-decode time -- every W-update family is now closed, including the pool-basis
-branch, P1/Iteration 4, and the pair-repair branch, A5/Iteration 5):
+decode time -- every W-update family is now closed (P1, Iteration 4), the
+pair-repair branch (A5, Iteration 5) is closed, and the sequential acquisition
+loop (A3, Iteration 6) is closed):
 
 1. **Logit calibration (B3)** -- z' = a_c z_c + b_c on the probe's logits. The
    known-weak baseline (bias-only = 0-4%) but zero-cost and a clean control, and
    the only parameter change that holds for the linear classifier (it is the
    probe's bias, not U). The one remaining Level-1 (decode-only) candidate.
-2. **Sequential AL (A3)** -- x1 -> y1 -> x2(y1) -> ... where each label sharpens
-   the next query. Directly tests "labels reveal the structure of the next query."
-   Now the primary Level-3 acquisition candidate, alongside A2 (TTA-instability x
-   boundary acquisition, the validated detector).
+2. **Sequential AL (A3) is CLOSED (Iteration 6)** -- the adaptive loop does not
+   beat one-shot acquisition: the pair-focus mechanism (the defining feature) is
+   worse than plain low-margin ordering, and the only arm that ever leads
+   (seq_margin) is just the static margin rule. "Labels reveal the structure of
+   the next query" is not supported.
 3. **Error-correction AL loop (A5) is CLOSED (Iteration 5)** -- the labels do not
    reliably identify the error pairs (recall <= 0.25), AND the decode-time pair
    repair does not close the gap even with oracle pairs (pair_bias ~ 0/-2, pair
@@ -480,14 +487,13 @@ branch, P1/Iteration 4, and the pair-repair branch, A5/Iteration 5):
 
 These are the surviving U-free bets. They share the property that failed nothing so
 far: they use labels to make DECISIONS about where to look or how to re-rank,
-not to estimate a parameter update. The last parameter-update branch (P1, pool
-basis + label selection) is CLOSED by Iteration 4, and the pair-repair branch
-(A5) is CLOSED by Iteration 5 -- the pivot to acquisition-only / decode-time
-decision rules is now final, with a measured negative rather than an assumption.
-The effort now concentrates on Level 3
-(acquisition-driven TTA: labels for instability/selection, TTA for the signal),
-with Levels 1-2 (decode-only calibration, local decision correction) as the
-conservative floor.
+not to estimate a parameter update. The parameter-update branch (P1) is CLOSED by
+Iteration 4, the pair-repair branch (A5) by Iteration 5, and the sequential
+acquisition loop (A3) by Iteration 6 -- the pivot to acquisition-only / decode-time
+decision rules is now final, with measured negatives rather than assumptions. The
+only candidates that survive with positive evidence are the STATIC acquisition
+rules from Iteration 1 (margin_tta_div / egl, validated to beat random at
+rho=0.8) and the remaining Level-1 candidate B3 (logit calibration).
 
 ## Iteration 3 result: the rank-1-per-label diagnostic is INCONCLUSIVE -- the
 negative is confounded by metric choice and step scale, NOT a verdict on the
@@ -718,3 +724,53 @@ the probe, not a set of per-pair scalar decisions. This closes the Level-2 "loca
 decision correction" candidate (A5, and by the same mechanism A1's class-pair
 repair). Remaining: B3 (logit calibration, Level 1) and A3/A2 (sequential AL +
 acquisition-driven TTA, Level 3).
+
+## Iteration 6 result: A3 -- SEQUENTIAL AL does not beat one-shot acquisition, and
+the pair-focus mechanism (the defining feature) actively hurts
+(2026-08-30, `al_sequential_al_diag.py`)
+
+A3's claim: "labels reveal the structure of the next query" -- each label reveals
+its error pair, so the NEXT query can focus on that boundary, concentrating the
+budget on the recoverable region. The diagnostic fixes the downstream (the
+oracle-U first-order step, the only few-label mechanism that works) and varies
+ONLY the acquisition: one-shot (random, margin_tta_div the Iteration-1 winner) vs
+sequential (seq_margin = greedy low-margin, seq_pair = focus the next query on a
+revealed error pair, seq_pair_tta / seq_pair_div = pair focus + TTA / diversity).
+Both DGLSS++ and cov-shift, all 4 conds, budgets 2/4/8.
+
+**Finding 1 -- the pair-focus mechanism is a DISTRACTION, not the lever.** On
+dglsspp crosstalk, seq_pair (+0.13 at b8) is far BELOW plain seq_margin (+0.26);
+on covshift fog, seq_margin (+0.43) beats seq_pair (+0.30). Focusing the next
+query on the revealed error pair makes it WORSE than just querying the lowest-
+margin boundary point. This replicates Iteration 5: the labels do not reliably
+reveal the recoverable error structure, so conditioning the next query on the
+revealed pair adds noise, not signal.
+
+**Finding 2 -- the only sequential arm that ever leads is seq_margin, and it is
+not a genuine sequential mechanism.** It is static low-margin ordering (approx
+the Iteration-1 "margin" rule), and its wins are inconsistent: covshift fog
++0.43 (best), but dglsspp fog +0.23 -- WORSE than random's +0.25.
+
+**Finding 3 -- one-shot rules are competitive or better across the board.**
+
+| arm | dglsspp fog b8 | dglsspp xtalk b8 | cov fog b8 | cov xtalk b4 |
+| :--- | :--- | :--- | :--- | :--- |
+| random | +0.25 | +0.21 | +0.27 | +0.14 |
+| margin_tta_div | +0.25 | +0.13 | +0.30 | +0.15 |
+| seq_margin | +0.23 | +0.26 | **+0.43** | +0.29 |
+| seq_pair | +0.17 | +0.13 | +0.30 | +0.30 |
+| seq_pair_tta | +0.18 | +0.11 | +0.33 | +0.30 |
+| seq_pair_div | +0.31 | +0.14 | +0.27 | +0.15 |
+
+random is competitive on every cell; margin_tta_div remains the strongest
+all-around one-shot rule. The sequential arms do not reliably exceed them.
+
+**Verdict: A3 is CLOSED with a measured negative.** The adaptive loop adds no
+reliable value over a good one-shot rule. "Labels reveal the structure of the
+next query" is not supported: the labels carry selection signal for WHERE the
+classifier is wrong (Iteration 1), but they do not reveal structure that a static
+boundary + TTA-instability + diversity score does not already encode. The
+sequential ordering itself (seq_margin) is just a re-derivation of the static
+margin rule. Together with Iteration 5 this closes the acquisition side of
+Level 3 except for the static scores already validated in Iteration 1.
+Remaining candidate: B3 (logit calibration, Level 1).
