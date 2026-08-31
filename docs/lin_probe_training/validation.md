@@ -84,6 +84,13 @@ The clean comparison, the same ridge fitter on the same fit set with only the
 input space changed (raw 128-d vs binarized codes), is measured directly by
 `lp_three_decoder_diag.py` on the current DGLSS++ encoder.
 
+On that encoder the answer turns out to be condition-dependent, and it is
+measured cleanly in `three_decoder_numbers.md`: the projection HELPS the linear
+probe on clean (+0.198) and the healthy conditions, but HURTS it on fog and
+crosstalk (-0.055/-0.073), where the raw 128-d linear probe is the best decoder
+(the `sign()` binarization discards the magnitude that is load-bearing under
+the destroyers).
+
 So the linear HDC probe is the reference decoder: its mIoU is the practical
 ceiling of the frozen-feature family, and the prototype decoder is the
 efficiency target (it is cheaper but leaves points on the table). The

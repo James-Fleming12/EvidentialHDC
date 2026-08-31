@@ -1,40 +1,28 @@
-"""lp_why_linear_diag.py: WHY does the HDC linear classifier consistently beat
-the HDC prototype classifier on every condition?
-(docs/lin_probe_training/validation.md)
+"""lp_why_linear_diag.py: WHY does the HDC linear classifier beat the prototype,
+FULL-HARNESS protocol (paper-realistic; docs/lin_probe_training/validation.md).
 
-Same frozen DGLSS++ features, same clean-only fit, two decoder families
-(prototype = mean binarized code / cosine, linear = ridge probe on the codes).
-This script measures the properties of the FEATURE SPACE and the CORRUPTIONS
-that explain the persistent gap, per condition and severity:
+Same protocol as the README / al_full_dataset_diag.py:
+  - CLEAN FIT: reservoir over ALL clean frames (seed 7), cap 200k;
+    spectral-exact ridge (ridge_fit_exact, lam 1e-3).
+  - EVAL: FULL streaming decode of EVERY point of EVERY frame (~300M
+    points/condition), default severity heavy (--sevs for the 3-sev mean).
+  - GEOMETRY (P1-P4): computed on a reservoir of the condition stream
+    (--geo_res, seed 3), representative not first-slice-biased.
 
-  P1 feature-space isotropy (128-d): participation ratio + top-5 variance
-     fraction. An anisotropic space dominates every random projection -> the
-     codes saturate -> the prototype means collapse. (The Phase 8 'isotropy'
-     mechanism.)
-  P2 code diversity: dead-coordinate fraction + mean pairwise code cosine.
-     If the codes are near-constant the prototype centroids coincide.
-  P3 prototype centroid separation: off-diagonal mean cosine of the class
-     prototype means in the 10000-d code space (clean and per condition).
-  P4 per-class mean shift clean->condition (1 - cos) and within-class
-     dispersion (mean cosine to own-class mean). Does the corruption move the
-     class centroids (proto collapse) or just widen the classes?
-  P5 the clean reference: does the linear-vs-proto gap already exist on CLEAN
-     (a feature-space property) or only under corruption?
-  P6 gap decomposition + disagreement: per-class linear-minus-proto IoU, and
-     where the two decoders disagree, P(linear right | disagree) vs P(proto
-     right | disagree) -- the direct measure of 'the structure the prototype
-     throws away' (the linear probe recovers it, the centroid cannot).
+Reports per condition/severity:
+  mIoU_linear (code probe) / mIoU_proto / mIoU_raw_linear (128-d probe) /
+  mIoU_no_hdc, per-class gap, and where the code probe and the prototype
+  disagree, P(linear right | disagree) vs P(proto right | disagree).
+  gap_code_minus_raw = does the HDC projection HELP (+)/HURT (-) the linear
+  classifier on this encoder (the README-consistent answer).
 
-Decisive reads:
-  P5 gap ~ 0 on clean, grows under corruption        -> a corruption-collapse
-     mechanism (mean shift / code saturation), the README story
-  P5 gap already present on clean                    -> a static space property
-     (anisotropy / centroid coincidence), not corruption-specific
-  P6 P(linear right | disagree) >> P(proto right)    -> the probe recovers
-     within-class structure the mean throws away; direction for a cheaper
-     decoder that keeps the mIoU
-  P2/P3 collapse together under fog/crosstalk         -> the encoding saturates
-     on the destroyer conditions (target for representation / encoding fixes)
+Feature-space diagnostics on the condition reservoir:
+  P1 isotropy of the 128-d features (participation ratio, top-5 variance)
+  P2 code diversity (dead-coordinate fraction, mean pairwise code cosine)
+  P3 prototype centroid separation (off-diagonal mean cosine in 10000-d)
+  P4 per-class mean shift clean->cond and within-class dispersion
+  P5 clean reference: the linear-vs-proto gap on clean (static space property
+     vs corruption collapse)
 
 Usage:
   uv run python robust_diagnostic/lp_why_linear_diag.py \
@@ -48,7 +36,7 @@ import torch
 import torch.nn.functional as F
 from dataset.kitti.parser import Parser
 from modules.gen_trainers import GenTrainer
-from modules.oracle_core import get_hdc_projection, compute_miou
+from modules.oracle_core import get_hdc_projection
 
 NUM_CLASSES = 17
 CONDS_ALL = ["fog", "crosstalk", "snow", "wet_ground", "incomplete_echo",
@@ -62,21 +50,45 @@ def build_parser(root, data, arch):
                   max_points=arch["dataset"]["max_points"], batch_size=1, workers=4, gt=True, shuffle_train=False)
 
 
-def extract_full(model, parser, device, num_frames=100):
-    feats, preds, lbls = [], [], []
+def stream_full(model, parser, device, max_frames=0, progress=None, report=500):
     model.eval()
     with torch.no_grad():
         for i, batch in enumerate(parser.get_train_set()):
-            if i >= num_frames:
+            if max_frames > 0 and i >= max_frames:
                 break
-            in_vol = batch[0].to(device); labels = batch[2].to(device).view(-1); mask = (batch[1].to(device) > 0).view(-1)
+            if progress is not None and i % report == 0:
+                print(f"  [{progress}] frame {i}...", flush=True)
+            in_vol = batch[0].to(device)
+            labels = batch[2].to(device).view(-1)
+            mask = (batch[1].to(device) > 0).view(-1)
             out = model(in_vol)
             pred = out[0]
             z8 = out[2] if len(out) == 3 else out[1]
-            zf = z8.permute(0, 2, 3, 1).reshape(-1, z8.shape[1])[mask]
-            pf = pred.permute(0, 2, 3, 1).reshape(-1, pred.shape[1])[mask]
-            feats.append(zf.cpu()); preds.append(pf.cpu()); lbls.append(labels[mask].cpu())
-    return torch.cat(feats), torch.cat(preds), torch.cat(lbls)
+            zf = z8.permute(0, 2, 3, 1).reshape(-1, z8.shape[1])[mask].cpu()
+            ph = pred.permute(0, 2, 3, 1).reshape(-1, pred.shape[1])[mask].argmax(1).cpu()
+            yield zf, ph, labels[mask].cpu(), i
+
+
+def reservoir_collect(stream, cap, seed):
+    buf_f = torch.zeros(cap, 128)
+    buf_l = torch.zeros(cap, dtype=torch.long)
+    n = 0
+    g = torch.Generator().manual_seed(seed)
+    for zf, ph, labels, fi in stream:
+        m = len(zf)
+        if m == 0:
+            continue
+        j = n + torch.arange(1, m + 1)
+        keep = torch.rand(m, generator=g) < (cap / j.float())
+        slot = torch.where(j <= cap, j - 1, torch.randint(0, cap, (m,), generator=g))
+        kept = keep.nonzero(as_tuple=True)[0]
+        if len(kept):
+            buf_f[slot[kept]] = zf[kept]
+            buf_l[slot[kept]] = labels[kept].long()
+        n += m
+        del zf, labels
+    n = min(n, cap)
+    return buf_f[:n], buf_l[:n]
 
 
 def hdc_codes(feats, proj, device, chunk=100000):
@@ -110,18 +122,113 @@ def build_prototypes(codes, lbls, nc=NUM_CLASSES):
     return F.normalize(protos, p=2, dim=1), counts
 
 
-def per_class_iou(preds, lbls, nc=NUM_CLASSES):
-    present = set(lbls.tolist())
-    ious = {}
-    for c in range(1, nc):
-        if c not in present:
+class ConfAccum:
+    def __init__(self, nc=NUM_CLASSES):
+        self.tp = torch.zeros(nc); self.fp = torch.zeros(nc); self.fn = torch.zeros(nc)
+        self.present = torch.zeros(nc, dtype=torch.bool); self.n = 0
+
+    def update(self, preds, lbls):
+        p = preds.long(); l = lbls.long()
+        for c in range(1, NUM_CLASSES):
+            pc = (p == c); lc = (l == c)
+            self.tp[c] += (pc & lc).sum().item()
+            self.fp[c] += (pc & ~lc).sum().item()
+            self.fn[c] += (~pc & lc).sum().item()
+            self.present[c] |= lc.any().item()
+        self.n += len(l)
+
+    def miou(self):
+        ious = []
+        for c in range(1, NUM_CLASSES):
+            if not self.present[c]:
+                continue
+            d = self.tp[c] + self.fp[c] + self.fn[c]
+            ious.append(float(self.tp[c] / d) if d > 0 else 0.0)
+        return float(sum(ious) / len(ious)) if ious else 0.0
+
+    def per_class(self):
+        ious = {}
+        for c in range(1, NUM_CLASSES):
+            if not self.present[c]:
+                continue
+            d = self.tp[c] + self.fp[c] + self.fn[c]
+            ious[str(c)] = float(self.tp[c] / d) if d > 0 else 0.0
+        return ious
+
+
+class DisagreeAccum:
+    """lin vs proto disagreement, accumulated streaming."""
+    def __init__(self):
+        self.n = 0; self.n_dis = 0
+        self.lin_right_dis = 0; self.pro_right_dis = 0; self.both_wrong_dis = 0
+
+    def update(self, lin_p, pro_p, lbls):
+        dis = lin_p != pro_p
+        lin_r = lin_p == lbls; pro_r = pro_p == lbls
+        self.n_dis += int(dis.sum().item())
+        self.lin_right_dis += int((dis & lin_r).sum().item())
+        self.pro_right_dis += int((dis & pro_r).sum().item())
+        self.both_wrong_dis += int(((dis & ~lin_r) & ~pro_r).sum().item())
+        self.n += len(lbls)
+
+    def summary(self):
+        if self.n_dis == 0:
+            return {'n_disagree': 0}
+        return {'n_disagree': self.n_dis,
+                'P_linear_right_given_disagree': self.lin_right_dis / self.n_dis,
+                'P_proto_right_given_disagree': self.pro_right_dis / self.n_dis,
+                'P_both_wrong_given_disagree': self.both_wrong_dis / self.n_dis}
+
+
+def stream_decode_why(model, parser, proj, device, decoders, exclude=None, max_frames=0, chunk=100000):
+    accs = {name: ConfAccum() for name in decoders}
+    dis = DisagreeAccum()
+    prep = {}
+    for name, dec in decoders.items():
+        t = dec['type']
+        if t == 'w':
+            prep[name] = ('w', dec['W'].to(device))
+        elif t == 'raw_w':
+            prep[name] = ('raw_w', dec['W'].to(device))
+        elif t == 'proto':
+            prep[name] = ('proto', dec['protos'].to(device))
+        else:
+            prep[name] = ('head',)
+    for zf, ph, labels, fi in stream_full(model, parser, device, max_frames, progress="decode"):
+        n = len(zf)
+        if n == 0:
             continue
-        tp = int(((preds == c) & (lbls == c)).sum().item())
-        fp = int(((preds == c) & (lbls != c)).sum().item())
-        fn = int(((preds != c) & (lbls == c)).sum().item())
-        denom = tp + fp + fn
-        ious[str(c)] = tp / denom if denom > 0 else 0.0
-    return ious
+        skip = None
+        if exclude and fi in exclude:
+            ex = exclude[fi]
+            pos = torch.searchsorted(ex, torch.arange(n))
+            skip = (pos < len(ex)) & (ex[pos.clamp(max=len(ex) - 1)] == torch.arange(n))
+        for s in range(0, n, chunk):
+            e = min(s + chunk, n)
+            codes = torch.sign(zf[s:e].to(device) @ proj).float()
+            zch = zf[s:e].to(device)
+            chunk_preds = {}
+            for name, p in prep.items():
+                if p[0] == 'head':
+                    preds = ph[s:e]
+                elif p[0] == 'w':
+                    preds = (codes @ p[1]).argmax(1).cpu()
+                elif p[0] == 'raw_w':
+                    preds = (zch @ p[1]).argmax(1).cpu()
+                else:
+                    sims = F.normalize(codes, p=2, dim=1) @ p[1].t()
+                    preds = sims.argmax(1).cpu()
+                lbls = labels[s:e]
+                if skip is not None:
+                    m = ~skip[s:e]
+                    preds, lbls = preds[m], lbls[m]
+                chunk_preds[name] = (preds, lbls)
+            dis.update(chunk_preds['linear'][0], chunk_preds['proto'][0], chunk_preds['linear'][1])
+            for name, (preds, lbls) in chunk_preds.items():
+                accs[name].update(preds, lbls)
+            del codes
+        del zf, labels
+    return accs, dis
 
 
 def isotropy(z):
@@ -197,14 +304,13 @@ def main():
     ap.add_argument("--kittic_dir", type=str, default="/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C")
     ap.add_argument("--config", type=str, default="config/labels/semantic-kitti-all.yaml")
     ap.add_argument("--arch", type=str, default="config/arch/senet-2048p.yml")
-    ap.add_argument("--frames", type=int, default=100)
-    ap.add_argument("--fit_clean", type=int, default=30000)
-    ap.add_argument("--val_size", type=int, default=100000)
+    ap.add_argument("--max_frames", type=int, default=0, help="0 = ALL frames of seq 08 (paper protocol)")
+    ap.add_argument("--clean_fit_n", type=int, default=200000)
     ap.add_argument("--lam", type=float, default=1e-3)
     ap.add_argument("--proj_dim", type=int, default=10000)
-    ap.add_argument("--geo_sub", type=int, default=20000, help="subsample for the geometry diagnostics")
+    ap.add_argument("--geo_res", type=int, default=200000, help="reservoir cap for the geometry diagnostics")
     ap.add_argument("--conds", type=str, default=",".join(CONDS_ALL))
-    ap.add_argument("--sevs", type=str, default="light,moderate,heavy")
+    ap.add_argument("--sevs", type=str, default="heavy", help="comma-separated; default heavy = README protocol")
     ap.add_argument("--path_b", type=str, required=True)
     ap.add_argument("--method_b", type=str, required=True)
     ap.add_argument("--label", type=str, default="dglsspp")
@@ -221,85 +327,81 @@ def main():
     model = trainer.model
     model.eval()
     clean_parser = build_parser(args.kitti_dir, DATA, ARCH)
-    cf, cp, cl = extract_full(model, clean_parser, device, args.frames)
-    proj = get_hdc_projection(dim_in=cf.shape[1], dim_out=args.proj_dim, device=device)
+    proj = get_hdc_projection(dim_in=128, dim_out=args.proj_dim, device=device)
     results = {'label': args.label, 'method': args.method_b, 'sevs': sevs,
-               'fit_clean': args.fit_clean, 'val_size': args.val_size, 'lam': args.lam,
-               'proj_dim': args.proj_dim, 'geo_sub': args.geo_sub, 'conds': {}}
+               'clean_fit_n': args.clean_fit_n, 'max_frames': args.max_frames,
+               'lam': args.lam, 'proj_dim': args.proj_dim, 'geo_res': args.geo_res,
+               'conds': {}}
 
-    cf_fit = cf[:args.fit_clean]; cl_fit = cl[:args.fit_clean]
-    Xc = hdc_codes(cf_fit, proj, device).float()
-    W = ridge_fit_exact(Xc, onehot(cl_fit, NUM_CLASSES), args.lam, device).detach().cpu()
-    protos, _ = build_prototypes(Xc, cl_fit)
+    t0 = tic()
+    print(f"=== clean fit (reservoir {args.clean_fit_n}) ===")
+    cf, cl = reservoir_collect(stream_full(model, clean_parser, device, args.max_frames, progress="clean"),
+                               args.clean_fit_n, 7)
+    print(f"  clean reservoir: {len(cf)} points ({toc(t0):.0f}s)")
+    Xc = hdc_codes(cf, proj, device).float()
+    W0 = ridge_fit_exact(Xc, onehot(cl, NUM_CLASSES), args.lam, device).detach().cpu()
+    protos, _ = build_prototypes(Xc, cl)
     protos = protos.float()
-    W_raw = ridge_fit_exact(cf_fit.to(device).float(), onehot(cl_fit, NUM_CLASSES).to(device),
+    W_raw = ridge_fit_exact(cf.float().to(device), onehot(cl, NUM_CLASSES).to(device),
                             args.lam, device).detach().cpu()
     del Xc
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    present_classes = sorted(set(cl_fit.tolist()) & set(range(1, NUM_CLASSES)))
+    present_classes = sorted(set(cl.tolist()) & set(range(1, NUM_CLASSES)))
     clean_means = torch.zeros(NUM_CLASSES, cf.shape[1])
     for c in present_classes:
-        m = cl_fit == c
+        m = cl == c
         if int(m.sum().item()) > 0:
-            clean_means[c] = cf_fit[m].float().mean(dim=0)
+            clean_means[c] = cf[m].float().mean(dim=0)
+
+    decoders = {
+        'no_hdc': {'type': 'head'},
+        'proto': {'type': 'proto', 'protos': protos},
+        'linear': {'type': 'w', 'W': W0},
+        'raw_linear': {'type': 'raw_w', 'W': W_raw},
+    }
 
     def geo(feats, lbls):
-        """Feature-space / code-space geometry on a subsample."""
-        n = min(args.geo_sub, len(feats))
-        torch.manual_seed(3)
-        idx = torch.randperm(len(feats))[:n]
-        z = feats[idx]
-        lv = lbls[idx]
-        pr, top5 = isotropy(z)
-        Xg = hdc_codes(z, proj, device).float()
+        Xg = hdc_codes(feats, proj, device).float()
         cond_means = torch.zeros(NUM_CLASSES, Xg.shape[1])
         for c in present_classes:
-            m = lv == c
+            m = lbls == c
             if int(m.sum().item()) > 0:
                 cond_means[c] = Xg[m].float().mean(dim=0)
+        pr, top5 = isotropy(feats)
         return {'participation_ratio': pr, 'top5_var_frac': top5,
                 'dead_coords': dead_coords(Xg), 'code_pair_cos': code_div(Xg),
                 'proto_pair_cos': offdiag_mean_cos(cond_means),
                 'mean_shift': class_mean_shift(clean_means, cond_means, present_classes),
-                'dispersion': class_dispersion(Xg, lv, cond_means, present_classes)}
+                'dispersion': class_dispersion(Xg, lbls, cond_means, present_classes)}
 
-    def eval_set(feats, preds, lbls, name):
-        Xv = hdc_codes(feats[:args.val_size], proj, device).float()
-        lv = lbls[:args.val_size]
-        zv = feats[:args.val_size].float()
-        lin_p = (Xv @ W).argmax(1)
-        pro_p = (Xv @ protos.t()).argmax(1)
-        raw_p = (zv @ W_raw).argmax(1)
-        r = {'mIoU_linear': compute_miou(lin_p, lv),
-             'mIoU_proto': compute_miou(pro_p, lv),
-             'mIoU_raw_linear': compute_miou(raw_p, lv),
-             'gap_linear_minus_proto': compute_miou(lin_p, lv) - compute_miou(pro_p, lv),
-             'gap_code_minus_raw': compute_miou(lin_p, lv) - compute_miou(raw_p, lv)}
-        r['per_class_linear'] = per_class_iou(lin_p, lv)
-        r['per_class_proto'] = per_class_iou(pro_p, lv)
-        r['per_class_raw_linear'] = per_class_iou(raw_p, lv)
-        r['per_class_gap'] = {k: r['per_class_linear'].get(k, 0.0) - r['per_class_proto'].get(k, 0.0)
-                              for k in r['per_class_linear']}
-        dis = lin_p != pro_p
-        n_dis = int(dis.sum().item())
-        lin_right = lin_p == lv; pro_right = pro_p == lv
-        r['n_disagree'] = n_dis
-        if n_dis > 0:
-            r['P_linear_right_given_disagree'] = float((dis & lin_right).sum().item()) / n_dis
-            r['P_proto_right_given_disagree'] = float((dis & pro_right).sum().item()) / n_dis
-            r['P_both_wrong_given_disagree'] = float(((dis & ~lin_right) & ~pro_right).sum().item()) / n_dis
-        r['n'] = int(len(lv))
-        del Xv
-        print(f"  {name}: linear {r['mIoU_linear']:.3f} | proto {r['mIoU_proto']:.3f} | "
-              f"raw-lin {r['mIoU_raw_linear']:.3f} | gap-lin-proto {r['gap_linear_minus_proto']:+.3f} | "
-              f"gap-code-raw {r['gap_code_minus_raw']:+.3f} | disagree {n_dis}")
-        return r
+    def eval_stream(parser, name, exclude=None, with_geo=False):
+        t1 = tic()
+        accs, dis = stream_decode_why(model, parser, proj, device, decoders,
+                                      exclude=exclude, max_frames=args.max_frames)
+        out = {'n': accs['no_hdc'].n}
+        for k, a in accs.items():
+            out[k] = a.miou()
+            out[k + '_per_class'] = a.per_class()
+        out['gap_linear_minus_proto'] = out['linear'] - out['proto']
+        out['gap_code_minus_raw'] = out['linear'] - out['raw_linear']
+        out['disagree'] = dis.summary()
+        pc_l = out['linear_per_class']; pc_p = out['proto_per_class']
+        out['per_class_gap'] = {k: pc_l.get(k, 0.0) - pc_p.get(k, 0.0) for k in pc_l}
+        if with_geo:
+            print(f"  [{name}] geometry reservoir...")
+            gf, gl = reservoir_collect(stream_full(model, parser, device, args.max_frames, progress="geo"),
+                                       args.geo_res, 3)
+            out['geo'] = geo(gf, gl)
+            del gf, gl
+        print(f"  {name}: no-hdc {out['no_hdc']:.3f} | proto {out['proto']:.3f} | "
+              f"linear {out['linear']:.3f} | raw-lin {out['raw_linear']:.3f} | "
+              f"gap-lin-proto {out['gap_linear_minus_proto']:+.3f} | "
+              f"gap-code-raw {out['gap_code_minus_raw']:+.3f} | disagree {out['disagree']['n_disagree']} ({toc(t1):.0f}s)")
+        return out
 
-    t0 = tic()
-    clean_res = eval_set(cf, cp, cl, "clean")
-    clean_res['geo'] = geo(cf, cl)
+    clean_res = eval_stream(clean_parser, "clean", with_geo=True)
     results['clean'] = clean_res
 
     for cond in conds:
@@ -309,35 +411,29 @@ def main():
             if not os.path.exists(cdir):
                 print(f"  [{cond}/{sev}] dir missing, skipped")
                 continue
-            fd, pd, ld = extract_full(model, build_parser(cdir, DATA, ARCH), device, args.frames)
-            r = eval_set(fd, pd, ld, f"{cond}/{sev}")
-            r['geo'] = geo(fd, ld)
-            cond_res['sevs'][sev] = r
-            del fd, pd, ld
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            cond_res['sevs'][sev] = eval_stream(build_parser(cdir, DATA, ARCH), f"{cond}/{sev}", with_geo=True)
         ev = [v for v in cond_res['sevs'].values()]
         if ev:
-            for k in ('mIoU_linear', 'mIoU_proto', 'gap_linear_minus_proto', 'gap_code_minus_raw'):
-                cond_res[k + '_3sev_mean'] = float(sum(v[k] for v in ev) / len(ev))
+            for k in ('no_hdc', 'proto', 'linear', 'raw_linear',
+                      'gap_linear_minus_proto', 'gap_code_minus_raw'):
+                cond_res[k + '_sev_mean'] = float(sum(v[k] for v in ev) / len(ev))
         results['conds'][cond] = cond_res
+        os.makedirs(os.path.dirname(args.out), exist_ok=True)
+        with open(args.out, 'w') as fh:
+            json.dump(results, fh, indent=2, default=float)
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, 'w') as fh:
         json.dump(results, fh, indent=2, default=float)
     print(f"\nSaved to {args.out} ({toc(t0):.0f}s)")
-    print("\n=== WHY-LINEAR READ ===")
-    print("P5 clean gap: does linear beat proto on CLEAN (static space property)")
-    print("   or does the gap only appear under corruption (collapse mechanism)?")
-    print("P6 disagreement: where they differ, is the linear probe right more")
-    print("   often? (the structure the prototype throws away)")
-    print("gap_code_minus_raw: does the HDC projection HELP (positive) or HURT")
-    print("   (negative) the linear probe on this encoder, per condition?")
-    print("   (Phase 8: hurt -1.6 on healthy supcon_vib; Phase 16: helped +17.4")
-    print("   on the over-collapsed strongvib. P1 isotropy shows which regime")
-    print("   this encoder is in.)")
-    print("P1/P2/P3/P4: isotropy, code diversity, centroid separation, mean shift")
-    print("   and dispersion -- does the corruption collapse the prototypes?")
+    print("\n=== WHY-LINEAR READ (full-harness protocol) ===")
+    print("gap_code_minus_raw: does the HDC projection HELP (+)/HURT (-) the")
+    print("   linear classifier per condition (README-consistent protocol).")
+    print("gap_linear_minus_proto + disagreement: what the probe recovers that")
+    print("   the prototype throws away, and P(linear right | disagree).")
+    print("geo: isotropy / code diversity / centroid separation / mean shift +")
+    print("   dispersion on a representative reservoir; P5 clean gap tells if")
+    print("   the linear-vs-proto gap is a static space property or corruption.")
 
 
 if __name__ == "__main__":

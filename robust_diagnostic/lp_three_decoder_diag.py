@@ -1,33 +1,42 @@
-"""lp_three_decoder_diag.py: the three-decoder numbers for the linear-probe
-training work (docs/lin_probe_training/validation.md).
+"""lp_three_decoder_diag.py: the three/four-decoder numbers, FULL-HARNESS protocol
+(paper-realistic; docs/lin_probe_training/validation.md).
 
-Evaluates DGLSS++ (or any frozen extractor) on KITTI-C with THREE classifiers,
-all reading the same frozen 128-d features:
-  no-HDC    the model's own trained 1x1 conv head (softmax over z8)
-  prototype mean binarized code per class, cosine decode (the HDC prototype
-            classifier)
-  linear    ridge probe W = (X^T X + lam I)^-1 X^T Y on the binarized codes,
-            argmax decode (the HDC linear classifier)
+Matches the README / al_full_dataset_diag.py protocol exactly:
+  - CLEAN FIT: reservoir over ALL clean frames (seed 7), cap 200k
+    (--clean_fit_n); spectral-exact ridge (ridge_fit_exact, lam 1e-3).
+  - EVAL: FULL streaming decode of EVERY point of EVERY frame of seq 08
+    (~300M points/condition), max_frames=0 = all frames.
+  - SEVERITY: default heavy (the README tables are heavy); pass
+    --sevs light,moderate,heavy for the 3-severity mean.
+  - The clean-fit reservoir points are EXCLUDED from the clean eval.
 
-Both HDC decoders are fit on CLEAN features only (zero-shot protocol) and
-evaluated on each condition at each severity (default light/moderate/heavy),
-with the 3-severity mean per condition and the clean eval. Per-class IoU is
-reported so the gap can be inspected. This establishes the reference numbers
-for the "linear classifier consistently outperforms on every condition" claim.
+Four decoders, all zero-shot (fit on clean only):
+  no_hdc      the model's own trained 1x1 conv head (argmax of its softmax)
+  proto       mean binarized code per class, cosine decode (the README R1)
+  linear      ridge probe on the binarized codes (the README R4)
+  raw_linear  the SAME ridge probe on the RAW 128-d features (input space is
+              the only change -> answers 'does the HDC projection help or
+              hurt the linear classifier' on this encoder)
+
+Per-class IoU is accumulated streaming (ConfAccum, class 0 + absent excluded),
+so the numbers are directly comparable to the README tables.
 
 Usage:
   uv run python robust_diagnostic/lp_three_decoder_diag.py \
     --path_b robust_diagnostic/logs/supcon_vib_dglsspp \
     --method_b supcon_vib_dglsspp --label dglsspp \
     --out robust_diagnostic/logs/lp_three_decoder_dglsspp.json
+  # 3-severity average (AL-arc reporting) instead of heavy-only:
+  #   --sevs light,moderate,heavy
 """
 import os, sys, time, argparse, json, yaml
+from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 import torch.nn.functional as F
 from dataset.kitti.parser import Parser
 from modules.gen_trainers import GenTrainer
-from modules.oracle_core import get_hdc_projection, compute_miou
+from modules.oracle_core import get_hdc_projection
 
 NUM_CLASSES = 17
 CONDS_ALL = ["fog", "crosstalk", "snow", "wet_ground", "incomplete_echo",
@@ -41,22 +50,52 @@ def build_parser(root, data, arch):
                   max_points=arch["dataset"]["max_points"], batch_size=1, workers=4, gt=True, shuffle_train=False)
 
 
-def extract_full(model, parser, device, num_frames=100):
-    """Frozen features z8, the model's OWN softmax (no-HDC head), and labels."""
-    feats, preds, lbls = [], [], []
+def stream_full(model, parser, device, max_frames=0, progress=None, report=500):
+    """Yield (zf, head_pred, labels, frame_idx) per frame, ALL frames unless
+    max_frames > 0. head_pred = the model's OWN head argmax (no-HDC)."""
     model.eval()
     with torch.no_grad():
         for i, batch in enumerate(parser.get_train_set()):
-            if i >= num_frames:
+            if max_frames > 0 and i >= max_frames:
                 break
-            in_vol = batch[0].to(device); labels = batch[2].to(device).view(-1); mask = (batch[1].to(device) > 0).view(-1)
+            if progress is not None and i % report == 0:
+                print(f"  [{progress}] frame {i}...", flush=True)
+            in_vol = batch[0].to(device)
+            labels = batch[2].to(device).view(-1)
+            mask = (batch[1].to(device) > 0).view(-1)
             out = model(in_vol)
-            pred = out[0]                             # softmax of the trained 1x1 conv head
-            z8 = out[2] if len(out) == 3 else out[1]  # the 128-d bottleneck
-            zf = z8.permute(0, 2, 3, 1).reshape(-1, z8.shape[1])[mask]
-            pf = pred.permute(0, 2, 3, 1).reshape(-1, pred.shape[1])[mask]
-            feats.append(zf.cpu()); preds.append(pf.cpu()); lbls.append(labels[mask].cpu())
-    return torch.cat(feats), torch.cat(preds), torch.cat(lbls)
+            pred = out[0]
+            z8 = out[2] if len(out) == 3 else out[1]
+            zf = z8.permute(0, 2, 3, 1).reshape(-1, z8.shape[1])[mask].cpu()
+            ph = pred.permute(0, 2, 3, 1).reshape(-1, pred.shape[1])[mask].argmax(1).cpu()
+            yield zf, ph, labels[mask].cpu(), i
+
+
+def reservoir_collect(stream, cap, seed):
+    """True reservoir sampling over a frame stream (harness copy): memory
+    bounded by cap, uniform over ALL points seen."""
+    buf_f = torch.zeros(cap, 128)
+    buf_l = torch.zeros(cap, dtype=torch.long)
+    buf_k = torch.zeros(cap, 2, dtype=torch.long)
+    n = 0
+    g = torch.Generator().manual_seed(seed)
+    for zf, ph, labels, fi in stream:
+        m = len(zf)
+        if m == 0:
+            continue
+        j = n + torch.arange(1, m + 1)
+        keep = torch.rand(m, generator=g) < (cap / j.float())
+        slot = torch.where(j <= cap, j - 1, torch.randint(0, cap, (m,), generator=g))
+        kept = keep.nonzero(as_tuple=True)[0]
+        if len(kept):
+            buf_f[slot[kept]] = zf[kept]
+            buf_l[slot[kept]] = labels[kept].long()
+            buf_k[slot[kept], 0] = fi
+            buf_k[slot[kept], 1] = kept
+        n += m
+        del zf, labels
+    n = min(n, cap)
+    return buf_f[:n], buf_l[:n], buf_k[:n]
 
 
 def hdc_codes(feats, proj, device, chunk=100000):
@@ -90,18 +129,89 @@ def build_prototypes(codes, lbls, nc=NUM_CLASSES):
     return F.normalize(protos, p=2, dim=1), counts
 
 
-def per_class_iou(preds, lbls, nc=NUM_CLASSES):
-    present = set(lbls.tolist())
-    ious = {}
-    for c in range(1, nc):
-        if c not in present:
+class ConfAccum:
+    """Streaming per-class tp/fp/fn accumulation (memory flat in dataset size)."""
+    def __init__(self, nc=NUM_CLASSES):
+        self.tp = torch.zeros(nc); self.fp = torch.zeros(nc); self.fn = torch.zeros(nc)
+        self.present = torch.zeros(nc, dtype=torch.bool); self.n = 0
+
+    def update(self, preds, lbls):
+        p = preds.long(); l = lbls.long()
+        for c in range(1, NUM_CLASSES):
+            pc = (p == c); lc = (l == c)
+            self.tp[c] += (pc & lc).sum().item()
+            self.fp[c] += (pc & ~lc).sum().item()
+            self.fn[c] += (~pc & lc).sum().item()
+            self.present[c] |= lc.any().item()
+        self.n += len(l)
+
+    def miou(self):
+        ious = []
+        for c in range(1, NUM_CLASSES):
+            if not self.present[c]:
+                continue
+            d = self.tp[c] + self.fp[c] + self.fn[c]
+            ious.append(float(self.tp[c] / d) if d > 0 else 0.0)
+        return float(sum(ious) / len(ious)) if ious else 0.0
+
+    def per_class(self):
+        ious = {}
+        for c in range(1, NUM_CLASSES):
+            if not self.present[c]:
+                continue
+            d = self.tp[c] + self.fp[c] + self.fn[c]
+            ious[str(c)] = float(self.tp[c] / d) if d > 0 else 0.0
+        return ious
+
+
+def stream_decode_four(model, parser, proj, device, decoders, exclude=None, max_frames=0, chunk=100000):
+    """Stream-decode EVERY point with each decoder; returns {name: ConfAccum}.
+    decoders: {'no_hdc': {'type':'head'}, 'proto': {'type':'proto',
+    'protos':(K,D)}, 'linear': {'type':'w','W':(D,K)},
+    'raw_linear': {'type':'raw_w','W':(128,K)}}."""
+    accs = {name: ConfAccum() for name in decoders}
+    prep = {}
+    for name, dec in decoders.items():
+        t = dec['type']
+        if t == 'w':
+            prep[name] = ('w', dec['W'].to(device))
+        elif t == 'raw_w':
+            prep[name] = ('raw_w', dec['W'].to(device))
+        elif t == 'proto':
+            prep[name] = ('proto', dec['protos'].to(device))
+        else:
+            prep[name] = ('head',)
+    for zf, ph, labels, fi in stream_full(model, parser, device, max_frames, progress="decode"):
+        n = len(zf)
+        if n == 0:
             continue
-        tp = int(((preds == c) & (lbls == c)).sum().item())
-        fp = int(((preds == c) & (lbls != c)).sum().item())
-        fn = int(((preds != c) & (lbls == c)).sum().item())
-        denom = tp + fp + fn
-        ious[str(c)] = tp / denom if denom > 0 else 0.0
-    return ious
+        skip = None
+        if exclude and fi in exclude:
+            ex = exclude[fi]
+            pos = torch.searchsorted(ex, torch.arange(n))
+            skip = (pos < len(ex)) & (ex[pos.clamp(max=len(ex) - 1)] == torch.arange(n))
+        for s in range(0, n, chunk):
+            e = min(s + chunk, n)
+            codes = torch.sign(zf[s:e].to(device) @ proj).float()
+            zch = zf[s:e].to(device)
+            for name, p in prep.items():
+                if p[0] == 'head':
+                    preds = ph[s:e]
+                elif p[0] == 'w':
+                    preds = (codes @ p[1]).argmax(1).cpu()
+                elif p[0] == 'raw_w':
+                    preds = (zch @ p[1]).argmax(1).cpu()
+                else:
+                    sims = F.normalize(codes, p=2, dim=1) @ p[1].t()
+                    preds = sims.argmax(1).cpu()
+                lbls = labels[s:e]
+                if skip is not None:
+                    m = ~skip[s:e]
+                    preds, lbls = preds[m], lbls[m]
+                accs[name].update(preds, lbls)
+            del codes
+        del zf, labels
+    return accs
 
 
 def sync():
@@ -123,13 +233,12 @@ def main():
     ap.add_argument("--kittic_dir", type=str, default="/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C")
     ap.add_argument("--config", type=str, default="config/labels/semantic-kitti-all.yaml")
     ap.add_argument("--arch", type=str, default="config/arch/senet-2048p.yml")
-    ap.add_argument("--frames", type=int, default=100)
-    ap.add_argument("--fit_clean", type=int, default=30000, help="cap on clean points used to fit linear+proto")
-    ap.add_argument("--val_size", type=int, default=100000)
+    ap.add_argument("--max_frames", type=int, default=0, help="0 = ALL frames of seq 08 (paper protocol)")
+    ap.add_argument("--clean_fit_n", type=int, default=200000)
     ap.add_argument("--lam", type=float, default=1e-3)
     ap.add_argument("--proj_dim", type=int, default=10000)
     ap.add_argument("--conds", type=str, default=",".join(CONDS_ALL))
-    ap.add_argument("--sevs", type=str, default="light,moderate,heavy")
+    ap.add_argument("--sevs", type=str, default="heavy", help="comma-separated; default heavy = README protocol")
     ap.add_argument("--path_b", type=str, required=True)
     ap.add_argument("--method_b", type=str, required=True)
     ap.add_argument("--label", type=str, default="dglsspp")
@@ -146,47 +255,54 @@ def main():
     model = trainer.model
     model.eval()
     clean_parser = build_parser(args.kitti_dir, DATA, ARCH)
-    cf, cp, cl = extract_full(model, clean_parser, device, args.frames)
-    proj = get_hdc_projection(dim_in=cf.shape[1], dim_out=args.proj_dim, device=device)
+    proj = get_hdc_projection(dim_in=128, dim_out=args.proj_dim, device=device)
     results = {'label': args.label, 'method': args.method_b, 'sevs': sevs,
-               'fit_clean': args.fit_clean, 'val_size': args.val_size, 'lam': args.lam,
-               'proj_dim': args.proj_dim, 'conds': {}}
+               'clean_fit_n': args.clean_fit_n, 'max_frames': args.max_frames,
+               'lam': args.lam, 'proj_dim': args.proj_dim, 'conds': {}}
 
-    # split clean: first fit_clean points fit both HDC decoders, last val_size eval clean
-    cf_fit = cf[:args.fit_clean]; cl_fit = cl[:args.fit_clean]
-    Xc = hdc_codes(cf_fit, proj, device).float()
-    W = ridge_fit_exact(Xc, onehot(cl_fit, NUM_CLASSES), args.lam, device).detach().cpu()
-    protos, _ = build_prototypes(Xc, cl_fit)
+    # ---- clean fit: reservoir over ALL clean frames (seed 7, cap clean_fit_n) ----
+    t0 = tic()
+    print(f"=== clean fit (reservoir {args.clean_fit_n}) ===")
+    cf, cl, ck = reservoir_collect(stream_full(model, clean_parser, device, args.max_frames, progress="clean"),
+                                   args.clean_fit_n, 7)
+    print(f"  clean reservoir: {len(cf)} points ({toc(t0):.0f}s)")
+    Xc = hdc_codes(cf, proj, device).float()
+    W0 = ridge_fit_exact(Xc, onehot(cl, NUM_CLASSES), args.lam, device).detach().cpu()
+    protos, _ = build_prototypes(Xc, cl)
     protos = protos.float()
-    # the RAW 128-d ridge probe: same fitter, same fit set, input space only change.
-    # Answers "does the HDC projection help or hurt the linear classifier" cleanly.
-    W_raw = ridge_fit_exact(cf_fit.to(device).float(), onehot(cl_fit, NUM_CLASSES).to(device),
+    W_raw = ridge_fit_exact(cf.float().to(device), onehot(cl, NUM_CLASSES).to(device),
                             args.lam, device).detach().cpu()
     del Xc
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+    print(f"  W0 (code), protos, W_raw (128-d) fit done ({toc(t0):.0f}s)")
 
-    def eval_set(feats, preds, lbls, name):
-        Xv = hdc_codes(feats[:args.val_size], proj, device).float()
-        lv = lbls[:args.val_size]
-        pv = preds[:args.val_size]
-        zv = feats[:args.val_size].float()
-        r = {'mIoU_no_hdc': compute_miou(pv.argmax(1), lv),
-             'mIoU_proto': compute_miou((Xv @ protos.t()).argmax(1), lv),
-             'mIoU_linear': compute_miou((Xv @ W).argmax(1), lv),
-             'mIoU_raw_linear': compute_miou((zv @ W_raw).argmax(1), lv)}
-        r['per_class_no_hdc'] = per_class_iou(pv.argmax(1), lv)
-        r['per_class_proto'] = per_class_iou((Xv @ protos.t()).argmax(1), lv)
-        r['per_class_linear'] = per_class_iou((Xv @ W).argmax(1), lv)
-        r['per_class_raw_linear'] = per_class_iou((zv @ W_raw).argmax(1), lv)
-        r['n'] = int(len(lv))
-        print(f"  {name}: no-hdc {r['mIoU_no_hdc']:.3f} | proto {r['mIoU_proto']:.3f} | "
-              f"lin {r['mIoU_linear']:.3f} | raw-lin {r['mIoU_raw_linear']:.3f}")
-        del Xv
-        return r
+    # exclude the clean-fit reservoir from the clean eval (no train-point optimism)
+    ex_clean = defaultdict(list)
+    for f, i in ck.tolist():
+        ex_clean[f].append(i)
+    ex_clean = {f: torch.tensor(sorted(s), dtype=torch.long) for f, s in ex_clean.items()}
 
-    t0 = tic()
-    clean_res = eval_set(cf, cp, cl, "clean")
+    decoders = {
+        'no_hdc': {'type': 'head'},
+        'proto': {'type': 'proto', 'protos': protos},
+        'linear': {'type': 'w', 'W': W0},
+        'raw_linear': {'type': 'raw_w', 'W': W_raw},
+    }
+
+    def eval_stream(parser, name, exclude=None):
+        t1 = tic()
+        accs = stream_decode_four(model, parser, proj, device, decoders,
+                                  exclude=exclude, max_frames=args.max_frames)
+        out = {'n': accs['no_hdc'].n}
+        for k, a in accs.items():
+            out[k] = a.miou()
+            out[k + '_per_class'] = a.per_class()
+        print(f"  {name}: no-hdc {out['no_hdc']:.3f} | proto {out['proto']:.3f} | "
+              f"linear {out['linear']:.3f} | raw-lin {out['raw_linear']:.3f} | n {out['n']} ({toc(t1):.0f}s)")
+        return out
+
+    clean_res = eval_stream(clean_parser, "clean", exclude=ex_clean)
     results['clean'] = clean_res
 
     for cond in conds:
@@ -196,30 +312,26 @@ def main():
             if not os.path.exists(cdir):
                 print(f"  [{cond}/{sev}] dir missing, skipped")
                 continue
-            fd, pd, ld = extract_full(model, build_parser(cdir, DATA, ARCH), device, args.frames)
-            cond_res['sevs'][sev] = eval_set(fd, pd, ld, f"{cond}/{sev}")
-            del fd, pd, ld
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            cond_res['sevs'][sev] = eval_stream(build_parser(cdir, DATA, ARCH), f"{cond}/{sev}")
         ev = [v for v in cond_res['sevs'].values()]
         if ev:
-            for k in ('mIoU_no_hdc', 'mIoU_proto', 'mIoU_linear', 'mIoU_raw_linear'):
-                cond_res[k + '_3sev_mean'] = float(sum(v[k] for v in ev) / len(ev))
+            for k in ('no_hdc', 'proto', 'linear', 'raw_linear'):
+                cond_res[k + '_sev_mean'] = float(sum(v[k] for v in ev) / len(ev))
         results['conds'][cond] = cond_res
+        os.makedirs(os.path.dirname(args.out), exist_ok=True)
+        with open(args.out, 'w') as fh:
+            json.dump(results, fh, indent=2, default=float)
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, 'w') as fh:
         json.dump(results, fh, indent=2, default=float)
     print(f"\nSaved to {args.out} ({toc(t0):.0f}s)")
-    print("\n=== THREE-DECODER READ ===")
-    print("mIoU_no_hdc = the model's own trained head (no HDC).")
-    print("mIoU_proto = mean binarized code per class, cosine decode.")
-    print("mIoU_linear = ridge probe on the binarized codes.")
-    print("mIoU_raw_linear = ridge probe on the RAW 128-d features (same fitter,")
-    print("  same fit set; the input space is the only change).")
-    print("  mIoU_linear vs mIoU_raw_linear answers 'does the HDC projection help")
-    print("  or hurt the linear classifier' on THIS encoder.")
-    print("Both HDC decoders fit on clean only (zero-shot). 3-sev mean per condition.")
+    print("\n=== THREE-DECODER READ (full-harness protocol) ===")
+    print("mIoU_linear vs mIoU_raw_linear = 'does the HDC projection help/hurt")
+    print("   the linear classifier' on THIS encoder, same fitter + fit set.")
+    print("mIoU_linear (R4) vs mIoU_proto (R1) vs mIoU_no_hdc per condition;")
+    print("   full-dataset eval (~300M pts/cond), 200k clean reservoir fit,")
+    print("   spectral-exact ridge -- directly comparable to the README tables.")
 
 
 if __name__ == "__main__":

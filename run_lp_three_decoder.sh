@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# run_lp_three_decoder.sh: the three-decoder numbers (docs/lin_probe_training/).
-#   no-HDC   the model's own trained 1x1 conv head
-#   prototype  mean binarized code per class, cosine decode
-#   linear     ridge probe on the binarized codes (the reference decoder)
-# Both HDC decoders fit on clean only (zero-shot); evaluated on clean + each
-# condition at light/moderate/heavy with the 3-sev mean per condition.
+# run_lp_three_decoder.sh: the four-decoder numbers, FULL-HARNESS protocol
+# (paper-realistic, docs/lin_probe_training/).
+#   no-HDC     the model's own trained 1x1 conv head
+#   prototype  mean binarized code per class, cosine decode (README R1)
+#   linear     ridge probe on the binarized codes (README R4)
+#   raw-linear the same ridge probe on the RAW 128-d features
+# Protocol = README: 200k clean reservoir fit (all frames), FULL streaming eval
+# (~300M pts/condition), spectral-exact ridge, default severity heavy.
 #
 # Usage:
 #   DRY_RUN=1 bash run_lp_three_decoder.sh 3
 #   SMOKE=1   bash run_lp_three_decoder.sh 3
 #   bash run_lp_three_decoder.sh 3
 #   CONDS="fog,crosstalk" bash run_lp_three_decoder.sh 3
+#   SEVS="light,moderate,heavy" bash run_lp_three_decoder.sh 3   # 3-sev mean
 #
 # Output:
 #   robust_diagnostic/logs/lp_three_decoder_dglsspp.json
@@ -22,16 +25,17 @@ GPU="${1:-2}"
 DRY_RUN="${DRY_RUN:-0}"
 SMOKE="${SMOKE:-0}"
 CONDS="${CONDS:-fog,crosstalk,snow,wet_ground,incomplete_echo,beam_missing,motion_blur,cross_sensor}"
-SM_FRAMES="${SM_FRAMES:-5}"
-echo "Three-decoder numbers (DGLSS++) | GPU $GPU | DRY_RUN=$DRY_RUN SMOKE=$SMOKE"
-echo "  conds=$CONDS"
+SEVS="${SEVS:-heavy}"
+SM_FRAMES="${SM_FRAMES:-30}"
+echo "Four-decoder numbers, full-harness protocol (DGLSS++) | GPU $GPU | DRY_RUN=$DRY_RUN SMOKE=$SMOKE"
+echo "  conds=$CONDS sevs=$SEVS"
 
 DGLSSPP="dglsspp|supcon_vib_dglsspp|robust_diagnostic/logs/supcon_vib_dglsspp"
 EXTRACTORS="$DGLSSPP"
 
 SMOKE_ARGS=""
 if [ "$SMOKE" = "1" ]; then
-  SMOKE_ARGS="--frames $SM_FRAMES --fit_clean 3000 --val_size 6000 --sevs moderate"
+  SMOKE_ARGS="--max_frames $SM_FRAMES --clean_fit_n 5000 --sevs moderate"
   echo "  [SMOKE] $SMOKE_ARGS"
 fi
 
@@ -49,7 +53,7 @@ for entry in "${EXS[@]}"; do
   logf="logs/lp_three_decoder_${label}.log"
   outjson="robust_diagnostic/logs/lp_three_decoder_${label}.json"
   CMD="CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/lp_three_decoder_diag.py \
-    --path_b \"$ckpt\" --method_b \"$method\" --label \"$label\" --conds \"$CONDS\" \
+    --path_b \"$ckpt\" --method_b \"$method\" --label \"$label\" --conds \"$CONDS\" --sevs \"$SEVS\" \
     $SMOKE_ARGS --out \"$outjson\""
   echo "  CMD: $CMD"
   if [ "$DRY_RUN" = "1" ]; then
@@ -71,9 +75,10 @@ if [ "$DRY_RUN" = "1" ]; then
   exit 0
 fi
 if [ "$FAIL" = false ]; then
-  echo "=== THREE-DECODER OK ==="
-  echo "  mIoU_no_hdc vs mIoU_proto vs mIoU_linear per condition (3-sev mean)"
+  echo "=== FOUR-DECODER OK (full-harness protocol) ==="
+  echo "  mIoU_no_hdc / mIoU_proto / mIoU_linear / mIoU_raw_linear per condition"
 else
-  echo "=== THREE-DECODER FAILED ==="
+  echo "=== FOUR-DECODER FAILED ==="
   exit 1
 fi
+

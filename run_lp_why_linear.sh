@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# run_lp_why_linear.sh: WHY the HDC linear classifier beats the prototype on
-# every condition (docs/lin_probe_training/). Feature-space + corruption
-# diagnostics on the same frozen DGLSS++ features:
-#   P5 clean gap (static space property vs corruption collapse)
-#   P6 disagreement (where they differ, is the linear probe right?)
-#   P1-P4 isotropy / code diversity / centroid separation / mean shift+dispersion
+# run_lp_why_linear.sh: WHY the HDC linear classifier beats the prototype,
+# FULL-HARNESS protocol (paper-realistic, docs/lin_probe_training/).
+#   P5 clean gap, P6 disagreement (linear-right vs proto-right), P1-P4 feature
+#   space on a representative reservoir. Protocol = README: 200k clean
+#   reservoir fit, FULL streaming eval, default severity heavy.
 #
 # Usage:
 #   DRY_RUN=1 bash run_lp_why_linear.sh 3
 #   SMOKE=1   bash run_lp_why_linear.sh 3
 #   bash run_lp_why_linear.sh 3
 #   CONDS="fog,crosstalk" bash run_lp_why_linear.sh 3
+#   SEVS="light,moderate,heavy" bash run_lp_why_linear.sh 3
 #
 # Output:
 #   robust_diagnostic/logs/lp_why_linear_dglsspp.json
@@ -22,16 +22,17 @@ GPU="${1:-2}"
 DRY_RUN="${DRY_RUN:-0}"
 SMOKE="${SMOKE:-0}"
 CONDS="${CONDS:-fog,crosstalk,snow,wet_ground,incomplete_echo,beam_missing,motion_blur,cross_sensor}"
-SM_FRAMES="${SM_FRAMES:-5}"
-echo "Why-linear diagnostics (DGLSS++) | GPU $GPU | DRY_RUN=$DRY_RUN SMOKE=$SMOKE"
-echo "  conds=$CONDS"
+SEVS="${SEVS:-heavy}"
+SM_FRAMES="${SM_FRAMES:-30}"
+echo "Why-linear diagnostics, full-harness protocol (DGLSS++) | GPU $GPU | DRY_RUN=$DRY_RUN SMOKE=$SMOKE"
+echo "  conds=$CONDS sevs=$SEVS"
 
 DGLSSPP="dglsspp|supcon_vib_dglsspp|robust_diagnostic/logs/supcon_vib_dglsspp"
 EXTRACTORS="$DGLSSPP"
 
 SMOKE_ARGS=""
 if [ "$SMOKE" = "1" ]; then
-  SMOKE_ARGS="--frames $SM_FRAMES --fit_clean 3000 --val_size 6000 --geo_sub 3000 --sevs moderate"
+  SMOKE_ARGS="--max_frames $SM_FRAMES --clean_fit_n 5000 --geo_res 3000 --sevs moderate"
   echo "  [SMOKE] $SMOKE_ARGS"
 fi
 
@@ -49,7 +50,7 @@ for entry in "${EXS[@]}"; do
   logf="logs/lp_why_linear_${label}.log"
   outjson="robust_diagnostic/logs/lp_why_linear_${label}.json"
   CMD="CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/lp_why_linear_diag.py \
-    --path_b \"$ckpt\" --method_b \"$method\" --label \"$label\" --conds \"$CONDS\" \
+    --path_b \"$ckpt\" --method_b \"$method\" --label \"$label\" --conds \"$CONDS\" --sevs \"$SEVS\" \
     $SMOKE_ARGS --out \"$outjson\""
   echo "  CMD: $CMD"
   if [ "$DRY_RUN" = "1" ]; then
@@ -71,7 +72,7 @@ if [ "$DRY_RUN" = "1" ]; then
   exit 0
 fi
 if [ "$FAIL" = false ]; then
-  echo "=== WHY-LINEAR OK ==="
+  echo "=== WHY-LINEAR OK (full-harness protocol) ==="
   echo "  P5 clean gap / P6 disagreement / P1-P4 feature-space per condition"
 else
   echo "=== WHY-LINEAR FAILED ==="
