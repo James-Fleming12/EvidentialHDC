@@ -336,12 +336,13 @@ def main():
         # participation ratio (effective rank)
         sv = torch.linalg.svdvals(R_cov.double())
         pr = (sv.sum().item() ** 2) / ((sv ** 2).sum().item() + 1e-12)
-        # rank-r oracle gc
+        # rank-r oracle gc: project R_cov (d x C) onto its top-r LEFT singular
+        # vectors (the 10000-d code-space directions), W0 + rank-r(R_cov).
         rank_gc = {}
-        _, _, Vh = torch.linalg.svd(R_cov.double(), full_matrices=False)
+        U_s, _, _ = torch.linalg.svd(R_cov.double(), full_matrices=False)
         for r in rank_sweep:
             rr = min(r, R_cov.shape[1])
-            U_r = Vh[:rr].t().float()                      # d x r (code-space dirs)
+            U_r = U_s[:, :rr].float()                       # d x r (code-space dirs)
             W_r = W0c + (U_r @ (U_r.t() @ R_cov.float()))   # project R_cov to rank r
             rank_gc[str(r)] = gc(mw(W_r, Xv, vl))
 
