@@ -776,3 +776,77 @@ Per the Iteration-7 review, do NOT immediately build the pairwise logit method
 6. MOST IMPORTANT: does ONE SHARED scalar capture most of the oracle correction?
    z'_a - z'_b = alpha(z_a-z_b) + beta with a single global (alpha,beta) -- a
    tiny parameter count is far more compelling than 17x16 independent pairs.
+
+## Iterations 7.5 + 8 result: cov_only does NOT reproduce the oracle -- the
+"99.98% covariance" was a VECTOR accounting, not a decision mechanism; and the
+logit correction's oracle ceiling is ~0, closing the Iteration-8 premise
+(2026-08-30, `al_class_stats_iter78_diag.py`)
+
+Verified against clean JSONs. The two required tests in one run.
+
+**PART A -- cov_only = W0 + (W* - W_mean_oracle) is NEGATIVE on every cell. The
+"99.98% covariance" was a residual-accounting identity, NOT the decision
+mechanism.**
+
+| | dglsspp fog | dglsspp crosstalk | covshift fog | covshift crosstalk |
+| :--- | :--- | :--- | :--- | :--- |
+| mean_only gc | **+0.72** | **+0.99** | **+0.50** | **+1.02** |
+| mean_only dec_agree (errs) | **0.687** | **0.930** | **0.586** | **0.949** |
+| cov_only gc | -0.47 | -0.28 | -1.73 | -2.48 |
+| cov_only dec_agree (errs) | 0.238 | 0.296 | 0.381 | 0.578 |
+
+The covariance-only decoder is NEGATIVE everywhere, and its decision agreement
+is far below mean_only (dglsspp fog: 0.238 vs 0.687). The Iteration-7
+"99.98% covariance" statement is now correctly understood: it is a vector
+ACCOUNTING identity (cov = R - mean - prior, so when mean/prior are tiny cov ~ R
+by construction), but the covariance term is ORTHOGONAL to what actually fixes
+decisions. **The MEAN decoder is the one that moves decisions toward the oracle**
+(mean_cov = full oracle trivially; cov alone is useless). This is exactly the
+"subtle issue" the Iteration-7 review predicted -- and it means covariance is NOT
+the exploitable mechanism.
+
+**PART B -- the pairwise logit correction's ORACLE ceiling is ~0, closing the
+Iteration-8 premise.**
+- Per-pair oracle (alpha,beta): the best pair is +0.04 to +0.07 (dglsspp 13-14
+  fog, 13-16 crosstalk); most pairs are ~0 or negative (covshift all ~0/negative).
+- Few-label fits: on the few positive pairs (13-16), b16 tracks the oracle
+  (+0.03 to +0.07); elsewhere negative.
+- Global bias (17 scalars): +0.06 to +0.08 on dglsspp (weak but the most
+  consistent), ~0/-0.5 on covshift.
+- **Shared scalar (ONE alpha,beta): NEGATIVE everywhere** (-0.14 to -1.40) --
+  the key Iteration-8 test FAILS.
+
+### Verdict: the class-statistics line is now CLOSED with the mechanism fully
+measured at every level.
+
+The progression of closures is complete:
+- W updates: closed (Iterations 3b/4/7 of new_iters.md).
+- Class means as an update object: closed (Iteration 5).
+- Class means as a decision object: closed (Iterations 6-7 -- the mean decoder
+  is decision-relevant but not label-estimable).
+- Covariance as the explanation: closed (Iteration 7.5 -- the vector accounting
+  over-attributed the residual to covariance; cov_only is negative, the mean
+  decoder is the one that matches oracle decisions).
+- Pairwise logit correction: closed (Iteration 8 -- oracle ceiling ~0, shared
+  scalar negative).
+
+The one consistent positive across the whole line is the MEAN decoder
+(W_mean_oracle = Sigma0^-1 P0 M*), which closes +0.50 to +1.15 gc on the
+healthy-capacity conditions and matches oracle decisions on 0.59-0.95 of the
+error points -- but it requires the ORACLE means M*, which need the full pool
+labels. The label-free hard pseudo-mean decoder (+0.05-0.12) and confusion
+correction (+0.01-0.05) remain the only label-free/few-label positives, and both
+are small.
+
+The class-statistics reformulation does NOT provide a deployable few-label
+update. Its value is diagnostic: it conclusively localizes the few-label
+information bottleneck to the mismatch between recoverable class statistics
+(means, directions) and the decision-relevant correction (which the mean decoder
+captures only with oracle means, and which the covariance accounting
+misattributes). This is consistent with the broader conclusion from
+new_iters.md: the labeled ceiling is only reachable with the full pool labels.
+
+No further iteration on the class-statistics line is supported by the evidence.
+If the project continues, the open direction is the error-predictability /
+acquisition route from new_iters.md (which selects WHERE the frozen classifier is
+wrong), NOT parameter reconstruction.
