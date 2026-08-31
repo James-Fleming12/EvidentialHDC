@@ -399,10 +399,10 @@ def main():
             m_p = Lp_full[mask, a] - Lp_full[mask, b]
             t_p = (pl[mask] == a).float() * 1.0 + (pl[mask] == b).float() * (-1.0)
             a_r, b_r = fit_affine(m_p, t_p)
-            pred = Lv.clone()
+            pred_n = Lv.clone()
             corr = a_r * (Lv[:, a] - Lv[:, b]) + b_r
-            pred[:, a] += corr; pred[:, b] -= corr
-            gc_real = gc(compute_miou(pred.argmax(1), vl))
+            pred_n[:, a] += corr; pred_n[:, b] -= corr
+            gc_real = gc(compute_miou(pred_n.argmax(1), vl))
             gc_shufs = []
             for s in range(args.n_null):
                 torch.manual_seed(50 + s)
