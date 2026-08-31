@@ -171,7 +171,7 @@ def class_means(X, y, nc):
     return M, C
 
 
-def mean_rel_err(M, M_star, nc, classes):
+def mean_rel_err(M, M_star, classes):
     """Relative per-class mean error ||M[c]-M_star[c]|| / ||M_star[c]||."""
     d = (M - M_star).norm(dim=1)
     n = M_star.norm(dim=1).clamp(min=1e-8)
