@@ -1525,3 +1525,90 @@ those low-margin boundary points (the P3 pairs, or low-margin points whose
 frozen pred is driveable_surface/sidewalk/terrain) grows the +0.26/+0.45 beyond
 the random and mass-stratified anchor selection (Iteration 11), and whether it
 recovers the ~40% crosstalk frozen-error mass in the top-2 pairs.
+
+## Targeted acquisition + composition (the two never-tested levers): RESULTS
+(2026-08-30, `al_propagation_targeted_diag.py`, `run_al_propagation_targeted.sh`,
+JSON `robust_diagnostic/logs/al_propagation_targeted_dglsspp.json`)
+
+This tests the two levers the arc had never touched on the winning mechanism
+(the propagated-mean decoder): (A) WHERE the anchors are drawn (P3-motivated
+targeted acquisition, from the 8B finding that 40% of crosstalk frozen errors
+sit in the 11-13/11-14 pairs), and (B) whether the feature-conditioned
+calibration COMPOSES on top of propagation (the +0.12 gc from 8B stacked on the
++0.26/+0.45 gc propagation, sharing the same labeled set). References: W_mean_oracle
++0.72 fog / +0.99 crosstalk. All gc normalized, `gc = (mi - frozen) / gap`.
+
+| arm (fog b2 / fog b8) | gc | labels | arm (crosstalk b2 / b8) | gc | labels |
+|-----------------------|----|--------|--------------------------|----|--------|
+| gcP random | +0.28 / +0.28 | 14 / 56 | gcP random | +0.26 / +0.45 | 16 / 64 |
+| B2 mass-stratified | +0.14 / +0.18 | 14 / 54 | B2 mass-stratified | +0.13 / +0.38 | 16 / 63 |
+| A1 p3_margin (lowest margin) | +0.14 / -0.06 | 14 / 56 | A1 p3_margin | +0.11 / +0.03 | 16 / 64 |
+| A4 p3_prior (3x on 11/13/14) | +0.22 / +0.23 | 26 / 104 | A4 p3_prior | +0.32 / +0.51 | 28 / 112 |
+| A2 err_alloc (oracle) | -0.11 / -0.05 | 13 / 54 | A2 err_alloc | +0.10 / +0.19 | 17 / 62 |
+| A3 both | +0.09 / -0.08 | 13 / 54 | A3 both | -0.11 / +0.06 | 17 / 62 |
+| gc_cal_alone (8B repro) | -0.03 / +0.04 | 14 / 56 | gc_cal_alone | -0.14 / +0.14 | 16 / 64 |
+| gc_comp (propagation + calibration) | +0.24 / +0.29 | 14 / 56 | gc_comp | +0.23 / +0.43 | 16 / 64 |
+| gc_comp_shuf (null) | +0.15 / +0.28 | | gc_comp_shuf | -0.10 / +0.40 | |
+
+Present pool classes: fog {4,7,11,13,14,15,16} (7 classes), crosstalk
+{2,4,7,11,13,14,15,16} (8 classes).
+
+### A. Targeted acquisition FAILS. Random anchors remain unbeaten.
+
+- **A1 (lowest-margin boundary anchors, label-free and deployable) is below
+  random everywhere** (fog +0.14/-0.06, crosstalk +0.11/+0.03 vs gcP +0.28/+0.28
+  and +0.26/+0.45). The "spend labels at the decision frontier" hypothesis
+  fails. Combined with B3 (highest margin, negative) from the improve diag,
+  BOTH margin extremes hurt; the boundary points' Voronoi cells in 128-d split
+  neighboring classes wrongly, while interior anchors cluster redundantly.
+  Random anchors span the class and win.
+- **A2 (oracle error allocation, budget ~ frozen-error mass) fails too**,
+  negative on fog (-0.11/-0.05) and weakly positive on crosstalk (+0.10/+0.19),
+  below random everywhere. Even KNOWING the per-class frozen-error mass does not
+  help allocate labels. The P3 concentration is a property of the val decision
+  mass; it does not transfer to better anchor placement, and concentrating
+  labels does not fix the mean imprecision.
+- **A4 (budget concentrated on the P3 classes 11/13/14) is the only arm that
+  beats random, and only on crosstalk** (+0.32/+0.51 vs +0.26/+0.45) at ~2x the
+  label budget (28/112 vs 16/64). On fog it is below random even with ~2x the
+  labels (+0.22/+0.23 vs +0.28). At a matched budget this is a tie at best, so
+  it is not a clean win and not a method.
+- Read: ACQUISITION IS NOT THE LEVER. The selection axis is now closed
+  (random, mass, confidence, high-margin, low-margin, error-alloc, P3-prior all
+  tried; random wins).
+
+### B. Composition FAILS: the calibration adds nothing on top of propagation.
+
+- gc_comp ~ gcP in every cell (fog +0.24/+0.29 vs +0.28; crosstalk +0.23/+0.43
+  vs +0.26/+0.45), and the null is at the same level (comp_shuf +0.28 vs comp
+  +0.29 on fog b8, +0.40 vs +0.43 on crosstalk b8). The composition gain is
+  NOISE.
+- The calibration that was worth +0.12 alone (8B, correcting the frozen
+  decoder) has NOTHING left to correct once propagation has re-estimated the
+  means. This is the clean demonstration of the 8B P1 read: the recoverable
+  shift is per-class bias (which propagation grabs), and the per-point residual
+  is noise.
+- Read: the decision-correction mechanism is fully SUBSUMED by the mean
+  correction. Composition is closed.
+
+### Verdict: the propagated-mean decoder (random anchors) is the winning
+mechanism and now has a complete, honest headroom analysis.
+
+The two never-tested levers are closed: neither WHERE you label (A) nor STACKING
+the decision correction (B) improves the +0.26/+0.45 gc. The headroom story is
+fully consistent: the bottleneck is the propagated MEANS (A1: true means with
+propagated counts gives +0.45-0.81 gc), every mean-estimator axis is closed
+(A2 128-d means -0.29 to -0.36, A3 agreement ~0, A5 soft +0.17-0.29, C1
+fractional whitening, C3 shrinkage all at or below gcP), the geometry gate says
+even correct assignments leave Werr ~1.4-1.5x, and neither acquisition nor
+composition escapes it. The few-label mechanism is +0.26-0.45 gc (+0.045/+0.095
+mIoU) and the structural analysis says the remaining gap is mean imprecision
+that few labels cannot clean with the current single-pass design.
+
+**Next step.** The one lever not yet tried is ITERATIVE REFINEMENT: the labels
+currently drive a single propagation pass, and the propagated means are the
+measured bottleneck. Make more use of the points by looping propagate -> refit
+W -> re-propagate the pool with the better decoder (confidence-gated
+self-training), and compare against W_mean_oracle (+0.72/+0.99) as the target.
+Also test the anchors-only mean (the b labeled points per class, no
+propagation) since the classes are tight and it is assignment-noise-free.
