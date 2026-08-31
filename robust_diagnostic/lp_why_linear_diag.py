@@ -123,13 +123,15 @@ def build_prototypes(codes, lbls, nc=NUM_CLASSES):
 
 
 class ConfAccum:
-    def __init__(self, nc=NUM_CLASSES):
+    def __init__(self, nc, fixed=False):
+        self.nc = nc
+        self.fixed = fixed
         self.tp = torch.zeros(nc); self.fp = torch.zeros(nc); self.fn = torch.zeros(nc)
         self.present = torch.zeros(nc, dtype=torch.bool); self.n = 0
 
     def update(self, preds, lbls):
         p = preds.long(); l = lbls.long()
-        for c in range(1, NUM_CLASSES):
+        for c in range(1, self.nc):
             pc = (p == c); lc = (l == c)
             self.tp[c] += (pc & lc).sum().item()
             self.fp[c] += (pc & ~lc).sum().item()
@@ -139,8 +141,8 @@ class ConfAccum:
 
     def miou(self):
         ious = []
-        for c in range(1, NUM_CLASSES):
-            if not self.present[c]:
+        for c in range(1, self.nc):
+            if (not self.fixed) and (not self.present[c]):
                 continue
             d = self.tp[c] + self.fp[c] + self.fn[c]
             ious.append(float(self.tp[c] / d) if d > 0 else 0.0)
@@ -148,8 +150,8 @@ class ConfAccum:
 
     def per_class(self):
         ious = {}
-        for c in range(1, NUM_CLASSES):
-            if not self.present[c]:
+        for c in range(1, self.nc):
+            if (not self.fixed) and (not self.present[c]):
                 continue
             d = self.tp[c] + self.fp[c] + self.fn[c]
             ious[str(c)] = float(self.tp[c] / d) if d > 0 else 0.0
@@ -180,8 +182,8 @@ class DisagreeAccum:
                 'P_both_wrong_given_disagree': self.both_wrong_dis / self.n_dis}
 
 
-def stream_decode_why(model, parser, proj, device, decoders, exclude=None, max_frames=0, chunk=100000):
-    accs = {name: ConfAccum() for name in decoders}
+def stream_decode_why(model, parser, proj, device, decoders, exclude=None, max_frames=0, chunk=100000, nc=17):
+    accs = {name: ConfAccum(nc) for name in decoders}
     dis = DisagreeAccum()
     prep = {}
     for name, dec in decoders.items():
@@ -304,6 +306,9 @@ def main():
     ap.add_argument("--kittic_dir", type=str, default="/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C")
     ap.add_argument("--config", type=str, default="config/labels/semantic-kitti-all.yaml")
     ap.add_argument("--arch", type=str, default="config/arch/senet-2048p.yml")
+    ap.add_argument("--map19", type=int, default=0,
+                    help="1 = evaluate on GeoID's exact 19-class map (semantic-kitti-19.yaml), "
+                         "fixed-19 mIoU convention, no-HDC decoder dropped (merged head)")
     ap.add_argument("--max_frames", type=int, default=0, help="0 = ALL frames of seq 08 (paper protocol)")
     ap.add_argument("--clean_fit_n", type=int, default=200000)
     ap.add_argument("--lam", type=float, default=1e-3)
@@ -317,9 +322,12 @@ def main():
     ap.add_argument("--out", type=str, required=True)
     args = ap.parse_args()
 
+    if args.map19:
+        args.config = "config/labels/semantic-kitti-19.yaml"
     DATA = yaml.safe_load(open(args.config)); ARCH = yaml.safe_load(open(args.arch))
+    NC = len(DATA["learning_map_inv"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using {device}")
+    print(f"Using {device} | config {args.config} | NC {NC} | map19 {args.map19}")
     conds = [c.strip() for c in args.conds.split(',') if c.strip()]
     sevs = [s.strip() for s in args.sevs.split(',') if s.strip()]
 
@@ -329,6 +337,7 @@ def main():
     clean_parser = build_parser(args.kitti_dir, DATA, ARCH)
     proj = get_hdc_projection(dim_in=128, dim_out=args.proj_dim, device=device)
     results = {'label': args.label, 'method': args.method_b, 'sevs': sevs,
+               'config': args.config, 'map19': args.map19, 'nc': NC,
                'clean_fit_n': args.clean_fit_n, 'max_frames': args.max_frames,
                'lam': args.lam, 'proj_dim': args.proj_dim, 'geo_res': args.geo_res,
                'conds': {}}
@@ -339,32 +348,34 @@ def main():
                                args.clean_fit_n, 7)
     print(f"  clean reservoir: {len(cf)} points ({toc(t0):.0f}s)")
     Xc = hdc_codes(cf, proj, device).float()
-    W0 = ridge_fit_exact(Xc, onehot(cl, NUM_CLASSES), args.lam, device).detach().cpu()
-    protos, _ = build_prototypes(Xc, cl)
+    W0 = ridge_fit_exact(Xc, onehot(cl, NC), args.lam, device).detach().cpu()
+    protos, _ = build_prototypes(Xc, cl, NC)
     protos = protos.float()
-    W_raw = ridge_fit_exact(cf.float().to(device), onehot(cl, NUM_CLASSES).to(device),
+    W_raw = ridge_fit_exact(cf.float().to(device), onehot(cl, NC).to(device),
                             args.lam, device).detach().cpu()
+    # clean class means in the CODE space (same space as the condition means
+    # used by mean_shift / proto_pair_cos / dispersion below)
+    present_classes = sorted(set(cl.tolist()) & set(range(1, NC)))
+    clean_means = torch.zeros(NC, Xc.shape[1])
+    for c in present_classes:
+        m = cl == c
+        if int(m.sum().item()) > 0:
+            clean_means[c] = Xc[m].float().mean(dim=0)
     del Xc
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    present_classes = sorted(set(cl.tolist()) & set(range(1, NUM_CLASSES)))
-    clean_means = torch.zeros(NUM_CLASSES, cf.shape[1])
-    for c in present_classes:
-        m = cl == c
-        if int(m.sum().item()) > 0:
-            clean_means[c] = cf[m].float().mean(dim=0)
-
     decoders = {
-        'no_hdc': {'type': 'head'},
         'proto': {'type': 'proto', 'protos': protos},
         'linear': {'type': 'w', 'W': W0},
         'raw_linear': {'type': 'raw_w', 'W': W_raw},
     }
+    if not args.map19:
+        decoders['no_hdc'] = {'type': 'head'}
 
     def geo(feats, lbls):
         Xg = hdc_codes(feats, proj, device).float()
-        cond_means = torch.zeros(NUM_CLASSES, Xg.shape[1])
+        cond_means = torch.zeros(NC, Xg.shape[1])
         for c in present_classes:
             m = lbls == c
             if int(m.sum().item()) > 0:
@@ -379,8 +390,8 @@ def main():
     def eval_stream(parser, name, exclude=None, with_geo=False):
         t1 = tic()
         accs, dis = stream_decode_why(model, parser, proj, device, decoders,
-                                      exclude=exclude, max_frames=args.max_frames)
-        out = {'n': accs['no_hdc'].n}
+                                      exclude=exclude, max_frames=args.max_frames, nc=NC)
+        out = {'n': accs['linear'].n}
         for k, a in accs.items():
             out[k] = a.miou()
             out[k + '_per_class'] = a.per_class()
@@ -395,7 +406,8 @@ def main():
                                        args.geo_res, 3)
             out['geo'] = geo(gf, gl)
             del gf, gl
-        print(f"  {name}: no-hdc {out['no_hdc']:.3f} | proto {out['proto']:.3f} | "
+        head_s = f"no-hdc {out['no_hdc']:.3f} | " if not args.map19 else ""
+        print(f"  {name}: {head_s}proto {out['proto']:.3f} | "
               f"linear {out['linear']:.3f} | raw-lin {out['raw_linear']:.3f} | "
               f"gap-lin-proto {out['gap_linear_minus_proto']:+.3f} | "
               f"gap-code-raw {out['gap_code_minus_raw']:+.3f} | disagree {out['disagree']['n_disagree']} ({toc(t1):.0f}s)")
@@ -414,8 +426,10 @@ def main():
             cond_res['sevs'][sev] = eval_stream(build_parser(cdir, DATA, ARCH), f"{cond}/{sev}", with_geo=True)
         ev = [v for v in cond_res['sevs'].values()]
         if ev:
-            for k in ('no_hdc', 'proto', 'linear', 'raw_linear',
-                      'gap_linear_minus_proto', 'gap_code_minus_raw'):
+            keys = ('proto', 'linear', 'raw_linear', 'gap_linear_minus_proto', 'gap_code_minus_raw')
+            if not args.map19:
+                keys = ('no_hdc',) + keys
+            for k in keys:
                 cond_res[k + '_sev_mean'] = float(sum(v[k] for v in ev) / len(ev))
         results['conds'][cond] = cond_res
         os.makedirs(os.path.dirname(args.out), exist_ok=True)
