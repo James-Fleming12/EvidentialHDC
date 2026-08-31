@@ -235,6 +235,34 @@ def sync():
         torch.cuda.synchronize()
 
 
+def load_map19_model(ARCH, DATA, kitti_dir, ckpt_path, method, device):
+    """Build the model with the map19 (20-class) head and load only the matching
+    encoder weights from a checkpoint trained with a different head size.
+    strict=False RAISES on size mismatches, so filter those keys first (the
+    17->20 class head and aux heads are dropped; the encoder loads intact)."""
+    trainer = GenTrainer(ARCH, DATA, kitti_dir, ckpt_path, path=None, method=method)
+    model = trainer.model
+    model.eval()
+    ckpt_file = None
+    for cand in ("SENet", "SENet_valid_best", "SENet_train_best"):
+        p = os.path.join(ckpt_path, cand)
+        if os.path.exists(p):
+            ckpt_file = p
+            break
+    if ckpt_file is None:
+        raise FileNotFoundError(f"no checkpoint (SENet/SENet_valid_best) in {ckpt_path}")
+    w_dict = torch.load(ckpt_file, map_location="cpu")
+    sd = w_dict['state_dict']
+    ms = model.state_dict()
+    filtered = {k: v for k, v in sd.items()
+                if k in ms and tuple(v.shape) == tuple(ms[k].shape)}
+    dropped = sorted(set(sd) - set(filtered))
+    print(f"  loaded {len(filtered)}/{len(sd)} keys from {ckpt_file} "
+          f"(dropped {len(dropped)} shape-mismatched: {dropped[:6]}{'...' if len(dropped) > 6 else ''})")
+    model.load_state_dict(filtered, strict=False)
+    return model
+
+
 def tic():
     sync(); return time.time()
 
@@ -273,9 +301,12 @@ def main():
     conds = [c.strip() for c in args.conds.split(',') if c.strip()]
     sevs = [s.strip() for s in args.sevs.split(',') if s.strip()]
 
-    trainer = GenTrainer(ARCH, DATA, args.kitti_dir, args.path_b, path=args.path_b, method=args.method_b)
-    model = trainer.model
-    model.eval()
+    if args.map19:
+        model = load_map19_model(ARCH, DATA, args.kitti_dir, args.path_b, args.method_b, device)
+    else:
+        trainer = GenTrainer(ARCH, DATA, args.kitti_dir, args.path_b, path=args.path_b, method=args.method_b)
+        model = trainer.model
+        model.eval()
     clean_parser = build_parser(args.kitti_dir, DATA, ARCH)
     proj = get_hdc_projection(dim_in=128, dim_out=args.proj_dim, device=device)
     results = {'label': args.label, 'method': args.method_b, 'sevs': sevs,
