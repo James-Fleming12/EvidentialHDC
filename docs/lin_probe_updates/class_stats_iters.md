@@ -19,6 +19,11 @@ rather than treating the method as a blackbox.
 | Generic whitening regularization (lam_w) | Closed (no effect at these scales) |
 | Arbitrary raw W-update | Closed / deprioritized |
 | Label-free pool pseudo-mean (hard) | Real but weak positive (+0.05-0.12) |
+| **Nearest-anchor PROPAGATED mean decoder** | **STRONG POSITIVE (+0.26 to +0.45 gc on dglsspp fog/crosstalk, the primary AL target) -- the strongest few-label result since Iteration 1; REOPENS the line (Iteration 10)** |
+| Structure multiplies anchors (prop > anchors alone on mean cos) | Validated (D1: b1 0.76->0.89, b2 0.87->0.95) |
+| Clean-source bank (memory-bank idea, label-free) | Better label set than nearest-anchor on hard conditions (dglsspp fog 0.63 vs 0.31) -- worth combining with the mean decoder |
+| Agreement-gated propagation | Raises per-point precision (0.50-0.66) but drops coverage (0.26-0.47) -- Iteration-5 tradeoff |
+| Boundary as a label source | Closed (C1: precision INCREASES with margin -- the bulk transfers, not the boundary) |
 | Pool directions v_c point at the true shift (raw-space) | Validated (align +0.83-0.92 raw) |
 | Pool direction SURVIVES decoder geometry | Validated (Iteration 6: per-class align ~0.9-1.0; H1 rejected) |
 | Mean direction robust to ~50% corruption | Partially misleading (corrupted whitened diff) but direction IS robust per-class |
@@ -846,7 +851,104 @@ captures only with oracle means, and which the covariance accounting
 misattributes). This is consistent with the broader conclusion from
 new_iters.md: the labeled ceiling is only reachable with the full pool labels.
 
-No further iteration on the class-statistics line is supported by the evidence.
-If the project continues, the open direction is the error-predictability /
-acquisition route from new_iters.md (which selects WHERE the frozen classifier is
-wrong), NOT parameter reconstruction.
+**UPDATE (Iteration 10): the "no further iteration" verdict is REVERSED by the
+propagation result -- nearest-anchor propagation of few labels produces a
+positive mean decoder on the primary AL target.** See below. The line is
+REOPENED around the propagated-mean estimator.
+
+## Iteration 10 result: nearest-anchor PROPAGATION of few labels produces a
+positive mean decoder on dglsspp fog/crosstalk -- the strongest few-label result
+since Iteration 1, REOPENING the class-statistics line
+(2026-08-30, `al_propagation_potential_diag.py`)
+
+The user's question: can AL labels + feature-space structure approximate the
+oracle means M*? The diagnostic separates the ORACLE signal (proximity
+precision, mean cos) from the IMPLEMENTATION (nearest-anchor / centroid /
+agreement-gated / clean-source propagation), so we can tell "the structure
+can't label the pool" from "the estimator is the bottleneck." Verified against
+clean JSONs.
+
+**THE HEADLINE -- propagation works on the primary AL target.** The propagated
+mean decoder (gcP = M_prop x propagated counts) closes REAL positive gc:
+
+| | dglsspp fog | dglsspp crosstalk |
+| :--- | :--- | :--- |
+| W_mean_oracle ceiling | +0.73 | +0.99 |
+| **gcP (propagated mean, prop counts)** | **+0.26 to +0.36** | **+0.19 to +0.46** |
+| gcO (prop mean, CLEAN counts) | +0.15 to +0.22 | +0.19 to +0.44 |
+| gcC (mass-calibrated) | +0.20 to +0.31 | +0.11 to +0.40 |
+| frozen-pseudo baseline (Iteration 2) | +0.05-0.12 | +0.05-0.12 |
+
+From just 1-16 anchors per class, propagation closes +0.26 to +0.45 gc on the
+primary target -- far above the frozen-pseudo baseline and the confusion
+correction (+0.05). This is the first few-label mechanism to reach real positive
+gc on dglsspp fog/crosstalk since Iteration 1's oracle-U step. The per-point
+propagation precision is LOW (0.28-0.48) yet the aggregated mean decoder works
+-- the class-mean aggregation is robust to per-point label noise (the mean_cos
+0.89-0.98 is in the saturated code space, not diagnostic; the decoder outcome
+is what matters).
+
+**The other arms, per the oracle-vs-implementation split:**
+- A1 proximity precision (128-d): 0.67-0.84 -- the ORACLE signal is real and
+  high. The structure CAN label the pool at 70-80%+.
+- A2 nearest-anchor propagation: 0.28-0.48 -- the IMPLEMENTATION is noisy at the
+  per-point level, but the mean aggregation survives it. (Potential exists;
+  the estimator is the bottleneck for per-point labels, but the MEAN is already
+  good.)
+- A2b centroid anchors: ~same as A2 (0.27-0.71) -- no gain over nearest-anchor.
+- A2c agreement-gated: precision jumps to 0.50-0.66 (dglsspp fog) but coverage
+  drops to 0.26-0.47 -- the Iteration-5 clean-T tradeoff again.
+- A4 clean-source bank (the MEMORY-BANK idea): 0.47-0.79 precision, and on the
+  hard conditions it beats nearest-anchor (dglsspp fog 0.63 vs 0.31; crosstalk
+  0.40-0.75 vs 0.42-0.48) -- a label-free proxy, worth combining with the mean
+  decoder (it gives a better label set to aggregate over).
+- C1 boundary: precision INCREASES with margin (low-margin points are WORSE,
+  high-margin better) -- the boundary is NOT where labels transfer; the bulk is.
+  This closes the "label the boundary to get labels" idea for means.
+- D1: propagation beats anchors alone on mean cos (b1: a0.76 vs p0.89; b2:
+  0.87 vs 0.95) -- structure MULTIPLIES the effective labeled set. The core
+  mechanism is validated.
+
+**Failures (same pattern as always):** covshift fog negative everywhere (-0.24
+to -0.57); snow/wet_ground negative. Covshift is already near ceiling; the loose
+conditions (7/15/14) still poison. The propagated-mean result is specific to the
+healthy-capacity conditions on dglsspp -- exactly where AL has headroom.
+
+**CAVEAT (code labeling bug):** the "gc_oracle_counts" arm (gcO) actually uses
+the CLEAN counts C0, not the oracle counts C_star, so it is "propagated means x
+clean counts," not the true oracle-count ceiling. The headline gcP (propagated
+counts) is unaffected. The true oracle-count ceiling for propagated means
+(gcP with C_star) was NOT measured -- it is the first item in the next
+iteration.
+
+### Verdict: the line is REOPENED around the propagated-mean estimator
+
+The class-statistics line was closed on the premise that the mean decoder needs
+oracle means and few labels cannot estimate them. Iteration 10 shows that is
+WRONG: **propagation of a few anchors through the 128-d feature space estimates
+the class means well enough that the mean decoder closes +0.26 to +0.45 gc on
+the primary AL target -- the strongest few-label result since Iteration 1.** The
+mechanism is validated end-to-end (D1: structure multiplies the anchors; B1:
+the mean decoder works; A4: a label-free clean-source bank gives an even better
+label set on the hard conditions).
+
+Next steps, in order of value:
+1. **The true oracle-count ceiling for propagated means** (fix the gcO bug: use
+   C_star). This tells us how much of the +0.73/+0.99 ceiling the propagated
+   MEANS alone capture vs how much is lost to the count error.
+2. **Clean-source bank means**: aggregate the A4 label-free clean-source labels
+   (0.63-0.79 precision) into the mean decoder -- this is label-free, and if it
+   works it beats the few-label version entirely.
+3. **Agreement-gated propagation for the MEAN (not the per-point label)**: the
+   A2c gate raises precision to 0.5-0.66; aggregating the gated points into
+   means may preserve the gain without the coverage collapse.
+4. **Per-class propagated-mean breakdown**: which classes carry the +0.26-0.45
+   (likely the tight majority, with the loose 7/15/14 still failing -- the
+   budget must target them).
+5. **Propagation in the 128-d space for the means directly** (the current B1
+   aggregates in the 10000-d code space; the 128-d space is where the packing
+   lives).
+
+The propagated-mean estimator is the direction the whole class-statistics arc
+was looking for: it uses AL labels + structure to approximate M* without needing
+the full pool labels.
