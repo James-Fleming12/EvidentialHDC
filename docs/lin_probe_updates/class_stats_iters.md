@@ -28,7 +28,13 @@ rather than treating the method as a blackbox.
 | Class-prior correction (P* vs P0) | Closed (negligible, same-scan P*~P0) |
 | Scalar/coefficient estimation | Closed as an object for the PER-CLASS mean shift; the mean shift is not the decision-relevant object |
 | Whitening at any rank/fractional power | Not the culprit (Iteration 6 D/E: alignment high, gc negative at all ranks) |
-| Pairwise / covariance-change direction (w_a-w_b, R_cov) | OPEN -- Iteration 7 (the per-class residual is covariance-dominated, G) |
+| Pairwise decision decomposition (mean/prior/cov) | Measured (Iteration 7 A): 99.98% of the measured pairwise residual is covariance; mean ~0.2% (PRIOR-WEIGHTED combination cancels, not individual shifts) |
+| Mean-only decoder vs oracle (dec_agree) | DISAGREES on the big-gap conditions (fog: 0.509-0.639 on errors) -- mean correction is NOT the decision correction |
+| Pairwise pseudo-mean direction d_ab = Sigma^-1(v_a-v_b) | Closed (degenerate: V_a-V_b ~ 0); closes the v_a-v_b CONSTRUCTION, not pairwise pool stats in general |
+| Boundary-local mean displacement | Closed (align 0.01-0.13); boundary-local covariance/density untested |
+| TTA decision-space displacement | Inconsistent (not a stable directed estimate); TTA still useful for uncertainty/acquisition |
+| Pairwise affine LOGIT correction (alpha,beta) | ONLY tested positive mechanism (oracle +0.02-0.06, few-label sometimes reproduces) -- small signal, needs ceiling test |
+| Covariance-only DECODER ceiling | REQUIRED before closing (the vector decomposition is residually defined; needs W_cov,oracle = W0 + R_cov to reproduce the oracle classifier) |
 | Full-class (not top-K) mean correction | OPEN -- H shows the correction must cover all classes, not the 3-5 largest raw shifts |
 
 The headline: the direction IS correct and survives whitening (Iteration 6), but
@@ -640,3 +646,133 @@ Iteration 7 (planned): test the PAIRWISE covariance-space direction
 d_ab = Sigma^-1(v_a - v_b) against the oracle pairwise shift, and the
 covariance-change direction R_cov, since G shows the per-class residual is
 covariance-dominated rather than mean-dominated.
+
+## Iteration 7 result: 99.98% of the measured PAIRWISE oracle residual is
+explained by covariance; the prior-weighted pairwise mean combination nearly
+cancels; the only tested positive correction mechanism is the tiny pairwise
+LOGIT correction (2026-08-30, `al_class_stats_iter7_diag.py`)
+
+Verified against clean JSONs (al_class_stats_iter7_{dglsspp,covshift_ep10}.json).
+The exact pairwise decision decomposition resolved what Iteration 6 could only
+infer.
+
+**A. 99.98% OF THE MEASURED pairwise decision residual is explained by the
+covariance term (with an important qualification).** For every pair on every
+condition: n_mean ~ 0.001-0.002, n_prior = 0, n_cov = n_total, cos_cov ~ 1.0.
+Global (D): frac_mean 0.0022 (dglsspp fog), frac_prior 0.00004, frac_cov
+0.9999, cos_cov_R = 1.0.
+
+**QUALIFICATION -- the residual-vs-independent distinction.** The code computes
+cov_ab = dw_ab - mean_ab - prior_ab RESIDUALLY, so when mean and prior are tiny,
+cov ~ total BY CONSTRUCTION and cos_cov ~ 1.0 is partly tautological. The
+strong claim ("covariance explains the residual") requires the INDEPENDENT
+covariance expression (Sigma*^-1 - Sigma0^-1) P* M* to reproduce the pairwise
+residual on its own -- which has NOT yet been measured directly. The residual
+decomposition is valid as an accounting identity, but the decisive test is the
+covariance-only DECODER ceiling (below, "required before closing").
+
+**A (precise). The mean statement is NOT "individual mean shifts are
+common-mode" -- it is that their PRIOR-WEIGHTED PAIRWISE COMBINATION nearly
+cancels.** Iteration 6 showed the individual whitened mean shifts
+Sigma^-1 Delta_mu_c are LARGE and highly aligned with their own oracle mean
+shift (align ~1.0). Iteration 7 A shows
+Delta_d_ab_mean = Sigma0^-1 (p_a Delta_mu_a - p_b Delta_mu_b) ~ 0.001-0.002.
+So: the mean shifts are individually substantial, but their contribution to the
+pairwise classifier correction is nearly CANCELED (they move together enough
+that the prior-weighted difference is ~0). This is the correct, precise
+statement.
+
+**dec_agree (the decisive number) -- the mean-only decoder DISAGREES with the
+oracle on the big-gap conditions:**
+
+| cond | dec_agree (all) | dec_agree (on errors) |
+| :--- | :--- | :--- |
+| dglsspp fog | 0.687 | **0.639** |
+| covshift fog | 0.619 | **0.509** |
+| dglsspp crosstalk | 0.967 | 0.956 |
+| covshift crosstalk | 0.983 | 0.955 |
+| snow / wet_ground | 0.74-0.96 | 0.61-0.88 |
+
+On fog, the mean-only decoder disagrees with the oracle on 36-49% of the points
+in the error/oracle-disagreement subset (dec_agree_on_errors 0.509-0.639 --
+i.e. the mean-only decoder does NOT recover the oracle's corrections on about
+half the relevant points on covshift fog). On crosstalk/snow (small gaps) means
+already match. The strongest number in the iteration: the decision-relevant
+correction is NOT the mean shift.
+
+**B. The PSEUDO-MEAN pair direction is degenerate (all gc ~0.00) -- this closes
+the specific v_a - v_b CONSTRUCTION, not pairwise pool statistics in general.**
+The pseudo-means of confused pairs are nearly identical (V_a - V_b ~ 0), so
+d_ab = Sigma^-1(v_a - v_b) flips nothing. This is a real cancellation, not a
+code issue -- and Iteration 7A explains WHY v_a - v_b was doomed: if the true
+pairwise correction is covariance, a difference of class MEANS is simply the
+wrong statistic. It does NOT close boundary-local covariance, density changes,
+TTA disagreement features, or logit-space corrections.
+
+**C. Boundary-local MEAN directions do not recover the oracle pairwise
+correction** (align 0.01-0.13, dglsspp fog). This closes the tested
+boundary-local mean displacement construction, not boundary-local covariance or
+other boundary statistics.
+
+**F. TTA decision-space displacement is INCONSISTENT -- Delta z_TTA is not a
+stable directed estimate of the oracle correction under the tested formulation**
+(dglsspp fog: +0.53, -0.24, -0.45, +0.35, -0.23; mixed signs elsewhere). This
+does NOT mean TTA is useless: it may still be extremely useful for uncertainty,
+acquisition, identifying boundary points, scalar correction estimation, and
+conditional calibration -- consistent with the broader AL direction.
+
+**G. The tiny pairwise LOGIT correction is the ONLY TESTED positive correction
+mechanism in this diagnostic (not "the only live signal").** Oracle alpha,beta
+gives small positives on some pairs: dglsspp fog 13-16 or+0.04, crosstalk 13-16
+or+0.06; covshift wet_ground 14-15 or+0.05, 14-16 or+0.02. And the FEW-LABEL fit
+sometimes reproduces the oracle: dglsspp 13-16 fl+0.04/0.05, covshift wet_ground
+14-16 fl+0.03, 14-15 fl+0.04. IMPORTANT: the oracle gains are only +0.02-0.06 --
+evidence of a low-dimensional decision-space SIGNAL, but not yet evidence of a
+useful adaptation MECHANISM. The few-label matches are encouraging but tiny.
+
+### Verdict (the scientifically strongest version)
+
+The class-mean route is CLOSED as a mechanism for recovering the missing
+pairwise decision correction. The exact decomposition shows that, on the tested
+conditions, approximately 99.98% of the measured pairwise oracle residual is
+explained by the covariance term, the prior contribution is negligible, and the
+mean contribution is only ~0.2%. The large per-class mean shifts therefore
+survive whitening (Iteration 6) but largely CANCEL when converted into
+prior-weighted pairwise decision differences (Iteration 7 A).
+
+This closes the tested class-mean / pseudo-mean routes: global means, pairwise
+mean differences, and boundary-local mean displacements do not recover the
+missing decision correction. It does NOT establish that covariance itself is
+impossible to exploit -- it establishes that the tested label-free MEAN
+statistics do not encode the required correction.
+
+The remaining positive evidence is the small pairwise affine logit correction.
+Its oracle ceiling is modest (+0.02-0.06 on the tested pairs), but the fact
+that few-label fits sometimes recover the oracle gain makes it worth one focused
+iteration.
+
+**REQUIRED BEFORE FULLY CLOSING the class-statistics line (point 8/9 of the
+Iteration-7 review): the covariance-only DECODER ceiling.** The vector
+decomposition is residually defined; the decisive test is whether
+W_cov,oracle = W0 + R_cov (with R_cov from the INDEPENDENT expression
+(Sigma*^-1 - Sigma0^-1) P* M*) reproduces the oracle CLASSIFIER (gc and
+dec_agree). Run the ceiling table: W0 / mean-only / prior-only / covariance-
+only / mean+prior / mean+cov / full oracle. If covariance-only reaches ~the
+oracle, the conclusion is decisive (the remaining problem IS covariance
+adaptation). If covariance-only does NOT reproduce the classifier despite the
+vector decomposition saying covariance explains R, there is a subtle issue
+worth investigating before closing.
+
+### Iteration 8 (planned): the pairwise LOGIT correction, ceiling-first
+
+Per the Iteration-7 review, do NOT immediately build the pairwise logit method
+-- first establish its ceiling and stability:
+1. Pairwise oracle ceiling: z'_a - z'_b = alpha_ab(z_a-z_b) + beta_ab per pair,
+   oracle improvement.
+2. Pool vs label estimation: fit (alpha,beta) with 1/2/4/8/16 labels vs oracle.
+3. Random-pair vs confused-pair selection (sparse = good for AL).
+4. Boundary-conditioned fit: fit (alpha,beta) only near |z_a - z_b| < tau.
+5. Global vs pairwise correction: z'_c = z_c + b_c vs the O(K^2) pairwise form.
+6. MOST IMPORTANT: does ONE SHARED scalar capture most of the oracle correction?
+   z'_a - z'_b = alpha(z_a-z_b) + beta with a single global (alpha,beta) -- a
+   tiny parameter count is far more compelling than 17x16 independent pairs.
