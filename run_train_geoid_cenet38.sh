@@ -51,10 +51,13 @@ echo "  Budget: EPOCHS=24 (~31h) | EPOCHS=16 CUTOFF=0.6 (~13h)"
 TRAIN_ARGS="--arch $ARCH --epochs $EPOCHS --cutoff $CUTOFF"
 SMOKE_CONDS="${SMOKE_CONDS:-fog,crosstalk}"
 if [ "$SMOKE" = "1" ]; then
-  # much faster smoke: ~64 steps of training + a 2-condition tiny eval
+  # much faster smoke: ~64 steps of training + a 2-condition tiny eval, in a
+  # DEDICATED smoke dir so it never touches the real 40h checkpoint
   TRAIN_ARGS="--arch $ARCH --epochs 1 --cutoff 0.02"
   CONDS="$SMOKE_CONDS"
-  echo "  [SMOKE] 1 epoch @ 2% data (64 steps) + 2-condition eval"
+  LOG_DIR="${SMOKE_LOG_DIR:-robust_diagnostic/logs/${METHOD}_cenet38_19cls_smoke}"
+  OUTJSON="${SMOKE_OUTJSON:-robust_diagnostic/logs/lp_three_decoder_${METHOD}_cenet38_19cls_smoke.json}"
+  echo "  [SMOKE] 1 epoch @ 2% data (64 steps) + 2-condition eval, smoke dir (isolated)"
 fi
 EVAL_ARGS="--arch $ARCH --map19 --ceiling"
 if [ "$SMOKE" = "1" ]; then
@@ -73,6 +76,12 @@ echo "  CMD: $TCMD"
 if [ "$DRY_RUN" = "1" ]; then
   echo "  [DRY] not executed"
 else
+  if [ "$SMOKE" = "1" ]; then
+    # idempotent smoke: start from a clean smoke dir (resume would otherwise
+    # skip re-training against the leftover checkpoint)
+    rm -rf "$LOG_DIR"
+    echo "  [SMOKE] cleaned smoke dir $LOG_DIR"
+  fi
   if ! eval "$TCMD" 2>&1 | tee "logs/train_geoid_cenet38.log"; then
     echo "ERROR: training failed" >&2
     FAIL=true
