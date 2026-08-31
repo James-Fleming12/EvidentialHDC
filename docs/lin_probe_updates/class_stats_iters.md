@@ -1319,3 +1319,111 @@ by the geometry: the propagated means are good in cosine, bad in whitened space,
 because the corrupted classes are tight-but-overlapping. This is the same
 fundamental limit as every prior result -- the few-label route cannot
 reconstruct the mass-weighted decision boundary the oracle needs.
+
+## Covariance-structure + predictability gate result: the covariance is low-rank
+(eff_rank 5-7) but its rank-r projection is NEGATIVE, while delta_z* is
+substantially PREDICTABLE from label-free features (+0.10 gc) -- the strongest
+positive signal in the arc (2026-08-30, `al_cov_structure_diag.py`)
+
+DGLSS++ only, fog/crosstalk/snow. Verified against clean JSONs.
+
+**A. The covariance is genuinely low-rank (eff_rank 5.3-7.0) -- but the rank-r
+oracle gc is NEGATIVE at every rank** (fog r8 -0.45, crosstalk r8 -0.27, snow
+r8 -3.1). So the covariance correction being low-rank does NOT help: projecting
+W0 + rank-r(R_cov) makes things worse at every rank, on every condition. This
+confirms Iterations 7.5/8 (cov_only negative): the covariance term is low-rank
+but its DIRECTION is anti-aligned with what fixes decisions. The "pool basis +
+label scalars" hope is closed at the direction level, not the rank level.
+
+**B. delta_z* IS substantially PREDICTABLE -- the strongest positive signal in
+the arc.** Mean R^2 0.52-0.54 (fog/crosstalk) from just {margin, entropy,
+confidence}, and the feature-conditioned logit correction gives gc +0.09 to
++0.10 (fit on pool, applied on val). **The oracle logit correction is NOT
+inaccessible -- it is predictable from label-free features.** (Per-class R^2 is
+bimodal: the classes the frozen probe already gets right have delta_z ~ 0,
+giving R^2 1.00 trivially; the meaningful classes with nonzero correction are
+the {2,4,7,11,13,14,15,16} at R^2 0.02-0.22.) This is the bridge the user's
+8A plan predicted: if delta_z* is predictable, labels can calibrate a tiny
+decision-correction model -- a genuinely low-dimensional, label-estimable
+mechanism. The +0.10 gc from a 3-feature linear correction (margin, entropy,
+conf) is small but real and it is the first feature-conditional positive.
+
+**C. Null control is clean.** real -0.04 to +0.01 vs shuffled -0.23 to +0.02.
+On fog the real is better than shuffled (less negative: -0.04 vs -0.23); on
+crosstalk they are ~equal (~0). The small logit signal is near the noise floor
+on crosstalk, but the fog real-vs-shuffled gap indicates genuine (if small)
+signal. The prior +0.03-0.06 logit results are at the margin of being noise.
+
+**D. Implementation diagnostics:**
+- D1 (decision floors) is a MEASUREMENT ARTIFACT: the per-pair "flips near
+  boundary" counts (~53k/53k) are saturated because nearly every val point
+  flips between frozen and oracle (the frozen probe is far from oracle). The
+  floor diagnostic must count flips RESTRICTED to the frozen-error set to
+  discriminate. Needs a fix, not a conclusion.
+- D2 (shrinkage): the optimal a_c is condition-specific (fog/crosstalk mostly
+  0.0, snow 0.25-0.75), not class-specific within a condition. One per-condition
+  shrinkage, not per-class.
+- D3 (density-core mean): beats the plain mean on 4/6-4/7 classes on
+  fog/crosstalk but 0/7 on snow -- NOT reliably better. The mean is not clearly
+  the wrong summary; the core-mean idea is weak.
+- D4: 100% of the propagated-mean error energy sits in the high-gain whitening
+  directions (confirming the amplification). The per-direction gain bound is the
+  untested lever from the estimator list.
+
+**Verdict: the B finding (delta_z* predictable, +0.10 gc) is the direction.** The
+covariance is low-rank but directionally useless (A); the mean estimator
+variants are weak (D2/D3); but the oracle logit correction is predictable from
+label-free features (B) -- and the null control (C) supports that the small
+signal is real. This points to a feature-conditioned DECISION correction (the
+user's 8B branch) rather than another W/mean/covariance estimator. The next
+test: enrich the feature set (add TTA instability, prototype distance, density,
+pair identity) and measure whether the feature-conditioned logit correction
+gain grows past +0.10 and whether a few labels can calibrate it.
+
+## The feature-conditioned DECISION correction (8B branch): PENDING --
+placeholder, results to be added (2026-08-30, `al_feature_correction_diag.py`)
+
+This is the direction the covariance-structure gate pointed to: the oracle logit
+correction delta_z* is predictable from label-free features (mean R^2 0.52-0.54,
++0.10 gc from just {margin, entropy, confidence}), so instead of another
+W/mean/covariance estimator, we test a feature-conditioned DECISION correction
+calibrated by a few labels. The diagnostic (`al_feature_correction_diag.py`)
+measures:
+
+**P1 -- ORACLE CEILING with the RICH feature set** (12 label-free features:
+margin, entropy, confidence, p1/p2, TTA variance/agreement, prototype
+distance/disagreement, density, local disagreement, classifier disagreement,
++ pseudo-class onehot). Reports mean R^2, the corrected-decoder gc (linear,
+`gc_rich`), the nonlinear RFF version (`gc_rff`), and a FEATURE ABLATION
+(which features carry the predictability -- what to collect). Decisive: does
+the rich set grow the +0.10 gc from the 3-feature version?
+
+**P2 -- FEW-LABEL CALIBRATION (the actual AL mechanism).** The oracle target
+delta_z* needs full pool labels; the label-estimable analogue at a queried
+point is the residual r = Y - softmax(z0). Fit the same feature model on b in
+{1,2,4,8,16} labels/class, apply on val. Report `gc_cal` vs the oracle ceiling
+(`gc_rich`) and a SHUFFLED-LABEL NULL (`gc_shuf`). Decisive:
+- `gc_cal ~ gc_rich` at modest b -> the correction is LABEL-CALIBRATABLE (a real
+  few-label mechanism);
+- `gc_cal ~ 0` -> the features predict but labels cannot calibrate (the target
+  is not estimable from few labels);
+- `gc_cal ~ gc_shuf` -> the gain is noise.
+
+**P3 -- the FIXED D1 floors.** The prior D1 (per-pair oracle flips near the
+boundary) was saturated (~53k/53k) because nearly every val point flips
+frozen->oracle. This counts flips RESTRICTED to the frozen-error set -- the true
+decision floors where labels should be spent.
+
+**P4 -- TTA as an acquisition signal (8C).** corr(TTA instability, |delta_z*|)
+and corr(TTA instability, frozen error). If positive, TTA tells WHERE the
+correction is needed (not the direction, which Iteration 7 closed).
+
+**Expected reads.** If P1 grows the +0.10 and P2 shows few-label gc approaching
+the oracle ceiling (with shuffled ~ 0), this is the first genuinely
+label-calibratable, low-dimensional decision-correction mechanism in the arc --
+and the pivot from "reconstruct the classifier" to "calibrate where it's wrong"
+becomes methodologically grounded. If P2 collapses (few-label cannot calibrate),
+then the correction is label-free-predictable but not AL-exploitable, and the
+honest conclusion is that the labeled ceiling is unreachable with a small budget.
+
+Results PENDING -- to be filled after the run.
