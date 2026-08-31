@@ -44,7 +44,7 @@ EXTRACTORS="$DGLSSPP"
 
 SMOKE_ARGS=""
 if [ "$SMOKE" = "1" ]; then
-  SMOKE_ARGS="--frames $SM_FRAMES --pool_size 3000 --val_size 6000 --max_clean 5000 --b_anchors 2 --k_rounds 2 --tau_sweep 0.8"
+  SMOKE_ARGS="--frames $SM_FRAMES --pool_size 3000 --val_size 6000 --max_clean 5000 --b_anchors 2 --k_rounds 2 --tau_sweep 0.8 --topk_sweep 0.2"
   echo "  [SMOKE] $SMOKE_ARGS"
 fi
 

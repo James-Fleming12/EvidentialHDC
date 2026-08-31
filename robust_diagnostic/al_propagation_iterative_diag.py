@@ -19,13 +19,18 @@ Arms (all at the SAME labeled set = random anchors, seed 7, b per class):
    128-d so an unbiased b-point mean may be better), at the SAME counts C_prop
    (isolates the mean estimator). The "make direct use of the points" arm.
 3. ITERATIVE SELF-TRAINING (the main arm): loop
-       W_cur -> decode pool -> confidence-gated pseudo-labels (conf > tau)
-       -> new means -> new W_cur
-   with the anchor-propagated labels held as the fallback below tau. This is
-   "more use" (labels drive every round) AND "denoise the means" (a better
-   decoder each round cleans the boundary assignments). Sweeps tau in
-   {0.8, 0.95} and also a SOFT variant (weighted by the pseudo-class
-   softmax at tau 0.9).
+       W_cur -> decode pool -> gated pseudo-labels -> new means -> new W_cur
+   with the anchor-propagated labels held as the fallback outside the gate.
+   The first run showed the ABSOLUTE confidence gate never fires (max pool
+   conf < 0.8 -> gate_cov 0.0 -> the loop was inert). This version uses THREE
+   gate types so the loop actually runs and tests the trust signal:
+     tau        absolute confidence threshold (reference; expected inert)
+     topk       top-k% of pool by confidence (relative, guaranteed coverage)
+     agr        top-k% confident AND agrees with the frozen probe (a second
+                independent signal; tests whether frozen-agreement raises
+                gate precision)
+   Sweeps tau in {0.8} and topk in {0.05, 0.2}; plus a SOFT variant at the
+   top-20% gate.
 4. TOWARD-CLEAN SHRINKAGE (the inter-class/prior arm): M = (1-a) M_prop + a M0
    (shrink the corrupted propagated means toward the CLEAN means), a in
    {0.25, 0.5}, counts fixed at C_prop. The one form of cross-class structure
@@ -207,8 +212,9 @@ def main():
     ap.add_argument("--cg_iters", type=int, default=8)
     ap.add_argument("--b_anchors", type=str, default="2,8")
     ap.add_argument("--k_rounds", type=int, default=4)
-    ap.add_argument("--tau_sweep", type=str, default="0.8,0.95")
-    ap.add_argument("--soft_tau", type=float, default=0.9)
+    ap.add_argument("--tau_sweep", type=str, default="0.8", help="absolute conf gates (reference; may be inert)")
+    ap.add_argument("--topk_sweep", type=str, default="0.05,0.2", help="relative conf gates: top-k fraction of the pool")
+    ap.add_argument("--soft_topk", type=float, default=0.2, help="soft variant gate: top-k fraction")
     ap.add_argument("--shrink_sweep", type=str, default="0.25,0.5")
     ap.add_argument("--conds", type=str, default="fog,crosstalk")
     ap.add_argument("--path_b", type=str, required=True)
@@ -223,6 +229,7 @@ def main():
     conds = [c.strip() for c in args.conds.split(',') if c.strip()]
     b_anchors = [int(x) for x in args.b_anchors.split(',')]
     tau_sweep = [float(x) for x in args.tau_sweep.split(',')]
+    topk_sweep = [float(x) for x in args.topk_sweep.split(',')]
     shrink_sweep = [float(x) for x in args.shrink_sweep.split(',')]
 
     trainer = GenTrainer(ARCH, DATA, args.kitti_dir, args.path_b, path=args.path_b, method=args.method_b)
@@ -290,6 +297,9 @@ def main():
         cond_res = {'refs': refs, 'gap': float(gap), 'gc_mean_oracle': gc_mean_oracle,
                     'present_classes': present, 'budgets': {}}
 
+        # frozen-probe pool predictions once (for the agreement gate)
+        pred_w0_pool = (Xp.float() @ W0.detach().cpu()).argmax(1).long()
+
         for b in b_anchors:
             # random anchors (the fixed labeled set for ALL arms)
             torch.manual_seed(7)
@@ -331,8 +341,20 @@ def main():
                     rec['gate_prec'] = gate_prec; rec['gate_cov'] = gate_cov
                 return rec
 
+            def apply_gate(gname, gval, conf, pred, pred_w0_pool):
+                if gname == 'tau':
+                    return conf > gval
+                if gname == 'topk':
+                    return conf >= torch.quantile(conf, 1.0 - gval)
+                if gname == 'agr':  # top-k confident AND agrees with the frozen probe
+                    return (conf >= torch.quantile(conf, 1.0 - gval)) & (pred == pred_w0_pool)
+                raise ValueError(gname)
+
             iter_hard = {}
-            for tau in tau_sweep:
+            gates = [('tau', t) for t in tau_sweep] \
+                + [('topk', k) for k in topk_sweep] \
+                + [('agr', topk_sweep[0])]
+            for (gname, gval) in gates:
                 Wc = W_cur.clone()
                 traj = {'r0': record(M_r, W_cur, gcP)}
                 for r in range(1, args.k_rounds + 1):
@@ -341,7 +363,7 @@ def main():
                     conf = sm.max(dim=1).values
                     pred = L.argmax(1)
                     lab = prop_rand.clone().long()
-                    gate = conf > tau
+                    gate = apply_gate(gname, gval, conf, pred, pred_w0_pool)
                     lab[gate] = pred[gate]
                     gate_prec = float((gate & (pred == pl)).float().sum().item() /
                                       max(1.0, float(gate.float().sum().item())))
@@ -351,15 +373,15 @@ def main():
                                         args.lam, args.cg_iters, args.nystrom_m, device).cpu()
                     traj[f'r{r}'] = record(M_new, Wc, decoder_W(Wc),
                                            gate_prec=gate_prec, gate_cov=gate_cov)
-                iter_hard[str(tau)] = traj
-            # soft variant at soft_tau: weight by the pseudo-class softmax where confident
+                iter_hard[f"{gname}{gval}"] = traj
+            # soft variant: weight by the pseudo-class softmax, top-k gate
             Wc = W_cur.clone()
             traj_soft = {'r0': gcP}
             for r in range(1, args.k_rounds + 1):
                 L = Xp.float() @ Wc
                 sm = torch.softmax(L, dim=1)
                 conf = sm.max(dim=1).values
-                gate = conf > args.soft_tau
+                gate = conf >= torch.quantile(conf, 1.0 - args.soft_topk)
                 w = onehot(prop_rand, NUM_CLASSES)
                 w[gate] = sm[gate]
                 M_new = torch.zeros(NUM_CLASSES, Xp.shape[1]); C_new = torch.zeros(NUM_CLASSES)
@@ -391,14 +413,14 @@ def main():
                   " ".join(f"a{k}:{v:+.2f}" for k, v in shrink.items()))
             print(f"      prop acc {prop_acc:.2f} | err in p3-pairs {err_in_p3:.2f} "
                   f"({n_err}) | pool_acc w0 {pool_acc_w0:.2f}")
-            for tau in tau_sweep:
-                tr = iter_hard[str(tau)]
+            for (gname, gval) in gates:
+                tr = iter_hard[f"{gname}{gval}"]
                 s = [f"r0:{tr['r0']['gc']:+.2f}(mE {tr['r0']['mean_err']:.2f}/p3 {tr['r0']['mean_err_p3']:.2f})"]
                 for r in range(1, args.k_rounds + 1):
                     rec = tr[f'r{r}']
                     s.append(f"r{r}:{rec['gc']:+.2f}(prec {rec['gate_prec']:.2f} "
                              f"cov {rec['gate_cov']:.2f} mE {rec['mean_err']:.2f})")
-                print(f"      iter hard tau{tau}: " + " ".join(s))
+                print(f"      iter hard {gname}{gval}: " + " ".join(s))
             print("      iter soft: " + " ".join(f"{k}:{v:+.2f}" for k, v in traj_soft.items()))
 
         results['conds'][cond] = cond_res
@@ -425,8 +447,9 @@ print("DIAGNOSTICS (where the method is wrong):")
 print("  prop.acc / err_in_p3: is the propagation assignment error in the SAME")
 print("    P3 pairs (11-13/11-14) as the frozen errors, or elsewhere?")
 print("  pool_acc w0 vs rK: is the refit actually better on the pool (foundation)?")
-print("  gate_prec per round vs prop.acc: is confidence the right signal to carry")
-print("    across iterations? (loop only denoises if gate_prec > prop.acc)")
+print("  gate_prec per round vs prop.acc: is the gate signal the right one to")
+print("    carry across iterations? (topk vs agr vs tau; loop denoises only if")
+print("    gate_prec > prop.acc)")
 print("  mean_err / mean_err_p3 per round: does the loop fix the boundary")
 print("    classes or drift elsewhere?")
 
