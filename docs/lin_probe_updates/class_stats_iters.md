@@ -1128,13 +1128,13 @@ These are diagnostics about the CURRENT method's problems, in service of
 continuing to improve it, not a ceiling assumption to trust blindly.
 
 ## Improvement-axes result: the propagated MEANS are not the whole gap, and the
-update is already near its limit -- but MASS-STRATIFIED anchors (B2) is the one
+update is already near its limit, but MASS-STRATIFIED anchors (B2) is the one
 lever with headroom (2026-08-30, `al_propagation_improve_diag.py`)
 
 DGLSS++ only, fog/crosstalk. Verified against clean JSONs. The improvement axes
 resolve which part of the pipeline is the real gap.
 
-**A. The MEAN ESTIMATOR -- the clean count-split (A1) is the decisive number,
+**A. The MEAN ESTIMATOR: the clean count-split (A1) is the decisive number,
 and it shows the propagated means are NOT the whole gap.**
 
 | | b8 gcP (prop means, prop counts) | **A1 (TRUE means, prop counts)** | W_mean_oracle |
@@ -1143,7 +1143,7 @@ and it shows the propagated means are NOT the whole gap.**
 | crosstalk | +0.45 | **+0.81** | +0.99 |
 
 A1 (true means x PROPAGATED counts) exceeds gcP on both (crosstalk +0.81 vs
-+0.45), so the propagated MEANS lose ~0.36 gc at fixed counts -- real but not the
++0.45), so the propagated MEANS lose ~0.36 gc at fixed counts, real but not the
 whole story. And A1 does NOT reach W_mean_oracle (+0.99), so the count reference
 (C_prop vs C0) also contributes. Two gaps, roughly: the means lose ~0.36, the
 count reference the rest. **The headroom question is now cleanly decomposed.**
@@ -1158,7 +1158,7 @@ The other mean-estimator arms:
   crosstalk (0.43 at b8).
 - **A5 (soft propagation)** +0.17 to +0.29: below gcP.
 
-**B. The AL SELECTION -- MASS-STRATIFIED anchors (B2) is the one lever with
+**B. The AL SELECTION: MASS-STRATIFIED anchors (B2) is the one lever with
 headroom.**
 
 | | b8 fog | b8 crosstalk |
@@ -1173,7 +1173,7 @@ B2 (mass-stratified) roughly matches gcP at similar label counts (its alloc give
 boundary-avoiding (B3) are negative. The prior confidence-self-selection hope
 does NOT transfer to the mean decoder. B2 is worth combining with the method.
 
-**C. The UPDATE / DECODER -- already near its limit, no improvement available.**
+**C. The UPDATE / DECODER: already near its limit, no improvement available.**
 - C1 fractional whitening peaks at beta=1.0 (the full whitening = gcP); beta<1
   strictly hurts. The fractional-whitening robustness hope does NOT help the mean
   decoder.
@@ -1197,7 +1197,7 @@ the gap). If B2 + count-correction approaches A1's +0.81 on crosstalk, the
 method closes most of the W_mean_oracle gap.
 
 ## Method-decomposition result: the MEAN error is the dominant cost on crosstalk,
-the count error on fog -- and the count-reference fix (F1) adds NOTHING, closing
+the count error on fog, and the count-reference fix (F1) adds NOTHING, closing
 that lever (2026-08-30, `al_propagation_method_diag.py`)
 
 DGLSS++ only, fog/crosstalk. Verified against clean JSONs. The 2x2 decomposition
@@ -1214,32 +1214,32 @@ DGLSS++ only, fog/crosstalk. Verified against clean JSONs. The 2x2 decomposition
 | **mean_error_cost** | +0.02 | **+0.42** |
 | **count_error_cost** | -0.17 | -0.01 |
 
-**Finding 1 -- the MEAN error is the dominant cost on crosstalk.** With TRUE
+**Finding 1: the MEAN error is the dominant cost on crosstalk.** With TRUE
 means at fixed propagated counts, gc jumps +0.46 -> +0.88 (mean_cost +0.42 at
-b16, +0.47 at b2). The propagated means ARE the bottleneck on crosstalk -- the
+b16, +0.47 at b2). The propagated means ARE the bottleneck on crosstalk, the
 single most important number in the decomposition.
 
-**Finding 2 -- on fog, the COUNT error is the cost, and fixing it HURTS.** On
+**Finding 2: on fog, the COUNT error is the cost, and fixing it HURTS.** On
 fog the count_error_cost is negative (-0.17 at b16): replacing the propagated
 counts with oracle counts makes the propagated-means decoder WORSE (the
 accidental-better-prior effect again). The count-cost and mean-cost split is
 condition-specific: crosstalk is mean-dominated, fog is count-dominated.
 
-**Finding 3 -- the count-REFERENCE fix (F1/F1b) adds NOTHING.** F1 (counts
+**Finding 3: the count-REFERENCE fix (F1/F1b) adds NOTHING.** F1 (counts
 toward anchor proportions) and F1b (toward a smooth prior) both sit at ~gcP
 everywhere (fog b16: F1 +0.34, gcP +0.36). The propagated counts are already
 close to oracle counts on crosstalk (count_ref_cost only +0.12 at b16). **The
 count-fix lever from the improvement-axes plan is CLOSED.**
 
-**Finding 4 -- the fix arms FAIL as implemented.** F2 (worst whitened-error
+**Finding 4: the fix arms FAIL as implemented.** F2 (worst whitened-error
 classes -> pseudo-mean) is below gcP on fog and only matches on crosstalk; F3
 (F1+F2) is below gcP everywhere. The worst whitened-error classes ({11,13,14,16}
 on fog, {7,13,14,11} on crosstalk) are NOT the loose {7,15} classes, and
 replacing them with pseudo-means does NOT repair the propagated means. **The
 per-class pseudo-mean substitution is the wrong mean fix.**
 
-**Finding 5 -- the true-means ceiling is REACHED under mass/mass_loose.**
-mass_loose b16 reaches orM +1.00 (fog) / +1.00 (crosstalk) -- with mass+loose
+**Finding 5: the true-means ceiling is REACHED under mass/mass_loose.**
+mass_loose b16 reaches orM +1.00 (fog) / +1.00 (crosstalk); with mass+loose
 selection and TRUE means, the full W_mean_oracle ceiling is reached. This
 confirms the means carry the remaining gap under those selections, not the
 counts (their gcP is still only +0.54 because the means are the problem).
@@ -1252,9 +1252,10 @@ decomposition resolves:
 - the per-class pseudo-mean substitution (F2) is the wrong mean fix.
 
 The remaining open direction is a mean estimator that reduces the +0.42
-crosstalk mean cost WITHOUT the count interaction -- the next test should
-compare candidate mean estimators (not count corrections): better propagation
-(weighted, agreement-gated, or the 128-d-native means we could not project), or
-a per-class mean correction that matches the ACTUAL worst classes (not the
-pseudo-mean substitution). The mass/mass_loose selection reaching orM ~1.00
-means the selection is not the barrier; the MEAN ESTIMATOR is.
+crosstalk mean cost WITHOUT the count interaction (the next test should
+compare candidate mean estimators, not count corrections: better propagation
+such as weighted, agreement-gated, or the 128-d-native means we could not
+project, or a per-class mean correction that matches the ACTUAL worst classes
+rather than the pseudo-mean substitution). The mass/mass_loose selection
+reaching orM ~1.00 means the selection is not the barrier; the MEAN ESTIMATOR
+is.
