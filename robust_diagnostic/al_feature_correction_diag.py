@@ -427,7 +427,7 @@ def main():
                     'P2': p2, 'P3_floors': top_pairs,
                     'P4': {'corr_tta_dz': corr_tta_dz, 'corr_tta_err': corr_tta_err}}
         results['conds'][cond] = cond_res
-        del Xp, Xv, Ws, M0, pool_f
+        del Xp, Xv, Ws, pool_f
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
