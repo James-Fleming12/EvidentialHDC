@@ -479,9 +479,9 @@ def main():
             if C_star[c] < 100:
                 continue
             e = (M_prop[c] - M_star[c]).double()
-            proj = (Qe.double().t() @ e) ** 2            # k
-            hi = proj[gains > med].sum().item()
-            lo = proj[gains <= med].sum().item()
+            proj_e = (Qe.double().t() @ e) ** 2            # k
+            hi = proj_e[gains > med].sum().item()
+            lo = proj_e[gains <= med].sum().item()
             err_energy[str(c)] = {'frac_high_gain': hi / (hi + lo + 1e-12)}
         d4 = {'gain_median': med, 'per_class_frac_high_gain': err_energy}
 
