@@ -1259,3 +1259,63 @@ project, or a per-class mean correction that matches the ACTUAL worst classes
 rather than the pseudo-mean substitution). The mass/mass_loose selection
 reaching orM ~1.00 means the selection is not the barrier; the MEAN ESTIMATOR
 is.
+
+## Geometry result: the mean error is INTRINSIC, not contamination -- even the
+CORRECTLY-assigned points produce a mean ~1.4-1.5x the oracle's norm away from
+M*, and the classes are tight but their centroids nearly coincide
+(2026-08-30, `al_propagation_geometry_diag.py`)
+
+DGLSS++ only, fog/crosstalk. Verified against clean JSONs. The decisive control
+answers the "better rule vs better estimator" question with a negative for the
+rule.
+
+**The decisive control: Werr_correct is NOT ~0 -- it is HIGHER than Werr_all.**
+The mean of only the CORRECTLY-assigned points is still ~1.4-1.5x the oracle's
+norm away from M* (fog: Werr_correct 1.42 vs Werr_all 1.18; crosstalk 1.54 vs
+1.34). Even the points the propagation gets RIGHT aggregate to a mean far from
+M* in whitened space. **The mean error is NOT wrong assignments pulling the
+mean; it is that correctly-labeled points aggregate to a mean far from M\*.**
+
+**The per-class picture confirms it -- NO class has Werr_correct near 0:**
+
+| class (fog) | assign_prec | Werr_all | Werr_correct | intra_cos | inter_cos (nearest) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| c11 | 0.52 | 1.73 | **1.56** | 0.94 | 0.97 (c13) |
+| c14 | 0.39 | 1.26 | **1.46** | 0.85 | 0.99 (c13) |
+| c13 | 0.61 | 1.20 | **1.00** | 0.90 | 0.99 (c14) |
+| c15 | 0.16 | 1.05 | **2.38** | 0.81 | 0.97 (c16) |
+| c16 | 0.59 | 1.01 | **0.86** | 0.76 | 0.97 (c15) |
+
+Class 15 (fog) has the worst correct-only error (2.38) despite the tightest
+need; class 16 (crosstalk) has the best precision (0.73) yet Werr_correct 0.85.
+**Precision does NOT predict mean error** (corr(prec, Werr) ~ 0: +0.18 fog,
+-0.16 crosstalk). This closes the contamination hypothesis: a better label rule
+CANNOT fix the mean error.
+
+**The geometry story: the classes are TIGHT but their centroids nearly COINCIDE.**
+The high-error classes (11, 13, 14) have high intra_cos (0.85-0.96, tight
+classes) AND high inter_cos (0.97-1.00 to the nearest neighbor). The 128-d
+class means are only ~8-13 degrees apart under corruption. This is the
+"boundary pathologically sensitive" finding (means barely separate; the
+whitening amplifies small differences) -- the propagated means are close in raw
+cosine but the whitened decoder amplifies the small residual differences.
+
+**Verdict: the mean error is INTRINSIC (geometry/saturation), so no label rule
+fixes it.** The remaining levers are estimator-level:
+1. **SHRINKAGE / regularization of the propagated mean toward a pool-stable
+   prior** -- the class means are tight but noisy in whitened space; a shrinkage
+   that bounds the whitened step (the C3 global version hurt, but a PER-CLASS,
+   whitened-error-aware shrinkage is untested).
+2. **A NON-MEAN estimator** -- the classes are tight but centroids nearly
+   coincide, so the mean is the wrong summary; a boundary-aware estimator (the
+   difference w_a - w_b, or a density-core mean) may separate what the mean
+   cannot.
+3. **Reduce the whitening amplification** (fractional whitening failed at
+   beta<1 for the mean decoder, but the failure was the whole-matrix beta;
+   a per-direction or per-class gain bound is untested).
+
+The propagation mechanism is real (+0.045/+0.095 mIoU) but its ceiling is set
+by the geometry: the propagated means are good in cosine, bad in whitened space,
+because the corrupted classes are tight-but-overlapping. This is the same
+fundamental limit as every prior result -- the few-label route cannot
+reconstruct the mass-weighted decision boundary the oracle needs.
