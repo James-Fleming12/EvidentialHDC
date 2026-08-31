@@ -249,8 +249,8 @@ def main():
     ap.add_argument("--kittic_dir", type=str, default="/mnt/bravo/jmfleming/OpenDataLab___SemanticKITTI-C/SemanticKITTI-C")
     ap.add_argument("--config", type=str, default="config/labels/semantic-kitti-all.yaml")
     ap.add_argument("--arch", type=str, default="config/arch/senet-2048p.yml")
-    ap.add_argument("--map19", type=int, default=0,
-                    help="1 = evaluate on GeoID's exact 19-class map (semantic-kitti-19.yaml), "
+    ap.add_argument("--map19", action="store_true",
+                    help="evaluate on GeoID's exact 19-class map (semantic-kitti-19.yaml), "
                          "fixed-19 mIoU convention, no-HDC decoder dropped (merged head)")
     ap.add_argument("--max_frames", type=int, default=0, help="0 = ALL frames of seq 08 (paper protocol)")
     ap.add_argument("--clean_fit_n", type=int, default=200000)
