@@ -1,0 +1,64 @@
+train:
+  pipeline: res
+  act: Hardswish
+  loss: xentropy
+  aux_loss: true
+  lamda: 1.0
+  scheduler: consine
+  max_epochs: 80
+  consine:
+    min_lr: 0.0001
+    max_lr: 0.01
+    first_cycle: 80
+    cycle: 1
+    wup_epochs: 1
+    gamma: 1.0
+  decay:
+    lr: 0.01
+    wup_epochs: 1
+    lr_decay: 0.99
+  momentum: 0.9
+  w_decay: 0.0001
+  batch_size: 6
+  report_batch: 100
+  report_epoch: 1
+  epsilon_w: 0.001
+  save_summary: false
+  save_scans: false
+  show_scans: true
+  save_batch: 50
+  workers: 6
+  twobranch:
+    width_mult: 2.4
+post:
+  KNN:
+    use: true
+    params:
+      knn: 7
+      search: 7
+      sigma: 1.0
+      cutoff: 2.0
+dataset:
+  labels: kitti
+  scans: kitti
+  max_points: 200000
+  sensor:
+    name: HDL64
+    type: spherical
+    fov_up: 3
+    fov_down: -25
+    img_prop:
+      width: 2048
+      height: 64
+    img_means:
+    - 11.71279
+    - -0.1023471
+    - 0.4952
+    - -1.0545
+    - 0.2877
+    img_stds:
+    - 10.24
+    - 12.295865
+    - 9.4287
+    - 0.8643
+    - 0.145

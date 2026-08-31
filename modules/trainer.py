@@ -123,7 +123,8 @@ class DGLSSTrainer():
                                        scale_only=tw.get("scale_only", False),
                                        norm_scope=tw.get("norm_scope", "all"),
                                        scale_in=tw.get("scale_in", False),
-                                       geoid_head=tw.get("geoid_head", False))
+                                       geoid_head=tw.get("geoid_head", False),
+                                       width_mult=tw.get("width_mult", 1.0))
 
                 def convert_relu_to_softplus(model, act):
                     for child_name, child in model.named_children():
@@ -888,7 +889,8 @@ class Trainer():
                                        scale_only=tw.get("scale_only", False),
                                        norm_scope=tw.get("norm_scope", "all"),
                                        scale_in=tw.get("scale_in", False),
-                                       geoid_head=tw.get("geoid_head", False))
+                                       geoid_head=tw.get("geoid_head", False),
+                                       width_mult=tw.get("width_mult", 1.0))
 
                 def convert_relu_to_softplus(model, act):
                     for child_name, child in model.named_children():

@@ -153,8 +153,14 @@ class ResNet_34(nn.Module):
                  norm_layer=None, groups=1, width_per_group=64, use_adaptor=True,
                  corr_dim=0, corr_mode='ind', inv_dim=128, norm='bn', input_in=False,
                  norm_channels=None, scale_only=False, norm_scope='all', scale_in=False,
-                 geoid_head=False):
+                 geoid_head=False, width_mult=1.0):
         super(ResNet_34, self).__init__()
+        # width_mult: scale the base channel widths by this factor (params ~ w^2).
+        # Default 1.0 reproduces the 6.8M network; width_mult ~2.4 matches the
+        # ~37.85M GeoID MinkUNet34 capacity while keeping the 128-d HDC bottleneck.
+        self.width_mult = width_mult
+        def _ch(x):
+            return int(round(x * width_mult))
         if norm_layer is None:
             norm_layer = norm_layer_for(norm, scale_in)
         self._norm_layer = norm_layer
@@ -176,11 +182,11 @@ class ResNet_34(nn.Module):
         early_norm = 'bn' if norm_scope == 'in_late' else norm
         late_norm = norm if norm_scope == 'all' else ('in' if norm_scope == 'in_late' else norm)
 
-        self.conv1 = BasicConv2d(5, 64, kernel_size=3, padding=1, norm=early_norm, scale_in=scale_in)
-        self.conv2 = BasicConv2d(64, 128, kernel_size=3, padding=1, norm=early_norm, scale_in=scale_in)
-        self.conv3 = BasicConv2d(128, 128, kernel_size=3, padding=1, norm=early_norm, scale_in=scale_in)
+        self.conv1 = BasicConv2d(5, _ch(64), kernel_size=3, padding=1, norm=early_norm, scale_in=scale_in)
+        self.conv2 = BasicConv2d(_ch(64), _ch(128), kernel_size=3, padding=1, norm=early_norm, scale_in=scale_in)
+        self.conv3 = BasicConv2d(_ch(128), _ch(128), kernel_size=3, padding=1, norm=early_norm, scale_in=scale_in)
 
-        self.inplanes = 128
+        self.inplanes = _ch(128)
 
         self.groups = groups
         self.base_width = width_per_group
@@ -189,13 +195,13 @@ class ResNet_34(nn.Module):
         self.dilation = 1
         self.aux = aux
 
-        self.layer1 = self._make_layer(block, 128, layers[0], use_adaptor=use_adaptor, norm=early_norm)
-        self.layer2 = self._make_layer(block, 128, layers[1], stride=2, use_adaptor=use_adaptor, norm=early_norm)
-        self.layer3 = self._make_layer(block, 128, layers[2], stride=2, use_adaptor=use_adaptor, norm=late_norm)
-        self.layer4 = self._make_layer(block, 128, layers[3], stride=2, use_adaptor=use_adaptor, norm=late_norm)
+        self.layer1 = self._make_layer(block, _ch(128), layers[0], use_adaptor=use_adaptor, norm=early_norm)
+        self.layer2 = self._make_layer(block, _ch(128), layers[1], stride=2, use_adaptor=use_adaptor, norm=early_norm)
+        self.layer3 = self._make_layer(block, _ch(128), layers[2], stride=2, use_adaptor=use_adaptor, norm=late_norm)
+        self.layer4 = self._make_layer(block, _ch(128), layers[3], stride=2, use_adaptor=use_adaptor, norm=late_norm)
 
-        self.conv_1 = BasicConv2d(640, 256, kernel_size=3, padding=1, norm=late_norm, scale_in=scale_in)
-        self.conv_2 = BasicConv2d(256, inv_dim, kernel_size=3, padding=1, norm=late_norm, scale_in=scale_in)
+        self.conv_1 = BasicConv2d(_ch(640), _ch(256), kernel_size=3, padding=1, norm=late_norm, scale_in=scale_in)
+        self.conv_2 = BasicConv2d(_ch(256), inv_dim, kernel_size=3, padding=1, norm=late_norm, scale_in=scale_in)
         # Decoupling branch (Iteration-15 shortlist): a SECOND bottleneck head with its
         # own capacity. The invariant head (conv_2) keeps the full inv_dim and carries
         # GMSIFC+LSCC+SupCon; the corruption head (conv_corr) is either an independent
@@ -215,16 +221,16 @@ class ResNet_34(nn.Module):
         # direction -- the Iteration-19.12 candidate for the cleaner general fix).
         self.scale_only = scale_only
         if corr_dim > 0:
-            self.conv_corr = BasicConv2d(256, corr_dim, kernel_size=3, padding=1, norm=late_norm, scale_in=scale_in)
+            self.conv_corr = BasicConv2d(_ch(256), corr_dim, kernel_size=3, padding=1, norm=late_norm, scale_in=scale_in)
             self.semantic_output = nn.Conv2d(inv_dim + corr_dim, nclasses, 1)
         else:
             self.conv_corr = None
             self.semantic_output = nn.Conv2d(inv_dim, nclasses, 1)
 
         if self.aux:
-            self.aux_head1 = nn.Conv2d(128, nclasses, 1)
-            self.aux_head2 = nn.Conv2d(128, nclasses, 1)
-            self.aux_head3 = nn.Conv2d(128, nclasses, 1)
+            self.aux_head1 = nn.Conv2d(_ch(128), nclasses, 1)
+            self.aux_head2 = nn.Conv2d(_ch(128), nclasses, 1)
+            self.aux_head3 = nn.Conv2d(_ch(128), nclasses, 1)
 
         # GeoID inlier-discrimination head (port of exp_geoid.py final_cls): a 1x1
         # conv on the bottleneck output -> 1 channel (logit of "real inlier" vs
