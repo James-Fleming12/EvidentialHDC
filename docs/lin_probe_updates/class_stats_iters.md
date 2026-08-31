@@ -1612,3 +1612,158 @@ W -> re-propagate the pool with the better decoder (confidence-gated
 self-training), and compare against W_mean_oracle (+0.72/+0.99) as the target.
 Also test the anchors-only mean (the b labeled points per class, no
 propagation) since the classes are tight and it is assignment-noise-free.
+
+## Iterative self-training (the last "more use of the points" design lever): RESULTS
+(2026-08-30, `al_propagation_iterative_diag.py` v2 with the gate fix,
+JSON `robust_diagnostic/logs/al_propagation_iterative_dglsspp.json`)
+
+Two runs. The FIRST was INERT: the absolute confidence gate never fired (max
+pool softmax < 0.8, gate_cov 0.000 at tau 0.8/0.95), so the loop did nothing and
+the "plateau" was meaningless. The SECOND (v2) fixes the gate with a RELATIVE
+top-k gate (top 5%/20% of the pool by confidence) plus an AGREEMENT gate (top-k
+confident AND the refit agrees with the frozen probe), so the loop actually
+tests the trust signal. All results below are b=8 (56 fog / 64 crosstalk labels;
+the server copy mislabels the budget key "11"). All gc normalized.
+
+| metric | fog | crosstalk |
+|--------|-----|-----------|
+| gcP (baseline) | +0.28 | +0.45 |
+| A1 (true means x prop counts) | +0.37 | +0.81 |
+| gc_anc_only (anchors-only means) | -0.20 | -0.14 |
+| shrink toward clean a0.25/0.5 | -0.25 / -0.32 | -0.19 / -0.30 |
+| prop.acc (assignment accuracy) | 0.28 | 0.48 |
+| err_in_p3 (share of assignment errors in 11/13/14) | 0.30 | 0.56 |
+| pool_acc w0 (frozen on pool) | 0.42 | 0.45 |
+
+| gate | fog r0 -> r4 | fog prec/cov | crosstalk r0 -> r4 | crosstalk prec/cov |
+|------|--------------|--------------|--------------------|--------------------|
+| tau0.8 | +0.28 -> +0.28 | 0.00 / 0.00 (inert) | +0.45 -> +0.45 | 0.00 / 0.00 (inert) |
+| topk0.05 | +0.28 -> +0.28 | 0.33 / 0.05 | +0.45 -> +0.45 | 0.47 / 0.05 |
+| topk0.2 | +0.28 -> +0.28 | 0.36 / 0.20 | +0.45 -> +0.45 | 0.53 / 0.20 |
+| agr0.05 | +0.28 -> +0.28 | 0.76 / 0.01 | +0.45 -> +0.45 | 0.57 / 0.02 |
+| soft (top20) | +0.28 -> +0.21..+0.25 | | +0.45 -> +0.39..+0.44 | |
+
+### Verdict: the CURRENT formulation of iterative self-training is closed.
+Iteration as an idea is OPEN, contingent on breaking the self-confirmation.
+
+- **The loop is now tested and net-neutral.** With the top-k gates firing
+  (coverage 5%/20%), every hard arm is FLAT across all 4 rounds: gc stays +0.28
+  fog / +0.45 crosstalk, and the mean error mE is flat too (0.25 fog, 0.27
+  crosstalk) , the means do not denoise.
+- **The decoder's confidence is a weak trust signal.** Gate precision for the
+  top-k gates (0.33-0.36 fog, 0.47-0.53 crosstalk) barely exceeds prop.acc
+  (0.28/0.48) and is BELOW the frozen probe's pool accuracy on fog (0.42). The
+  agreement gate has high precision (0.76 fog) but coverage of only 1-2% , too
+  little to move anything. Replacing the propagated labels with the refit's
+  predictions at gated points is mostly wrong->wrong or no-op, because the refit
+  is TRAINED on the noisy propagated labels and reproduces them on the pool
+  (pool_acc of the refit ~ prop.acc).
+- **Soft refinement drifts DOWN** (fog +0.28 -> +0.21-0.25; crosstalk +0.45 ->
+  +0.39-0.44): feeding the softmax probabilities of the noisy refit back into
+  the means adds noise, not signal.
+- anc-only (-0.14 to -0.32) and toward-clean shrink (-0.19 to -0.35) are
+  confirmed negative: b-point means are too noisy, and the corrupted means must
+  shift AWAY from clean.
+
+**Scope of the verdict (important).** What is closed is the SPECIFIC formulation
+that was run: fixed anchors, confidence-gated hard label replacement, and a
+target that is the refit's own training labels. That loop is a fixed point BY
+CONSTRUCTION (a refit trained on the propagated labels reproduces them on the
+pool, so gated replacements confirm the input), so its flatness is consistent
+with TWO hypotheses that this run cannot separate:
+- H1: the per-round update is too noisy to use (gate precision ~ prop.acc);
+- H2: the formulation was untailored for iteration (self-confirming target,
+  anchors never updated, per-point structure discarded each round).
+
+The data leans H2 (the refit pool-acc ~ prop.acc IS the self-confirmation
+signature), but this is not decisive. The idea of iterative refinement remains
+open until a loop that breaks the self-confirmation (independent update signal,
+re-anchoring, carried per-point structure) is tested.
+
+### Read for the arc
+
+This closes the CURRENT "confidence-gated, fixed-anchor" formulation of the
+"make more use of the points" design lever, NOT the lever itself. Iteration on
+the decoder via its own confidence cannot fix the assignment noise, because the
+decoder's own signal (confidence) is no better than the propagation it would be
+correcting, and the refit is trained on the noisy labels it would refine. The
+bottleneck is now cleanly isolated: **the ASSIGNMENT accuracy (28-48%), with
+30-56% of assignment errors inside the P3 triple (11/13/14)**. The remaining
+avenues are a better ASSIGNMENT mechanism and a loop that uses an INDEPENDENT
+signal:
+- graph label propagation in 128-d (diffuse labels over the pool's kNN graph,
+  using the pool's own structure instead of the 112-anchor Voronoi partition);
+- P3 distance-ratio disambiguation (top-3 anchor distances; when d1 ~ d2 in the
+  degenerate 11/13/14 region, resolve by neighborhood agreement instead of
+  argmin);
+- a self-refinement loop gated on REFIT-vs-PROPAGATION DISAGREEMENT (quasi-
+  independent of the training labels) with re-anchoring, instead of confidence.
+
+## Self-refinement loop design study (v3): DIAGNOSTICS-FIRST -- PENDING
+placeholder, results to be added (next iteration, `al_refine_loop_design_diag.py`)
+
+The v2 flatness is consistent with two hypotheses this run could not separate:
+H1 (the per-round update is too noisy to use) vs H2 (the formulation was
+self-confirming and untailored for iteration). This iteration does NOT test
+another specific loop. It measures the signals and structure needed to DESIGN a
+loop that could work, so the next attempt is grounded in evidence rather than
+another blind build. Reuses the v2 machinery (pool 20k, val 100k, b=8,
+fog/crosstalk, DGLSS++ only); every metric is cheap on already-computed
+quantities (one refit W_r, one 128-d sim matrix, one feature pass). Measurement
+only, no loop is run.
+
+**P1 -- DISAGREEMENT as an error signal (the gate candidate).** For each pool
+point, the propagated label, the refit prediction, and the true label. Report
+P(propagated wrong | refit disagrees) and P(propagated correct | refit agrees),
+overall and restricted to the P3 classes. Decisive: if disagreement marks
+errors (wrong-given-disagree >> the 28-48% baseline, agree-given-correct high),
+a disagreement-gated flip has real signal; if P(correct | disagree) ~ overall
+accuracy, disagreement is uninformative and no flip-based loop can work.
+
+**P2 -- REPAIRABILITY: does the refit win where propagation loses?** Per-point
+2x2 (refit correct? x propagation correct?): reparable = refit right &
+propagation wrong (the mistakes a loop could fix), damage = refit wrong &
+propagation right (what flipping would break), plus the two agreement cells,
+overall and in the P3 classes. Decisive: a loop helps only if reparable >
+damage by a real margin; this is the direct measure of "are the mistakes
+quickly reparable" (do the propagation's P3 errors coincide with the refit's
+correct predictions?).
+
+**P3 -- FEATURE-SPACE separability of the assignment errors.** Label-free
+features at each pool point: nearest-anchor distance d1, distance ratio d2/d1,
+local 128-d label agreement, frozen-probe confidence, refit confidence. Rank
+each feature's ability to separate correct from incorrect assignments (AUROC).
+Decisive: if a feature separates the errors (e.g., d2/d1 ~ 1 marks boundary
+mistakes), the loop can target them cheaply and the acquisition rule can use
+it; if nothing separates, no targeted rule exists.
+
+**P4 -- WEIGHT-SPACE: does the refit have room to move?** (a) ||W_r - W0|| and
+per-class components vs the oracle ||W_mean_oracle - W0||, to see how far the
+current decoder already moves and whether the P3 classes carry the change. (b)
+the SELF-CONFIRMATION rate: the fraction of pool points where the refit's
+prediction equals the propagated label it was trained on. Decisive: if
+confirmation ~ 1 the loop is at a fixed point BY CONSTRUCTION and only a
+changed TARGET (independent signal, re-anchoring) can move it; if ||W_r - W0||
+is still well below the oracle, there is room for a better decoder to shift
+further.
+
+**P5 -- the anchors' role in the P3 errors (argmin misfire vs placement
+failure).** For pool points whose propagated label is wrong, how often is the
+wrong label that of the NEAREST anchor vs the SECOND-nearest (i.e., was the
+correct class the runner-up anchor, d1 ~ d2)? Decisive: argmin misfires ->
+distance-ratio / disagreement disambiguation can fix them; placement failures
+(nearest two anchors are the same wrong class) -> need re-anchoring (more or
+different anchors), not a decision rule.
+
+**Expected reads.**
+- P1 + P2 strong (disagreement marks errors, reparable > damage, especially in
+  P3): build a disagreement-gated re-anchoring loop (the tailored v3).
+- P3 finds a separable feature: use it as the gate and the acquisition signal.
+- P4 confirmation ~ 1: the fix is a changed TARGET (re-anchor from the refit,
+  an independent signal), not a changed gate.
+- P5 argmin misfires: distance-ratio disambiguation is the cheap repair.
+- All flat / P1 uninformative + P2 damage >= reparable: H1 confirmed, iteration
+  genuinely closed, and the paper story is the single-pass propagation decoder
+  with the bounded-ceiling analysis.
+
+Results PENDING -- to be filled after the run.
