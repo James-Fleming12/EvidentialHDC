@@ -166,6 +166,7 @@ def class_means(X, y, nc):
 def nystrom_influence(Xd, lam, m, device):
     """I_i ~= ||(S + lI)^-1 x_i|| in the Nystrom subspace (same sketch as the
     warm start). The magnitude of point i's contribution to W."""
+    Xd = Xd.to(device)
     torch.manual_seed(SKETCH_SEED)
     P = (torch.rand(Xd.shape[1], m, device=device) > 0.5).float() * 2 - 1
     XP = Xd @ P
