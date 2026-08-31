@@ -316,7 +316,7 @@ def main():
                         continue
                     ctr_d = pf[class_idx[d]].mean(dim=0)
                     ctr_d = ctr_d / (ctr_d.norm() + 1e-12)
-                    s = float((ctr * ctr_d).item())
+                    s = float((ctr * ctr_d).sum().item())
                     if s > best_other:
                         best_other = s; best_cls = d
                 # code-space intra (saturation reference) -- reported via
