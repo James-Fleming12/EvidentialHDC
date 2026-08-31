@@ -367,7 +367,7 @@ def main():
                 if int(m.sum().item()) > 0:
                     M128[c] = pool_f[m].float().mean(dim=0)
             # project 128-d mean into code space (sign of proj)
-            M128_code = torch.sign(M128 @ proj.cpu().float().t())
+            M128_code = torch.sign(M128 @ proj.cpu().float())
             gcA2 = decoder(M128_code, C_r)
             # A3: agreement-gated means (propagate only where probe agrees)
             agree = pred == prop_rand
