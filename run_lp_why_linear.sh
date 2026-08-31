@@ -35,9 +35,10 @@ fi
 
 DGLSSPP="dglsspp|supcon_vib_dglsspp|robust_diagnostic/logs/supcon_vib_dglsspp"
 CKPT="${CKPT:-}"
+METHOD="${METHOD:-supcon_vib_dglsspp}"
 if [ -n "$CKPT" ]; then
-  DGLSSPP="dglsspp_19cls|supcon_vib_dglsspp|$CKPT"
-  echo "  [CKPT] evaluating against: $CKPT"
+  DGLSSPP="ckpt|$METHOD|$CKPT"
+  echo "  [CKPT] evaluating against: $CKPT (method=$METHOD)"
 fi
 EXTRACTORS="$DGLSSPP"
 

@@ -27,20 +27,27 @@ SMOKE="${SMOKE:-0}"
 CONDS="${CONDS:-fog,crosstalk,snow,wet_ground,incomplete_echo,beam_missing,motion_blur,cross_sensor}"
 SEVS="${SEVS:-heavy}"
 MAP19="${MAP19:-0}"
+CEILING="${CEILING:-0}"
 SM_FRAMES="${SM_FRAMES:-30}"
 echo "Four-decoder numbers, full-harness protocol (DGLSS++) | GPU $GPU | DRY_RUN=$DRY_RUN SMOKE=$SMOKE"
-echo "  conds=$CONDS sevs=$SEVS map19=$MAP19"
+echo "  conds=$CONDS sevs=$SEVS map19=$MAP19 ceiling=$CEILING"
 MAP19_ARGS=""
 if [ "$MAP19" = "1" ]; then
   MAP19_ARGS="--map19"
   echo "  [map19] GeoID 19-class map, fixed-19 mIoU, no-HDC dropped"
 fi
+CEIL_ARGS=""
+if [ "$CEILING" = "1" ]; then
+  CEIL_ARGS="--ceiling"
+  echo "  [ceiling] also fit + eval labeled-ceiling decoders (corrupted-pool fit)"
+fi
 
 DGLSSPP="dglsspp|supcon_vib_dglsspp|robust_diagnostic/logs/supcon_vib_dglsspp"
 CKPT="${CKPT:-}"
+METHOD="${METHOD:-supcon_vib_dglsspp}"
 if [ -n "$CKPT" ]; then
-  DGLSSPP="dglsspp_19cls|supcon_vib_dglsspp|$CKPT"
-  echo "  [CKPT] evaluating against: $CKPT"
+  DGLSSPP="ckpt|$METHOD|$CKPT"
+  echo "  [CKPT] evaluating against: $CKPT (method=$METHOD)"
 fi
 EXTRACTORS="$DGLSSPP"
 
@@ -65,7 +72,7 @@ for entry in "${EXS[@]}"; do
   outjson="robust_diagnostic/logs/lp_three_decoder_${label}.json"
   CMD="CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/lp_three_decoder_diag.py \
     --path_b \"$ckpt\" --method_b \"$method\" --label \"$label\" --conds \"$CONDS\" --sevs \"$SEVS\" \
-    $MAP19_ARGS $SMOKE_ARGS --out \"$outjson\""
+    $MAP19_ARGS $CEIL_ARGS $SMOKE_ARGS --out \"$outjson\""
   echo "  CMD: $CMD"
   if [ "$DRY_RUN" = "1" ]; then
     echo "  [DRY] not executed"

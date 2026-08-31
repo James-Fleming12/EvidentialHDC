@@ -282,6 +282,11 @@ def main():
                          "fixed-19 mIoU convention, no-HDC decoder dropped (merged head)")
     ap.add_argument("--max_frames", type=int, default=0, help="0 = ALL frames of seq 08 (paper protocol)")
     ap.add_argument("--clean_fit_n", type=int, default=200000)
+    ap.add_argument("--ceiling", action="store_true",
+                    help="also fit CEILING decoders on a corrupted-pool reservoir (seed 42) per "
+                         "condition and full-stream eval them (pool points excluded); the labeled "
+                         "oracle upper bound")
+    ap.add_argument("--pool_cap", type=int, default=400000, help="corrupted-pool reservoir cap for the ceiling")
     ap.add_argument("--lam", type=float, default=1e-3)
     ap.add_argument("--proj_dim", type=int, default=10000)
     ap.add_argument("--conds", type=str, default=",".join(CONDS_ALL))
@@ -343,17 +348,37 @@ def main():
     if not args.map19:
         decoders['no_hdc'] = {'type': 'head'}
 
-    def eval_stream(parser, name, exclude=None):
+    def fit_ceiling(pool_f, pool_l):
+        Xp = hdc_codes(pool_f, proj, device).float()
+        Wc = ridge_fit_exact(Xp, onehot(pool_l, NC), args.lam, device).detach().cpu()
+        pc, _ = build_prototypes(Xp, pool_l, NC)
+        Wrc = ridge_fit_exact(pool_f.float().to(device), onehot(pool_l, NC).to(device),
+                              args.lam, device).detach().cpu()
+        del Xp
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return {
+            'linear_ceiling': {'type': 'w', 'W': Wc},
+            'proto_ceiling': {'type': 'proto', 'protos': pc.float()},
+            'raw_linear_ceiling': {'type': 'raw_w', 'W': Wrc},
+        }
+
+    def eval_stream(parser, name, exclude=None, decs=None):
+        decs = decs if decs is not None else decoders
         t1 = tic()
-        accs = stream_decode_four(model, parser, proj, device, decoders,
+        accs = stream_decode_four(model, parser, proj, device, decs,
                                   exclude=exclude, max_frames=args.max_frames, nc=NC)
         out = {'n': accs['linear'].n}
         for k, a in accs.items():
             out[k] = a.miou()
             out[k + '_per_class'] = a.per_class()
         head_s = f"no-hdc {out['no_hdc']:.3f} | " if not args.map19 else ""
+        ceil_s = ""
+        if args.ceiling:
+            ceil_s = (f" | ceil: lin {out['linear_ceiling']:.3f} proto {out['proto_ceiling']:.3f} "
+                      f"raw {out['raw_linear_ceiling']:.3f}")
         print(f"  {name}: {head_s}proto {out['proto']:.3f} | "
-              f"linear {out['linear']:.3f} | raw-lin {out['raw_linear']:.3f} | n {out['n']} ({toc(t1):.0f}s)")
+              f"linear {out['linear']:.3f} | raw-lin {out['raw_linear']:.3f}{ceil_s} | n {out['n']} ({toc(t1):.0f}s)")
         return out
 
     clean_res = eval_stream(clean_parser, "clean", exclude=ex_clean)
@@ -366,11 +391,32 @@ def main():
             if not os.path.exists(cdir):
                 print(f"  [{cond}/{sev}] dir missing, skipped")
                 continue
-            cond_res['sevs'][sev] = eval_stream(build_parser(cdir, DATA, ARCH), f"{cond}/{sev}")
+            cparser = build_parser(cdir, DATA, ARCH)
+            if args.ceiling:
+                t1 = tic()
+                pf, pl, pk = reservoir_collect(stream_full(model, cparser, device, args.max_frames,
+                                                           progress="pool"), args.pool_cap, 42)
+                print(f"  [{cond}/{sev}] pool {len(pf)} pts ({toc(t1):.0f}s)")
+                ceil_dec = fit_ceiling(pf, pl)
+                ex_pool = defaultdict(list)
+                for f, i in pk.tolist():
+                    ex_pool[f].append(i)
+                ex_pool = {f: torch.tensor(sorted(s), dtype=torch.long) for f, s in ex_pool.items()}
+                all_dec = dict(decoders)
+                all_dec.update(ceil_dec)
+                cond_res['sevs'][sev] = eval_stream(cparser, f"{cond}/{sev}", exclude=ex_pool, decs=all_dec)
+                del pf, pl, pk
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            else:
+                cond_res['sevs'][sev] = eval_stream(cparser, f"{cond}/{sev}")
         ev = [v for v in cond_res['sevs'].values()]
         if ev:
             for k in ('proto', 'linear', 'raw_linear'):
                 cond_res[k + '_sev_mean'] = float(sum(v[k] for v in ev) / len(ev))
+            if args.ceiling:
+                for k in ('proto_ceiling', 'linear_ceiling', 'raw_linear_ceiling'):
+                    cond_res[k + '_sev_mean'] = float(sum(v[k] for v in ev) / len(ev))
             if not args.map19:
                 cond_res['no_hdc_sev_mean'] = float(sum(v['no_hdc'] for v in ev) / len(ev))
         results['conds'][cond] = cond_res
