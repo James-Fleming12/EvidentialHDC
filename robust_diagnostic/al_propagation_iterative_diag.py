@@ -340,7 +340,7 @@ def main():
                     sm = torch.softmax(L, dim=1)
                     conf = sm.max(dim=1).values
                     pred = L.argmax(1)
-                    lab = prop_rand.clone()
+                    lab = prop_rand.clone().long()
                     gate = conf > tau
                     lab[gate] = pred[gate]
                     gate_prec = float((gate & (pred == pl)).float().sum().item() /
