@@ -318,6 +318,7 @@ def main():
             err_in_p3 = float((err_m & in_p3).float().sum().item()) / n_err if n_err > 0 else None
             # D4 foundation: is the refit actually better on the pool?
             def pool_acc(W):
+                W = W.detach().cpu()
                 return float(((Xp.float() @ W).argmax(1) == pl).float().mean().item())
             pool_acc_w0 = pool_acc(W0)
             p3_present = [c for c in present if c in P3_CLASSES]
