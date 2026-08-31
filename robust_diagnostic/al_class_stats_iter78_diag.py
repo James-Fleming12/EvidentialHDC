@@ -414,7 +414,7 @@ def main():
         for c in range(1, NUM_CLASSES):
             pred_g[:, c] += gb[c]
         B['global_bias'] = {'gc': gc(compute_miou(pred_g.argmax(1), vl)),
-                            'bias': {str(c): round(v, 3) for c, v in gb.items() if v != 0}}
+                            'bias': {str(c): round(float(gb[c].item()), 3) for c in range(NUM_CLASSES) if gb[c].item() != 0}}
 
         # B6 shared scalar: one (alpha, beta) across ALL confused pairs
         all_m = []; all_t = []
