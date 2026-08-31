@@ -49,10 +49,21 @@ def main():
           f"{len(DATA['learning_map_inv'])} classes")
 
     os.makedirs(args.log_dir, exist_ok=True)
-    trainer = GenTrainer(ARCH, DATA, args.kitti_dir, args.log_dir, method=args.method,
-                         cutoff_percent=args.cutoff)
+    # Crash-safe resume: SENet is saved every epoch with self.epoch inside, and
+    # train(epochs) runs range(self.epoch, epochs). If a checkpoint exists, load
+    # it (path=log_dir) and train ONLY the remaining epochs; re-running the same
+    # command after a crash picks up where it left off.
+    senet = os.path.join(args.log_dir, "SENet")
+    if os.path.exists(senet):
+        print(f"  [resume] {senet} found; resuming from the saved epoch")
+        trainer = GenTrainer(ARCH, DATA, args.kitti_dir, args.log_dir, path=args.log_dir,
+                             method=args.method, cutoff_percent=args.cutoff)
+    else:
+        trainer = GenTrainer(ARCH, DATA, args.kitti_dir, args.log_dir, method=args.method,
+                             cutoff_percent=args.cutoff)
+    print(f"  starting epoch {trainer.epoch} / target {args.epochs}")
     trainer.train(epochs=args.epochs)
-    print(f"\nRetrain done -> {args.log_dir} (SENet_valid_best).")
+    print(f"\nRetrain done -> {args.log_dir} (SENet / SENet_valid_best).")
     print("Evaluate with:")
     print(f"  CKPT=\"{args.log_dir}\" MAP19=1 CONDS=\"fog,crosstalk,wet_ground\" "
           f"bash run_lp_three_decoder.sh 3")

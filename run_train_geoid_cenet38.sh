@@ -31,6 +31,7 @@ GPU="${1:-2}"
 DRY_RUN="${DRY_RUN:-0}"
 SMOKE="${SMOKE:-0}"
 EPOCHS="${EPOCHS:-24}"
+CUTOFF="${CUTOFF:-1.0}"
 SEVS="${SEVS:-heavy}"
 CONDS="${CONDS:-fog,crosstalk,snow,wet_ground,incomplete_echo,beam_missing,motion_blur,cross_sensor}"
 GEO_W="${GEO_W:-1.0}"
@@ -42,11 +43,18 @@ SM_FRAMES="${SM_FRAMES:-30}"
 export GEO_W
 
 echo "GeoID-loss on CENET at GeoID param count (38M), 19-class map"
-echo "  GPU $GPU | method=$METHOD | epochs=$EPOCHS | geo_w=$GEO_W | arch=$ARCH | log=$LOG_DIR"
+echo "  GPU $GPU | method=$METHOD | epochs=$EPOCHS cutoff=$CUTOFF | geo_w=$GEO_W | arch=$ARCH | log=$LOG_DIR"
+echo "  NOTE: ~1.5s/it on GPU2 -> 24ep/100% is ~31-33h (multiday). Resume-safe: re-running"
+echo "  the same command after a crash continues from the saved epoch (SENet saved every epoch)."
+echo "  Budget: EPOCHS=24 (~31h) | EPOCHS=16 CUTOFF=0.6 (~13h)"
 
-TRAIN_ARGS="--arch $ARCH --epochs $EPOCHS"
+TRAIN_ARGS="--arch $ARCH --epochs $EPOCHS --cutoff $CUTOFF"
+SMOKE_CONDS="${SMOKE_CONDS:-fog,crosstalk}"
 if [ "$SMOKE" = "1" ]; then
-  TRAIN_ARGS="--arch $ARCH --epochs 1 --cutoff 0.1"
+  # much faster smoke: ~64 steps of training + a 2-condition tiny eval
+  TRAIN_ARGS="--arch $ARCH --epochs 1 --cutoff 0.02"
+  CONDS="$SMOKE_CONDS"
+  echo "  [SMOKE] 1 epoch @ 2% data (64 steps) + 2-condition eval"
 fi
 EVAL_ARGS="--arch $ARCH --map19 --ceiling"
 if [ "$SMOKE" = "1" ]; then

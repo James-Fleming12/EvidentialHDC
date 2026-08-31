@@ -39,8 +39,10 @@ echo "OVERNIGHT DGLSS++-19: train + full zero-shot/ceiling eval"
 echo "  GPU $GPU | epochs=$EPOCHS | sevs=$SEVS | log=$LOG_DIR | out=$OUTJSON"
 
 TRAIN_ARGS="--epochs $EPOCHS"
+SMOKE_CONDS="${SMOKE_CONDS:-fog,crosstalk}"
 if [ "$SMOKE" = "1" ]; then
-  TRAIN_ARGS="--epochs 1 --cutoff 0.1"
+  TRAIN_ARGS="--epochs 1 --cutoff 0.02"
+  CONDS="$SMOKE_CONDS"
 fi
 EVAL_ARGS="--map19 --ceiling"
 if [ "$SMOKE" = "1" ]; then
