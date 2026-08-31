@@ -158,6 +158,10 @@ def main():
     W = ridge_fit_exact(Xc, onehot(cl_fit, NUM_CLASSES), args.lam, device).detach().cpu()
     protos, _ = build_prototypes(Xc, cl_fit)
     protos = protos.float()
+    # the RAW 128-d ridge probe: same fitter, same fit set, input space only change.
+    # Answers "does the HDC projection help or hurt the linear classifier" cleanly.
+    W_raw = ridge_fit_exact(cf_fit.to(device).float(), onehot(cl_fit, NUM_CLASSES).to(device),
+                            args.lam, device).detach().cpu()
     del Xc
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -166,15 +170,18 @@ def main():
         Xv = hdc_codes(feats[:args.val_size], proj, device).float()
         lv = lbls[:args.val_size]
         pv = preds[:args.val_size]
+        zv = feats[:args.val_size].float()
         r = {'mIoU_no_hdc': compute_miou(pv.argmax(1), lv),
              'mIoU_proto': compute_miou((Xv @ protos.t()).argmax(1), lv),
-             'mIoU_linear': compute_miou((Xv @ W).argmax(1), lv)}
+             'mIoU_linear': compute_miou((Xv @ W).argmax(1), lv),
+             'mIoU_raw_linear': compute_miou((zv @ W_raw).argmax(1), lv)}
         r['per_class_no_hdc'] = per_class_iou(pv.argmax(1), lv)
         r['per_class_proto'] = per_class_iou((Xv @ protos.t()).argmax(1), lv)
         r['per_class_linear'] = per_class_iou((Xv @ W).argmax(1), lv)
+        r['per_class_raw_linear'] = per_class_iou((zv @ W_raw).argmax(1), lv)
         r['n'] = int(len(lv))
         print(f"  {name}: no-hdc {r['mIoU_no_hdc']:.3f} | proto {r['mIoU_proto']:.3f} | "
-              f"linear {r['mIoU_linear']:.3f}")
+              f"lin {r['mIoU_linear']:.3f} | raw-lin {r['mIoU_raw_linear']:.3f}")
         del Xv
         return r
 
@@ -196,7 +203,7 @@ def main():
                 torch.cuda.empty_cache()
         ev = [v for v in cond_res['sevs'].values()]
         if ev:
-            for k in ('mIoU_no_hdc', 'mIoU_proto', 'mIoU_linear'):
+            for k in ('mIoU_no_hdc', 'mIoU_proto', 'mIoU_linear', 'mIoU_raw_linear'):
                 cond_res[k + '_3sev_mean'] = float(sum(v[k] for v in ev) / len(ev))
         results['conds'][cond] = cond_res
 
@@ -208,6 +215,10 @@ def main():
     print("mIoU_no_hdc = the model's own trained head (no HDC).")
     print("mIoU_proto = mean binarized code per class, cosine decode.")
     print("mIoU_linear = ridge probe on the binarized codes.")
+    print("mIoU_raw_linear = ridge probe on the RAW 128-d features (same fitter,")
+    print("  same fit set; the input space is the only change).")
+    print("  mIoU_linear vs mIoU_raw_linear answers 'does the HDC projection help")
+    print("  or hurt the linear classifier' on THIS encoder.")
     print("Both HDC decoders fit on clean only (zero-shot). 3-sev mean per condition.")
 
 

@@ -68,6 +68,22 @@ Two things follow:
    recovers. This is the "the linear-probe decoder on the HDC code recovers the
    structure the distance-to-prototype rule throws away" claim from the README.
 
+**Does the projection HELP or HURT the linear probe? It depends on the space.**
+On the healthy supcon_vib encoder above, projection costs the linear probe ~1.6
+points (49.4 -> 47.8). But on the over-collapsed, anisotropic strongvib encoder
+(Phase 16), the binarized-10kD linear probe (38.2%) was nearly DOUBLE the raw
+128-d linear probe (20.8%): there the projection HELPS the linear probe too,
+the same "isotropic smoothing over the extreme VIB anisotropic rays" mechanism
+that lifted the prototype from 8.2% to 31.7%. The effect is therefore a
+property of the 128-d space's conditioning: when the space is healthy the
+projection costs a little, when it is anisotropic/over-collapsed the projection
+helps substantially. Two caveats: those Phase 8/16 comparisons used different
+fitters (LogReg on 128-d vs RidgeClassifier on 10k-d) and different fit sizes
+(50k vs 10k), so the direction is trustworthy but the magnitude is not precise.
+The clean comparison, the same ridge fitter on the same fit set with only the
+input space changed (raw 128-d vs binarized codes), is measured directly by
+`lp_three_decoder_diag.py` on the current DGLSS++ encoder.
+
 So the linear HDC probe is the reference decoder: its mIoU is the practical
 ceiling of the frozen-feature family, and the prototype decoder is the
 efficiency target (it is cheaper but leaves points on the table). The

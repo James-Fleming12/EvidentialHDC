@@ -232,6 +232,8 @@ def main():
     W = ridge_fit_exact(Xc, onehot(cl_fit, NUM_CLASSES), args.lam, device).detach().cpu()
     protos, _ = build_prototypes(Xc, cl_fit)
     protos = protos.float()
+    W_raw = ridge_fit_exact(cf_fit.to(device).float(), onehot(cl_fit, NUM_CLASSES).to(device),
+                            args.lam, device).detach().cpu()
     del Xc
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -266,13 +268,18 @@ def main():
     def eval_set(feats, preds, lbls, name):
         Xv = hdc_codes(feats[:args.val_size], proj, device).float()
         lv = lbls[:args.val_size]
+        zv = feats[:args.val_size].float()
         lin_p = (Xv @ W).argmax(1)
         pro_p = (Xv @ protos.t()).argmax(1)
+        raw_p = (zv @ W_raw).argmax(1)
         r = {'mIoU_linear': compute_miou(lin_p, lv),
              'mIoU_proto': compute_miou(pro_p, lv),
-             'gap_linear_minus_proto': compute_miou(lin_p, lv) - compute_miou(pro_p, lv)}
+             'mIoU_raw_linear': compute_miou(raw_p, lv),
+             'gap_linear_minus_proto': compute_miou(lin_p, lv) - compute_miou(pro_p, lv),
+             'gap_code_minus_raw': compute_miou(lin_p, lv) - compute_miou(raw_p, lv)}
         r['per_class_linear'] = per_class_iou(lin_p, lv)
         r['per_class_proto'] = per_class_iou(pro_p, lv)
+        r['per_class_raw_linear'] = per_class_iou(raw_p, lv)
         r['per_class_gap'] = {k: r['per_class_linear'].get(k, 0.0) - r['per_class_proto'].get(k, 0.0)
                               for k in r['per_class_linear']}
         dis = lin_p != pro_p
@@ -286,7 +293,8 @@ def main():
         r['n'] = int(len(lv))
         del Xv
         print(f"  {name}: linear {r['mIoU_linear']:.3f} | proto {r['mIoU_proto']:.3f} | "
-              f"gap {r['gap_linear_minus_proto']:+.3f} | disagree {n_dis}")
+              f"raw-lin {r['mIoU_raw_linear']:.3f} | gap-lin-proto {r['gap_linear_minus_proto']:+.3f} | "
+              f"gap-code-raw {r['gap_code_minus_raw']:+.3f} | disagree {n_dis}")
         return r
 
     t0 = tic()
@@ -310,7 +318,7 @@ def main():
                 torch.cuda.empty_cache()
         ev = [v for v in cond_res['sevs'].values()]
         if ev:
-            for k in ('mIoU_linear', 'mIoU_proto', 'gap_linear_minus_proto'):
+            for k in ('mIoU_linear', 'mIoU_proto', 'gap_linear_minus_proto', 'gap_code_minus_raw'):
                 cond_res[k + '_3sev_mean'] = float(sum(v[k] for v in ev) / len(ev))
         results['conds'][cond] = cond_res
 
@@ -323,6 +331,11 @@ def main():
     print("   or does the gap only appear under corruption (collapse mechanism)?")
     print("P6 disagreement: where they differ, is the linear probe right more")
     print("   often? (the structure the prototype throws away)")
+    print("gap_code_minus_raw: does the HDC projection HELP (positive) or HURT")
+    print("   (negative) the linear probe on this encoder, per condition?")
+    print("   (Phase 8: hurt -1.6 on healthy supcon_vib; Phase 16: helped +17.4")
+    print("   on the over-collapsed strongvib. P1 isotropy shows which regime")
+    print("   this encoder is in.)")
     print("P1/P2/P3/P4: isotropy, code diversity, centroid separation, mean shift")
     print("   and dispersion -- does the corruption collapse the prototypes?")
 
