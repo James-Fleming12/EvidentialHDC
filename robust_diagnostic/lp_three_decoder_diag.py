@@ -374,7 +374,7 @@ def main():
             out[k + '_per_class'] = a.per_class()
         head_s = f"no-hdc {out['no_hdc']:.3f} | " if not args.map19 else ""
         ceil_s = ""
-        if args.ceiling:
+        if 'linear_ceiling' in out:
             ceil_s = (f" | ceil: lin {out['linear_ceiling']:.3f} proto {out['proto_ceiling']:.3f} "
                       f"raw {out['raw_linear_ceiling']:.3f}")
         print(f"  {name}: {head_s}proto {out['proto']:.3f} | "
