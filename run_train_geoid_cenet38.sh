@@ -34,14 +34,15 @@ EPOCHS="${EPOCHS:-24}"
 SEVS="${SEVS:-heavy}"
 CONDS="${CONDS:-fog,crosstalk,snow,wet_ground,incomplete_echo,beam_missing,motion_blur,cross_sensor}"
 GEO_W="${GEO_W:-1.0}"
+METHOD="${METHOD:-geoid}"     # 'geoid' = pure seg + GeoID BCE (no SupCon/VIB); 'supcon_vib_geoid' = bundled
 ARCH="config/arch/senet-2048p-w38.yml"
-LOG_DIR="${LOG_DIR:-robust_diagnostic/logs/supcon_vib_geoid_cenet38_19cls}"
-OUTJSON="${OUTJSON:-robust_diagnostic/logs/lp_three_decoder_geoid_cenet38_19cls_ceiling.json}"
+LOG_DIR="${LOG_DIR:-robust_diagnostic/logs/${METHOD}_cenet38_19cls}"
+OUTJSON="${OUTJSON:-robust_diagnostic/logs/lp_three_decoder_${METHOD}_cenet38_19cls_ceiling.json}"
 SM_FRAMES="${SM_FRAMES:-30}"
 export GEO_W
 
 echo "GeoID-loss on CENET at GeoID param count (38M), 19-class map"
-echo "  GPU $GPU | epochs=$EPOCHS | geo_w=$GEO_W | arch=$ARCH | log=$LOG_DIR"
+echo "  GPU $GPU | method=$METHOD | epochs=$EPOCHS | geo_w=$GEO_W | arch=$ARCH | log=$LOG_DIR"
 
 TRAIN_ARGS="--arch $ARCH --epochs $EPOCHS"
 if [ "$SMOKE" = "1" ]; then
@@ -56,10 +57,10 @@ FAIL=false
 
 echo ""
 echo "======================================================"
-echo "=== STEP 1: train supcon_vib_geoid on CENET-38M (19-class) ==="
+echo "=== STEP 1: train $METHOD on CENET-38M (19-class) ==="
 echo "======================================================"
 TCMD="CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/retrain_dglsspp_19cls.py \
-  --method supcon_vib_geoid --log_dir \"$LOG_DIR\" $TRAIN_ARGS"
+  --method "$METHOD" --log_dir \"$LOG_DIR\" $TRAIN_ARGS"
 echo "  CMD: $TCMD"
 if [ "$DRY_RUN" = "1" ]; then
   echo "  [DRY] not executed"
@@ -75,7 +76,7 @@ echo "======================================================"
 echo "=== STEP 2: full zero-shot + ceiling eval (map19, all conds) ==="
 echo "======================================================"
 ECMD="CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/lp_three_decoder_diag.py \
-  --path_b \"$LOG_DIR\" --method_b supcon_vib_geoid --label geoid_cenet38_19cls \
+  --path_b \"$LOG_DIR\" --method_b \"$METHOD\" --label ${METHOD}_cenet38_19cls \
   --conds \"$CONDS\" --sevs \"$SEVS\" $EVAL_ARGS --out \"$OUTJSON\""
 echo "  CMD: $ECMD"
 if [ "$DRY_RUN" = "1" ]; then

@@ -200,7 +200,10 @@ class ResNet_34(nn.Module):
         self.layer3 = self._make_layer(block, _ch(128), layers[2], stride=2, use_adaptor=use_adaptor, norm=late_norm)
         self.layer4 = self._make_layer(block, _ch(128), layers[3], stride=2, use_adaptor=use_adaptor, norm=late_norm)
 
-        self.conv_1 = BasicConv2d(_ch(640), _ch(256), kernel_size=3, padding=1, norm=late_norm, scale_in=scale_in)
+        # feat_map = cat([x, x_1, res_2, res_3, res_4]) = 5 * _ch(128) channels;
+        # compute from the actual concat width (not _ch(640)) so non-integer width
+        # multipliers stay consistent with the per-stage rounding.
+        self.conv_1 = BasicConv2d(5 * _ch(128), _ch(256), kernel_size=3, padding=1, norm=late_norm, scale_in=scale_in)
         self.conv_2 = BasicConv2d(_ch(256), inv_dim, kernel_size=3, padding=1, norm=late_norm, scale_in=scale_in)
         # Decoupling branch (Iteration-15 shortlist): a SECOND bottleneck head with its
         # own capacity. The invariant head (conv_2) keeps the full inv_dim and carries
@@ -240,7 +243,19 @@ class ResNet_34(nn.Module):
         self.geoid_head = None
         self._geoid_logits = None
         if geoid_head:
-            self.geoid_head = nn.Conv2d(inv_dim, 1, 1)
+            # GeoID's inlier head is a full U-Net decoder branch (block5_cls..8_cls)
+            # at full resolution. Mirror that with a multi-scale decoder fusing the
+            # encoder's native-resolution features (x_2/x_3/x_4) + the bottleneck, so
+            # the inlier discriminator has real spatial capacity instead of a 1x1 conv.
+            gw = _ch(128)
+            self.geoid_dec4 = BasicConv2d(gw, gw, kernel_size=3, padding=1, norm=late_norm, scale_in=scale_in)
+            self.geoid_up43 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+            self.geoid_dec3 = BasicConv2d(2 * gw, gw, kernel_size=3, padding=1, norm=late_norm, scale_in=scale_in)
+            self.geoid_up32 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+            self.geoid_dec2 = BasicConv2d(2 * gw, gw, kernel_size=3, padding=1, norm=late_norm, scale_in=scale_in)
+            self.geoid_up21 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+            self.geoid_dec1 = BasicConv2d(gw + inv_dim, 64, kernel_size=3, padding=1, norm=late_norm, scale_in=scale_in)
+            self.geoid_head = nn.Conv2d(64, 1, 1)
 
     def _make_layer(self, block, planes, blocks, stride=1, dilate=False, use_adaptor=False, norm=None):
         norm_layer = self._norm_layer if norm is None else norm_layer_for(norm, self.scale_in)
@@ -367,7 +382,11 @@ class ResNet_34(nn.Module):
         # (pred, [aux], out). This avoids breaking ~30 probe files that assume the
         # 3-tuple.
         if self.geoid_head is not None:
-            self._geoid_logits = self.geoid_head(out)
+            g = self.geoid_dec4(x_4)
+            g = self.geoid_dec3(torch.cat([x_3, self.geoid_up43(g)], dim=1))
+            g = self.geoid_dec2(torch.cat([x_2, self.geoid_up32(g)], dim=1))
+            g = self.geoid_dec1(torch.cat([out, self.geoid_up21(g)], dim=1))
+            self._geoid_logits = self.geoid_head(g)
         elif hasattr(self, '_geoid_logits'):
             self._geoid_logits = None
 

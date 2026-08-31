@@ -23,7 +23,7 @@ DGLSS_TAU = 0.7
 # DGLSS / DGLSS++ / standard-implementation arms. These are VIB-FREE by construction:
 # they route through their own branch (plain bottleneck, no reparameterization, no KL)
 # so the comparison with the paper implementations is not contaminated by VIB.
-GEOID_METHODS = {'supcon_vib_geoid'}
+GEOID_METHODS = {'supcon_vib_geoid', 'geoid'}   # 'geoid' = PURE seg + GeoID BCE (no SupCon/VIB); 'supcon_vib_geoid' = the bundled variant
 DGLSS_METHODS = {'supcon_vib_dglss', 'supcon_vib_dglsspp', 'supcon_vib_dglss_enc',
                  'supcon_vib_dglsspp_cor', 'supcon_vib_dglsspp_supcon',
                  'supcon_vib_dglsspp_bal', 'supcon_vib_dglsspp_vib',
@@ -967,7 +967,13 @@ class GenTrainer(Trainer):
                 # Standard semantic segmentation loss
                 loss_ce = criterion(torch.log(output.clamp(min=1e-8)), proj_labels)
                 loss_ce_aug = criterion(torch.log(output_aug.clamp(min=1e-8)), proj_labels)
-                loss_sem = (loss_ce + loss_ce_aug) / 2.0
+                if self.method == 'geoid':
+                    # PURE GeoID source training: L_seg on the RAW (clean) view only
+                    # (GeoID Eq. 4 -- synthetic displaced points are excluded from the
+                    # seg loss via the ignore mask). The augmented view feeds ONLY L_geo.
+                    loss_sem = loss_ce
+                else:
+                    loss_sem = (loss_ce + loss_ce_aug) / 2.0
                 
                 loss_total = loss_sem
                 

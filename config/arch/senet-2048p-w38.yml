@@ -29,7 +29,7 @@ train:
   save_batch: 50
   workers: 6
   twobranch:
-    width_mult: 2.4
+    width_mult: 2.26
 post:
   KNN:
     use: true
