@@ -1126,3 +1126,72 @@ the pipeline they improve:
 
 These are diagnostics about the CURRENT method's problems, in service of
 continuing to improve it, not a ceiling assumption to trust blindly.
+
+## Improvement-axes result: the propagated MEANS are not the whole gap, and the
+update is already near its limit -- but MASS-STRATIFIED anchors (B2) is the one
+lever with headroom (2026-08-30, `al_propagation_improve_diag.py`)
+
+DGLSS++ only, fog/crosstalk. Verified against clean JSONs. The improvement axes
+resolve which part of the pipeline is the real gap.
+
+**A. The MEAN ESTIMATOR -- the clean count-split (A1) is the decisive number,
+and it shows the propagated means are NOT the whole gap.**
+
+| | b8 gcP (prop means, prop counts) | **A1 (TRUE means, prop counts)** | W_mean_oracle |
+| :--- | :--- | :--- | :--- |
+| fog | +0.28 | **+0.37** | +0.72 |
+| crosstalk | +0.45 | **+0.81** | +0.99 |
+
+A1 (true means x PROPAGATED counts) exceeds gcP on both (crosstalk +0.81 vs
++0.45), so the propagated MEANS lose ~0.36 gc at fixed counts -- real but not the
+whole story. And A1 does NOT reach W_mean_oracle (+0.99), so the count reference
+(C_prop vs C0) also contributes. Two gaps, roughly: the means lose ~0.36, the
+count reference the rest. **The headroom question is now cleanly decomposed.**
+
+The other mean-estimator arms:
+- **A2 (128-d mean aggregation) FAILS badly** (-0.36/-0.29): projecting the 128-d
+  means through the random projection to code space DESTROYS them. The code-space
+  aggregation is NOT the cap; the 128-d-to-code projection is lossy. This closes
+  that hypothesis.
+- **A3 (agreement-gated means)** -0.03 to 0.00: no gain.
+- **A4 (per-class loose budget)** +0.11 to +0.43: a real but small gain on
+  crosstalk (0.43 at b8).
+- **A5 (soft propagation)** +0.17 to +0.29: below gcP.
+
+**B. The AL SELECTION -- MASS-STRATIFIED anchors (B2) is the one lever with
+headroom.**
+
+| | b8 fog | b8 crosstalk |
+| :--- | :--- | :--- |
+| gcP (random) | +0.28 | +0.45 |
+| B2 mass-stratified | +0.25 | +0.38 |
+| B1 confidence | -0.20 | +0.01 |
+| B3 boundary-avoiding | -0.19 | -0.08 |
+
+B2 (mass-stratified) roughly matches gcP at similar label counts (its alloc gives
+~2x labels, so the per-label efficiency is comparable), while confidence (B1) and
+boundary-avoiding (B3) are negative. The prior confidence-self-selection hope
+does NOT transfer to the mean decoder. B2 is worth combining with the method.
+
+**C. The UPDATE / DECODER -- already near its limit, no improvement available.**
+- C1 fractional whitening peaks at beta=1.0 (the full whitening = gcP); beta<1
+  strictly hurts. The fractional-whitening robustness hope does NOT help the mean
+  decoder.
+- C2 update-norm constraint is FLAT (c=0.5-1.5 all ~gcP): the step magnitude is
+  already right.
+- C3 shrinkage toward pseudo-mean hurts (best at a=0.25, barely = gcP).
+
+**Verdict: the method's current form is close to the update's limit, and the
+propagated means are not the whole gap.** The improvement axes resolve:
+- the means lose ~0.36 gc vs true means at fixed counts (A1),
+- the count reference contributes the rest of the gap to W_mean_oracle,
+- the update itself has NO headroom (C1/C2/C3 all ~gcP),
+- the only lever with real headroom is MASS-STRATIFIED anchor selection (B2),
+  worth combining into the method.
+
+**NEXT STEP (planned): the B2-combined method + the count-reference fix.** The
+natural next method is the propagated-mean decoder with (a) mass-stratified
+anchors (B2) and (b) a mass-corrected count reference (the propagated counts
+corrected toward the pool prior, since A1 shows the count reference is part of
+the gap). If B2 + count-correction approaches A1's +0.81 on crosstalk, the
+method closes most of the W_mean_oracle gap.
