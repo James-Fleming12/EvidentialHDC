@@ -75,7 +75,7 @@ for entry in "${EXS[@]}"; do
   echo "=== extractor: $label (method=$method, ckpt=$ckpt) ==="
   echo "======================================================"
   logf="logs/lp_three_decoder_${label}.log"
-  outjson="robust_diagnostic/logs/lp_three_decoder_${label}.json"
+  outjson="${OUTJSON:-robust_diagnostic/logs/lp_three_decoder_${label}.json}"
   CMD="CUDA_VISIBLE_DEVICES=$GPU uv run python robust_diagnostic/lp_three_decoder_diag.py \
     --path_b \"$ckpt\" --method_b \"$method\" --label \"$label\" --conds \"$CONDS\" --sevs \"$SEVS\" \
     $ARCH_ARGS $MAP19_ARGS $CEIL_ARGS $SMOKE_ARGS --out \"$outjson\""
