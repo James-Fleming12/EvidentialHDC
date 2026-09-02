@@ -35,9 +35,13 @@ fi
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$ENV_NAME"
 
-# 2. CUDA 11.x toolkit (nvcc) from the nvidia channel
-echo "[2/4] installing cuda-toolkit=$CUDA_TK (provides nvcc)..."
-conda install -n "$ENV_NAME" -c nvidia "cuda-toolkit=$CUDA_TK" -y
+# 2. CUDA 11.x compiler + headers (nvcc) from the nvidia channel.
+# NOTE: use the MINIMAL split packages (cuda-nvcc, cuda-cudart-dev), NOT the
+# cuda-toolkit metapackage -- that pulls nsight-compute / nsight-systems etc.
+# (huge, not cached, and fails with "no package in cache directories").
+echo "[2/4] installing cuda-nvcc / cuda-cudart-dev (provides nvcc + headers)..."
+conda install -n "$ENV_NAME" -c nvidia "cuda-nvcc=$CUDA_TK" "cuda-cudart-dev=$CUDA_TK" "cuda-cudart=$CUDA_TK" -y
+conda activate "$ENV_NAME"
 which nvcc && nvcc --version | tail -1
 
 # 3. torch 1.13 + the rest (ME needs torch<2.0)
