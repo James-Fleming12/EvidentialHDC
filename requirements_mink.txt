@@ -18,7 +18,7 @@ opencv-python<4.13.0
 pyyaml
 tqdm
 matplotlib
-Cython>=0.29
+Cython>=0.29,<3
 ninja
 munch
 mlxtend

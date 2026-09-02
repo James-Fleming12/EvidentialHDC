@@ -54,14 +54,18 @@ pip install --index-url "https://download.pytorch.org/whl/$CU_TAG" \
 pip install -r requirements_mink.txt
 
 # 4. MinkowskiEngine 0.5.4 from source (compiles against the conda nvcc + torch)
-echo "[4/4] building MinkowskiEngine 0.5.4 from source..."
+echo "[4/4] building MinkowskiEngine 0.5.4 from source (verbose)..."
 if [ ! -d "$ME_DIR" ]; then
   git clone --recursive --branch v0.5.4 https://github.com/NVIDIA/MinkowskiEngine.git "$ME_DIR"
 fi
 export CUDA_HOME="$CONDA_PREFIX"   # point ME's build at the conda CUDA 11.8 toolkit
-( cd "$ME_DIR" && \
-  python setup.py install --blas=openblas 2>/dev/null || \
-  python -m pip install -e . --install-option="--blas=openblas" -v --no-deps )
+# NOTE: pip's --install-option was removed in modern pip, and `setup.py install`
+# needs to run verbosely to surface compile errors. Build manually:
+#   cd ~/MinkowskiEngine
+#   python setup.py build_ext --blas=openblas
+#   python setup.py install  --blas=openblas
+# (the script no longer auto-builds -- run step 4 by hand so errors are visible)
+echo "  build manually (see above); ME_DIR=$ME_DIR"
 
 echo "verifying..."
 python -c "import torch, MinkowskiEngine as ME; print('torch', torch.__version__, 'cuda', torch.version.cuda); print('MinkowskiEngine', ME.__version__)"
