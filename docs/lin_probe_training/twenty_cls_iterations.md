@@ -98,3 +98,66 @@ training.
 3. If fog/crosstalk collapse persists across all range-view variants, the
    comparison story is: healthy-condition parity with GeoID's zero-shot/adapted
    at a fraction of the capacity, with the destroyers as the open problem.
+
+## The geoid-cenet38 (38M capacity-matched) result: the GeoID signal does NOT
+transfer to a range-view network, and its TTA does not help
+
+The geoid-cenet38 run (pure seg + GeoID inlier loss, 19-class map, 24 epochs,
+37.76M params = MinkUNet34-matched capacity) finished. HEAVY-only mIoU
+(zero-shot linear + labeled ceiling), vs the DGLSS++-19 (6.8M) on the same
+protocol (JSONs `lp_three_decoder_geoid_cenet38_19cls_ceiling.json` and
+`lp_three_decoder_dglsspp_19cls_ceiling.json`):
+
+| condition | DGLSS++-19 zs | geoid-cenet38 zs | DGLSS++-19 ceil | geoid-cenet38 ceil | geoid38 - dgl zs |
+|-----------|---------------|------------------|-----------------|--------------------|------------------|
+| clean | 0.551 | **0.558** | - | - | +0.007 |
+| fog | **0.075** | 0.052 | 0.176 | 0.199 | -0.023 |
+| crosstalk | **0.088** | 0.075 | 0.218 | 0.251 | -0.013 |
+| snow | 0.440 | **0.450** | 0.474 | 0.460 | +0.010 |
+| wet_ground | 0.440 | **0.448** | 0.502 | 0.509 | +0.008 |
+| incomplete_echo | 0.440 | **0.444** | 0.443 | 0.459 | +0.004 |
+| beam_missing | **0.508** | 0.433 | 0.509 | 0.435 | -0.075 |
+| motion_blur | 0.459 | **0.457** | 0.476 | 0.477 | -0.003 |
+| cross_sensor | **0.408** | 0.270 | 0.427 | 0.334 | -0.137 |
+| mean (8) | 0.357 | **0.329** | 0.403 | 0.390 | -0.028 |
+
+**Read.** The pure GeoID model at 5.6x the capacity does NOT beat the 6.8M
+DGLSS++ at zero-shot on average (mean 0.329 vs 0.357), even though it is
+marginally better on clean (0.558 vs 0.551) and on snow/wet_ground/
+incomplete_echo. The DGLSS++ consistency machinery (GMSIFC/LSCC/SupCon) is
+worth far more than adding the GeoID loss at MinkowskiNet capacity. The
+capacity-matched GeoID signal does not transfer to the range-view CENET. The
+fog/crosstalk collapse persists (0.052/0.075), and even the labeled ceiling
+(0.199/0.251) remains far below GeoID's MinkowskiNet source-only.
+
+**GeoID TTA validation** (`geoid_tta_validate.json`): the GeoID inlier-loss
+test-time adaptation on the 38M does NOT produce a usable signal. Seg-head
+mIoU frozen vs adapted:
+
+| cond/heavy | frozen | adapted | delta | BiUPF retained |
+|------------|--------|---------|-------|----------------|
+| fog | 0.057 | 0.030 | -0.028 | 0.08 |
+| crosstalk | 0.032 | 0.028 | -0.004 | 0.32 |
+| wet_ground | 0.008 | 0.016 | +0.009 | 0.22 |
+
+**Two reads.**
+1. The GeoID TTA mechanism (inlier-BCE + BiUPF) does not help on the range-view
+   CENET: fog/crosstalk deltas are negative, wet_ground only marginally
+   positive. The retained fraction is low (0.08 on fog), i.e., BiUPF gates away
+   most points, and the retained signal is not usable. This is consistent with
+   the causal-rep-learning S4.T5 limit: when the corrupted features carry little
+   causal signal, invariance/adaptation methods cannot recover it.
+2. Caveat on the metric: the TTA is measured on the model's SEG HEAD, and this
+   pure-geoid seg head is catastrophically weak under corruption (wet_ground
+   0.008) even though the same features give the linear probe 0.448. The
+   trained seg head overfits clean and does not transfer; our deployment decoder
+   is the probe, so a cleaner TTA test would measure the adapted features
+   through a re-fit probe, not the seg head.
+
+**Overall conclusion of the geoid line.** The GeoID objective does not transfer
+to a range-view network, neither as a source-training signal (the 38M loses to
+the 6.8M DGLSS++) nor as a test-time adaptation signal (deltas ~ 0 / negative).
+The DGLSS++ consistency losses, the 19-class retrain, and the healthy-condition
+zero-shot remain the value; fog/crosstalk heavy is an unsolved
+representation-level collapse on the range-view family, and the comparison to
+GeoID is healthy-condition parity at a fraction of the capacity.

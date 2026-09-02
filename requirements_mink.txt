@@ -1,0 +1,25 @@
+# requirements_mink.txt: a SEPARATE uv env for the DGLSS++-on-MinkowskiNet
+# experiment (docs/lin_probe_training, the "is GeoID inherent to MinkowskiNets"
+# question). MinkowskiEngine 0.5.4 (what GeoID uses, and what the vendored
+# modules/GeoID models import) requires torch < 2.0, so this env MUST be
+# separate from the main repo's torch-2.x venv.
+#
+# torch + torchvision are installed first via setup_mink_uv.sh with the CUDA
+# index (cu118 default; set CU= to match the server driver), THEN MinkowskiEngine
+# is built from source against that torch (it is not on PyPI for all platforms).
+#
+# The DGLSS++ training code (GenTrainer) uses torch.amp (a 2.x API); to run in
+# this env it must be switched to fp32 (no autocast / GradScaler). Everything
+# else (the losses, HDC, parsers) is torch-version-agnostic.
+numpy>=1.24,<2.0
+scipy>=1.10
+scikit-learn>=1.2
+opencv-python<4.13.0
+pyyaml
+tqdm
+matplotlib
+Cython>=0.29
+ninja
+munch
+mlxtend
+nuscenes-devkit
