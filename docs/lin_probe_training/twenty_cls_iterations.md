@@ -27,10 +27,12 @@ pole, traffic-sign). To compare honestly we:
    trained features collapsed on the merged sub-classes: parking 0.06 vs road
    0.91, trunk 0.09 vs vegetation 0.82, etc.).
 
-## The comparison table (mIoU %, 19-class map)
+## The comparison table (mIoU %, 19-class map, 3-severity average)
 
 Our numbers are the code-space linear probe (R4) fit on a 200k clean reservoir
-(spectral-exact ridge, lam 1e-3), full-dataset streaming eval. Our labeled
+(spectral-exact ridge, lam 1e-3), full-dataset streaming eval, averaged over
+light/moderate/heavy (the fair severity convention, matching GeoID's reporting;
+JSON `robust_diagnostic/logs/lp_three_decoder_dglsspp_19cls_3sev.json`). Our labeled
 ceiling is the same probe fit on a 400k corrupted-pool reservoir (the supervised
 oracle upper bound, NOT a method). GeoID numbers are the paper's Table 1
 (MinkowskiNet): source-only = no adaptation, adapted = its gradient test-time
@@ -38,24 +40,22 @@ training.
 
 | condition | DGLSS++-19 zs (ours) | DGLSS++-19 ceil (ours, oracle) | GeoID source-only | GeoID adapted |
 |-----------|----------------------|--------------------------------|-------------------|---------------|
-| fog | **7.5** | 17.6 | 33.20 | 40.14 |
-| crosstalk | **8.8** | 21.8 | 24.46 | 40.82 |
-| snow | **44.0** | 47.4 | 32.04 | 40.63 |
-| wet_ground | **44.0** | 50.2 | 45.53 | 47.66 |
-| incomplete_echo | **44.0** | 44.3 | 50.54 | 50.79 |
-| beam_missing | **50.8** | 50.9 | 51.05 | 52.10 |
-| motion_blur | **45.9** | 47.7 | 54.09 | 54.59 |
-| cross_sensor | **40.8** | 42.7 | 47.76 | 48.97 |
-| mean | 35.7 | 40.3 | 42.33 | 46.96 |
+| fog | **16.8** | 25.8 | 33.20 | 40.14 |
+| crosstalk | **8.9** | 21.9 | 24.46 | 40.82 |
+| snow | **43.1** | 46.7 | 32.04 | 40.63 |
+| wet_ground | **47.3** | 51.4 | 45.53 | 47.66 |
+| incomplete_echo | **47.6** | 47.2 | 50.54 | 50.79 |
+| beam_missing | **52.5** | 52.8 | 51.05 | 52.10 |
+| motion_blur | **47.9** | 49.3 | 54.09 | 54.59 |
+| cross_sensor | **46.6** | 48.0 | 47.76 | 48.97 |
+| mean | 38.8 | 42.9 | 42.33 | 46.96 |
 
 ## CRITICAL caveats (read the table carefully)
 
-1. **Severity mismatch (the big one).** Ours are HEAVY-only
-   (`--sevs heavy`, the hardest severity). GeoID's are 3-SEVERITY AVERAGES
-   (light/moderate/heavy, per the paper). Heavy is hardest, so our numbers are
-   systematically DEFLATED relative to a 3-sev average; a direct head-to-head
-   is not apples-to-apples. Our heavy-only numbers would rise on the 3-sev
-   convention (the README note: DGLSS++ heavy-only mean 54.4 vs 3-sev 57.9).
+1. **Severity convention is now MATCHED.** Both sides are 3-severity averages
+   (light/moderate/heavy), so the head-to-head is apples-to-apples on severity.
+   (Heavy-only numbers are available in the JSON; the 3-sev mean is higher on most
+   conditions, most notably fog 7.5 -> 16.8, and barely on crosstalk 8.8 -> 8.9.)
 2. **Label space and metric DO match.** Both use the same 19-class map and the
    same fixed-19 mIoU mean. That part is comparable.
 3. **Backbone / capacity differ.** Ours: range-view SENet (DGLSS++-19,
@@ -67,16 +67,15 @@ training.
 
 ## Initial reads
 
-- **The healthy conditions are competitive at zero-shot.** On snow, wet_ground,
-  beam_missing, incomplete_echo, motion_blur, cross_sensor, our HEAVY-only
-  zero-shot (40.8-50.8) sits near GeoID's 3-sev source-only (32.0-51.1) and in
-  some cases near its adapted (beam_missing 50.8 vs 52.10; snow 44.0 vs 40.63,
-  we exceed its adapted). Given the severity penalty, our healthy-condition
-  zero-shot is roughly comparable to GeoID's source-only and occasionally its
-  adapted.
+- **The healthy conditions are competitive at zero-shot, now severity-fair.** On
+  snow, wet_ground, beam_missing, incomplete_echo, motion_blur, cross_sensor, our
+  3-sev zero-shot (43.1-52.5) exceeds GeoID's source-only on three conditions
+  (snow 43.1 vs 32.04, beam_missing 52.5 vs 51.05, wet_ground 47.3 vs 45.53) and
+  is within 2-7 points on the rest. On beam_missing we are at parity with GeoID's
+  ADAPTED (52.5 vs 52.10).
 - **Fog/crosstalk still collapse, and the ceiling is the damning number.**
-  Our fog/crosstalk zero-shot (7.5/8.8) is far below GeoID source-only
-  (33.2/24.5). Even our LABELED CEILING on fog (17.6) is below GeoID's
+  Our fog/crosstalk zero-shot (16.8/8.9) is far below GeoID source-only
+  (33.2/24.5). Even our LABELED CEILING on fog (25.8) is below GeoID's
   SOURCE-ONLY (33.2). That means: with every label, the DGLSS++-19 features
   cannot match what GeoID's MinkowskiNet does with no adaptation on fog. This
   is the clearest evidence yet that the fog/crosstalk representation
@@ -84,15 +83,14 @@ training.
   geoid-cenet38 run (is the GeoID signal / capacity transferable to a
   range-view network, or is it specific to the point-based MinkowskiNet?).
 - **The retrain helped the fine classes.** The 19-class retrained zero-shot
-  (e.g., wet_ground 44.0) is well above the frozen-17-class-features map19
-  number (wet_ground 34.1), confirming the merged-sub-class collapse was
+  (e.g., wet_ground heavy 44.0) is well above the frozen-17-class-features map19
+  number (wet_ground heavy 34.1), confirming the merged-sub-class collapse was
   largely a training-map issue.
 
 ## Next steps
 
-1. Confirm the severity effect: re-run the DGLSS++-19 eval with
-   `--sevs light,moderate,heavy` for the 3-sev mean (apples-to-apples with
-   GeoID's reporting).
+1. ~~Confirm the severity effect~~ (DONE: the table above is the 3-sev mean,
+   apples-to-apples with GeoID's reporting; heavy-only is in the JSON).
 2. The geoid-cenet38 run (GeoID loss on a range-view CENET scaled to
    MinkUNet34's ~37.9M params, 19-class map) tests whether a capacity-matched
    range-view extractor with the GeoID objective produces the reliable feature
