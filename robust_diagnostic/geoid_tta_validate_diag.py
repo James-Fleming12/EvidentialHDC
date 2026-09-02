@@ -119,12 +119,13 @@ def tta_step(model, optimizer, scaler, aug, geo_lbl, retain, device):
         model(aug.to(device))
         logits = model._geoid_logits
         logits_p = logits.permute(0, 2, 3, 1).reshape(-1)
-        lbl_p = geo_lbl.permute(0, 2, 3, 1).reshape(-1)
-        retain_p = retain.permute(0, 2, 3, 1).reshape(-1)
+        lbl_p = geo_lbl.permute(0, 2, 3, 1).reshape(-1).to(device)
+        retain_p = retain.permute(0, 2, 3, 1).reshape(-1).to(device)
         sel = retain_p & (lbl_p >= 0)
         if not sel.any():
             return
-        loss = F.binary_cross_entropy_with_logits(logits_p[sel], (lbl_p[sel] > 0).float())
+        target = (lbl_p[sel] > 0).float().to(logits_p.dtype)
+        loss = F.binary_cross_entropy_with_logits(logits_p[sel], target)
     scaler.scale(loss).backward()
     scaler.step(optimizer)
     scaler.update()
@@ -139,7 +140,8 @@ def pseudo_step(model, optimizer, scaler, in_vol, mask, tau_p, device):
     with torch.amp.autocast('cuda'):
         out = model(in_vol.to(device))
         pred = out[0]
-        sm = pred.permute(0, 2, 3, 1).reshape(-1, pred.shape[1])[mask]
+        m = mask.to(device)
+        sm = pred.permute(0, 2, 3, 1).reshape(-1, pred.shape[1])[m]
         conf = sm.max(1).values
         gate = conf > tau_p
         if not gate.any():
