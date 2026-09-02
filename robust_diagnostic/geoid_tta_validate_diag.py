@@ -45,8 +45,9 @@ def build_parser(root, data, arch):
 
 
 def stream_inputs(parser, device, max_frames=0, progress=None, report=100):
-    """Yield (in_vol_cpu, mask, labels, frame_idx) per frame, ALL frames unless
-    max_frames > 0."""
+    """Yield (in_vol_cpu, mask, labels_masked, frame_idx) per frame, ALL frames
+    unless max_frames > 0. labels are masked to the valid points to match the
+    seg predictions (which are masked)."""
     for i, batch in enumerate(parser.get_train_set()):
         if max_frames > 0 and i >= max_frames:
             break
@@ -55,7 +56,7 @@ def stream_inputs(parser, device, max_frames=0, progress=None, report=100):
         in_vol = batch[0].to(device).cpu()
         mask = (batch[1].to(device) > 0).view(-1).cpu()
         labels = batch[2].to(device).view(-1).cpu()
-        yield in_vol, mask, labels, i
+        yield in_vol, mask, labels[mask], i
 
 
 class ConfAccum:
@@ -129,6 +130,27 @@ def tta_step(model, optimizer, scaler, aug, geo_lbl, retain, device):
     scaler.update()
 
 
+def pseudo_step(model, optimizer, scaler, in_vol, mask, tau_p, device):
+    """Pseudo-label self-training step: CE on the model's own confident
+    predictions (conf > tau_p), updating the whole model. Works on ANY
+    segmentation model (no geoid head needed)."""
+    model.train()
+    optimizer.zero_grad()
+    with torch.amp.autocast('cuda'):
+        out = model(in_vol.to(device))
+        pred = out[0]
+        sm = pred.permute(0, 2, 3, 1).reshape(-1, pred.shape[1])[mask]
+        conf = sm.max(1).values
+        gate = conf > tau_p
+        if not gate.any():
+            return
+        pseudo = sm.argmax(1)[gate]
+        loss = F.nll_loss(torch.log(sm[gate].clamp(min=1e-8)), pseudo)
+    scaler.scale(loss).backward()
+    scaler.step(optimizer)
+    scaler.update()
+
+
 def sync():
     if torch.cuda.is_available():
         torch.cuda.synchronize()
@@ -150,6 +172,10 @@ def main():
     ap.add_argument("--arch", type=str, default="config/arch/senet-2048p-w38.yml")
     ap.add_argument("--path_b", type=str, required=True, help="geoid checkpoint dir")
     ap.add_argument("--method", type=str, default="geoid", help="geoid or supcon_vib_geoid")
+    ap.add_argument("--tta_mode", type=str, default="geoid",
+                    help="geoid = GeoID inlier-BCE + BiUPF (needs a geoid head); "
+                         "pseudo = confidence-gated pseudo-label self-training (any model)")
+    ap.add_argument("--tau_p", type=float, default=0.9, help="pseudo-label confidence gate")
     ap.add_argument("--label", type=str, default="geoid")
     ap.add_argument("--conds", type=str, default="fog,crosstalk")
     ap.add_argument("--sevs", type=str, default="heavy")
@@ -174,24 +200,28 @@ def main():
     trainer = GenTrainer(ARCH, DATA, args.kitti_dir, args.path_b, path=args.path_b, method=args.method)
     model = trainer.model
     model.eval()
-    # frozen source model for BiUPF (GeoID keeps the source encoder + geoid head frozen for the gate)
-    frozen_model = copy.deepcopy(model)
-    frozen_model.eval()
-    for p in frozen_model.parameters():
-        p.requires_grad_(False)
-    # optimizer updates encoder + geoid head, NOT the seg head (GeoID keeps Phi_s frozen)
-    frozen_p = set()
-    for n, p in model.named_parameters():
-        if 'semantic_output' in n or 'aux_head' in n:
-            frozen_p.add(id(p))
-    params = [p for n, p in model.named_parameters() if id(p) not in frozen_p]
+    if args.tta_mode == 'geoid':
+        # frozen source model for BiUPF (GeoID keeps the source encoder + geoid head frozen for the gate)
+        frozen_model = copy.deepcopy(model)
+        frozen_model.eval()
+        for p in frozen_model.parameters():
+            p.requires_grad_(False)
+        # optimizer updates encoder + geoid head, NOT the seg head (GeoID keeps Phi_s frozen)
+        frozen_p = set()
+        for n, p in model.named_parameters():
+            if 'semantic_output' in n or 'aux_head' in n:
+                frozen_p.add(id(p))
+        params = [p for n, p in model.named_parameters() if id(p) not in frozen_p]
+    else:
+        frozen_model = None
+        params = [p for p in model.parameters()]
     optimizer = torch.optim.Adam(params, lr=args.tta_lr)
     scaler = torch.amp.GradScaler('cuda')
-    print(f"  trainable params: {sum(p.numel() for p in params)/1e6:.2f}M (encoder + geoid head)")
+    print(f"  mode {args.tta_mode} | trainable params: {sum(p.numel() for p in params)/1e6:.2f}M")
 
-    results = {'label': args.label, 'method': args.method, 'nc': NC,
+    results = {'label': args.label, 'method': args.method, 'tta_mode': args.tta_mode, 'nc': NC,
                'tta_frames': args.tta_frames, 'tta_steps': args.tta_steps,
-               'tta_lr': args.tta_lr, 'tau_r': args.tau_r, 'p': args.p,
+               'tta_lr': args.tta_lr, 'tau_r': args.tau_r, 'tau_p': args.tau_p, 'p': args.p,
                'conds': {}}
 
     for cond in conds:
@@ -212,19 +242,23 @@ def main():
             frozen = acc_f.miou()
             print(f"  [{cond}/{sev}] frozen seg mIoU {frozen:.3f} ({toc(t0):.0f}s)")
 
-            # pass 2: GeoID TTA on the first tta_frames
+            # pass 2: TTA on the first tta_frames
             retained_tot = 0.0; retained_n = 0
             for in_vol, mask, labels, i in stream_inputs(parser, device, args.tta_frames, progress="tta"):
-                aug, geo_lbl = trainer.geoid_displace(in_vol, min_dist=1, max_dist=3, p=args.p)
-                c_src = inlier_scores(frozen_model, aug, device)
-                retain = biupf_retain(c_src, geo_lbl, args.tau_r)
-                retained_tot += float(retain.float().mean().item()); retained_n += 1
-                for _ in range(args.tta_steps):
-                    tta_step(model, optimizer, scaler, aug, geo_lbl, retain, device)
+                if args.tta_mode == 'geoid':
+                    aug, geo_lbl = trainer.geoid_displace(in_vol, min_dist=1, max_dist=3, p=args.p)
+                    c_src = inlier_scores(frozen_model, aug, device)
+                    retain = biupf_retain(c_src, geo_lbl, args.tau_r)
+                    retained_tot += float(retain.float().mean().item()); retained_n += 1
+                    for _ in range(args.tta_steps):
+                        tta_step(model, optimizer, scaler, aug, geo_lbl, retain, device)
+                else:
+                    for _ in range(args.tta_steps):
+                        pseudo_step(model, optimizer, scaler, in_vol, mask, args.tau_p, device)
             model.eval()
-            retained_frac = retained_tot / max(1, retained_n)
+            retained_frac = retained_tot / max(1, retained_n) if args.tta_mode == 'geoid' else None
             print(f"  [{cond}/{sev}] TTA {args.tta_frames} frames x {args.tta_steps} steps "
-                  f"(retained {retained_frac:.2f}) ({toc(t0):.0f}s)")
+                  f"(mode {args.tta_mode}" + (f", retained {retained_frac:.2f}" if retained_frac is not None else "") + f") ({toc(t0):.0f}s)")
 
             # pass 3: adapted eval on the val slice
             acc_a = ConfAccum(NC)
@@ -248,11 +282,16 @@ def main():
     print(f"\nSaved to {args.out}")
     print("\n=== READ ===")
     print("delta = adapted - frozen (seg-head mIoU, fixed-19 mean).")
-    print("positive delta -> GeoID's TTA mechanism works on our range-view encoder.")
-    print("delta ~ 0 or negative + low retained_frac -> the inlier signal / BiUPF")
-    print("gate is not usable on our features (consistent with the AL-arc finding).")
-    print("Re-run with --path_b <geoid-cenet38 ckpt> --arch senet-2048p-w38.yml for")
-    print("the capacity-matched comparison.")
+    if args.tta_mode == 'geoid':
+        print("positive delta -> GeoID's TTA mechanism (inlier-BCE + BiUPF) works on our")
+        print("range-view encoder. delta ~ 0 or negative + low retained_frac -> the")
+        print("inlier signal / BiUPF gate is not usable on our features.")
+    else:
+        print("positive delta -> confidence-gated pseudo-label self-training helps on our")
+        print("features. delta ~ 0 or negative -> the pseudo-label signal is not usable")
+        print("(consistent with the AL-arc label-free-gate finding).")
+    print("Re-run with --path_b <geoid-cenet38 ckpt> --arch senet-2048p-w38.yml --tta_mode geoid")
+    print("for the capacity-matched GeoID-TTA comparison.")
 
 
 if __name__ == "__main__":

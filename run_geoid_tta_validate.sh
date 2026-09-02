@@ -30,20 +30,21 @@ SEVS="${SEVS:-heavy}"
 CKPT="${CKPT:-robust_diagnostic/logs/geoid_cenet38_19cls}"
 METHOD="${METHOD:-geoid}"
 ARCH="${ARCH:-config/arch/senet-2048p-w38.yml}"
+TTA_MODE="${TTA_MODE:-geoid}"
 TTA_FRAMES="${TTA_FRAMES:-100}"
 TTA_STEPS="${TTA_STEPS:-3}"
 TTA_LR="${TTA_LR:-0.001}"
 TAU_R="${TAU_R:-0.6}"
 OUTJSON="${OUTJSON:-robust_diagnostic/logs/geoid_tta_validate.json}"
 echo "GeoID-TTA validation | GPU $GPU | DRY_RUN=$DRY_RUN SMOKE=$SMOKE"
-echo "  ckpt=$CKPT method=$METHOD arch=$ARCH conds=$CONDS sevs=$SEVS"
+echo "  ckpt=$CKPT method=$METHOD arch=$ARCH mode=$TTA_MODE conds=$CONDS sevs=$SEVS"
 echo "  tta_frames=$TTA_FRAMES tta_steps=$TTA_STEPS tta_lr=$TTA_LR tau_r=$TAU_R"
 
 ARGS="--path_b \"$CKPT\" --method \"$METHOD\" --arch \"$ARCH\" --conds \"$CONDS\" --sevs \"$SEVS\" \
-  --tta_frames $TTA_FRAMES --tta_steps $TTA_STEPS --tta_lr $TTA_LR --tau_r $TAU_R --out \"$OUTJSON\""
+  --tta_mode \"$TTA_MODE\" --tta_frames $TTA_FRAMES --tta_steps $TTA_STEPS --tta_lr $TTA_LR --tau_r $TAU_R --out \"$OUTJSON\""
 if [ "$SMOKE" = "1" ]; then
   ARGS="--path_b \"$CKPT\" --method \"$METHOD\" --arch \"$ARCH\" --conds fog --sevs heavy \
-  --max_frames 40 --tta_frames 20 --tta_steps 1 --tta_lr $TTA_LR --tau_r $TAU_R --val_size 5000 --out \"$OUTJSON\""
+  --tta_mode \"$TTA_MODE\" --max_frames 40 --tta_frames 20 --tta_steps 1 --tta_lr $TTA_LR --tau_r $TAU_R --val_size 5000 --out \"$OUTJSON\""
   echo "  [SMOKE] 20 TTA frames, 1 step, 40 total frames, fog only"
 fi
 
