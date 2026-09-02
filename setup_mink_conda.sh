@@ -19,8 +19,11 @@ set -euo pipefail
 
 ENV_NAME="${ENV_NAME:-mink}"
 PY_VER="${PY_VER:-3.10}"
-CU_TAG="${CU_TAG:-cu118}"          # torch wheel tag (must match the CUDA toolkit below)
-CUDA_TK="${CUDA_TK:-11.8}"         # CUDA toolkit to install (for nvcc)
+CU_TAG="${CU_TAG:-cu117}"          # torch wheel tag: 1.13.1's newest CUDA build is cu117
+                                   # (cu118 wheels start at torch 2.0; GeoID's setup also
+                                   # resolves to cu117 from default PyPI)
+CUDA_TK="${CUDA_TK:-11.8}"         # conda CUDA toolkit for nvcc (11.8 compiles ME 0.5.4;
+                                   # minor-version mix with torch cu117 is fine)
 ME_DIR="${ME_DIR:-$HOME/MinkowskiEngine}"
 
 echo "=== MinkowskiNet conda setup ($ENV_NAME, py $PY_VER, torch $CU_TAG, cuda-toolkit $CUDA_TK) ==="
@@ -44,10 +47,10 @@ conda install -n "$ENV_NAME" -c nvidia "cuda-nvcc=$CUDA_TK" "cuda-cudart-dev=$CU
 conda activate "$ENV_NAME"
 which nvcc && nvcc --version | tail -1
 
-# 3. torch 1.13 + the rest (ME needs torch<2.0)
+# 3. torch 1.13 + the rest (ME needs torch<2.0; use the cu117 build)
 echo "[3/4] installing torch==1.13.1 ($CU_TAG) + requirements_mink.txt..."
 pip install --index-url "https://download.pytorch.org/whl/$CU_TAG" \
-  "torch==1.13.1" "torchvision==0.14.1"
+  "torch==1.13.1+$CU_TAG" "torchvision==0.14.1+$CU_TAG"
 pip install -r requirements_mink.txt
 
 # 4. MinkowskiEngine 0.5.4 from source (compiles against the conda nvcc + torch)
@@ -55,6 +58,7 @@ echo "[4/4] building MinkowskiEngine 0.5.4 from source..."
 if [ ! -d "$ME_DIR" ]; then
   git clone --recursive --branch v0.5.4 https://github.com/NVIDIA/MinkowskiEngine.git "$ME_DIR"
 fi
+export CUDA_HOME="$CONDA_PREFIX"   # point ME's build at the conda CUDA 11.8 toolkit
 ( cd "$ME_DIR" && \
   python setup.py install --blas=openblas 2>/dev/null || \
   python -m pip install -e . --install-option="--blas=openblas" -v --no-deps )
